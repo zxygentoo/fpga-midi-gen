@@ -1,0 +1,32 @@
+# Hardcaml output and Vivado work directories
+board/_generated/
+board/_build/
+
+# dune
+_build/
+*.install
+
+# opam
+_opam/
+
+# merlin
+.merlin
+
+# OCaml artifacts
+*.annot
+*.cma
+*.cmi
+*.cmo
+*.cmt
+*.cmti
+*.cmx
+*.cmxa
+*.cmxs
+*.a
+*.o
+*.so
+
+# Vivado journals and logs outside the work directory
+.Xil/
+vivado*.jou
+vivado*.log
