@@ -22,27 +22,38 @@ module O = struct
 end
 
 module State = struct
-  let init = 0
-  let ready = 1
-  let busy = 2
+  type t =
+    | Init
+    | Ready
+    | Busy
+
+  let to_code = function
+    | Init -> 0
+    | Ready -> 1
+    | Busy -> 2
+  ;;
 end
 
 (* The power-on values of the control cells, from the ABI constants. The port writes them
-   into the register file in the init state. *)
+   into the register file in the init state. A field is (address, width, value);
+   multi-byte values take the little-endian order of the ABI. A cell of no field is 0. *)
 let defaults =
-  let d = Array.make Abi.Reg.Ctl.size 0 in
-  let set_byte addr value = d.(addr - Abi.Reg.Ctl.base) <- value land 0xff in
-  let set_bytes addr n value =
-    for i = 0 to n - 1 do
-      set_byte (addr + i) (value lsr (8 * i))
-    done
+  let fields =
+    [ Abi.Reg.Ctl.channel, 1, Abi.Default.channel
+    ; Abi.Reg.Ctl.step_ms, 2, Abi.Default.step_ms
+    ; Abi.Reg.Ctl.gate_ms, 2, Abi.Default.gate_ms
+    ; Abi.Reg.Ctl.velocity, 1, Abi.Default.velocity
+    ; Abi.Reg.Ctl.seed, 4, Abi.Default.seed
+    ]
   in
-  set_byte Abi.Reg.Ctl.channel Abi.Default.channel;
-  set_bytes Abi.Reg.Ctl.step_ms 2 Abi.Default.step_ms;
-  set_bytes Abi.Reg.Ctl.gate_ms 2 Abi.Default.gate_ms;
-  set_byte Abi.Reg.Ctl.velocity Abi.Default.velocity;
-  set_bytes Abi.Reg.Ctl.seed 4 Abi.Default.seed;
-  d
+  let bytes =
+    List.concat_map
+      (fun (address, width, value) ->
+        List.init width (fun k -> address + k, (value lsr (8 * k)) land 0xff))
+      fields
+  in
+  List.init Abi.Reg.Ctl.size (fun k ->
+    Option.value ~default:0 (List.assoc_opt (Abi.Reg.Ctl.base + k) bytes))
 ;;
 
 (* payload capacity: the header plus the largest write burst *)
@@ -53,18 +64,25 @@ module Ctl_regfile = Regfile.Make (struct
     let size = Abi.Reg.Ctl.size
   end)
 
-(* the FSM states; init is 0, the value of the state register at power-on *)
-let s_init = 0
-let s_receive = 1
-let s_parse = 2
-let s_apply = 3
-let s_start = 4
-let s_wait = 5
+(* one transaction at a time: Receive buffers a frame, Parse judges it, Apply writes the
+   cells, Respond and Sending run the encoder *)
+module Fsm = struct
+  type t =
+    | Init
+    (** writes the control defaults. The first constructor encodes as 0, the value of the
+        state register at power-on and at clear *)
+    | Receive (** buffers decoded bytes until [frame_end] *)
+    | Parse (** judges the header and chooses the response *)
+    | Apply (** writes one cell each cycle *)
+    | Respond (** strobes [frame_start] to the encoder *)
+    | Sending (** the encoder sends; back to [Receive] when it is done *)
+  [@@deriving compare ~localize, enumerate, sexp_of]
+end
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
-  let state = Variable.reg spec ~width:3 in
+  let sm = State_machine.create (module Fsm) spec in
   let wr_idx = Variable.reg spec ~width:7 in
   let drop = Variable.reg spec ~width:1 in
   let hdr = Array.init 4 (fun _ -> Variable.reg spec ~width:8) in
@@ -77,8 +95,6 @@ let create (i : _ I.t) : _ O.t =
   let init_idx = Variable.reg spec ~width:4 in
   let rf_we = Variable.wire ~default:gnd () in
   let cobs_start = Variable.wire ~default:gnd () in
-  let in_state k = state.value ==:. k in
-  let goto k = state <--. k in
   (* the decoder *)
   let decoder =
     Cobs_decoder.create
@@ -89,7 +105,7 @@ let create (i : _ I.t) : _ O.t =
       }
   in
   (* the payload buffer *)
-  let capture = in_state s_receive &: decoder.out_valid &: ~:(drop.value) in
+  let capture = sm.is Receive &: decoder.out_valid &: ~:(drop.value) in
   let ram_q =
     (multiport_memory
        buffer_size
@@ -127,16 +143,11 @@ let create (i : _ I.t) : _ O.t =
       ; clear = i.clear
       ; write_enable = rf_we.value
       ; address =
-          mux2
-            (in_state s_init)
-            init_idx.value
-            (mux2 (in_state s_apply) apply_target resp_cell_idx)
+          mux2 (sm.is Init) init_idx.value (mux2 (sm.is Apply) apply_target resp_cell_idx)
       ; write_data =
           mux2
-            (in_state s_init)
-            (mux
-               init_idx.value
-               (List.map (of_unsigned_int ~width:8) (Array.to_list defaults)))
+            (sm.is Init)
+            (mux init_idx.value (List.map (of_unsigned_int ~width:8) defaults))
             ram_q
       }
   in
@@ -169,83 +180,89 @@ let create (i : _ I.t) : _ O.t =
   in
   let reset_frame = proc [ wr_idx <--. 0; drop <-- gnd ] in
   compile
-    [ when_
-        (in_state s_init)
-        [ (* one default each cycle; the cells are not valid before the end *)
-          rf_we <-- vdd
-        ; init_idx <-- init_idx.value +:. 1
-        ; when_ (init_idx.value ==:. Abi.Reg.Ctl.size - 1) [ goto s_receive ]
-        ]
-    ; when_
-        (in_state s_receive)
-        [ when_
-            (decoder.out_valid &: ~:(drop.value))
-            [ wr_idx <-- wr_idx.value +:. 1
-            ; when_ (wr_idx.value ==:. max_payload) [ drop <-- vdd ]
-            ; proc
-                (List.init 4 (fun k ->
-                   when_ (wr_idx.value ==:. k) [ hdr.(k) <-- decoder.out_data ]))
-            ]
-        ; when_ decoder.abort [ reset_frame ]
-        ; when_
-            decoder.frame_end
-            [ if_
-                (~:(drop.value) &: (wr_idx.value >=:. 4))
-                [ plen <-- wr_idx.value; goto s_parse ]
-                [ reset_frame ]
-            ]
-        ]
-    ; when_
-        (in_state s_parse)
-        [ reset_frame
-        ; addr <-- h_addr
-        ; len <-- h_len
-        ; apply_idx <--. 0
-        ; if_
-            ~:structural_ok
-            [ goto s_receive ]
-            [ status <--. Abi.Status.to_code Abi.Status.Ok
-            ; resp_len <--. 2
-            ; if_
-                ~:len_ok
-                [ status <--. Abi.Status.to_code Abi.Status.Bad_length; goto s_start ]
+    [ sm.switch
+        [ ( Init
+          , [ (* one default each cycle; the cells are not valid before the end *)
+              rf_we <-- vdd
+            ; init_idx <-- init_idx.value +:. 1
+            ; when_ (init_idx.value ==:. Abi.Reg.Ctl.size - 1) [ sm.set_next Receive ]
+            ] )
+        ; ( Receive
+          , [ when_
+                (decoder.out_valid &: ~:(drop.value))
+                [ wr_idx <-- wr_idx.value +:. 1
+                ; when_ (wr_idx.value ==:. max_payload) [ drop <-- vdd ]
+                ; proc
+                    (List.init 4 (fun k ->
+                       when_ (wr_idx.value ==:. k) [ hdr.(k) <-- decoder.out_data ]))
+                ]
+            ; when_ decoder.abort [ reset_frame ]
+            ; when_
+                decoder.frame_end
                 [ if_
-                    ~:(is_read |: is_write)
-                    [ status <--. Abi.Status.to_code Abi.Status.Bad_op; goto s_start ]
+                    (~:(drop.value) &: (wr_idx.value >=:. 4))
+                    [ plen <-- wr_idx.value; sm.set_next Parse ]
+                    [ reset_frame ]
+                ]
+            ] )
+        ; ( Parse
+          , [ reset_frame
+            ; addr <-- h_addr
+            ; len <-- h_len
+            ; apply_idx <--. 0
+            ; if_
+                ~:structural_ok
+                [ sm.set_next Receive ]
+                [ status <--. Abi.Status.to_code Abi.Status.Ok
+                ; resp_len <--. 2
+                ; if_
+                    ~:len_ok
+                    [ status <--. Abi.Status.to_code Abi.Status.Bad_length
+                    ; sm.set_next Respond
+                    ]
                     [ if_
-                        ~:addr_ok
-                        [ status <--. Abi.Status.to_code Abi.Status.Bad_address
-                        ; goto s_start
+                        ~:(is_read |: is_write)
+                        [ status <--. Abi.Status.to_code Abi.Status.Bad_op
+                        ; sm.set_next Respond
                         ]
                         [ if_
-                            is_read
-                            [ resp_len <-- uresize h_len ~width:7 +:. 2; goto s_start ]
-                            [ goto s_apply ]
+                            ~:addr_ok
+                            [ status <--. Abi.Status.to_code Abi.Status.Bad_address
+                            ; sm.set_next Respond
+                            ]
+                            [ if_
+                                is_read
+                                [ resp_len <-- uresize h_len ~width:7 +:. 2
+                                ; sm.set_next Respond
+                                ]
+                                [ sm.set_next Apply ]
+                            ]
                         ]
                     ]
                 ]
-            ]
+            ] )
+        ; ( Apply
+          , [ (* one cell each cycle, in the sequence of increasing addresses *)
+              rf_we <-- vdd
+            ; apply_idx <-- apply_idx.value +:. 1
+            ; when_
+                (apply_idx.value +:. 1 ==: uresize len.value ~width:6)
+                [ sm.set_next Respond ]
+            ] )
+        ; Respond, [ cobs_start <-- vdd; sm.set_next Sending ]
+        ; Sending, [ when_ ~:(encoder.busy) [ sm.set_next Receive ] ]
         ]
-    ; when_
-        (in_state s_apply)
-        [ (* one cell each cycle, in the sequence of increasing addresses *)
-          rf_we <-- vdd
-        ; apply_idx <-- apply_idx.value +:. 1
-        ; when_ (apply_idx.value +:. 1 ==: uresize len.value ~width:6) [ goto s_start ]
-        ]
-    ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
-    ; when_ (in_state s_wait) [ when_ ~:(encoder.busy) [ goto s_receive ] ]
     ];
   { O.out_data = encoder.data
   ; out_valid = encoder.valid
   ; state =
       mux2
-        (in_state s_init)
-        (of_unsigned_int ~width:2 State.init)
+        (sm.is Init)
+        (of_unsigned_int ~width:2 (State.to_code State.Init))
         (mux2
-           (in_state s_receive)
-           (of_unsigned_int ~width:2 State.ready)
-           (of_unsigned_int ~width:2 State.busy))
+           (sm.is Receive)
+           (of_unsigned_int ~width:2 (State.to_code State.Ready))
+           (of_unsigned_int ~width:2 (State.to_code State.Busy)))
   }
 ;;
 
@@ -259,11 +276,13 @@ let%expect_test "transactions against the register file" =
   inp.clear := Bits.gnd;
   (* the port loads the defaults, then reports ready *)
   let budget = ref 40 in
-  while Bits.to_int_trunc !(out.state) <> State.ready && !budget > 0 do
+  while Bits.to_int_trunc !(out.state) <> State.to_code State.Ready && !budget > 0 do
     Cyclesim.cycle sim;
     budget := !budget - 1
   done;
-  Printf.printf "ready after init: %b\n" (Bits.to_int_trunc !(out.state) = State.ready);
+  Printf.printf
+    "ready after init: %b\n"
+    (Bits.to_int_trunc !(out.state) = State.to_code State.Ready);
   [%expect {| ready after init: true |}];
   let response = Buffer.create 64 in
   let complete = ref false in

@@ -35,16 +35,15 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** The values of [O.state]. *)
+(** The meaning of [O.state]. *)
 module State : sig
-  (** the port loads the control defaults; the cells are not valid *)
-  val init : int
+  type t =
+    | Init (** the port loads the control defaults; the cells are not valid *)
+    | Ready (** idle; the cells are valid and stable *)
+    | Busy (** a transaction is in progress; a write can tear a multi-byte cell *)
 
-  (** idle; the cells are valid and stable *)
-  val ready : int
-
-  (** a transaction is in progress; a write can tear a multi-byte cell *)
-  val busy : int
+  (** the encoding on the [O.state] wires *)
+  val to_code : t -> int
 end
 
 val create : Signal.t I.t -> Signal.t O.t
