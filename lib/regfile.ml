@@ -84,6 +84,63 @@ let%expect_test "zeros, write and read" =
   [%expect {| during 30 after 2a |}]
 ;;
 
+let%expect_test "the waveform of the port timing" =
+  (* the write is registered: during the write cycle [read_data] shows the old value, and
+     the new value appears in the next cycle. The read is combinational: [read_data] moves
+     in the same cycle as [address]. *)
+  let module R =
+    Make (struct
+      let size = 4
+    end)
+  in
+  let module Sim = Cyclesim.With_interface (R.I) (R.O) in
+  let sim = Sim.create R.create in
+  let waves, sim = Cyclesim.Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  let address k = inp.address := Bits.of_unsigned_int ~width:2 k in
+  address 2;
+  Cyclesim.cycle sim;
+  (* the write cycle *)
+  inp.write_enable := Bits.vdd;
+  inp.write_data := Bits.of_unsigned_int ~width:8 0xaa;
+  Cyclesim.cycle sim;
+  inp.write_enable := Bits.gnd;
+  Cyclesim.cycle sim;
+  (* the combinational read *)
+  address 0;
+  Cyclesim.cycle sim;
+  address 2;
+  Cyclesim.cycle sim;
+  Cyclesim.cycle sim;
+  let display_rules =
+    List.map
+      (fun name ->
+        Hardcaml_waveterm.Display_rule.port_name_is
+          name
+          ~wave_format:Wave_format.(Bit_or Hex))
+      [ "clock"; "write_enable"; "address"; "write_data"; "read_data" ]
+  in
+  Hardcaml_waveterm.Waveform.expect ~display_rules ~show_digest:false ~wave_width:2 waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │clock          ││┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──│
+    │               ││   └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  │
+    │write_enable   ││      ┌─────┐                                      │
+    │               ││──────┘     └───────────────────────               │
+    │               ││──────────────────┬─────┬───────────               │
+    │address        ││ 2                │0    │2                         │
+    │               ││──────────────────┴─────┴───────────               │
+    │               ││──────┬─────────────────────────────               │
+    │write_data     ││ 00   │AA                                          │
+    │               ││──────┴─────────────────────────────               │
+    │               ││────────────┬─────┬─────┬───────────               │
+    │read_data      ││ 00         │AA   │00   │AA                        │
+    │               ││────────────┴─────┴─────┴───────────               │
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
+;;
+
 let%expect_test "the address width follows the size" =
   let module R =
     Make (struct
