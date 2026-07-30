@@ -15,6 +15,8 @@
   - local mutation with a large, measured performance win
   - an idiomatic use of a mutable data structure
   - code that is much more clear in the imperative style
+- A library module has a documented `.mli` file. A top-level module — an
+  executable in `bin/`, the board top level — can omit it.
 - Format all code with ocamlformat, profile `janestreet`.
 
 # Basic

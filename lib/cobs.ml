@@ -1,14 +1,3 @@
-(** COBS: Consistent Overhead Byte Stuffing.
-
-    [encode src] is the COBS body of [src] plus the zero delimiter. [decode frame] expects
-    that delimiter as the last byte of [frame].
-
-    The delimiter is fixed at zero: COBS group headers are the counts 1 to 255, thus any
-    other delimiter can collide with a header byte.
-
-    The encoder makes the minimal form: no empty group after a final 254-byte block. The
-    decoder accepts both the minimal form and the phantom-zero form. *)
-
 let delimiter = '\000'
 
 let encode src =

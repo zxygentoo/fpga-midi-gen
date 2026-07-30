@@ -1,9 +1,3 @@
-(** The ABI between the host drivers and the FPGA.
-
-    This module is the single definition of the ABI constants and of the wire-frame codec.
-    The drivers use it directly. The RTL reads the constants at elaboration time. The
-    normative description is [docs/abi.md]. *)
-
 module Limits = struct
   let max_data_len = 32
   let max_frame_wire_bytes = 64
