@@ -16,20 +16,50 @@ module O = struct
   type 'a t =
     { tx_data : 'a [@bits 8]
     ; tx_valid : 'a
+    ; state : 'a [@bits 2]
     }
   [@@deriving hardcaml]
 end
+
+module State = struct
+  let init = 0
+  let ready = 1
+  let busy = 2
+end
+
+(* The power-on values of the control cells, from the ABI constants. The bridge writes
+   them into the register file in the init state. *)
+let defaults =
+  let d = Array.make Abi.Reg.Ctl.size 0 in
+  let set_byte addr value = d.(addr - Abi.Reg.Ctl.base) <- value land 0xff in
+  let set_bytes addr n value =
+    for i = 0 to n - 1 do
+      set_byte (addr + i) (value lsr (8 * i))
+    done
+  in
+  set_byte Abi.Reg.Ctl.channel Abi.Default.channel;
+  set_bytes Abi.Reg.Ctl.step_ms 2 Abi.Default.step_ms;
+  set_bytes Abi.Reg.Ctl.gate_ms 2 Abi.Default.gate_ms;
+  set_byte Abi.Reg.Ctl.velocity Abi.Default.velocity;
+  set_bytes Abi.Reg.Ctl.seed 4 Abi.Default.seed;
+  d
+;;
 
 (* payload capacity: the header plus the largest write burst *)
 let max_payload = 4 + Abi.Limits.max_data_len
 let buffer_size = 64
 
-(* the FSM states *)
-let s_receive = 0
-let s_parse = 1
-let s_apply = 2
-let s_start = 3
-let s_wait = 4
+module Ctl_regfile = Regfile.Make (struct
+    let size = Abi.Reg.Ctl.size
+  end)
+
+(* the FSM states; init is 0, the value of the state register at power-on *)
+let s_init = 0
+let s_receive = 1
+let s_parse = 2
+let s_apply = 3
+let s_start = 4
+let s_wait = 5
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -44,6 +74,7 @@ let create (i : _ I.t) : _ O.t =
   let status = Variable.reg spec ~width:8 in
   let resp_len = Variable.reg spec ~width:7 in
   let apply_idx = Variable.reg spec ~width:6 in
+  let init_idx = Variable.reg spec ~width:4 in
   let rf_we = Variable.wire ~default:gnd () in
   let cobs_start = Variable.wire ~default:gnd () in
   let in_state k = state.value ==:. k in
@@ -87,12 +118,22 @@ let create (i : _ I.t) : _ O.t =
     select addr.value ~high:3 ~low:0 +: select (cobs_tx.rd_addr -:. 2) ~high:3 ~low:0
   in
   let regfile =
-    Regfile.create
-      { Regfile.I.clock = i.clock
+    Ctl_regfile.create
+      { Ctl_regfile.I.clock = i.clock
       ; clear = i.clear
       ; write_enable = rf_we.value
-      ; address = mux2 (in_state s_apply) apply_target resp_cell_idx
-      ; write_data = ram_q
+      ; address =
+          mux2
+            (in_state s_init)
+            init_idx.value
+            (mux2 (in_state s_apply) apply_target resp_cell_idx)
+      ; write_data =
+          mux2
+            (in_state s_init)
+            (mux
+               init_idx.value
+               (List.map (of_unsigned_int ~width:8) (Array.to_list defaults)))
+            ram_q
       }
   in
   (* response byte [j]: the op echo, the status, then the cells *)
@@ -125,6 +166,13 @@ let create (i : _ I.t) : _ O.t =
   let reset_frame = proc [ wr_idx <--. 0; drop <-- gnd ] in
   compile
     [ when_
+        (in_state s_init)
+        [ (* one default each cycle; the cells are not valid before the end *)
+          rf_we <-- vdd
+        ; init_idx <-- init_idx.value +:. 1
+        ; when_ (init_idx.value ==:. Abi.Reg.Ctl.size - 1) [ goto s_receive ]
+        ]
+    ; when_
         (in_state s_receive)
         [ when_
             (rx.valid &: ~:(drop.value))
@@ -184,7 +232,17 @@ let create (i : _ I.t) : _ O.t =
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
     ; when_ (in_state s_wait) [ when_ ~:(cobs_tx.busy) [ goto s_receive ] ]
     ];
-  { O.tx_data = cobs_tx.tx_data; tx_valid = cobs_tx.tx_valid }
+  { O.tx_data = cobs_tx.tx_data
+  ; tx_valid = cobs_tx.tx_valid
+  ; state =
+      mux2
+        (in_state s_init)
+        (of_unsigned_int ~width:2 State.init)
+        (mux2
+           (in_state s_receive)
+           (of_unsigned_int ~width:2 State.ready)
+           (of_unsigned_int ~width:2 State.busy))
+  }
 ;;
 
 let%expect_test "transactions against the register file" =
@@ -195,6 +253,14 @@ let%expect_test "transactions against the register file" =
   inp.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inp.clear := Bits.gnd;
+  (* the bridge loads the defaults, then reports ready *)
+  let budget = ref 40 in
+  while Bits.to_int_trunc !(out.state) <> State.ready && !budget > 0 do
+    Cyclesim.cycle sim;
+    budget := !budget - 1
+  done;
+  Printf.printf "ready after init: %b\n" (Bits.to_int_trunc !(out.state) = State.ready);
+  [%expect {| ready after init: true |}];
   let response = Buffer.create 64 in
   let complete = ref false in
   let cycle () =
