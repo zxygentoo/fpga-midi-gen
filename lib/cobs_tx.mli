@@ -1,27 +1,30 @@
 (** The streaming COBS framer: the hardware mirror of [Cobs.encode].
 
-    The block reads the payload by index: it presents [rd_addr], and [rd_data] must hold
-    that byte on the subsequent cycle (a registered read). Thus the payload can live in a
-    memory, a register file, or a function of the index; the producer decides.
-
-    A [start] strobe with [length] begins a frame. The block emits the encoded bytes and
-    the final delimiter on [tx_data]/[tx_valid], and the transmitter takes each byte when
-    [tx_busy] is 0. [busy] stays high until the delimiter is out. *)
+    The block reads the payload by index; thus the payload can live in a memory, a
+    register file, or a function of the index. The producer decides. *)
 
 open Hardcaml
 
-type t =
-  { rd_addr : Signal.t
-  ; tx_data : Signal.t
-  ; tx_valid : Signal.t
-  ; busy : Signal.t
-  }
+module I : sig
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; start : 'a (** a strobe; begins a frame of [length] payload bytes *)
+    ; length : 'a (** the payload length; the block takes it with [start] *)
+    ; rd_data : 'a (** the payload byte at the [rd_addr] of the previous cycle *)
+    ; tx_busy : 'a (** from the transmitter: 1 while it sends *)
+    }
+  [@@deriving hardcaml]
+end
 
-val create
-  :  clock:Signal.t
-  -> clear:Signal.t
-  -> start:Signal.t
-  -> length:Signal.t
-  -> rd_data:Signal.t
-  -> tx_busy:Signal.t
-  -> t
+module O : sig
+  type 'a t =
+    { rd_addr : 'a (** the payload index to read; a registered read *)
+    ; tx_data : 'a (** an encoded frame byte; the delimiter is the last *)
+    ; tx_valid : 'a (** the transmitter takes [tx_data] when [tx_busy] is 0 *)
+    ; busy : 'a (** high from [start] until the delimiter is out *)
+    }
+  [@@deriving hardcaml]
+end
+
+val create : Signal.t I.t -> Signal.t O.t

@@ -1,14 +1,26 @@
 open Hardcaml
 open Signal
 
-type t =
-  { data : Signal.t
-  ; valid : Signal.t
-  }
+module I = struct
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; rxd : 'a
+    }
+  [@@deriving hardcaml]
+end
 
-let create ~clocks_per_bit ~clock ~clear ~rxd =
-  let spec = Reg_spec.create ~clock ~clear () in
-  let rxd = reg spec (reg spec rxd) in
+module O = struct
+  type 'a t =
+    { data : 'a [@bits 8]
+    ; valid : 'a
+    }
+  [@@deriving hardcaml]
+end
+
+let create ~clocks_per_bit (i : _ I.t) : _ O.t =
+  let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
+  let rxd = reg spec (reg spec i.rxd) in
   let baud_width = address_bits_for clocks_per_bit in
   let open Always in
   let busy = Variable.reg spec ~width:1 in
@@ -45,34 +57,25 @@ let create ~clocks_per_bit ~clock ~clear ~rxd =
         ]
         [ when_ ~:rxd [ busy <-- vdd; baud <--. 0; count <--. 0 ] ]
     ];
-  { data = shift.value; valid = valid.value }
+  { O.data = shift.value; valid = valid.value }
 ;;
 
 let%expect_test "frames at 4 clocks per bit" =
   let clocks_per_bit = 4 in
-  let circuit =
-    let t =
-      create
-        ~clocks_per_bit
-        ~clock:(input "clock" 1)
-        ~clear:(input "clear" 1)
-        ~rxd:(input "rxd" 1)
-    in
-    Circuit.create_exn ~name:"uart_rx" [ output "data" t.data; output "valid" t.valid ]
-  in
-  let sim = Cyclesim.create circuit in
-  let rxd = Cyclesim.in_port sim "rxd" in
-  let data = Cyclesim.out_port sim "data" in
-  let valid = Cyclesim.out_port sim "valid" in
-  rxd := Bits.vdd;
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create (create ~clocks_per_bit) in
+  let inp = Cyclesim.inputs sim in
+  let out = Cyclesim.outputs sim in
+  inp.rxd := Bits.vdd;
   Cyclesim.cycle ~n:8 sim;
   let send_frame ~stop byte =
-    let level b = rxd := if b then Bits.vdd else Bits.gnd in
+    let level b = inp.rxd := if b then Bits.vdd else Bits.gnd in
     let bit b =
       level b;
       for _ = 1 to clocks_per_bit do
         Cyclesim.cycle sim;
-        if Bits.to_bool !valid then Printf.printf "byte %02x\n" (Bits.to_int_trunc !data)
+        if Bits.to_bool !(out.valid)
+        then Printf.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
       done
     in
     bit false;
@@ -84,7 +87,8 @@ let%expect_test "frames at 4 clocks per bit" =
     level true;
     for _ = 1 to 8 do
       Cyclesim.cycle sim;
-      if Bits.to_bool !valid then Printf.printf "byte %02x\n" (Bits.to_int_trunc !data)
+      if Bits.to_bool !(out.valid)
+      then Printf.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
     done
   in
   send_frame ~stop:true 0xa3;

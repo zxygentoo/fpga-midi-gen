@@ -24,19 +24,24 @@ let create () =
   let counter = reg_fb spec ~width:27 ~f:(fun d -> d +:. 1) in
   let heartbeat = select counter ~high:26 ~low:26 in
   let uart_rx =
-    Uart_rx.create ~clocks_per_bit:host_clocks_per_bit ~clock:clk ~clear ~rxd:rx_pin
+    Uart_rx.create
+      ~clocks_per_bit:host_clocks_per_bit
+      { Uart_rx.I.clock = clk; clear; rxd = rx_pin }
   in
   let tx_busy = wire 1 in
   let bridge =
-    Bridge.create ~clock:clk ~clear ~rx_data:uart_rx.data ~rx_valid:uart_rx.valid ~tx_busy
+    Bridge.create
+      { Bridge.I.clock = clk
+      ; clear
+      ; rx_data = uart_rx.data
+      ; rx_valid = uart_rx.valid
+      ; tx_busy
+      }
   in
   let uart_tx =
     Uart_tx.create
       ~clocks_per_bit:host_clocks_per_bit
-      ~clock:clk
-      ~clear
-      ~data:bridge.tx_data
-      ~valid:bridge.tx_valid
+      { Uart_tx.I.clock = clk; clear; data = bridge.tx_data; valid = bridge.tx_valid }
   in
   assign tx_busy uart_tx.busy;
   let led = concat_msb [ zero 13; ~:(uart_tx.txd); ~:rx_pin; heartbeat ] in

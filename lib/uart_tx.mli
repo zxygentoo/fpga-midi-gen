@@ -2,17 +2,23 @@
 
 open Hardcaml
 
-type t =
-  { txd : Signal.t
-  ; busy : Signal.t
-  }
+module I : sig
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; data : 'a (** the byte to send *)
+    ; valid : 'a (** the block takes [data] when [valid] is 1 and [busy] is 0 *)
+    }
+  [@@deriving hardcaml]
+end
 
-(** [clocks_per_bit] selects the baud rate at elaboration time. The block takes [data]
-    when [valid] is 1 and [busy] is 0. The line idles at 1. *)
-val create
-  :  clocks_per_bit:int
-  -> clock:Signal.t
-  -> clear:Signal.t
-  -> data:Signal.t
-  -> valid:Signal.t
-  -> t
+module O : sig
+  type 'a t =
+    { txd : 'a (** the serial line; it idles at 1 *)
+    ; busy : 'a (** high while a frame is on the line *)
+    }
+  [@@deriving hardcaml]
+end
+
+(** [clocks_per_bit] selects the baud rate at elaboration time. *)
+val create : clocks_per_bit:int -> Signal.t I.t -> Signal.t O.t

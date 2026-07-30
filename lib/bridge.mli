@@ -1,24 +1,30 @@
 (** The memory bridge: the wire-protocol engine and the control register file.
 
-    The bridge consumes the byte stream from the host UART, decodes COBS frames, executes
-    read and write requests against the register file, and produces the response byte
-    stream for the transmitter. The behavior is the one of [docs/abi.md]: a frame that
-    does not decode gets no response, a write applies its bytes in the sequence of
-    increasing addresses, and a rejected access changes no cell. *)
+    The behavior is the one of [docs/abi.md]: a frame that does not decode gets no
+    response, a write applies its bytes in the sequence of increasing addresses, and a
+    rejected access changes no cell. *)
 
 open Hardcaml
 
-type t =
-  { tx_data : Signal.t
-  ; tx_valid : Signal.t (** the transmitter takes the byte when it is not busy *)
-  ; cells : Signal.t
-  (** the register file as one vector; the cell at [Abi.Reg.Ctl.base] is the low byte *)
-  }
+module I : sig
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; rx_data : 'a (** the byte stream from the host UART *)
+    ; rx_valid : 'a (** a strobe: [rx_data] holds one stream byte *)
+    ; tx_busy : 'a (** from the transmitter: 1 while it sends *)
+    }
+  [@@deriving hardcaml]
+end
 
-val create
-  :  clock:Signal.t
-  -> clear:Signal.t
-  -> rx_data:Signal.t
-  -> rx_valid:Signal.t
-  -> tx_busy:Signal.t
-  -> t
+module O : sig
+  type 'a t =
+    { tx_data : 'a (** the response byte stream: COBS frames with their delimiters *)
+    ; tx_valid : 'a (** the transmitter takes [tx_data] when [tx_busy] is 0 *)
+    ; cells : 'a
+    (** the register file as one vector; the cell at [Abi.Reg.Ctl.base] is the low byte *)
+    }
+  [@@deriving hardcaml]
+end
+
+val create : Signal.t I.t -> Signal.t O.t

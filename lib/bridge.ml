@@ -1,11 +1,25 @@
 open Hardcaml
 open Signal
 
-type t =
-  { tx_data : Signal.t
-  ; tx_valid : Signal.t
-  ; cells : Signal.t
-  }
+module I = struct
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; rx_data : 'a [@bits 8]
+    ; rx_valid : 'a
+    ; tx_busy : 'a
+    }
+  [@@deriving hardcaml]
+end
+
+module O = struct
+  type 'a t =
+    { tx_data : 'a [@bits 8]
+    ; tx_valid : 'a
+    ; cells : 'a [@bits 128]
+    }
+  [@@deriving hardcaml]
+end
 
 (* payload capacity: the header plus the largest write burst *)
 let max_payload = 4 + Abi.Limits.max_data_len
@@ -18,8 +32,8 @@ let s_apply = 2
 let s_start = 3
 let s_wait = 4
 
-let create ~clock ~clear ~rx_data ~rx_valid ~tx_busy =
-  let spec = Reg_spec.create ~clock ~clear () in
+let create (i : _ I.t) : _ O.t =
+  let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let state = Variable.reg spec ~width:3 in
   let wr_idx = Variable.reg spec ~width:7 in
@@ -36,14 +50,17 @@ let create ~clock ~clear ~rx_data ~rx_valid ~tx_busy =
   let in_state k = state.value ==:. k in
   let goto k = state <--. k in
   (* the deframer *)
-  let rx = Cobs_rx.create ~clock ~clear ~data:rx_data ~valid:rx_valid in
+  let rx =
+    Cobs_rx.create
+      { Cobs_rx.I.clock = i.clock; clear = i.clear; data = i.rx_data; valid = i.rx_valid }
+  in
   (* the payload buffer *)
   let capture = in_state s_receive &: rx.valid &: ~:(drop.value) in
   let ram_q =
     (multiport_memory
        buffer_size
        ~write_ports:
-         [| { Write_port.write_clock = clock
+         [| { Write_port.write_clock = i.clock
             ; write_address = uresize wr_idx.value ~width:6
             ; write_enable = capture
             ; write_data = rx.data
@@ -55,12 +72,13 @@ let create ~clock ~clear ~rx_data ~rx_valid ~tx_busy =
   let cobs_rd_data = wire 8 in
   let cobs_tx =
     Cobs_tx.create
-      ~clock
-      ~clear
-      ~start:cobs_start.value
-      ~length:resp_len.value
-      ~rd_data:cobs_rd_data
-      ~tx_busy
+      { Cobs_tx.I.clock = i.clock
+      ; clear = i.clear
+      ; start = cobs_start.value
+      ; length = resp_len.value
+      ; rd_data = cobs_rd_data
+      ; tx_busy = i.tx_busy
+      }
   in
   (* the register file *)
   let apply_target =
@@ -71,12 +89,13 @@ let create ~clock ~clear ~rx_data ~rx_valid ~tx_busy =
   in
   let regfile =
     Regfile.create
-      ~clock
-      ~clear
-      ~wr_en:rf_we.value
-      ~wr_idx:apply_target
-      ~wr_data:ram_q
-      ~rd_idx:resp_cell_idx
+      { Regfile.I.clock = i.clock
+      ; clear = i.clear
+      ; wr_en = rf_we.value
+      ; wr_idx = apply_target
+      ; wr_data = ram_q
+      ; rd_idx = resp_cell_idx
+      }
   in
   (* response byte [j]: the op echo, the status, then the cells *)
   let resp_byte j =
@@ -167,39 +186,24 @@ let create ~clock ~clear ~rx_data ~rx_valid ~tx_busy =
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
     ; when_ (in_state s_wait) [ when_ ~:(cobs_tx.busy) [ goto s_receive ] ]
     ];
-  { tx_data = cobs_tx.tx_data; tx_valid = cobs_tx.tx_valid; cells = regfile.cells }
+  { O.tx_data = cobs_tx.tx_data; tx_valid = cobs_tx.tx_valid; cells = regfile.cells }
 ;;
 
 let%expect_test "transactions against the register file" =
-  let circuit =
-    let t =
-      create
-        ~clock:(input "clock" 1)
-        ~clear:(input "clear" 1)
-        ~rx_data:(input "rx_data" 8)
-        ~rx_valid:(input "rx_valid" 1)
-        ~tx_busy:(input "tx_busy" 1)
-    in
-    Circuit.create_exn
-      ~name:"bridge"
-      [ output "tx_data" t.tx_data; output "tx_valid" t.tx_valid ]
-  in
-  let sim = Cyclesim.create circuit in
-  let rx_data = Cyclesim.in_port sim "rx_data" in
-  let rx_valid = Cyclesim.in_port sim "rx_valid" in
-  let clear = Cyclesim.in_port sim "clear" in
-  let tx_data = Cyclesim.out_port ~clock_edge:Before sim "tx_data" in
-  let tx_valid = Cyclesim.out_port ~clock_edge:Before sim "tx_valid" in
-  clear := Bits.vdd;
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let out = Cyclesim.outputs ~clock_edge:Before sim in
+  inp.clear := Bits.vdd;
   Cyclesim.cycle sim;
-  clear := Bits.gnd;
+  inp.clear := Bits.gnd;
   let response = Buffer.create 64 in
   let complete = ref false in
   let cycle () =
     Cyclesim.cycle sim;
-    if (not !complete) && Bits.to_bool !tx_valid
+    if (not !complete) && Bits.to_bool !(out.tx_valid)
     then (
-      let byte = Bits.to_int_trunc !tx_data in
+      let byte = Bits.to_int_trunc !(out.tx_data) in
       Buffer.add_char response (Char.chr byte);
       if byte = 0 then complete := true)
   in
@@ -208,11 +212,11 @@ let%expect_test "transactions against the register file" =
     complete := false;
     Bytes.iter
       (fun b ->
-        rx_data := Bits.of_unsigned_int ~width:8 (Char.code b);
-        rx_valid := Bits.vdd;
+        inp.rx_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+        inp.rx_valid := Bits.vdd;
         cycle ())
       frame;
-    rx_valid := Bits.gnd;
+    inp.rx_valid := Bits.gnd;
     let budget = ref 500 in
     while (not !complete) && !budget > 0 do
       cycle ();

@@ -1,15 +1,28 @@
 open Hardcaml
 open Signal
 
-type t =
-  { data : Signal.t
-  ; valid : Signal.t
-  ; frame_end : Signal.t
-  ; abort : Signal.t
-  }
+module I = struct
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; data : 'a [@bits 8]
+    ; valid : 'a
+    }
+  [@@deriving hardcaml]
+end
 
-let create ~clock ~clear ~data ~valid =
-  let spec = Reg_spec.create ~clock ~clear () in
+module O = struct
+  type 'a t =
+    { data : 'a [@bits 8] [@rtlname "out_data"]
+    ; valid : 'a [@rtlname "out_valid"]
+    ; frame_end : 'a
+    ; abort : 'a
+    }
+  [@@deriving hardcaml]
+end
+
+let create (i : _ I.t) : _ O.t =
+  let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let remaining = Variable.reg spec ~width:8 in
   let insert_zero = Variable.reg spec ~width:1 in
@@ -19,9 +32,9 @@ let create ~clock ~clear ~data ~valid =
   let abort = Variable.wire ~default:gnd () in
   compile
     [ when_
-        valid
+        i.valid
         [ if_
-            (data ==:. 0)
+            (i.data ==:. 0)
             [ (* the delimiter; a pending implicit zero is discarded *)
               if_ (remaining.value ==:. 0) [ frame_end <-- vdd ] [ abort <-- vdd ]
             ; remaining <--. 0
@@ -31,17 +44,17 @@ let create ~clock ~clear ~data ~valid =
                 (remaining.value ==:. 0)
                 [ (* a group code; a pending zero goes out first *)
                   when_ insert_zero.value [ out_valid <-- vdd ]
-                ; remaining <-- data -:. 1
-                ; insert_zero <-- (data <>:. 0xff)
+                ; remaining <-- i.data -:. 1
+                ; insert_zero <-- (i.data <>:. 0xff)
                 ]
-                [ out_data <-- data
+                [ out_data <-- i.data
                 ; out_valid <-- vdd
                 ; remaining <-- remaining.value -:. 1
                 ]
             ]
         ]
     ];
-  { data = out_data.value
+  { O.data = out_data.value
   ; valid = out_valid.value
   ; frame_end = frame_end.value
   ; abort = abort.value
@@ -49,44 +62,25 @@ let create ~clock ~clear ~data ~valid =
 ;;
 
 let%expect_test "the deframer agrees with Cobs.decode" =
-  let circuit =
-    let t =
-      create
-        ~clock:(input "clock" 1)
-        ~clear:(input "clear" 1)
-        ~data:(input "data" 8)
-        ~valid:(input "valid" 1)
-    in
-    Circuit.create_exn
-      ~name:"cobs_rx"
-      [ output "out_data" t.data
-      ; output "out_valid" t.valid
-      ; output "frame_end" t.frame_end
-      ; output "abort" t.abort
-      ]
-  in
-  let sim = Cyclesim.create circuit in
-  let data = Cyclesim.in_port sim "data" in
-  let valid = Cyclesim.in_port sim "valid" in
-  let out_data = Cyclesim.out_port ~clock_edge:Before sim "out_data" in
-  let out_valid = Cyclesim.out_port ~clock_edge:Before sim "out_valid" in
-  let frame_end = Cyclesim.out_port ~clock_edge:Before sim "frame_end" in
-  let abort = Cyclesim.out_port ~clock_edge:Before sim "abort" in
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let out = Cyclesim.outputs ~clock_edge:Before sim in
   let run frame =
     let bytes = Buffer.create 8 in
     let events = Buffer.create 8 in
     String.iter
       (fun c ->
-        data := Bits.of_unsigned_int ~width:8 (Char.code c);
-        valid := Bits.vdd;
+        inp.data := Bits.of_unsigned_int ~width:8 (Char.code c);
+        inp.valid := Bits.vdd;
         Cyclesim.cycle sim;
-        if Bits.to_bool !out_valid
+        if Bits.to_bool !(out.valid)
         then
-          Buffer.add_string bytes (Printf.sprintf "%02x " (Bits.to_int_trunc !out_data));
-        if Bits.to_bool !frame_end then Buffer.add_string events "end ";
-        if Bits.to_bool !abort then Buffer.add_string events "abort ")
+          Buffer.add_string bytes (Printf.sprintf "%02x " (Bits.to_int_trunc !(out.data)));
+        if Bits.to_bool !(out.frame_end) then Buffer.add_string events "end ";
+        if Bits.to_bool !(out.abort) then Buffer.add_string events "abort ")
       frame;
-    valid := Bits.gnd;
+    inp.valid := Bits.gnd;
     Cyclesim.cycle sim;
     let sw =
       match Cobs.decode (Bytes.of_string frame) with

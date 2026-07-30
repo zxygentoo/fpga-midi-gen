@@ -2,11 +2,23 @@
 
 open Hardcaml
 
-type t =
-  { data : Signal.t
-  ; valid : Signal.t (** high for one cycle when a byte is complete *)
-  }
+module I : sig
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; rxd : 'a (** the serial line *)
+    }
+  [@@deriving hardcaml]
+end
+
+module O : sig
+  type 'a t =
+    { data : 'a (** the received byte; read it when [valid] is 1 *)
+    ; valid : 'a (** high for one cycle when a byte is complete *)
+    }
+  [@@deriving hardcaml]
+end
 
 (** [clocks_per_bit] selects the baud rate at elaboration time. The block samples each bit
     at its center, verifies the start bit, and discards a frame with a bad stop bit. *)
-val create : clocks_per_bit:int -> clock:Signal.t -> clear:Signal.t -> rxd:Signal.t -> t
+val create : clocks_per_bit:int -> Signal.t I.t -> Signal.t O.t
