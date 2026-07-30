@@ -99,6 +99,10 @@ let create (i : _ I.t) : _ O.t =
   let init_index = Variable.reg spec ~width:cell_bits in
   let write_enable = Variable.wire ~default:gnd () in
   let frame_start = Variable.wire ~default:gnd () in
+  (* the names put the machine and the write strobe into the waveform tests; the port
+     already owns the name [state], thus the machine shows as [fsm] *)
+  let _ = sm.current -- "fsm" in
+  let _ = write_enable.value -- "write_enable" in
   (* the header fields, as views of the header registers. The registers hold through the
      whole transaction: [capture] is gated on [Receive], and the op echo of
      [response_byte] already depends on this *)
@@ -149,21 +153,24 @@ let create (i : _ I.t) : _ O.t =
   let response_cell =
     target_cell +: select (encoder.address -:. 2) ~high:(cell_bits - 1) ~low:0
   in
+  let cell_address =
+    mux2 (sm.is Init) init_index.value (mux2 (sm.is Apply) apply_target response_cell)
+    -- "cell_address"
+  in
+  let cell_write_data =
+    mux2
+      (sm.is Init)
+      (mux init_index.value (List.map (of_unsigned_int ~width:8) defaults))
+      payload_byte
+    -- "cell_write_data"
+  in
   let regfile =
     Ctl_regfile.create
       { Ctl_regfile.I.clock = i.clock
       ; clear = i.clear
       ; write_enable = write_enable.value
-      ; address =
-          mux2
-            (sm.is Init)
-            init_index.value
-            (mux2 (sm.is Apply) apply_target response_cell)
-      ; write_data =
-          mux2
-            (sm.is Init)
-            (mux init_index.value (List.map (of_unsigned_int ~width:8) defaults))
-            payload_byte
+      ; address = cell_address
+      ; write_data = cell_write_data
       }
   in
   (* response byte [j]: the op echo, the status, then the cells *)
@@ -370,5 +377,127 @@ let%expect_test "transactions against the register file" =
   transact (Cobs.encode (Bytes.of_string "\xAA\xBB"));
   [%expect {| no response |}];
   transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
+  [%expect {| op 1 status ok data 02 |}];
+  (* the port ignores a frame that arrives while it sends: one response only, and the next
+     request transacts normally *)
+  Buffer.clear response;
+  complete := false;
+  let feed frame =
+    Bytes.iter
+      (fun b ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+        inp.in_valid := Bits.vdd;
+        cycle ())
+      frame;
+    inp.in_valid := Bits.gnd
+  in
+  feed (Abi.encode_request (Read { addr = Abi.Reg.Ctl.velocity; len = 1 }));
+  let budget = ref 200 in
+  while Buffer.length response = 0 && !budget > 0 do
+    cycle ();
+    budget := !budget - 1
+  done;
+  (* the response has begun: the port is in Sending; inject a complete frame *)
+  feed (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
+  let budget = ref 500 in
+  while (not !complete) && !budget > 0 do
+    cycle ();
+    budget := !budget - 1
+  done;
+  (match Abi.decode_response (Buffer.to_bytes response) with
+   | Ok { op; status = Abi.Status.Ok; data } ->
+     Printf.printf "during-send response: op %d data %02x\n" op (Bytes.get_uint8 data 0)
+   | _ -> print_endline "bad response");
+  Buffer.clear response;
+  complete := false;
+  for _ = 1 to 400 do
+    cycle ()
+  done;
+  Printf.printf "response to the injected frame: %d bytes\n" (Buffer.length response);
+  [%expect
+    {|
+    during-send response: op 1 data 30
+    response to the injected frame: 0 bytes
+    |}];
+  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}]
+;;
+
+let%expect_test "the waveform of a write tear" =
+  (* a two-byte write to STEP_MS. [Apply] writes one cell each cycle, in the sequence of
+     increasing addresses: the value is torn between the two cycles, and [state] holds
+     Busy for the whole transaction. The window opens at the tail of the request frame.
+     The fsm tags follow [Fsm.t]: Init Recv Parse Apply Rspnd Send. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Cyclesim.Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  (* the init walk *)
+  for _ = 1 to 16 do
+    Cyclesim.cycle sim
+  done;
+  Bytes.iter
+    (fun b ->
+      inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+      inp.in_valid := Bits.vdd;
+      Cyclesim.cycle sim)
+    (Abi.encode_request
+       (Write { addr = Abi.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" }));
+  inp.in_valid := Bits.gnd;
+  for _ = 1 to 8 do
+    Cyclesim.cycle sim
+  done;
+  let rules =
+    let signal name =
+      Hardcaml_waveterm.Display_rule.port_name_is
+        name
+        ~wave_format:Wave_format.(Bit_or Hex)
+    in
+    [ signal "clock"
+    ; signal "in_data"
+    ; signal "in_valid"
+    ; Hardcaml_waveterm.Display_rule.port_name_is
+        "fsm"
+        ~wave_format:
+          (Wave_format.Index [ "Init"; "Recv"; "Parse"; "Apply"; "Rspnd"; "Send" ])
+    ; signal "write_enable"
+    ; signal "cell_address"
+    ; signal "cell_write_data"
+    ; Hardcaml_waveterm.Display_rule.port_name_is
+        "state"
+        ~wave_format:(Wave_format.Index [ "Init"; "Ready"; "Busy" ])
+    ]
+  in
+  Hardcaml_waveterm.Waveform.expect
+    ~display_rules:rules
+    ~show_digest:false
+    ~wave_width:2
+    ~start_cycle:22
+    waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │clock          ││┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──│
+    │               ││   └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  │
+    │               ││──────┬────────────────────────────────────────────│
+    │in_data        ││ 22   │00                                          │
+    │               ││──────┴────────────────────────────────────────────│
+    │in_valid       ││────────────┐                                      │
+    │               ││            └──────────────────────────────────────│
+    │               ││────────────┬─────┬───────────┬─────┬──────────────│
+    │fsm            ││ Recv       │Parse│Apply      │Rspnd│Send          │
+    │               ││────────────┴─────┴───────────┴─────┴──────────────│
+    │write_enable   ││                  ┌───────────┐                    │
+    │               ││──────────────────┘           └────────────────────│
+    │               ││──────────────────┬─────┬─────┬─────────────────┬──│
+    │cell_address   ││ A                │C    │D    │A                │B │
+    │               ││──────────────────┴─────┴─────┴─────────────────┴──│
+    │               ││────────────────────────┬─────┬────────────────────│
+    │cell_write_data││ 11                     │22   │00                  │
+    │               ││────────────────────────┴─────┴────────────────────│
+    │               ││────────────┬──────────────────────────────────────│
+    │state          ││ Ready      │Busy                                  │
+    │               ││────────────┴──────────────────────────────────────│
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
 ;;
