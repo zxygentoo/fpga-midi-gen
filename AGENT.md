@@ -3,6 +3,19 @@
 1. ALWAYS show the diff for review before you make a commit. Make a commit
    automatically ONLY if the user gives permission.
 2. Write ALL technical documents in ASD-STE100 English.
+3. Design first, implement later.
+4. Checking instead of guessing.
+5. Measure before optimizing.
+
+# Style
+
+- Prefer the functional style: pure functions and clear data abstractions.
+- Mutation is permitted only with a real justification:
+  - global state at the outer edge of the program
+  - local mutation with a large, measured performance win
+  - an idiomatic use of a mutable data structure
+  - code that is much more clear in the imperative style
+- Format all code with ocamlformat, profile `janestreet`.
 
 # Basic
 
@@ -90,7 +103,8 @@ clock error of this hardware is −279 ppm. The console UART to the host is
 
 - The default receive channel is **3**, not 1. Roland uses different channels
   so that you can connect more than one AIRA Compact unit.
-- If there is no sound but all counters are correct, examine the channel first.
+- If there is no sound but the board shows MIDI output activity, examine the
+  channel first.
 - The synth receives Program Change on channel **16**.
 - Clock, Start and Stop have no channel. Therefore the synth can play its own
   sequencer from your clock and ignore all your notes. Sound does not show that
@@ -120,7 +134,9 @@ output with no loss of quality. The format is S32_LE, 44100 Hz, 2 channels. It i
   example `board/nexys-4`.
 - `board/_generated/` — Verilog from the Hardcaml top level. Git ignores it.
 - `board/_build/` — the Vivado work directory. Git ignores it.
+- `docs/` — the design documents.
 - `lib/` — the core library and the RTL.
+- `test/` — integration tests and above: simulation tests, formal checks.
 
 # Design
 
@@ -130,16 +146,39 @@ Model (RTL/Hardcaml) -- ABI -- Drivers (OCaml)
 
 - Model: the FPGA does the inference. Train the model on the host computer if
   it is necessary. Possible models are a Markov chain, an RNN and a UNet.
-- ABI: one interface for all drivers. Every model gives MIDI as its output, so
-  the interface is easy to keep stable. A control message is a SysEx message
-  with manufacturer ID 7D. MIDI reserves this ID for non-commercial use. All
-  other data goes to the MIDI transmitter with no change.
-- Drivers: self-check, inference control and other functions.
+- ABI: one interface for all drivers — a flat memory map and a read/write
+  wire protocol on the UART. The specification is `docs/abi.md`. The model
+  weights are not runtime state: the bitstream initializes them.
+- Drivers: self-check, control and other functions.
 
-Keep the model `config` (for example the transition matrix, the tempo and the
-channel) in a memory that the host writes at run time. Then a change needs only
-a serial write and not a rebuild. The map of this memory is part of the ABI.
-Define the map one time in `lib/`, and use it in both the RTL and the drivers.
+Rules:
+
+- `lib/abi.ml` defines all constants of the ABI one time. The RTL elaboration
+  and the drivers must use the constants from that module. If `docs/abi.md`
+  and `lib/abi.ml` do not agree, correct one of them before you continue.
+- The ABI has no runtime version. The driver and the bitstream must come from
+  the same repository state. If the board behavior does not agree with the
+  specification, program the board again with the current bitstream.
+
+# Tests
+
+Run all tests with `dune runtest`.
+
+- Unit tests are expect tests (`ppx_expect`), in the module that they test.
+- `test/` holds integration tests and above: simulation tests with Cyclesim,
+  formal verification.
+
+- The reference model is an audition tool: train, run it on the host, send
+  the MIDI to the S-1 through USB, listen. The FPGA is not in this loop.
+  The reference model does not have to equal the circuit bit for bit.
+- The circuit is tested with Cyclesim, block by block: the PRNG, the
+  sampler, the timer. Exact test vectors are easy at the block level.
+- If a reference model is exact with no extra work, the stream comparison
+  against Cyclesim is a cheap extra test. The Markov chain is this case.
+- Randomness is pseudo-randomness, and the seed is an input. The same seed
+  gives the same sequence in the simulation and on the board.
+- Diagnostics are on the board: the LEDs and the display. The ABI has no
+  status or counter cells.
 
 # Traps
 
@@ -148,5 +187,7 @@ Define the map one time in `lib/`, and use it in both the RTL and the drivers.
 
 # Gitflow
 
-This repository uses git-flow, with the branches `main` and `develop`, and the
-prefix `feat/` for features.
+- This repository uses git-flow, with the branches `main` and `develop`, and
+  the prefix `feat/` for features.
+- The pre-commit gates are: `dune fmt` makes no change, and `dune build`
+  completes with no error and no warning.
