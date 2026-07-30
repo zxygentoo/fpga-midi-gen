@@ -1,9 +1,8 @@
 (** The top level of the Nexys 4 board.
 
-    Step 3 of the bring-up: the host UART echoes at 115200 baud. A one-byte buffer holds
-    the newest byte while the transmitter is busy: at one baud rate the transmitter
-    becomes free a moment after the subsequent byte is complete, thus a direct connection
-    loses bytes in a continuous stream.
+    Step 4 of the bring-up: the memory bridge serves the wire protocol on the host UART.
+    The MSG cells are plain memory in this step; the doorbell behavior comes with the MIDI
+    output.
 
     The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
     [led 2]. The JD pins stay at 1, the idle level of the MIDI current loop; no current
@@ -28,21 +27,16 @@ let create () =
     Uart_rx.create ~clocks_per_bit:host_clocks_per_bit ~clock:clk ~clear ~rxd:rx_pin
   in
   let tx_busy = wire 1 in
-  let open Always in
-  let pending = Variable.reg spec ~width:8 in
-  let pending_valid = Variable.reg spec ~width:1 in
-  let tx_valid = pending_valid.value &: ~:tx_busy in
-  compile
-    [ when_ tx_valid [ pending_valid <-- gnd ]
-    ; when_ uart_rx.valid [ pending <-- uart_rx.data; pending_valid <-- vdd ]
-    ];
+  let bridge =
+    Bridge.create ~clock:clk ~clear ~rx_data:uart_rx.data ~rx_valid:uart_rx.valid ~tx_busy
+  in
   let uart_tx =
     Uart_tx.create
       ~clocks_per_bit:host_clocks_per_bit
       ~clock:clk
       ~clear
-      ~data:pending.value
-      ~valid:tx_valid
+      ~data:bridge.tx_data
+      ~valid:bridge.tx_valid
   in
   assign tx_busy uart_tx.busy;
   let led = concat_msb [ zero 13; ~:(uart_tx.txd); ~:rx_pin; heartbeat ] in
