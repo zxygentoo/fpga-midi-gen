@@ -5,13 +5,15 @@
     rejected access changes no cell.
 
     After power-on and after clear, the port writes the control defaults into the register
-    file (state [init]); then it serves one transaction at a time.
+    file (state [Init]); then it serves one transaction at a time. While the port serves a
+    transaction, it ignores the input stream: a frame in that interval gets no response,
+    and the sender must repeat it.
 
     A write applies one byte each cycle: a multi-byte value is torn between these cycles.
     The wire protocol cannot observe this, because the response comes after the last byte.
     A hardware block that consumes a multi-byte cell must take the value on the write of
     its last byte, as the SEED rule of the ABI does, or sample the cells only when [state]
-    is [State.ready]. *)
+    is [State.Ready]. *)
 
 open Hardcaml
 

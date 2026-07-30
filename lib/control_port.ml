@@ -56,9 +56,15 @@ let defaults =
     Option.value ~default:0 (List.assoc_opt (Abi.Reg.Ctl.base + k) bytes))
 ;;
 
-(* payload capacity: the header plus the largest write burst *)
+(* payload capacity: the header plus the largest write burst; the buffer size and its
+   address width follow *)
 let max_payload = 4 + Abi.Limits.max_data_len
-let buffer_size = 64
+let buffer_address_bits = address_bits_for (max_payload + 1)
+let buffer_size = 1 lsl buffer_address_bits
+
+(* the low bits of an ABI address select the cell: the base must be aligned *)
+let () = assert (Abi.Reg.Ctl.base mod Abi.Reg.Ctl.size = 0)
+let cell_bits = address_bits_for Abi.Reg.Ctl.size
 
 module Ctl_regfile = Regfile.Make (struct
     let size = Abi.Reg.Ctl.size
@@ -87,14 +93,18 @@ let create (i : _ I.t) : _ O.t =
   let drop = Variable.reg spec ~width:1 in
   let header = Array.init 4 (fun _ -> Variable.reg spec ~width:8) in
   let request_length = Variable.reg spec ~width:7 in
-  let target_address = Variable.reg spec ~width:16 in
-  let data_length = Variable.reg spec ~width:8 in
   let status = Variable.reg spec ~width:8 in
   let response_length = Variable.reg spec ~width:7 in
   let apply_index = Variable.reg spec ~width:6 in
-  let init_index = Variable.reg spec ~width:4 in
+  let init_index = Variable.reg spec ~width:cell_bits in
   let write_enable = Variable.wire ~default:gnd () in
   let frame_start = Variable.wire ~default:gnd () in
+  (* the header fields, as views of the header registers. The registers hold through the
+     whole transaction: [capture] is gated on [Receive], and the op echo of
+     [response_byte] already depends on this *)
+  let op = header.(0).value in
+  let header_address = header.(2).value @: header.(1).value in
+  let header_length = header.(3).value in
   (* the decoder *)
   let decoder =
     Cobs_decoder.create
@@ -111,12 +121,13 @@ let create (i : _ I.t) : _ O.t =
        buffer_size
        ~write_ports:
          [| { Write_port.write_clock = i.clock
-            ; write_address = uresize capture_index.value ~width:6
+            ; write_address = uresize capture_index.value ~width:buffer_address_bits
             ; write_enable = capture
             ; write_data = decoder.out_data
             }
          |]
-       ~read_addresses:[| uresize (apply_index.value +:. 4) ~width:6 |]).(0)
+       ~read_addresses:[| uresize (apply_index.value +:. 4) ~width:buffer_address_bits |]).(
+    0)
   in
   (* the encoder, fed by a registered read of the response bytes *)
   let response_data = wire 8 in
@@ -130,13 +141,13 @@ let create (i : _ I.t) : _ O.t =
       ; hold = i.hold
       }
   in
-  (* the register file *)
+  (* the register file; the low address bits select the cell, per the alignment check *)
+  let target_cell = select header_address ~high:(cell_bits - 1) ~low:0 in
   let apply_target =
-    select target_address.value ~high:3 ~low:0 +: select apply_index.value ~high:3 ~low:0
+    target_cell +: select apply_index.value ~high:(cell_bits - 1) ~low:0
   in
   let response_cell =
-    select target_address.value ~high:3 ~low:0
-    +: select (encoder.address -:. 2) ~high:3 ~low:0
+    target_cell +: select (encoder.address -:. 2) ~high:(cell_bits - 1) ~low:0
   in
   let regfile =
     Ctl_regfile.create
@@ -159,14 +170,10 @@ let create (i : _ I.t) : _ O.t =
   let response_byte j =
     mux2
       (j ==:. 0)
-      (header.(0).value |: of_unsigned_int ~width:8 0x80)
+      (op |: of_unsigned_int ~width:8 0x80)
       (mux2 (j ==:. 1) status.value regfile.read_data)
   in
   assign response_data (reg spec (response_byte encoder.address));
-  (* header fields *)
-  let op = header.(0).value in
-  let header_address = header.(2).value @: header.(1).value in
-  let header_length = header.(3).value in
   (* the range check, in 17 bits so the top of the space cannot wrap *)
   let range_end = uresize header_address ~width:17 +: uresize header_length ~width:17 in
   let address_ok =
@@ -185,6 +192,9 @@ let create (i : _ I.t) : _ O.t =
       (mux2 is_read (request_length.value ==:. 4) vdd)
   in
   let reset_frame = proc [ capture_index <--. 0; drop <-- gnd ] in
+  let respond_with code =
+    proc [ status <--. Abi.Status.to_code code; sm.set_next Respond ]
+  in
   compile
     [ sm.switch
         [ ( Init
@@ -215,8 +225,6 @@ let create (i : _ I.t) : _ O.t =
             ] )
         ; ( Parse
           , [ reset_frame
-            ; target_address <-- header_address
-            ; data_length <-- header_length
             ; apply_index <--. 0
             ; if_
                 ~:structural_ok
@@ -225,19 +233,13 @@ let create (i : _ I.t) : _ O.t =
                 ; response_length <--. 2
                 ; if_
                     ~:length_ok
-                    [ status <--. Abi.Status.to_code Abi.Status.Bad_length
-                    ; sm.set_next Respond
-                    ]
+                    [ respond_with Bad_length ]
                     [ if_
                         ~:(is_read |: is_write)
-                        [ status <--. Abi.Status.to_code Abi.Status.Bad_op
-                        ; sm.set_next Respond
-                        ]
+                        [ respond_with Bad_op ]
                         [ if_
                             ~:address_ok
-                            [ status <--. Abi.Status.to_code Abi.Status.Bad_address
-                            ; sm.set_next Respond
-                            ]
+                            [ respond_with Bad_address ]
                             [ if_
                                 is_read
                                 [ response_length <-- uresize header_length ~width:7 +:. 2
@@ -254,7 +256,7 @@ let create (i : _ I.t) : _ O.t =
               write_enable <-- vdd
             ; apply_index <-- apply_index.value +:. 1
             ; when_
-                (apply_index.value +:. 1 ==: uresize data_length.value ~width:6)
+                (apply_index.value +:. 1 ==: uresize header_length ~width:6)
                 [ sm.set_next Respond ]
             ] )
         ; Respond, [ frame_start <-- vdd; sm.set_next Sending ]
