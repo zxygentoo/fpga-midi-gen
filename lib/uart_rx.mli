@@ -6,7 +6,7 @@ module I : sig
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; rxd : 'a (** the serial line *)
+    ; serial : 'a (** the serial line *)
     }
   [@@deriving hardcaml]
 end

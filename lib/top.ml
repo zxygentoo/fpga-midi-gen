@@ -26,7 +26,7 @@ let create () =
   let uart_rx =
     Uart_rx.create
       ~clocks_per_bit:host_clocks_per_bit
-      { Uart_rx.I.clock = clk; clear; rxd = rx_pin }
+      { Uart_rx.I.clock = clk; clear; serial = rx_pin }
   in
   let tx_busy = wire 1 in
   let control_port =
@@ -48,8 +48,8 @@ let create () =
       }
   in
   assign tx_busy uart_tx.busy;
-  let led = concat_msb [ zero 13; ~:(uart_tx.txd); ~:rx_pin; heartbeat ] in
+  let led = concat_msb [ zero 13; ~:(uart_tx.serial); ~:rx_pin; heartbeat ] in
   Circuit.create_exn
     ~name:"top"
-    [ output "led" led; output "RsTx" uart_tx.txd; output "JD" (ones 8) ]
+    [ output "led" led; output "RsTx" uart_tx.serial; output "JD" (ones 8) ]
 ;;

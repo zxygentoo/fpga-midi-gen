@@ -14,7 +14,7 @@ end
 
 module O : sig
   type 'a t =
-    { txd : 'a (** the serial line; it idles at 1 *)
+    { serial : 'a (** the serial line; it idles at 1 *)
     ; busy : 'a (** high while a frame is on the line *)
     }
   [@@deriving hardcaml]
