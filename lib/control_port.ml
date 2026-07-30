@@ -5,17 +5,17 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; rx_data : 'a [@bits 8]
-    ; rx_valid : 'a
-    ; tx_busy : 'a
+    ; in_data : 'a [@bits 8]
+    ; in_valid : 'a
+    ; hold : 'a
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { tx_data : 'a [@bits 8]
-    ; tx_valid : 'a
+    { out_data : 'a [@bits 8]
+    ; out_valid : 'a
     ; state : 'a [@bits 2]
     }
   [@@deriving hardcaml]
@@ -27,8 +27,8 @@ module State = struct
   let busy = 2
 end
 
-(* The power-on values of the control cells, from the ABI constants. The bridge writes
-   them into the register file in the init state. *)
+(* The power-on values of the control cells, from the ABI constants. The port writes them
+   into the register file in the init state. *)
 let defaults =
   let d = Array.make Abi.Reg.Ctl.size 0 in
   let set_byte addr value = d.(addr - Abi.Reg.Ctl.base) <- value land 0xff in
@@ -84,8 +84,8 @@ let create (i : _ I.t) : _ O.t =
     Cobs_decoder.create
       { Cobs_decoder.I.clock = i.clock
       ; clear = i.clear
-      ; in_data = i.rx_data
-      ; in_valid = i.rx_valid
+      ; in_data = i.in_data
+      ; in_valid = i.in_valid
       }
   in
   (* the payload buffer *)
@@ -111,7 +111,7 @@ let create (i : _ I.t) : _ O.t =
       ; frame_start = cobs_start.value
       ; payload_length = resp_len.value
       ; read_data = cobs_rd_data
-      ; hold = i.tx_busy
+      ; hold = i.hold
       }
   in
   (* the register file *)
@@ -236,8 +236,8 @@ let create (i : _ I.t) : _ O.t =
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
     ; when_ (in_state s_wait) [ when_ ~:(encoder.busy) [ goto s_receive ] ]
     ];
-  { O.tx_data = encoder.data
-  ; tx_valid = encoder.valid
+  { O.out_data = encoder.data
+  ; out_valid = encoder.valid
   ; state =
       mux2
         (in_state s_init)
@@ -257,7 +257,7 @@ let%expect_test "transactions against the register file" =
   inp.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inp.clear := Bits.gnd;
-  (* the bridge loads the defaults, then reports ready *)
+  (* the port loads the defaults, then reports ready *)
   let budget = ref 40 in
   while Bits.to_int_trunc !(out.state) <> State.ready && !budget > 0 do
     Cyclesim.cycle sim;
@@ -269,9 +269,9 @@ let%expect_test "transactions against the register file" =
   let complete = ref false in
   let cycle () =
     Cyclesim.cycle sim;
-    if (not !complete) && Bits.to_bool !(out.tx_valid)
+    if (not !complete) && Bits.to_bool !(out.out_valid)
     then (
-      let byte = Bits.to_int_trunc !(out.tx_data) in
+      let byte = Bits.to_int_trunc !(out.out_data) in
       Buffer.add_char response (Char.chr byte);
       if byte = 0 then complete := true)
   in
@@ -280,11 +280,11 @@ let%expect_test "transactions against the register file" =
     complete := false;
     Bytes.iter
       (fun b ->
-        inp.rx_data := Bits.of_unsigned_int ~width:8 (Char.code b);
-        inp.rx_valid := Bits.vdd;
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+        inp.in_valid := Bits.vdd;
         cycle ())
       frame;
-    inp.rx_valid := Bits.gnd;
+    inp.in_valid := Bits.gnd;
     let budget = ref 500 in
     while (not !complete) && !budget > 0 do
       cycle ();

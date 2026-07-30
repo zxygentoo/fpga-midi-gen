@@ -1,6 +1,6 @@
 (** The top level of the Nexys 4 board.
 
-    Step 4 of the bring-up: the memory bridge serves the wire protocol on the host UART.
+    Step 4 of the bring-up: the control port serves the wire protocol on the host UART.
     The MSG cells are plain memory in this step; the doorbell behavior comes with the MIDI
     output.
 
@@ -29,19 +29,23 @@ let create () =
       { Uart_rx.I.clock = clk; clear; rxd = rx_pin }
   in
   let tx_busy = wire 1 in
-  let bridge =
-    Bridge.create
-      { Bridge.I.clock = clk
+  let control_port =
+    Control_port.create
+      { Control_port.I.clock = clk
       ; clear
-      ; rx_data = uart_rx.data
-      ; rx_valid = uart_rx.valid
-      ; tx_busy
+      ; in_data = uart_rx.data
+      ; in_valid = uart_rx.valid
+      ; hold = tx_busy
       }
   in
   let uart_tx =
     Uart_tx.create
       ~clocks_per_bit:host_clocks_per_bit
-      { Uart_tx.I.clock = clk; clear; data = bridge.tx_data; valid = bridge.tx_valid }
+      { Uart_tx.I.clock = clk
+      ; clear
+      ; data = control_port.out_data
+      ; valid = control_port.out_valid
+      }
   in
   assign tx_busy uart_tx.busy;
   let led = concat_msb [ zero 13; ~:(uart_tx.txd); ~:rx_pin; heartbeat ] in
