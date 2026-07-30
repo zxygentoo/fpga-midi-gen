@@ -1,0 +1,9 @@
+(library
+ (name mgen)
+ (inline_tests
+  ; The ~preview ppx_expect records file basenames; the default
+  ; -source-tree-root from the backend points one level too high.
+  (flags
+   (:standard -source-tree-root .)))
+ (preprocess
+  (pps ppx_expect)))
