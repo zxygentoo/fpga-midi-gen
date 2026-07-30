@@ -83,18 +83,18 @@ let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let sm = State_machine.create (module Fsm) spec in
-  let wr_idx = Variable.reg spec ~width:7 in
+  let capture_index = Variable.reg spec ~width:7 in
   let drop = Variable.reg spec ~width:1 in
-  let hdr = Array.init 4 (fun _ -> Variable.reg spec ~width:8) in
-  let plen = Variable.reg spec ~width:7 in
-  let addr = Variable.reg spec ~width:16 in
-  let len = Variable.reg spec ~width:8 in
+  let header = Array.init 4 (fun _ -> Variable.reg spec ~width:8) in
+  let request_length = Variable.reg spec ~width:7 in
+  let target_address = Variable.reg spec ~width:16 in
+  let data_length = Variable.reg spec ~width:8 in
   let status = Variable.reg spec ~width:8 in
-  let resp_len = Variable.reg spec ~width:7 in
-  let apply_idx = Variable.reg spec ~width:6 in
-  let init_idx = Variable.reg spec ~width:4 in
-  let rf_we = Variable.wire ~default:gnd () in
-  let cobs_start = Variable.wire ~default:gnd () in
+  let response_length = Variable.reg spec ~width:7 in
+  let apply_index = Variable.reg spec ~width:6 in
+  let init_index = Variable.reg spec ~width:4 in
+  let write_enable = Variable.wire ~default:gnd () in
+  let frame_start = Variable.wire ~default:gnd () in
   (* the decoder *)
   let decoder =
     Cobs_decoder.create
@@ -106,117 +106,125 @@ let create (i : _ I.t) : _ O.t =
   in
   (* the payload buffer *)
   let capture = sm.is Receive &: decoder.out_valid &: ~:(drop.value) in
-  let ram_q =
+  let payload_byte =
     (multiport_memory
        buffer_size
        ~write_ports:
          [| { Write_port.write_clock = i.clock
-            ; write_address = uresize wr_idx.value ~width:6
+            ; write_address = uresize capture_index.value ~width:6
             ; write_enable = capture
             ; write_data = decoder.out_data
             }
          |]
-       ~read_addresses:[| uresize (apply_idx.value +:. 4) ~width:6 |]).(0)
+       ~read_addresses:[| uresize (apply_index.value +:. 4) ~width:6 |]).(0)
   in
   (* the encoder, fed by a registered read of the response bytes *)
-  let cobs_rd_data = wire 8 in
+  let response_data = wire 8 in
   let encoder =
     Cobs_encoder.create
       { Cobs_encoder.I.clock = i.clock
       ; clear = i.clear
-      ; frame_start = cobs_start.value
-      ; payload_length = resp_len.value
-      ; read_data = cobs_rd_data
+      ; frame_start = frame_start.value
+      ; payload_length = response_length.value
+      ; read_data = response_data
       ; hold = i.hold
       }
   in
   (* the register file *)
   let apply_target =
-    select addr.value ~high:3 ~low:0 +: select apply_idx.value ~high:3 ~low:0
+    select target_address.value ~high:3 ~low:0 +: select apply_index.value ~high:3 ~low:0
   in
-  let resp_cell_idx =
-    select addr.value ~high:3 ~low:0 +: select (encoder.address -:. 2) ~high:3 ~low:0
+  let response_cell =
+    select target_address.value ~high:3 ~low:0
+    +: select (encoder.address -:. 2) ~high:3 ~low:0
   in
   let regfile =
     Ctl_regfile.create
       { Ctl_regfile.I.clock = i.clock
       ; clear = i.clear
-      ; write_enable = rf_we.value
+      ; write_enable = write_enable.value
       ; address =
-          mux2 (sm.is Init) init_idx.value (mux2 (sm.is Apply) apply_target resp_cell_idx)
+          mux2
+            (sm.is Init)
+            init_index.value
+            (mux2 (sm.is Apply) apply_target response_cell)
       ; write_data =
           mux2
             (sm.is Init)
-            (mux init_idx.value (List.map (of_unsigned_int ~width:8) defaults))
-            ram_q
+            (mux init_index.value (List.map (of_unsigned_int ~width:8) defaults))
+            payload_byte
       }
   in
   (* response byte [j]: the op echo, the status, then the cells *)
-  let resp_byte j =
+  let response_byte j =
     mux2
       (j ==:. 0)
-      (hdr.(0).value |: of_unsigned_int ~width:8 0x80)
+      (header.(0).value |: of_unsigned_int ~width:8 0x80)
       (mux2 (j ==:. 1) status.value regfile.read_data)
   in
-  assign cobs_rd_data (reg spec (resp_byte encoder.address));
+  assign response_data (reg spec (response_byte encoder.address));
   (* header fields *)
-  let h_op = hdr.(0).value in
-  let h_addr = hdr.(2).value @: hdr.(1).value in
-  let h_len = hdr.(3).value in
+  let op = header.(0).value in
+  let header_address = header.(2).value @: header.(1).value in
+  let header_length = header.(3).value in
   (* the range check, in 17 bits so the top of the space cannot wrap *)
-  let range_end = uresize h_addr ~width:17 +: uresize h_len ~width:17 in
-  let addr_ok =
-    h_addr >=:. Abi.Reg.Ctl.base &: (range_end <=:. Abi.Reg.Ctl.base + Abi.Reg.Ctl.size)
+  let range_end = uresize header_address ~width:17 +: uresize header_length ~width:17 in
+  let address_ok =
+    header_address
+    >=:. Abi.Reg.Ctl.base
+    &: (range_end <=:. Abi.Reg.Ctl.base + Abi.Reg.Ctl.size)
   in
-  let len_ok = h_len >=:. 1 &: (h_len <=:. Abi.Limits.max_data_len) in
-  let is_read = h_op ==:. Abi.Op.read in
-  let is_write = h_op ==:. Abi.Op.write in
+  let length_ok = header_length >=:. 1 &: (header_length <=:. Abi.Limits.max_data_len) in
+  let is_read = op ==:. Abi.Op.read in
+  let is_write = op ==:. Abi.Op.write in
   (* a frame with the wrong shape gets no response *)
   let structural_ok =
     mux2
       is_write
-      (uresize h_len ~width:7 +:. 4 ==: plen.value)
-      (mux2 is_read (plen.value ==:. 4) vdd)
+      (uresize header_length ~width:7 +:. 4 ==: request_length.value)
+      (mux2 is_read (request_length.value ==:. 4) vdd)
   in
-  let reset_frame = proc [ wr_idx <--. 0; drop <-- gnd ] in
+  let reset_frame = proc [ capture_index <--. 0; drop <-- gnd ] in
   compile
     [ sm.switch
         [ ( Init
           , [ (* one default each cycle; the cells are not valid before the end *)
-              rf_we <-- vdd
-            ; init_idx <-- init_idx.value +:. 1
-            ; when_ (init_idx.value ==:. Abi.Reg.Ctl.size - 1) [ sm.set_next Receive ]
+              write_enable <-- vdd
+            ; init_index <-- init_index.value +:. 1
+            ; when_ (init_index.value ==:. Abi.Reg.Ctl.size - 1) [ sm.set_next Receive ]
             ] )
         ; ( Receive
           , [ when_
                 (decoder.out_valid &: ~:(drop.value))
-                [ wr_idx <-- wr_idx.value +:. 1
-                ; when_ (wr_idx.value ==:. max_payload) [ drop <-- vdd ]
+                [ capture_index <-- capture_index.value +:. 1
+                ; when_ (capture_index.value ==:. max_payload) [ drop <-- vdd ]
                 ; proc
                     (List.init 4 (fun k ->
-                       when_ (wr_idx.value ==:. k) [ hdr.(k) <-- decoder.out_data ]))
+                       when_
+                         (capture_index.value ==:. k)
+                         [ header.(k) <-- decoder.out_data ]))
                 ]
             ; when_ decoder.abort [ reset_frame ]
             ; when_
                 decoder.frame_end
                 [ if_
-                    (~:(drop.value) &: (wr_idx.value >=:. 4))
-                    [ plen <-- wr_idx.value; sm.set_next Parse ]
+                    (~:(drop.value) &: (capture_index.value >=:. 4))
+                    [ request_length <-- capture_index.value; sm.set_next Parse ]
                     [ reset_frame ]
                 ]
             ] )
         ; ( Parse
           , [ reset_frame
-            ; addr <-- h_addr
-            ; len <-- h_len
-            ; apply_idx <--. 0
+            ; target_address <-- header_address
+            ; data_length <-- header_length
+            ; apply_index <--. 0
             ; if_
                 ~:structural_ok
                 [ sm.set_next Receive ]
                 [ status <--. Abi.Status.to_code Abi.Status.Ok
-                ; resp_len <--. 2
+                ; response_length <--. 2
                 ; if_
-                    ~:len_ok
+                    ~:length_ok
                     [ status <--. Abi.Status.to_code Abi.Status.Bad_length
                     ; sm.set_next Respond
                     ]
@@ -226,13 +234,13 @@ let create (i : _ I.t) : _ O.t =
                         ; sm.set_next Respond
                         ]
                         [ if_
-                            ~:addr_ok
+                            ~:address_ok
                             [ status <--. Abi.Status.to_code Abi.Status.Bad_address
                             ; sm.set_next Respond
                             ]
                             [ if_
                                 is_read
-                                [ resp_len <-- uresize h_len ~width:7 +:. 2
+                                [ response_length <-- uresize header_length ~width:7 +:. 2
                                 ; sm.set_next Respond
                                 ]
                                 [ sm.set_next Apply ]
@@ -243,13 +251,13 @@ let create (i : _ I.t) : _ O.t =
             ] )
         ; ( Apply
           , [ (* one cell each cycle, in the sequence of increasing addresses *)
-              rf_we <-- vdd
-            ; apply_idx <-- apply_idx.value +:. 1
+              write_enable <-- vdd
+            ; apply_index <-- apply_index.value +:. 1
             ; when_
-                (apply_idx.value +:. 1 ==: uresize len.value ~width:6)
+                (apply_index.value +:. 1 ==: uresize data_length.value ~width:6)
                 [ sm.set_next Respond ]
             ] )
-        ; Respond, [ cobs_start <-- vdd; sm.set_next Sending ]
+        ; Respond, [ frame_start <-- vdd; sm.set_next Sending ]
         ; Sending, [ when_ ~:(encoder.busy) [ sm.set_next Receive ] ]
         ]
     ];
