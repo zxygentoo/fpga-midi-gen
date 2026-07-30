@@ -121,6 +121,66 @@ let%expect_test "round trips" =
     |}]
 ;;
 
+let%expect_test "the randomized properties" =
+  let open QCheck in
+  (* sizes up to 600 cross the 254-byte group boundary twice; one byte in four is a zero,
+     thus the group structure is rich. The fixed seed keeps the run deterministic. *)
+  let payload =
+    let gen =
+      let open Gen in
+      let byte = oneof_weighted [ 1, return '\000'; 3, char ] in
+      bytes_size ~gen:byte (int_range 0 600)
+    in
+    let print b =
+      Bytes.to_seq b
+      |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
+      |> List.of_seq
+      |> String.concat " "
+    in
+    make ~print gen
+  in
+  let check t = Test.check_exn ~rand:(Random.State.make [| 0xC0B5 |]) t in
+  check
+    (Test.make ~count:1000 ~name:"decode inverts encode" payload (fun b ->
+       decode (encode b) = Ok b));
+  check
+    (Test.make
+       ~count:1000
+       ~name:"the delimiter is the only zero, and the last byte"
+       payload
+       (fun b ->
+          let e = encode b in
+          Bytes.index_opt e delimiter = Some (Bytes.length e - 1)));
+  check
+    (Test.make ~count:1000 ~name:"the size bound holds" payload (fun b ->
+       let n = Bytes.length b in
+       let m = Bytes.length (encode b) in
+       n + 2 <= m && m <= n + (n / 254) + 2));
+  check
+    (Test.make
+       ~count:1000
+       ~name:"a frame cut at any point does not decode"
+       (pair payload (make Gen.(int_bound 10_000)))
+       (fun (b, k) ->
+         let e = encode b in
+         Result.is_error (decode (Bytes.sub e 0 (k mod Bytes.length e)))));
+  check
+    (Test.make
+       ~count:1000
+       ~name:"a byte after the delimiter does not decode"
+       payload
+       (fun b -> Result.is_error (decode (Bytes.cat (encode b) (Bytes.make 1 'A')))));
+  check
+    (Test.make
+       ~count:1000
+       ~name:"decode does not raise on any input"
+       (make Gen.(bytes_size (int_range 0 600)))
+       (fun f ->
+         match decode f with
+         | Ok _ | Error _ -> true));
+  [%expect {| |}]
+;;
+
 let%expect_test "frames that must not decode" =
   let show s =
     match decode (Bytes.of_string s) with
