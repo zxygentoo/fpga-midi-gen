@@ -108,10 +108,10 @@ let create (i : _ I.t) : _ O.t =
     Cobs_encoder.create
       { Cobs_encoder.I.clock = i.clock
       ; clear = i.clear
-      ; start = cobs_start.value
-      ; length = resp_len.value
-      ; rd_data = cobs_rd_data
-      ; tx_busy = i.tx_busy
+      ; frame_start = cobs_start.value
+      ; payload_length = resp_len.value
+      ; read_data = cobs_rd_data
+      ; hold = i.tx_busy
       }
   in
   (* the register file *)
@@ -119,7 +119,7 @@ let create (i : _ I.t) : _ O.t =
     select addr.value ~high:3 ~low:0 +: select apply_idx.value ~high:3 ~low:0
   in
   let resp_cell_idx =
-    select addr.value ~high:3 ~low:0 +: select (encoder.rd_addr -:. 2) ~high:3 ~low:0
+    select addr.value ~high:3 ~low:0 +: select (encoder.address -:. 2) ~high:3 ~low:0
   in
   let regfile =
     Ctl_regfile.create
@@ -147,7 +147,7 @@ let create (i : _ I.t) : _ O.t =
       (hdr.(0).value |: of_unsigned_int ~width:8 0x80)
       (mux2 (j ==:. 1) status.value regfile.read_data)
   in
-  assign cobs_rd_data (reg spec (resp_byte encoder.rd_addr));
+  assign cobs_rd_data (reg spec (resp_byte encoder.address));
   (* header fields *)
   let h_op = hdr.(0).value in
   let h_addr = hdr.(2).value @: hdr.(1).value in
@@ -236,8 +236,8 @@ let create (i : _ I.t) : _ O.t =
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
     ; when_ (in_state s_wait) [ when_ ~:(encoder.busy) [ goto s_receive ] ]
     ];
-  { O.tx_data = encoder.tx_data
-  ; tx_valid = encoder.tx_valid
+  { O.tx_data = encoder.data
+  ; tx_valid = encoder.valid
   ; state =
       mux2
         (in_state s_init)
