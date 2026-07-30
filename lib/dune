@@ -1,6 +1,6 @@
 (library
  (name mgen)
- (libraries hardcaml)
+ (libraries hardcaml hardcaml_waveterm)
  (inline_tests
   ; The ~preview ppx_expect records file basenames; the default
   ; -source-tree-root from the backend points one level too high.

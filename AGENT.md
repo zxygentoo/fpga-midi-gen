@@ -18,6 +18,9 @@
 - A library module has a documented `.mli` file. A top-level module — an
   executable in `bin/`, the board top level — can omit it.
 - Format all code with ocamlformat, profile `janestreet`.
+- Write each Hardcaml block in the standard idiom: the interface modules `I`
+  and `O` with `[@@deriving hardcaml]`. Give the fields clear names, and
+  avoid `[@rtlname]`: if a field seems to need it, correct the name instead.
 
 # Basic
 
@@ -167,6 +170,8 @@ Rules:
 Run all tests with `dune runtest`.
 
 - Unit tests are expect tests (`ppx_expect`), in the module that they test.
+- A waveform expect test is visual documentation. If a waveform can show the
+  behavior of a module clearly, write one.
 - `test/` holds integration tests and above: simulation tests with Cyclesim,
   formal verification.
 

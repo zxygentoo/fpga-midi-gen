@@ -79,13 +79,17 @@ let create (i : _ I.t) : _ O.t =
   let cobs_start = Variable.wire ~default:gnd () in
   let in_state k = state.value ==:. k in
   let goto k = state <--. k in
-  (* the deframer *)
-  let rx =
-    Cobs_rx.create
-      { Cobs_rx.I.clock = i.clock; clear = i.clear; data = i.rx_data; valid = i.rx_valid }
+  (* the decoder *)
+  let decoder =
+    Cobs_decoder.create
+      { Cobs_decoder.I.clock = i.clock
+      ; clear = i.clear
+      ; in_data = i.rx_data
+      ; in_valid = i.rx_valid
+      }
   in
   (* the payload buffer *)
-  let capture = in_state s_receive &: rx.valid &: ~:(drop.value) in
+  let capture = in_state s_receive &: decoder.out_valid &: ~:(drop.value) in
   let ram_q =
     (multiport_memory
        buffer_size
@@ -93,16 +97,16 @@ let create (i : _ I.t) : _ O.t =
          [| { Write_port.write_clock = i.clock
             ; write_address = uresize wr_idx.value ~width:6
             ; write_enable = capture
-            ; write_data = rx.data
+            ; write_data = decoder.out_data
             }
          |]
        ~read_addresses:[| uresize (apply_idx.value +:. 4) ~width:6 |]).(0)
   in
-  (* the framer, fed by a registered read of the response bytes *)
+  (* the encoder, fed by a registered read of the response bytes *)
   let cobs_rd_data = wire 8 in
-  let cobs_tx =
-    Cobs_tx.create
-      { Cobs_tx.I.clock = i.clock
+  let encoder =
+    Cobs_encoder.create
+      { Cobs_encoder.I.clock = i.clock
       ; clear = i.clear
       ; start = cobs_start.value
       ; length = resp_len.value
@@ -115,7 +119,7 @@ let create (i : _ I.t) : _ O.t =
     select addr.value ~high:3 ~low:0 +: select apply_idx.value ~high:3 ~low:0
   in
   let resp_cell_idx =
-    select addr.value ~high:3 ~low:0 +: select (cobs_tx.rd_addr -:. 2) ~high:3 ~low:0
+    select addr.value ~high:3 ~low:0 +: select (encoder.rd_addr -:. 2) ~high:3 ~low:0
   in
   let regfile =
     Ctl_regfile.create
@@ -143,7 +147,7 @@ let create (i : _ I.t) : _ O.t =
       (hdr.(0).value |: of_unsigned_int ~width:8 0x80)
       (mux2 (j ==:. 1) status.value regfile.read_data)
   in
-  assign cobs_rd_data (reg spec (resp_byte cobs_tx.rd_addr));
+  assign cobs_rd_data (reg spec (resp_byte encoder.rd_addr));
   (* header fields *)
   let h_op = hdr.(0).value in
   let h_addr = hdr.(2).value @: hdr.(1).value in
@@ -175,16 +179,16 @@ let create (i : _ I.t) : _ O.t =
     ; when_
         (in_state s_receive)
         [ when_
-            (rx.valid &: ~:(drop.value))
+            (decoder.out_valid &: ~:(drop.value))
             [ wr_idx <-- wr_idx.value +:. 1
             ; when_ (wr_idx.value ==:. max_payload) [ drop <-- vdd ]
             ; proc
                 (List.init 4 (fun k ->
-                   when_ (wr_idx.value ==:. k) [ hdr.(k) <-- rx.data ]))
+                   when_ (wr_idx.value ==:. k) [ hdr.(k) <-- decoder.out_data ]))
             ]
-        ; when_ rx.abort [ reset_frame ]
+        ; when_ decoder.abort [ reset_frame ]
         ; when_
-            rx.frame_end
+            decoder.frame_end
             [ if_
                 (~:(drop.value) &: (wr_idx.value >=:. 4))
                 [ plen <-- wr_idx.value; goto s_parse ]
@@ -230,10 +234,10 @@ let create (i : _ I.t) : _ O.t =
         ; when_ (apply_idx.value +:. 1 ==: uresize len.value ~width:6) [ goto s_start ]
         ]
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
-    ; when_ (in_state s_wait) [ when_ ~:(cobs_tx.busy) [ goto s_receive ] ]
+    ; when_ (in_state s_wait) [ when_ ~:(encoder.busy) [ goto s_receive ] ]
     ];
-  { O.tx_data = cobs_tx.tx_data
-  ; tx_valid = cobs_tx.tx_valid
+  { O.tx_data = encoder.tx_data
+  ; tx_valid = encoder.tx_valid
   ; state =
       mux2
         (in_state s_init)

@@ -99,7 +99,7 @@ let create (i : _ I.t) : _ O.t =
   }
 ;;
 
-let%expect_test "the framer agrees with Cobs.encode" =
+let%expect_test "the encoder agrees with Cobs.encode" =
   let module Harness_i = struct
     type 'a t =
       { clock : 'a

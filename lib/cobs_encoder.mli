@@ -1,4 +1,4 @@
-(** The streaming COBS framer: the hardware mirror of [Cobs.encode].
+(** The streaming COBS encoder: the hardware mirror of [Cobs.encode].
 
     The block reads the payload by index; thus the payload can live in a memory, a
     register file, or a function of the index. The producer decides. *)
