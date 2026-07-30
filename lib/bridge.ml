@@ -16,7 +16,6 @@ module O = struct
   type 'a t =
     { tx_data : 'a [@bits 8]
     ; tx_valid : 'a
-    ; cells : 'a [@bits 128]
     }
   [@@deriving hardcaml]
 end
@@ -91,10 +90,9 @@ let create (i : _ I.t) : _ O.t =
     Regfile.create
       { Regfile.I.clock = i.clock
       ; clear = i.clear
-      ; wr_en = rf_we.value
-      ; wr_idx = apply_target
-      ; wr_data = ram_q
-      ; rd_idx = resp_cell_idx
+      ; write_enable = rf_we.value
+      ; address = mux2 (in_state s_apply) apply_target resp_cell_idx
+      ; write_data = ram_q
       }
   in
   (* response byte [j]: the op echo, the status, then the cells *)
@@ -102,7 +100,7 @@ let create (i : _ I.t) : _ O.t =
     mux2
       (j ==:. 0)
       (hdr.(0).value |: of_unsigned_int ~width:8 0x80)
-      (mux2 (j ==:. 1) status.value regfile.rd_data)
+      (mux2 (j ==:. 1) status.value regfile.read_data)
   in
   assign cobs_rd_data (reg spec (resp_byte cobs_tx.rd_addr));
   (* header fields *)
@@ -186,7 +184,7 @@ let create (i : _ I.t) : _ O.t =
     ; when_ (in_state s_start) [ cobs_start <-- vdd; goto s_wait ]
     ; when_ (in_state s_wait) [ when_ ~:(cobs_tx.busy) [ goto s_receive ] ]
     ];
-  { O.tx_data = cobs_tx.tx_data; tx_valid = cobs_tx.tx_valid; cells = regfile.cells }
+  { O.tx_data = cobs_tx.tx_data; tx_valid = cobs_tx.tx_valid }
 ;;
 
 let%expect_test "transactions against the register file" =
@@ -247,7 +245,7 @@ let%expect_test "transactions against the register file" =
   in
   (* the register file has its defaults at power-on *)
   transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.base; len = Abi.Reg.Ctl.size }));
-  [%expect {| op 1 status ok data 00 00 00 00 00 ee ff c0 00 64 7d 00 fa 00 02 00 |}];
+  [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
   (* write, then read back *)
   transact
     (Abi.encode_request

@@ -2,7 +2,12 @@
 
     The behavior is the one of [docs/abi.md]: a frame that does not decode gets no
     response, a write applies its bytes in the sequence of increasing addresses, and a
-    rejected access changes no cell. *)
+    rejected access changes no cell.
+
+    A write applies one byte each cycle: a multi-byte value is torn between these cycles.
+    The wire protocol cannot observe this, because the response comes after the last byte.
+    A hardware block that consumes a multi-byte cell must take the value on the write of
+    its last byte, as the SEED rule of the ABI does. *)
 
 open Hardcaml
 
@@ -21,8 +26,6 @@ module O : sig
   type 'a t =
     { tx_data : 'a (** the response byte stream: COBS frames with their delimiters *)
     ; tx_valid : 'a (** the transmitter takes [tx_data] when [tx_busy] is 0 *)
-    ; cells : 'a
-    (** the register file as one vector; the cell at [Abi.Reg.Ctl.base] is the low byte *)
     }
   [@@deriving hardcaml]
 end

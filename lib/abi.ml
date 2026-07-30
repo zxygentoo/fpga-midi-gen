@@ -62,7 +62,7 @@ module Default = struct
   let step_ms = 250
   let gate_ms = 125
   let velocity = 100
-  let seed = 0x00C0FFEE (* must not be 0 *)
+  let seed = 42 (* must not be 0 *)
 end
 
 (* The framing is COBS; see [Cobs] in [lib/cobs.ml]. *)

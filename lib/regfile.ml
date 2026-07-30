@@ -5,20 +5,15 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; wr_en : 'a
-    ; wr_idx : 'a [@bits 4]
-    ; wr_data : 'a [@bits 8]
-    ; rd_idx : 'a [@bits 4]
+    ; write_enable : 'a
+    ; address : 'a [@bits 4]
+    ; write_data : 'a [@bits 8]
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
-  type 'a t =
-    { rd_data : 'a [@bits 8]
-    ; cells : 'a [@bits 128]
-    }
-  [@@deriving hardcaml]
+  type 'a t = { read_data : 'a [@bits 8] } [@@deriving hardcaml]
 end
 
 (* The power-on values of the register file, from the ABI constants. *)
@@ -43,19 +38,22 @@ let create (i : _ I.t) : _ O.t =
   let open Always in
   let cells =
     Array.init Abi.Reg.Ctl.size (fun k ->
-      Variable.reg ~clear_to:(of_unsigned_int ~width:8 defaults.(k)) spec ~width:8)
+      (* the default holds at power-on and at clear *)
+      Variable.reg
+        ~initialize_to:(Bits.of_unsigned_int ~width:8 defaults.(k))
+        ~clear_to:(of_unsigned_int ~width:8 defaults.(k))
+        spec
+        ~width:8)
   in
   compile
     [ when_
-        i.wr_en
+        i.write_enable
         [ proc
             (List.init Abi.Reg.Ctl.size (fun k ->
-               when_ (i.wr_idx ==:. k) [ cells.(k) <-- i.wr_data ]))
+               when_ (i.address ==:. k) [ cells.(k) <-- i.write_data ]))
         ]
     ];
-  { O.rd_data = mux i.rd_idx (Array.to_list (Array.map Variable.value cells))
-  ; cells = concat_lsb (Array.to_list (Array.map Variable.value cells))
-  }
+  { O.read_data = mux i.address (Array.to_list (Array.map Variable.value cells)) }
 ;;
 
 let%expect_test "defaults, write and read" =
@@ -68,21 +66,33 @@ let%expect_test "defaults, write and read" =
   inp.clear := Bits.gnd;
   let dump () =
     for k = 0 to Abi.Reg.Ctl.size - 1 do
-      inp.rd_idx := Bits.of_unsigned_int ~width:4 k;
+      inp.address := Bits.of_unsigned_int ~width:4 k;
       Cyclesim.cycle sim;
-      Printf.printf "%02x " (Bits.to_int_trunc !(out.rd_data))
+      Printf.printf "%02x " (Bits.to_int_trunc !(out.read_data))
     done;
     print_newline ()
   in
   (* all cells at power-on *)
   dump ();
-  [%expect {| 00 00 00 00 00 ee ff c0 00 64 7d 00 fa 00 02 00 |}];
+  [%expect {| 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
   (* write one cell, the others hold *)
-  inp.wr_en := Bits.vdd;
-  inp.wr_idx := Bits.of_unsigned_int ~width:4 (Abi.Reg.Ctl.velocity - Abi.Reg.Ctl.base);
-  inp.wr_data := Bits.of_unsigned_int ~width:8 0x30;
+  inp.write_enable := Bits.vdd;
+  inp.address := Bits.of_unsigned_int ~width:4 (Abi.Reg.Ctl.velocity - Abi.Reg.Ctl.base);
+  inp.write_data := Bits.of_unsigned_int ~width:8 0x30;
   Cyclesim.cycle sim;
-  inp.wr_en := Bits.gnd;
+  inp.write_enable := Bits.gnd;
   dump ();
-  [%expect {| 00 00 00 00 00 ee ff c0 00 30 7d 00 fa 00 02 00 |}]
+  [%expect {| 00 00 00 00 00 2a 00 00 00 30 7d 00 fa 00 02 00 |}];
+  (* during the write cycle the read still shows the old value *)
+  let out_before = Cyclesim.outputs ~clock_edge:Before sim in
+  inp.write_enable := Bits.vdd;
+  inp.address := Bits.of_unsigned_int ~width:4 (Abi.Reg.Ctl.velocity - Abi.Reg.Ctl.base);
+  inp.write_data := Bits.of_unsigned_int ~width:8 0x2a;
+  Cyclesim.cycle sim;
+  inp.write_enable := Bits.gnd;
+  Printf.printf
+    "during %02x after %02x\n"
+    (Bits.to_int_trunc !(out_before.read_data))
+    (Bits.to_int_trunc !(out.read_data));
+  [%expect {| during 30 after 2a |}]
 ;;

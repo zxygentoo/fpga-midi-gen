@@ -8,19 +8,18 @@ module I : sig
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; wr_en : 'a (** writes [wr_data] to the cell [wr_idx] *)
-    ; wr_idx : 'a (** a cell index; 0 is the cell at [Abi.Reg.Ctl.base] *)
-    ; wr_data : 'a (** the byte to write *)
-    ; rd_idx : 'a (** the cell index for [rd_data] *)
+    ; write_enable : 'a (** writes [write_data] to the cell [address] *)
+    ; address : 'a (** the cell index; 0 is the cell at [Abi.Reg.Ctl.base] *)
+    ; write_data : 'a (** the byte to write *)
     }
   [@@deriving hardcaml]
 end
 
 module O : sig
   type 'a t =
-    { rd_data : 'a (** the value of the cell [rd_idx]; the read is combinational *)
-    ; cells : 'a
-    (** all cells as one vector; the cell at [Abi.Reg.Ctl.base] is the low byte *)
+    { read_data : 'a
+    (** the value of the cell [address]; the read is combinational, and during a write it
+        is the old value *)
     }
   [@@deriving hardcaml]
 end
