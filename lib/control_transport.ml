@@ -3,13 +3,67 @@ open Base
 type t =
   { send : Bytes.t -> unit
   ; receive : unit -> char
+  ; resync : unit -> unit
   }
 
 type error =
   | Garbled
   | Nak of Abi.Status.t
 
-let resync t = t.send (Bytes.make 1 Cobs.delimiter)
+(* the transport over an open serial port: raw 8N1, a blocking read, and a resync of
+   tcflush plus one delimiter. The caller opens the descriptor and owns its lifetime. *)
+let serial ~baud fd =
+  let module Terminal_io = Core_unix.Terminal_io in
+  let tio = Terminal_io.tcgetattr fd in
+  Terminal_io.tcsetattr
+    { tio with
+      c_ibaud = baud
+    ; c_obaud = baud
+    ; c_csize = 8
+    ; c_cstopb = 1
+    ; c_parenb = false
+    ; c_cread = true
+    ; c_clocal = true
+    ; c_icanon = false
+    ; c_isig = false
+    ; c_echo = false
+    ; c_echoe = false
+    ; c_echok = false
+    ; c_echonl = false
+    ; c_ixon = false
+    ; c_ixoff = false
+    ; c_ignbrk = true
+    ; c_brkint = false
+    ; c_parmrk = false
+    ; c_inpck = false
+    ; c_istrip = false
+    ; c_inlcr = false
+    ; c_igncr = false
+    ; c_icrnl = false
+    ; c_opost = false
+    ; c_vmin = 1
+    ; c_vtime = 0
+    }
+    fd
+    ~mode:TCSANOW;
+  let send frame =
+    if Core_unix.write fd ~buf:frame <> Bytes.length frame
+    then failwith "short write to the serial port"
+  in
+  let receive () =
+    let one = Bytes.create 1 in
+    match Core_unix.read fd ~buf:one with
+    | 1 -> Bytes.get one 0
+    | _ -> failwith "the serial port closed"
+  in
+  let resync () =
+    Terminal_io.tcflush fd ~mode:TCIOFLUSH;
+    send (Bytes.make 1 Cobs.delimiter)
+  in
+  { send; receive; resync }
+;;
+
+let resync t = t.resync ()
 
 (* one response frame, delimiter last *)
 let collect_frame t =
@@ -58,13 +112,15 @@ let write t ~address ~data =
 let fake () =
   let pending = Queue.create () in
   let sent = Buffer.create 16 in
+  let send frame = Buffer.add_bytes sent frame in
   let transport =
-    { send = (fun frame -> Buffer.add_bytes sent frame)
+    { send
     ; receive =
         (fun () ->
           match Queue.dequeue pending with
           | Some byte -> byte
           | None -> failwith "the script is out of bytes")
+    ; resync = (fun () -> send (Bytes.make 1 Cobs.delimiter))
     }
   in
   transport, pending, sent
@@ -149,7 +205,7 @@ let%expect_test "a rejection is a rejection, not a garble" =
 
 let%expect_test "resync sends one delimiter" =
   let t, _, sent = fake () in
-  resync t;
+  t.resync ();
   Stdio.printf "sent %s\n" (hex (Buffer.contents_bytes sent));
   [%expect {| sent 00 |}]
 ;;

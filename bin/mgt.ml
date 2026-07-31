@@ -24,53 +24,9 @@ let int_arg s =
   | None -> usage ()
 ;;
 
-(* raw 8N1: no echo, no signals, no flow control, no translation *)
 let serial_transport_exn device =
   let fd = Core_unix.openfile device ~mode:[ O_RDWR; O_NOCTTY ] in
-  let tio = Core_unix.Terminal_io.tcgetattr fd in
-  Core_unix.Terminal_io.tcsetattr
-    { tio with
-      c_ibaud = baud
-    ; c_obaud = baud
-    ; c_csize = 8
-    ; c_cstopb = 1
-    ; c_parenb = false
-    ; c_cread = true
-    ; c_clocal = true
-    ; c_icanon = false
-    ; c_isig = false
-    ; c_echo = false
-    ; c_echoe = false
-    ; c_echok = false
-    ; c_echonl = false
-    ; c_ixon = false
-    ; c_ixoff = false
-    ; c_ignbrk = true
-    ; c_brkint = false
-    ; c_parmrk = false
-    ; c_inpck = false
-    ; c_istrip = false
-    ; c_inlcr = false
-    ; c_igncr = false
-    ; c_icrnl = false
-    ; c_opost = false
-    ; c_vmin = 1
-    ; c_vtime = 0
-    }
-    fd
-    ~mode:TCSANOW;
-  Core_unix.Terminal_io.tcflush fd ~mode:TCIOFLUSH;
-  let send frame =
-    if Core_unix.write fd ~buf:frame <> Bytes.length frame
-    then failwith "short write to the serial port"
-  in
-  let receive () =
-    let one = Bytes.create 1 in
-    match Core_unix.read fd ~buf:one with
-    | 1 -> Bytes.get one 0
-    | _ -> failwith "the serial port closed"
-  in
-  { Control_transport.send; receive }
+  Control_transport.serial ~baud fd
 ;;
 
 let serial_transport device =
