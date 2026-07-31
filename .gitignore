@@ -30,3 +30,7 @@ _opam/
 .Xil/
 vivado*.jou
 vivado*.log
+
+# Vivado batch-mode litter in the repository root
+clockInfo.txt
+tight_setup_hold_pins.txt
