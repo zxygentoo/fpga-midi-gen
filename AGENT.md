@@ -17,6 +17,7 @@
   - code that is much more clear in the imperative style
 - A library module has a documented `.mli` file. A top-level module — an
   executable in `bin/`, the board top level — can omit it.
+- Use Janestreet's Base/Core instead of Stdlib.
 - Format all code with ocamlformat, profile `janestreet`.
 - Write each Hardcaml block in the standard idiom: the interface modules `I`
   and `O` with `[@@deriving hardcaml]`. Give the fields clear names, and

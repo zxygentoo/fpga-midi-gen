@@ -116,11 +116,11 @@ Rules:
 - A write applies its bytes in the sequence of increasing addresses.
 - The maximum frame on the wire is 64 bytes. The FPGA discards a longer
   frame and each frame that does not decode, and sends no response for it.
-- The driver must use a timeout of 100 ms for each response. After a
-  timeout, the driver sends the request again. This is safe, because each
-  read and each write is idempotent. The one exception is a write that
-  covers MSG_GO: it sends the test message again. A duplicate test message
-  is acceptable, because test messages are a debug tool.
+- A driver decides how long it waits for a response, and it can send the
+  request again. This is safe, because each read and each write is
+  idempotent. The one exception is a write that covers MSG_GO: it sends the
+  test message again. A duplicate test message is acceptable, because test
+  messages are a debug tool.
 - A write reply comes after the write is complete. Therefore a read-back
   after a write shows the true state. The driver can verify each write with
   a read-back.

@@ -1,7 +1,6 @@
 module Limits = struct
   let max_data_len = 32
   let max_frame_wire_bytes = 64
-  let response_timeout_ms = 100
 end
 
 module Op = struct

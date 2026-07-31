@@ -10,10 +10,6 @@ module Limits : sig
 
   (** The maximum encoded frame on the wire; the FPGA discards a longer frame. *)
   val max_frame_wire_bytes : int
-
-  (** The driver timeout for one response. After it, send the request again: each
-      operation is idempotent. *)
-  val response_timeout_ms : int
 end
 
 module Op : sig
