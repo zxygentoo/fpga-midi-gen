@@ -18,9 +18,6 @@ module Constants : sig
   (** The largest payload: the request header and the largest DATA. The FPGA discards a
       frame with a longer payload. *)
   val max_payload_bytes : int
-
-  (** The maximum bytes in one test message: the width of the MSG cells. *)
-  val max_msg_len : int
 end
 
 module Op : sig
@@ -45,42 +42,35 @@ module Status : sig
   val to_string : t -> string
 end
 
+(** The control registers. They are the local storage of the control unit, thus one byte
+    of address names each one. *)
 module Reg : sig
-  (** Control: [0xFFF0] to [0xFFFF], read and write — the full register file. Cells with a
-      fixed nature sit at the top. MSG, the one payload with a variable nature, sits at
-      the low edge so it can grow with no change to the other addresses. *)
-  module Ctl : sig
-    val base : int
-    val size : int
+  val base : int
+  val size : int
 
-    (** Bit 0 holds the run state; the board button also toggles it. *)
-    val run : int
+  (** Bit 0 holds the run state; the board button also toggles it. *)
+  val run : int
 
-    val channel : int
+  val channel : int
 
-    (** 2 bytes, little-endian. *)
-    val step_ms : int
+  (** 2 bytes, little-endian. *)
+  val step_ms : int
 
-    (** 2 bytes, little-endian. *)
-    val gate_ms : int
+  (** 2 bytes, little-endian. *)
+  val gate_ms : int
 
-    val velocity : int
+  val velocity : int
 
-    (** 4 bytes, little-endian; the PRNG loads on a write to the last byte. *)
-    val seed : int
+  (** 4 bytes, little-endian; the PRNG loads at the end of a write that covers it. *)
+  val seed : int
 
-    (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
-    val msg_go : int
+  (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
+  val midi_go : int
 
-    val msg_len : int
+  val midi_len : int
 
-    (** 3 bytes, at the growth edge of the section. *)
-    val msg : int
-  end
-
-  (** The model window grows up from address 0: byte [i] of the blob is at address [i].
-      The wire protocol does not map it in this version. *)
-  val window_base : int
+  (** 3 bytes. *)
+  val midi_msg : int
 end
 
 (** The power-on values of the control cells. *)

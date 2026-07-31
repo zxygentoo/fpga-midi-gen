@@ -73,16 +73,16 @@ let () =
   (* write VELOCITY, then read it back *)
   send_frame
     (Mgen.Control.encode_request
-       (Write { addr = Mgen.Control.Reg.Ctl.velocity; data = Bytes.of_string "\x42" }));
+       (Write { addr = Mgen.Control.Reg.velocity; data = Bytes.of_string "\x42" }));
   level true (60 * cpb);
   send_frame
-    (Mgen.Control.encode_request (Read { addr = Mgen.Control.Reg.Ctl.velocity; len = 1 }));
+    (Mgen.Control.encode_request (Read { addr = Mgen.Control.Reg.velocity; len = 1 }));
   level true (80 * cpb);
   (* the one-shot doorbell write: the message must appear on the MIDI line *)
   send_frame
     (Mgen.Control.encode_request
        (Write
-          { addr = Mgen.Control.Reg.Ctl.msg
+          { addr = Mgen.Control.Reg.midi_msg
           ; data = Bytes.of_string "\x92\x3C\x64\x03\x01"
           }));
   level true (40 * midi_cpb);

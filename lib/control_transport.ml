@@ -142,20 +142,19 @@ let%expect_test "a read, with the wire vectors of the hardware session" =
   in
   Stdio.printf "response frame %s\n" (Bytes_util.hex response);
   reply pending response;
-  show (read t ~address:Control.Reg.Ctl.velocity ~length:1);
+  show (read t ~address:Control.Reg.velocity ~length:1);
   Stdio.printf "sent %s\n" (Bytes_util.hex (Buffer.contents_bytes sent));
-  [%expect
-    {|
+  [%expect {|
     response frame 02 81 02 64 00
     ok 64
-    sent 05 01 f9 ff 01 00
+    sent 04 01 09 01 00
     |}]
 ;;
 
 let%expect_test "a corrupt frame is Garbled" =
   let t, pending, _ = fake () in
   reply pending (Bytes.of_string "\xAA\xBB\x00");
-  show (read t ~address:Control.Reg.Ctl.velocity ~length:1);
+  show (read t ~address:Control.Reg.velocity ~length:1);
   [%expect {| garbled |}]
 ;;
 
@@ -170,13 +169,13 @@ let%expect_test "the wrong shape is Garbled" =
        ; status = Control.Status.Ok
        ; data = Bytes.of_string "\x64\x64"
        });
-  show (read t ~address:Control.Reg.Ctl.velocity ~length:1);
+  show (read t ~address:Control.Reg.velocity ~length:1);
   let t, pending, _ = fake () in
   reply
     pending
     (Control.encode_response
        { op = Control.Op.write; status = Control.Status.Ok; data = Bytes.create 0 });
-  show (read t ~address:Control.Reg.Ctl.velocity ~length:1);
+  show (read t ~address:Control.Reg.velocity ~length:1);
   [%expect {|
     garbled
     garbled
