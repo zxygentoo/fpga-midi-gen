@@ -18,9 +18,6 @@ module Constants : sig
   (** The largest payload: the request header and the largest DATA. The FPGA discards a
       frame with a longer payload. *)
   val max_payload_bytes : int
-
-  (** The maximum bytes in one test message: the width of the MSG cells. *)
-  val max_msg_len : int
 end
 
 module Op : sig

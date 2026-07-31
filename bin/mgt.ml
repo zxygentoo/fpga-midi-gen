@@ -69,7 +69,7 @@ let dump t =
       ; "seed", Control.Reg.Ctl.seed, 4
       ; "msg_go", Control.Reg.Ctl.msg_go, 1
       ; "msg_len", Control.Reg.Ctl.msg_len, 1
-      ; "msg", Control.Reg.Ctl.msg, Control.Constants.max_msg_len
+      ; "msg", Control.Reg.Ctl.msg, Mgen.Midi.max_message_bytes
       ]
   in
   List.iter
@@ -84,7 +84,7 @@ let dump t =
    poll after it bounds the exit at "the message went out". *)
 let doorbell t bytes =
   let n = List.length bytes in
-  if n < 1 || n > Control.Constants.max_msg_len then usage ();
+  if n < 1 || n > Mgen.Midi.max_message_bytes then usage ();
   let msg_go_clear () =
     let b = check (Control_transport.read t ~address:Control.Reg.Ctl.msg_go ~length:1) in
     Char.to_int (Bytes.get b 0) = 0

@@ -87,8 +87,7 @@ let len_cell = Control.Reg.Ctl.msg_len - Control.Reg.Ctl.base
 let go_cell = Control.Reg.Ctl.msg_go - Control.Reg.Ctl.base
 
 let () =
-  assert (
-    msg_cell = 0 && len_cell = Control.Constants.max_msg_len && go_cell = len_cell + 1)
+  assert (msg_cell = 0 && len_cell = Midi.max_message_bytes && go_cell = len_cell + 1)
 ;;
 
 module Ctl_regfile = Regfile.Make (struct
@@ -127,7 +126,7 @@ module Send_fsm = struct
 end
 
 (* one [Byte_] state for each MSG cell *)
-let () = assert (Control.Constants.max_msg_len = 3)
+let () = assert (Midi.max_message_bytes = 3)
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -151,7 +150,7 @@ let create (i : _ I.t) : _ O.t =
      the one storage of the cells; the regfile copies of cells 0 to [go_cell] are written
      by the uniform walks but never read. *)
   let msg_store =
-    Array.init Control.Constants.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
+    Array.init Midi.max_message_bytes ~f:(fun _ -> Variable.reg spec ~width:8)
   in
   let len_store = Variable.reg spec ~width:8 in
   (* the names put the machines and the write strobe into the waveform tests; the port
@@ -354,7 +353,7 @@ let create (i : _ I.t) : _ O.t =
     ; when_
         write_enable.value
         [ proc
-            (List.init Control.Constants.max_msg_len ~f:(fun k ->
+            (List.init Midi.max_message_bytes ~f:(fun k ->
                when_
                  (cell_address ==:. msg_cell + k)
                  [ msg_store.(k) <-- cell_write_data ]))
@@ -370,7 +369,7 @@ let create (i : _ I.t) : _ O.t =
                  &: (cell_address ==:. go_cell)
                  &: lsb cell_write_data
                  &: (msg_length >=:. 1)
-                 &: (msg_length <=:. Control.Constants.max_msg_len))
+                 &: (msg_length <=:. Midi.max_message_bytes))
                 [ send.set_next Byte_0 ]
             ] )
           (* each [Byte_k]: offer the cell; the transmitter takes it when [midi_hold] is 0 *)
@@ -748,12 +747,12 @@ let%expect_test "the doorbell rules" =
   in
   let drain () =
     let budget = ref 200 in
-    while Buffer.length taken < Control.Constants.max_msg_len && !budget > 0 do
+    while Buffer.length taken < Midi.max_message_bytes && !budget > 0 do
       cycle ();
       budget := !budget - 1
     done;
     (* room for one more message: a wrongly queued ring would show here *)
-    for _ = 1 to 5 * Control.Constants.max_msg_len * pace do
+    for _ = 1 to 5 * Midi.max_message_bytes * pace do
       cycle ()
     done
   in

@@ -7,7 +7,6 @@ module Constants = struct
   let response_header_bytes = 2 (* OP, STATUS *)
   let max_data_len = 32
   let max_payload_bytes = request_header_bytes + max_data_len
-  let max_msg_len = 3
 end
 
 module Op = struct
