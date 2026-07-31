@@ -50,7 +50,6 @@ let create (i : _ I.t) : _ O.t =
   let send_index = Variable.reg spec ~width:7 in
   let scan_index = Variable.reg spec ~width:7 in
   let group_end = Variable.reg spec ~width:7 in
-  let ended_at_zero = Variable.reg spec ~width:1 in
   let byte_to_send = Variable.reg spec ~width:8 in
   let data = Variable.wire ~default:(zero 8) () in
   let valid = Variable.wire ~default:gnd () in
@@ -61,9 +60,13 @@ let create (i : _ I.t) : _ O.t =
   let send byte next =
     proc [ data <-- byte; when_ ~:(i.hold) [ valid <-- vdd; proc next ] ]
   in
+  (* the group closed at a zero exactly when it did not close at the payload end.
+     [group_end] and [payload_length] both hold from [Scan_eval] to the end of the group,
+     thus this is the value that [Scan_eval] saw *)
+  let ended_at_zero = group_end.value <>: payload_length.value in
   let after_group =
     if_
-      ended_at_zero.value
+      ended_at_zero
       [ send_index <-- group_end.value +:. 1
       ; scan_index <-- group_end.value +:. 1
       ; sm.set_next Scan_req
@@ -85,10 +88,7 @@ let create (i : _ I.t) : _ O.t =
         ; ( Scan_eval
           , [ if_
                 (scan_index.value ==: payload_length.value |: (i.read_data ==:. 0))
-                [ group_end <-- scan_index.value
-                ; ended_at_zero <-- (scan_index.value <>: payload_length.value)
-                ; sm.set_next Code
-                ]
+                [ group_end <-- scan_index.value; sm.set_next Code ]
                 [ scan_index <-- scan_index.value +:. 1; sm.set_next Scan_req ]
             ] )
         ; ( Code
@@ -219,23 +219,26 @@ let%expect_test "the encoder agrees with Cobs.encode" =
    DaL DaS Del. *)
 
 let waveform_rules =
-  let signal name =
-    Hardcaml_waveterm.Display_rule.port_name_is name ~wave_format:Wave_format.(Bit_or Hex)
+  let signals names =
+    Hardcaml_waveterm.Display_rule.port_name_is_one_of
+      names
+      ~wave_format:Wave_format.(Bit_or Hex)
   in
-  [ signal "clock"
-  ; signal "frame_start"
+  [ signals [ "clock"; "frame_start" ]
   ; Hardcaml_waveterm.Display_rule.port_name_is
       "state"
       ~wave_format:
         (Wave_format.Index [ "Idl"; "ScR"; "ScE"; "Cod"; "DaR"; "DaL"; "DaS"; "Del" ])
-  ; signal "address"
-  ; signal "read_data"
-  ; signal "scan_index"
-  ; signal "send_index"
-  ; signal "data"
-  ; signal "valid"
-  ; signal "hold"
-  ; signal "busy"
+  ; signals
+      [ "address"
+      ; "read_data"
+      ; "scan_index"
+      ; "send_index"
+      ; "data"
+      ; "valid"
+      ; "hold"
+      ; "busy"
+      ]
   ]
 ;;
 

@@ -32,12 +32,7 @@ let decode_uart wave cpb =
   Buffer.contents received
 ;;
 
-let hex s =
-  s
-  |> String.to_list
-  |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
-  |> String.concat ~sep:" "
-;;
+let hex s = Mgen.Bytes_util.hex (Bytes.of_string s)
 
 let () =
   let open Hardcaml in

@@ -1,10 +1,7 @@
 open Base
+open Bytes_util
 
 let delimiter = '\000'
-
-(* Base.Bytes has no byte-integer accessors; these state the intent one time *)
-let byte b i = Char.to_int (Bytes.get b i)
-let set_byte b i v = Bytes.set b i (Char.of_int_exn v)
 
 let find_delimiter src ~from =
   let n = Bytes.length src in
@@ -82,12 +79,6 @@ let decode frame =
             else group i out_pos))
       in
       group 0 0)
-;;
-
-let hex b =
-  String.concat
-    ~sep:" "
-    (List.map (Bytes.to_list b) ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c)))
 ;;
 
 let%expect_test "the examples from the paper" =

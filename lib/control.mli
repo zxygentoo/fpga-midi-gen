@@ -4,7 +4,14 @@
     wire-frame codec. The drivers use it directly. The RTL reads the constants at
     elaboration time. The normative description is [docs/host_control.md]. *)
 
-module Limits : sig
+(** The sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
+module Constants : sig
+  (** The number of bytes in OP, ADDR low, ADDR high and LEN. *)
+  val request_header_bytes : int
+
+  (** The number of bytes in OP and STATUS. *)
+  val response_header_bytes : int
+
   (** The maximum data bytes in one read or write. *)
   val max_data_len : int
 
@@ -32,6 +39,9 @@ module Status : sig
 
   val to_code : t -> int
   val of_code : int -> t option
+
+  (** The name of the status in the diagnostic output. *)
+  val to_string : t -> string
 end
 
 module Reg : sig

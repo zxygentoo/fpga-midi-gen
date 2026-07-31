@@ -128,23 +128,10 @@ let fake () =
 
 let reply pending frame = String.iter (Bytes.to_string frame) ~f:(Queue.enqueue pending)
 
-let hex bytes =
-  String.concat
-    ~sep:" "
-    (List.map (Bytes.to_list bytes) ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c)))
-;;
-
 let show = function
-  | Ok data -> Stdio.printf "ok %s\n" (hex data)
+  | Ok data -> Stdio.printf "ok %s\n" (Bytes_util.hex data)
   | Error Garbled -> Stdio.print_endline "garbled"
-  | Error (Nak status) ->
-    Stdio.printf
-      "nak %s\n"
-      (match status with
-       | Control.Status.Ok -> "ok"
-       | Bad_op -> "bad-op"
-       | Bad_address -> "bad-address"
-       | Bad_length -> "bad-length")
+  | Error (Nak status) -> Stdio.printf "nak %s\n" (Control.Status.to_string status)
 ;;
 
 let%expect_test "a read, with the wire vectors of the hardware session" =
@@ -153,10 +140,10 @@ let%expect_test "a read, with the wire vectors of the hardware session" =
     Control.encode_response
       { op = Control.Op.read; status = Control.Status.Ok; data = Bytes.of_string "\x64" }
   in
-  Stdio.printf "response frame %s\n" (hex response);
+  Stdio.printf "response frame %s\n" (Bytes_util.hex response);
   reply pending response;
   show (read t ~address:Control.Reg.Ctl.velocity ~length:1);
-  Stdio.printf "sent %s\n" (hex (Buffer.contents_bytes sent));
+  Stdio.printf "sent %s\n" (Bytes_util.hex (Buffer.contents_bytes sent));
   [%expect
     {|
     response frame 02 81 02 64 00
@@ -212,6 +199,6 @@ let%expect_test "a rejection is a rejection, not a garble" =
 let%expect_test "resync sends one delimiter" =
   let t, _, sent = fake () in
   t.resync ();
-  Stdio.printf "sent %s\n" (hex (Buffer.contents_bytes sent));
+  Stdio.printf "sent %s\n" (Bytes_util.hex (Buffer.contents_bytes sent));
   [%expect {| sent 00 |}]
 ;;

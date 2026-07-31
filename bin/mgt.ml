@@ -7,6 +7,7 @@
    /dev/ttyUSB1, the Nexys 4 console UART. *)
 
 open Core
+module Bytes_util = Mgen.Bytes_util
 module Control = Mgen.Control
 module Control_transport = Mgen.Control_transport
 
@@ -38,26 +39,13 @@ let serial_transport device =
     exit 1
 ;;
 
-let hex_line bytes =
-  String.concat
-    ~sep:" "
-    (List.map (Bytes.to_list bytes) ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c)))
-;;
-
 let check = function
   | Ok v -> v
   | Error Control_transport.Garbled ->
     prerr_endline "garbled response: run the command again";
     exit 1
   | Error (Control_transport.Nak status) ->
-    let name =
-      match status with
-      | Control.Status.Ok -> "ok"
-      | Bad_op -> "bad op"
-      | Bad_address -> "bad address"
-      | Bad_length -> "bad length"
-    in
-    Printf.eprintf "rejected: %s\n" name;
+    Printf.eprintf "rejected: %s\n" (Control.Status.to_string status);
     exit 1
 ;;
 
@@ -69,7 +57,7 @@ let dump t =
          ~address:Control.Reg.Ctl.base
          ~length:Control.Reg.Ctl.size)
   in
-  Printf.printf "%04x  %s\n" Control.Reg.Ctl.base (hex_line bytes);
+  Printf.printf "%04x  %s\n" Control.Reg.Ctl.base (Bytes_util.hex bytes);
   let fields =
     List.sort
       ~compare:(fun (_, a, _) (_, b, _) -> Int.compare a b)
@@ -81,20 +69,12 @@ let dump t =
       ; "seed", Control.Reg.Ctl.seed, 4
       ; "msg_go", Control.Reg.Ctl.msg_go, 1
       ; "msg_len", Control.Reg.Ctl.msg_len, 1
-      ; "msg", Control.Reg.Ctl.msg, Control.Limits.max_msg_len
+      ; "msg", Control.Reg.Ctl.msg, Control.Constants.max_msg_len
       ]
   in
   List.iter
     ~f:(fun (name, address, width) ->
-      (* little-endian, as the host control stores multi-byte values *)
-      let value =
-        List.fold
-          (List.rev (List.init width ~f:Fn.id))
-          ~init:0
-          ~f:(fun acc k ->
-            (acc lsl 8)
-            lor Char.to_int (Bytes.get bytes (address - Control.Reg.Ctl.base + k)))
-      in
+      let value = Bytes_util.uint_le bytes ~pos:(address - Control.Reg.Ctl.base) ~width in
       Printf.printf "%04x  %-8s  %d (0x%x)\n" address name value value)
     fields
 ;;
@@ -104,7 +84,7 @@ let dump t =
    poll after it bounds the exit at "the message went out". *)
 let doorbell t bytes =
   let n = List.length bytes in
-  if n < 1 || n > Control.Limits.max_msg_len then usage ();
+  if n < 1 || n > Control.Constants.max_msg_len then usage ();
   let msg_go_clear () =
     let b = check (Control_transport.read t ~address:Control.Reg.Ctl.msg_go ~length:1) in
     Char.to_int (Bytes.get b 0) = 0
@@ -145,7 +125,7 @@ let () =
     let data =
       check (Control_transport.read t ~address:(int_arg address) ~length:(int_arg length))
     in
-    print_endline (hex_line data)
+    print_endline (Bytes_util.hex data)
   | "write" :: address :: (_ :: _ as bytes) ->
     let data =
       Bytes.of_string

@@ -63,11 +63,18 @@ let defaults =
       (List.Assoc.find bytes (Control.Reg.Ctl.base + k) ~equal:Int.equal))
 ;;
 
+(* the two header sizes get short names: the engine uses them at each stage *)
+let request_header_bytes = Control.Constants.request_header_bytes
+let response_header_bytes = Control.Constants.response_header_bytes
+
 (* payload capacity: the header plus the largest write burst; the buffer size and its
    address width follow *)
-let max_payload = 4 + Control.Limits.max_data_len
+let max_payload = request_header_bytes + Control.Constants.max_data_len
 let buffer_address_bits = address_bits_for (max_payload + 1)
 let buffer_size = 1 lsl buffer_address_bits
+
+(* the width of a cursor over the data bytes of one burst *)
+let index_bits = address_bits_for (Control.Constants.max_data_len + 1)
 
 (* the low bits of a control address select the cell: the base must be aligned *)
 let () = assert (Control.Reg.Ctl.base % Control.Reg.Ctl.size = 0)
@@ -80,7 +87,8 @@ let len_cell = Control.Reg.Ctl.msg_len - Control.Reg.Ctl.base
 let go_cell = Control.Reg.Ctl.msg_go - Control.Reg.Ctl.base
 
 let () =
-  assert (msg_cell = 0 && len_cell = Control.Limits.max_msg_len && go_cell = len_cell + 1)
+  assert (
+    msg_cell = 0 && len_cell = Control.Constants.max_msg_len && go_cell = len_cell + 1)
 ;;
 
 module Ctl_regfile = Regfile.Make (struct
@@ -119,7 +127,7 @@ module Send_fsm = struct
 end
 
 (* one [Byte_] state for each MSG cell *)
-let () = assert (Control.Limits.max_msg_len = 3)
+let () = assert (Control.Constants.max_msg_len = 3)
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -127,11 +135,11 @@ let create (i : _ I.t) : _ O.t =
   let sm = State_machine.create (module Fsm) spec in
   let capture_index = Variable.reg spec ~width:7 in
   let drop = Variable.reg spec ~width:1 in
-  let header = Array.init 4 ~f:(fun _ -> Variable.reg spec ~width:8) in
+  let header = Array.init request_header_bytes ~f:(fun _ -> Variable.reg spec ~width:8) in
   let request_length = Variable.reg spec ~width:7 in
   let status = Variable.reg spec ~width:8 in
   let response_length = Variable.reg spec ~width:7 in
-  let apply_index = Variable.reg spec ~width:6 in
+  let apply_index = Variable.reg spec ~width:index_bits in
   let init_index = Variable.reg spec ~width:cell_bits in
   let write_enable = Variable.wire ~default:gnd () in
   let frame_start = Variable.wire ~default:gnd () in
@@ -143,7 +151,7 @@ let create (i : _ I.t) : _ O.t =
      the one storage of the cells; the regfile copies of cells 0 to [go_cell] are written
      by the uniform walks but never read. *)
   let msg_store =
-    Array.init Control.Limits.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
+    Array.init Control.Constants.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
   in
   let len_store = Variable.reg spec ~width:8 in
   (* the names put the machines and the write strobe into the waveform tests; the port
@@ -179,8 +187,11 @@ let create (i : _ I.t) : _ O.t =
             ; write_data = decoder.out_data
             }
          |]
-       ~read_addresses:[| uresize (apply_index.value +:. 4) ~width:buffer_address_bits |]).(
-    0)
+       ~read_addresses:
+         [| uresize
+              (apply_index.value +:. request_header_bytes)
+              ~width:buffer_address_bits
+         |]).(0)
   in
   (* the encoder, fed by a registered read of the response bytes *)
   let response_data = wire 8 in
@@ -200,7 +211,8 @@ let create (i : _ I.t) : _ O.t =
     target_cell +: select apply_index.value ~high:(cell_bits - 1) ~low:0
   in
   let response_cell =
-    target_cell +: select (encoder.address -:. 2) ~high:(cell_bits - 1) ~low:0
+    target_cell
+    +: select (encoder.address -:. response_header_bytes) ~high:(cell_bits - 1) ~low:0
   in
   let cell_address =
     mux2 (sm.is Init) init_index.value (mux2 (sm.is Apply) apply_target response_cell)
@@ -230,12 +242,8 @@ let create (i : _ I.t) : _ O.t =
       (response_cell <=:. go_cell)
       (mux
          response_cell
-         [ msg_store.(0).value
-         ; msg_store.(1).value
-         ; msg_store.(2).value
-         ; len_store.value
-         ; uresize pending ~width:8
-         ])
+         (List.map (Array.to_list msg_store) ~f:Variable.value
+          @ [ len_store.value; uresize pending ~width:8 ]))
       regfile.read_data
   in
   (* response byte [j]: the op echo, the status, then the cells *)
@@ -254,7 +262,7 @@ let create (i : _ I.t) : _ O.t =
     &: (range_end <=:. Control.Reg.Ctl.base + Control.Reg.Ctl.size)
   in
   let length_ok =
-    header_length >=:. 1 &: (header_length <=:. Control.Limits.max_data_len)
+    header_length >=:. 1 &: (header_length <=:. Control.Constants.max_data_len)
   in
   let is_read = op ==:. Control.Op.read in
   let is_write = op ==:. Control.Op.write in
@@ -262,12 +270,19 @@ let create (i : _ I.t) : _ O.t =
   let structural_ok =
     mux2
       is_write
-      (uresize header_length ~width:7 +:. 4 ==: request_length.value)
-      (mux2 is_read (request_length.value ==:. 4) vdd)
+      (uresize header_length ~width:7 +:. request_header_bytes ==: request_length.value)
+      (mux2 is_read (request_length.value ==:. request_header_bytes) vdd)
   in
   let reset_frame = proc [ capture_index <--. 0; drop <-- gnd ] in
   let respond_with code =
     proc [ status <--. Control.Status.to_code code; sm.set_next Respond ]
+  in
+  (* the header checks of [Parse], in the priority order of the host control: the first
+     check that fails gives the status, and [accept] runs when each one passes *)
+  let rec reject_first checks ~accept =
+    match checks with
+    | [] -> accept
+    | (bad, code) :: rest -> [ if_ bad [ respond_with code ] (reject_first rest ~accept) ]
   in
   compile
     [ sm.switch
@@ -285,7 +300,7 @@ let create (i : _ I.t) : _ O.t =
                 [ capture_index <-- capture_index.value +:. 1
                 ; when_ (capture_index.value ==:. max_payload) [ drop <-- vdd ]
                 ; proc
-                    (List.init 4 ~f:(fun k ->
+                    (List.init request_header_bytes ~f:(fun k ->
                        when_
                          (capture_index.value ==:. k)
                          [ header.(k) <-- decoder.out_data ]))
@@ -294,7 +309,7 @@ let create (i : _ I.t) : _ O.t =
             ; when_
                 decoder.frame_end
                 [ if_
-                    (~:(drop.value) &: (capture_index.value >=:. 4))
+                    (~:(drop.value) &: (capture_index.value >=:. request_header_bytes))
                     [ request_length <-- capture_index.value; sm.set_next Parse ]
                     [ reset_frame ]
                 ]
@@ -305,34 +320,30 @@ let create (i : _ I.t) : _ O.t =
             ; if_
                 ~:structural_ok
                 [ sm.set_next Receive ]
-                [ status <--. Control.Status.to_code Control.Status.Ok
-                ; response_length <--. 2
-                ; if_
-                    ~:length_ok
-                    [ respond_with Bad_length ]
-                    [ if_
-                        ~:(is_read |: is_write)
-                        [ respond_with Bad_op ]
-                        [ if_
-                            ~:address_ok
-                            [ respond_with Bad_address ]
-                            [ if_
-                                is_read
-                                [ response_length <-- uresize header_length ~width:7 +:. 2
-                                ; sm.set_next Respond
-                                ]
-                                [ sm.set_next Apply ]
-                            ]
-                        ]
-                    ]
-                ]
+                ([ status <--. Control.Status.to_code Control.Status.Ok
+                 ; response_length <--. response_header_bytes
+                 ]
+                 @ reject_first
+                     [ ~:length_ok, Control.Status.Bad_length
+                     ; ~:(is_read |: is_write), Control.Status.Bad_op
+                     ; ~:address_ok, Control.Status.Bad_address
+                     ]
+                     ~accept:
+                       [ if_
+                           is_read
+                           [ response_length
+                             <-- uresize header_length ~width:7 +:. response_header_bytes
+                           ; sm.set_next Respond
+                           ]
+                           [ sm.set_next Apply ]
+                       ])
             ] )
         ; ( Apply
           , [ (* one cell each cycle, in the sequence of increasing addresses *)
               write_enable <-- vdd
             ; apply_index <-- apply_index.value +:. 1
             ; when_
-                (apply_index.value +:. 1 ==: uresize header_length ~width:6)
+                (apply_index.value +:. 1 ==: uresize header_length ~width:index_bits)
                 [ sm.set_next Respond ]
             ] )
         ; Respond, [ frame_start <-- vdd; sm.set_next Sending ]
@@ -343,7 +354,7 @@ let create (i : _ I.t) : _ O.t =
     ; when_
         write_enable.value
         [ proc
-            (List.init Control.Limits.max_msg_len ~f:(fun k ->
+            (List.init Control.Constants.max_msg_len ~f:(fun k ->
                when_
                  (cell_address ==:. msg_cell + k)
                  [ msg_store.(k) <-- cell_write_data ]))
@@ -359,7 +370,7 @@ let create (i : _ I.t) : _ O.t =
                  &: (cell_address ==:. go_cell)
                  &: lsb cell_write_data
                  &: (msg_length >=:. 1)
-                 &: (msg_length <=:. Control.Limits.max_msg_len))
+                 &: (msg_length <=:. Control.Constants.max_msg_len))
                 [ send.set_next Byte_0 ]
             ] )
           (* each [Byte_k]: offer the cell; the transmitter takes it when [midi_hold] is 0 *)
@@ -388,13 +399,11 @@ let create (i : _ I.t) : _ O.t =
   ; midi_data = midi_byte.value
   ; midi_valid = pending
   ; state =
-      mux2
-        (sm.is Init)
-        (of_unsigned_int ~width:2 (State.to_code State.Init))
-        (mux2
-           (sm.is Receive)
-           (of_unsigned_int ~width:2 (State.to_code State.Ready))
-           (of_unsigned_int ~width:2 (State.to_code State.Busy)))
+      (let code s = of_unsigned_int ~width:2 (State.to_code s) in
+       mux2
+         (sm.is Init)
+         (code State.Init)
+         (mux2 (sm.is Receive) (code State.Ready) (code State.Busy)))
   }
 ;;
 
@@ -447,20 +456,11 @@ let%expect_test "transactions against the register file" =
       match Control.decode_response (Buffer.contents_bytes response) with
       | Error e -> Stdio.printf "bad response: %s\n" e
       | Ok { op; status; data } ->
-        let hex =
-          data
-          |> Bytes.to_list
-          |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
-          |> String.concat ~sep:" "
-        in
+        let hex = Bytes_util.hex data in
         Stdio.printf
           "op %d status %s%s\n"
           op
-          (match status with
-           | Control.Status.Ok -> "ok"
-           | Bad_op -> "bad-op"
-           | Bad_address -> "bad-address"
-           | Bad_length -> "bad-length")
+          (Control.Status.to_string status)
           (if String.length hex = 0 then "" else " data " ^ hex))
   in
   (* the register file has its defaults at power-on *)
@@ -582,21 +582,17 @@ let%expect_test "the waveform of a write tear" =
     Cyclesim.cycle sim
   done;
   let rules =
-    let signal name =
-      Hardcaml_waveterm.Display_rule.port_name_is
-        name
+    let signals names =
+      Hardcaml_waveterm.Display_rule.port_name_is_one_of
+        names
         ~wave_format:Wave_format.(Bit_or Hex)
     in
-    [ signal "clock"
-    ; signal "in_data"
-    ; signal "in_valid"
+    [ signals [ "clock"; "in_data"; "in_valid" ]
     ; Hardcaml_waveterm.Display_rule.port_name_is
         "fsm"
         ~wave_format:
           (Wave_format.Index [ "Init"; "Recv"; "Parse"; "Apply"; "Rspnd"; "Send" ])
-    ; signal "write_enable"
-    ; signal "cell_address"
-    ; signal "cell_write_data"
+    ; signals [ "write_enable"; "cell_address"; "cell_write_data" ]
     ; Hardcaml_waveterm.Display_rule.port_name_is
         "state"
         ~wave_format:(Wave_format.Index [ "Init"; "Ready"; "Busy" ])
@@ -690,26 +686,21 @@ let%expect_test "the doorbell rules" =
       Char.to_int (Bytes.get data 0)
     | _ -> -1
   in
-  let hex b =
-    Bytes.to_list b
-    |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
-    |> String.concat ~sep:" "
-  in
   let show tag =
     Stdio.printf
       "%s: go %d, line [%s]\n"
       tag
       (msg_go ())
-      (hex (Buffer.contents_bytes taken))
+      (Bytes_util.hex (Buffer.contents_bytes taken))
   in
   let drain () =
     let budget = ref 200 in
-    while Buffer.length taken < Control.Limits.max_msg_len && !budget > 0 do
+    while Buffer.length taken < Control.Constants.max_msg_len && !budget > 0 do
       cycle ();
       budget := !budget - 1
     done;
     (* room for one more message: a wrongly queued ring would show here *)
-    for _ = 1 to 5 * Control.Limits.max_msg_len * pace do
+    for _ = 1 to 5 * Control.Constants.max_msg_len * pace do
       cycle ()
     done
   in
@@ -787,21 +778,19 @@ let%expect_test "the waveform of a doorbell ring" =
     Cyclesim.cycle sim
   done;
   let rules =
-    let signal name =
-      Hardcaml_waveterm.Display_rule.port_name_is
-        name
+    let signals names =
+      Hardcaml_waveterm.Display_rule.port_name_is_one_of
+        names
         ~wave_format:Wave_format.(Bit_or Hex)
     in
-    [ signal "clock"
-    ; signal "in_valid"
+    [ signals [ "clock"; "in_valid" ]
     ; Hardcaml_waveterm.Display_rule.port_name_is
         "fsm"
         ~wave_format:(Wave_format.Index [ "Init"; "Rcv"; "Prs"; "App"; "Rsp"; "Snd" ])
     ; Hardcaml_waveterm.Display_rule.port_name_is
         "send_fsm"
         ~wave_format:(Wave_format.Index [ "Idl"; "B0"; "B1"; "B2" ])
-    ; signal "msg_pending"
-    ; signal "midi_data"
+    ; signals [ "msg_pending"; "midi_data" ]
     ]
   in
   Hardcaml_waveterm.Waveform.expect

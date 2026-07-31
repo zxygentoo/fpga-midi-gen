@@ -1,6 +1,10 @@
 open Base
+open Bytes_util
 
-module Limits = struct
+(* the sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
+module Constants = struct
+  let request_header_bytes = 4 (* OP, ADDR low, ADDR high, LEN *)
+  let response_header_bytes = 2 (* OP, STATUS *)
   let max_data_len = 32
   let max_frame_wire_bytes = 64
   let max_msg_len = 3
@@ -32,6 +36,13 @@ module Status = struct
     | 0x02 -> Some Bad_address
     | 0x03 -> Some Bad_length
     | _ -> None
+  ;;
+
+  let to_string = function
+    | Ok -> "ok"
+    | Bad_op -> "bad-op"
+    | Bad_address -> "bad-address"
+    | Bad_length -> "bad-length"
   ;;
 end
 
@@ -67,18 +78,9 @@ module Default = struct
   let seed = 42 (* must not be 0 *)
 end
 
-(* The framing is COBS; see [Cobs] in [lib/cobs.ml]. *)
-
-(* Base.Bytes has no integer accessors; these state the wire format one time *)
-let byte b i = Char.to_int (Bytes.get b i)
-let set_byte b i v = Bytes.set b i (Char.of_int_exn (v land 0xff))
-
-let set_uint16_le b i v =
-  set_byte b i v;
-  set_byte b (i + 1) (v lsr 8)
-;;
-
-let uint16_le b i = byte b i lor (byte b (i + 1) lsl 8)
+(* The framing is COBS; see [Cobs] in [lib/cobs.ml]. The byte accessors and the
+   little-endian codec are in [Bytes_util]: all values of more than one byte are
+   little-endian, on the wire and in the cells. *)
 
 type request =
   | Read of
@@ -102,7 +104,7 @@ let check_addr addr =
 ;;
 
 let check_len len =
-  if len < 1 || len > Limits.max_data_len
+  if len < 1 || len > Constants.max_data_len
   then invalid_arg (Printf.sprintf "length %d is out of range" len)
 ;;
 
@@ -112,20 +114,25 @@ let encode_request req =
     | Read { addr; len } ->
       check_addr addr;
       check_len len;
-      let b = Bytes.create 4 in
+      let b = Bytes.create Constants.request_header_bytes in
       set_byte b 0 Op.read;
-      set_uint16_le b 1 addr;
+      set_uint_le b ~pos:1 ~width:2 addr;
       set_byte b 3 len;
       b
     | Write { addr; data } ->
       check_addr addr;
       check_len (Bytes.length data);
       let n = Bytes.length data in
-      let b = Bytes.create (4 + n) in
+      let b = Bytes.create (Constants.request_header_bytes + n) in
       set_byte b 0 Op.write;
-      set_uint16_le b 1 addr;
+      set_uint_le b ~pos:1 ~width:2 addr;
       set_byte b 3 n;
-      Bytes.blit ~src:data ~src_pos:0 ~dst:b ~dst_pos:4 ~len:n;
+      Bytes.blit
+        ~src:data
+        ~src_pos:0
+        ~dst:b
+        ~dst_pos:Constants.request_header_bytes
+        ~len:n;
       b
   in
   Cobs.encode payload
@@ -133,10 +140,10 @@ let encode_request req =
 
 let encode_response { op; status; data } =
   let n = Bytes.length data in
-  let b = Bytes.create (2 + n) in
+  let b = Bytes.create (Constants.response_header_bytes + n) in
   set_byte b 0 (op lor Op.response_flag);
   set_byte b 1 (Status.to_code status);
-  Bytes.blit ~src:data ~src_pos:0 ~dst:b ~dst_pos:2 ~len:n;
+  Bytes.blit ~src:data ~src_pos:0 ~dst:b ~dst_pos:Constants.response_header_bytes ~len:n;
   Cobs.encode b
 ;;
 
@@ -145,20 +152,24 @@ let decode_request frame =
   | Error e -> Error e
   | Ok b ->
     let n = Bytes.length b in
-    if n < 4
+    if n < Constants.request_header_bytes
     then Error "the request is too short"
     else (
       let op = byte b 0 in
-      let addr = uint16_le b 1 in
+      let addr = uint_le b ~pos:1 ~width:2 in
       let len = byte b 3 in
-      if len < 1 || len > Limits.max_data_len
+      if len < 1 || len > Constants.max_data_len
       then Error "the length is out of range"
       else if op = Op.read
-      then if n = 4 then Ok (Read { addr; len }) else Error "the read has extra bytes"
+      then
+        if n = Constants.request_header_bytes
+        then Ok (Read { addr; len })
+        else Error "the read has extra bytes"
       else if op = Op.write
       then
-        if n = 4 + len
-        then Ok (Write { addr; data = Bytes.sub b ~pos:4 ~len })
+        if n = Constants.request_header_bytes + len
+        then
+          Ok (Write { addr; data = Bytes.sub b ~pos:Constants.request_header_bytes ~len })
         else Error "the write length does not agree with the frame"
       else Error "the operation is not known")
 ;;
@@ -168,7 +179,7 @@ let decode_response frame =
   | Error e -> Error e
   | Ok b ->
     let n = Bytes.length b in
-    if n < 2
+    if n < Constants.response_header_bytes
     then Error "the response is too short"
     else (
       let op = byte b 0 in
@@ -181,7 +192,11 @@ let decode_response frame =
           Ok
             { op = op land lnot Op.response_flag
             ; status
-            ; data = Bytes.sub b ~pos:2 ~len:(n - 2)
+            ; data =
+                Bytes.sub
+                  b
+                  ~pos:Constants.response_header_bytes
+                  ~len:(n - Constants.response_header_bytes)
             }))
 ;;
 
@@ -221,9 +236,7 @@ let%expect_test "the one-shot doorbell frame on the wire" =
   (* MSG, MSG_LEN and MSG_GO in one ascending write: Note On, channel 3, C4, velocity 100 *)
   encode_request
     (Write { addr = Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
-  |> Bytes.to_list
-  |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
-  |> String.concat ~sep:" "
+  |> hex
   |> Stdio.print_endline;
   [%expect {| 0a 02 f0 ff 05 92 3c 64 03 01 00 |}]
 ;;

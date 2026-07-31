@@ -84,12 +84,10 @@ let%expect_test "the waveform of one frame" =
   inp.valid := Bits.gnd;
   Cyclesim.cycle ~n:44 sim;
   let rules =
-    let signal name =
-      Hardcaml_waveterm.Display_rule.port_name_is
-        name
+    [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
         ~wave_format:Wave_format.(Bit_or Hex)
-    in
-    [ signal "data"; signal "valid"; signal "serial"; signal "busy" ]
+        [ "data"; "valid"; "serial"; "busy" ]
+    ]
   in
   Hardcaml_waveterm.Waveform.expect
     ~display_rules:rules

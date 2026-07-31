@@ -119,21 +119,19 @@ let%expect_test "the decoder agrees with Cobs.decode" =
    keeps cycle 0 at the first frame byte. *)
 
 let waveform_rules =
-  let signal name =
-    Hardcaml_waveterm.Display_rule.port_name_is name ~wave_format:Wave_format.(Bit_or Hex)
-  in
-  List.map
-    ~f:signal
-    [ "clock"
-    ; "in_data"
-    ; "in_valid"
-    ; "out_data"
-    ; "out_valid"
-    ; "frame_end"
-    ; "abort"
-    ; "remaining"
-    ; "insert_zero"
-    ]
+  [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
+      ~wave_format:Wave_format.(Bit_or Hex)
+      [ "clock"
+      ; "in_data"
+      ; "in_valid"
+      ; "out_data"
+      ; "out_valid"
+      ; "frame_end"
+      ; "abort"
+      ; "remaining"
+      ; "insert_zero"
+      ]
+  ]
 ;;
 
 let waveform_sim () =

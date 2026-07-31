@@ -114,12 +114,10 @@ let%expect_test "the waveform of the port timing" =
   Cyclesim.cycle sim;
   Cyclesim.cycle sim;
   let display_rules =
-    List.map
-      ~f:(fun name ->
-        Hardcaml_waveterm.Display_rule.port_name_is
-          name
-          ~wave_format:Wave_format.(Bit_or Hex))
-      [ "clock"; "write_enable"; "address"; "write_data"; "read_data" ]
+    [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
+        ~wave_format:Wave_format.(Bit_or Hex)
+        [ "clock"; "write_enable"; "address"; "write_data"; "read_data" ]
+    ]
   in
   Hardcaml_waveterm.Waveform.expect ~display_rules ~show_digest:false ~wave_width:2 waves;
   [%expect

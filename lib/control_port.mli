@@ -22,7 +22,7 @@
     poll rule of the host control — read MSG_GO as 0 before a write that covers a cell of
     MSG, MSG_LEN or MSG_GO — is the rule that keeps each message complete on the stream.
     The port ignores the send bit while a message waits, and also when MSG_LEN is not in 1
-    to [Control.Limits.max_msg_len]. *)
+    to [Control.Constants.max_msg_len]. *)
 
 open Hardcaml
 
