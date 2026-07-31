@@ -1,9 +1,9 @@
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries mgen hardcaml jane_rope))
+ (libraries core core_unix mgen hardcaml jane_rope))
 
 (executable
  (name mgt)
  (modules mgt)
- (libraries mgen unix))
+ (libraries core core_unix mgen))

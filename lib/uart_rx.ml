@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -78,7 +79,7 @@ let%expect_test "frames at 4 clocks per bit" =
       for _ = 1 to clocks_per_bit do
         Cyclesim.cycle sim;
         if Bits.to_bool !(out.valid)
-        then Printf.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
+        then Stdio.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
       done
     in
     bit false;
@@ -91,7 +92,7 @@ let%expect_test "frames at 4 clocks per bit" =
     for _ = 1 to 8 do
       Cyclesim.cycle sim;
       if Bits.to_bool !(out.valid)
-      then Printf.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
+      then Stdio.printf "byte %02x\n" (Bits.to_int_trunc !(out.data))
     done
   in
   send_frame ~stop:true 0xa3;
@@ -123,7 +124,7 @@ let%expect_test "the waveform of one frame" =
   inp.serial := Bits.vdd;
   Cyclesim.cycle ~n:4 sim;
   bit false;
-  List.iter bit (List.init 8 (fun k -> (0xa5 lsr k) land 1 = 1));
+  List.iter ~f:bit (List.init 8 ~f:(fun k -> (0xa5 lsr k) land 1 = 1));
   bit true;
   Cyclesim.cycle ~n:4 sim;
   let rules =

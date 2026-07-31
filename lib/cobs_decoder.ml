@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -74,8 +75,8 @@ let%expect_test "the decoder agrees with Cobs.decode" =
     let bytes = Buffer.create 8 in
     let events = Buffer.create 8 in
     String.iter
-      (fun c ->
-        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code c);
+      ~f:(fun c ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int c);
         inp.in_valid := Bits.vdd;
         Cyclesim.cycle sim;
         if Bits.to_bool !(out.out_valid)
@@ -92,13 +93,12 @@ let%expect_test "the decoder agrees with Cobs.decode" =
       match Cobs.decode (Bytes.of_string frame) with
       | Ok b ->
         b
-        |> Bytes.to_seq
-        |> Seq.map (fun c -> Printf.sprintf "%02x " (Char.code c))
-        |> List.of_seq
-        |> String.concat ""
+        |> Bytes.to_list
+        |> List.map ~f:(fun c -> Printf.sprintf "%02x " (Char.to_int c))
+        |> String.concat ~sep:""
       | Error e -> "error: " ^ e
     in
-    Printf.printf "hw %s| %ssw %s\n" (Buffer.contents bytes) (Buffer.contents events) sw
+    Stdio.printf "hw %s| %ssw %s\n" (Buffer.contents bytes) (Buffer.contents events) sw
   in
   run "\x01\x00";
   [%expect {| hw | end sw |}];
@@ -123,7 +123,7 @@ let waveform_rules =
     Hardcaml_waveterm.Display_rule.port_name_is name ~wave_format:Wave_format.(Bit_or Hex)
   in
   List.map
-    signal
+    ~f:signal
     [ "clock"
     ; "in_data"
     ; "in_valid"
@@ -159,7 +159,7 @@ let%expect_test "the waveform of a frame with a zero in the body" =
      At the delimiter the pending zero of the last group is discarded, and [frame_end]
      strobes. *)
   let waves, feed, idle = waveform_sim () in
-  List.iter feed [ 0x03; 0x11; 0x22; 0x02; 0x33; 0x00 ];
+  List.iter ~f:feed [ 0x03; 0x11; 0x22; 0x02; 0x33; 0x00 ];
   idle ();
   Hardcaml_waveterm.Waveform.expect
     ~display_rules:waveform_rules
@@ -201,10 +201,10 @@ let%expect_test "the waveform of the frame boundary" =
      in the first frame shows the converse: [out_valid] falls with no boundary, as it does
      after every byte at the real UART rate. *)
   let waves, feed, idle = waveform_sim () in
-  List.iter feed [ 0x03; 0x41 ];
+  List.iter ~f:feed [ 0x03; 0x41 ];
   idle ();
-  List.iter feed [ 0x42; 0x00 ];
-  List.iter feed [ 0x02; 0x41; 0x00; 0x02; 0x42; 0x00 ];
+  List.iter ~f:feed [ 0x42; 0x00 ];
+  List.iter ~f:feed [ 0x02; 0x41; 0x00; 0x02; 0x42; 0x00 ];
   idle ();
   Hardcaml_waveterm.Waveform.expect
     ~display_rules:waveform_rules
@@ -244,8 +244,8 @@ let%expect_test "the waveform of an abort and the recovery" =
      strobes in place of [frame_end]. The delimiter also clears the state, thus the good
      frame after it decodes with no extra reset. *)
   let waves, feed, idle = waveform_sim () in
-  List.iter feed [ 0x05; 0x11; 0x00 ];
-  List.iter feed [ 0x02; 0x41; 0x00 ];
+  List.iter ~f:feed [ 0x05; 0x11; 0x00 ];
+  List.iter ~f:feed [ 0x02; 0x41; 0x00 ];
   idle ();
   Hardcaml_waveterm.Waveform.expect
     ~display_rules:waveform_rules

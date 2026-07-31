@@ -1,3 +1,5 @@
+open Base
+
 type t =
   { send : Bytes.t -> unit
   ; receive : unit -> char
@@ -15,15 +17,15 @@ let collect_frame t =
   let rec next () =
     let byte = t.receive () in
     Buffer.add_char buffer byte;
-    if Char.equal byte Cobs.delimiter then Buffer.to_bytes buffer else next ()
+    if Char.equal byte Cobs.delimiter then Buffer.contents_bytes buffer else next ()
   in
   next ()
 ;;
 
 (* a response is usable when it decodes and echoes the op of this request *)
 let usable_response ~op response_frame =
-  let ( let* ) = Option.bind in
-  let* response = Result.to_option (Abi.decode_response response_frame) in
+  let ( let* ) x f = Option.bind x ~f in
+  let* response = Result.ok (Abi.decode_response response_frame) in
   if response.Abi.op = op then Some response else None
 ;;
 
@@ -48,7 +50,7 @@ let read t ~address ~length =
 
 let write t ~address ~data =
   transact t (Abi.Write { addr = address; data }) ~op:Abi.Op.write ~data_length:0
-  |> Result.map (fun (_ : Bytes.t) -> ())
+  |> Result.map ~f:(fun (_ : Bytes.t) -> ())
 ;;
 
 (* The test transport: [pending] holds the scripted reply, and [sent] records the wire. *)
@@ -60,7 +62,7 @@ let fake () =
     { send = (fun frame -> Buffer.add_bytes sent frame)
     ; receive =
         (fun () ->
-          match Queue.take_opt pending with
+          match Queue.dequeue pending with
           | Some byte -> byte
           | None -> failwith "the script is out of bytes")
     }
@@ -68,21 +70,19 @@ let fake () =
   transport, pending, sent
 ;;
 
-let reply pending frame = Bytes.iter (fun c -> Queue.add c pending) frame
+let reply pending frame = String.iter (Bytes.to_string frame) ~f:(Queue.enqueue pending)
 
 let hex bytes =
-  bytes
-  |> Bytes.to_seq
-  |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
-  |> List.of_seq
-  |> String.concat " "
+  String.concat
+    ~sep:" "
+    (List.map (Bytes.to_list bytes) ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c)))
 ;;
 
 let show = function
-  | Ok data -> Printf.printf "ok %s\n" (hex data)
-  | Error Garbled -> print_endline "garbled"
+  | Ok data -> Stdio.printf "ok %s\n" (hex data)
+  | Error Garbled -> Stdio.print_endline "garbled"
   | Error (Nak status) ->
-    Printf.printf
+    Stdio.printf
       "nak %s\n"
       (match status with
        | Abi.Status.Ok -> "ok"
@@ -97,10 +97,10 @@ let%expect_test "a read, with the wire vectors of the hardware session" =
     Abi.encode_response
       { op = Abi.Op.read; status = Abi.Status.Ok; data = Bytes.of_string "\x64" }
   in
-  Printf.printf "response frame %s\n" (hex response);
+  Stdio.printf "response frame %s\n" (hex response);
   reply pending response;
   show (read t ~address:Abi.Reg.Ctl.velocity ~length:1);
-  Printf.printf "sent %s\n" (hex (Buffer.to_bytes sent));
+  Stdio.printf "sent %s\n" (hex (Buffer.contents_bytes sent));
   [%expect
     {|
     response frame 02 81 02 64 00
@@ -129,7 +129,7 @@ let%expect_test "the wrong shape is Garbled" =
   reply
     pending
     (Abi.encode_response
-       { op = Abi.Op.write; status = Abi.Status.Ok; data = Bytes.empty });
+       { op = Abi.Op.write; status = Abi.Status.Ok; data = Bytes.create 0 });
   show (read t ~address:Abi.Reg.Ctl.velocity ~length:1);
   [%expect {|
     garbled
@@ -142,7 +142,7 @@ let%expect_test "a rejection is a rejection, not a garble" =
   reply
     pending
     (Abi.encode_response
-       { op = Abi.Op.read; status = Abi.Status.Bad_address; data = Bytes.empty });
+       { op = Abi.Op.read; status = Abi.Status.Bad_address; data = Bytes.create 0 });
   show (read t ~address:0x0000 ~length:1);
   [%expect {| nak bad-address |}]
 ;;
@@ -150,6 +150,6 @@ let%expect_test "a rejection is a rejection, not a garble" =
 let%expect_test "resync sends one delimiter" =
   let t, _, sent = fake () in
   resync t;
-  Printf.printf "sent %s\n" (hex (Buffer.to_bytes sent));
+  Stdio.printf "sent %s\n" (hex (Buffer.contents_bytes sent));
   [%expect {| sent 00 |}]
 ;;

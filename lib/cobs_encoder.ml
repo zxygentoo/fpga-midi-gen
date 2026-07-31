@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -146,14 +147,16 @@ module Harness_o = struct
 end
 
 let harness payload (h : _ Harness_i.t) : _ Harness_o.t =
-  let bytes = List.map Char.code (List.of_seq (String.to_seq payload)) in
-  let padded = bytes @ List.init (8 - List.length bytes) (fun _ -> 0) in
+  let bytes = List.map ~f:Char.to_int (String.to_list payload) in
+  let padded = bytes @ List.init (8 - List.length bytes) ~f:(fun _ -> 0) in
   let spec = Reg_spec.create ~clock:h.clock ~clear:h.clear () in
   let address = wire 7 in
   let read_data =
     reg
       spec
-      (mux (select address ~high:2 ~low:0) (List.map (of_unsigned_int ~width:8) padded))
+      (mux
+         (select address ~high:2 ~low:0)
+         (List.map ~f:(of_unsigned_int ~width:8) padded))
     -- "read_data"
   in
   let t =
@@ -193,12 +196,11 @@ let%expect_test "the encoder agrees with Cobs.encode" =
     done;
     let sw =
       Cobs.encode (Bytes.of_string payload)
-      |> Bytes.to_seq
-      |> Seq.map (fun c -> Printf.sprintf "%02x " (Char.code c))
-      |> List.of_seq
-      |> String.concat ""
+      |> Bytes.to_list
+      |> List.map ~f:(fun c -> Printf.sprintf "%02x " (Char.to_int c))
+      |> String.concat ~sep:""
     in
-    Printf.printf "hw %s| sw %s\n" (Buffer.contents hw) sw
+    Stdio.printf "hw %s| sw %s\n" (Buffer.contents hw) sw
   in
   run "\x82\x00";
   [%expect {| hw 02 82 01 00 | sw 02 82 01 00 |}];

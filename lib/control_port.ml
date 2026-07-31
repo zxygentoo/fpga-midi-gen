@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -48,12 +49,14 @@ let defaults =
   in
   let bytes =
     List.concat_map
-      (fun (address, width, value) ->
-        List.init width (fun k -> address + k, (value lsr (8 * k)) land 0xff))
+      ~f:(fun (address, width, value) ->
+        List.init width ~f:(fun k -> address + k, (value lsr (8 * k)) land 0xff))
       fields
   in
-  List.init Abi.Reg.Ctl.size (fun k ->
-    Option.value ~default:0 (List.assoc_opt (Abi.Reg.Ctl.base + k) bytes))
+  List.init Abi.Reg.Ctl.size ~f:(fun k ->
+    Option.value
+      ~default:0
+      (List.Assoc.find bytes (Abi.Reg.Ctl.base + k) ~equal:Int.equal))
 ;;
 
 (* payload capacity: the header plus the largest write burst; the buffer size and its
@@ -63,7 +66,7 @@ let buffer_address_bits = address_bits_for (max_payload + 1)
 let buffer_size = 1 lsl buffer_address_bits
 
 (* the low bits of an ABI address select the cell: the base must be aligned *)
-let () = assert (Abi.Reg.Ctl.base mod Abi.Reg.Ctl.size = 0)
+let () = assert (Abi.Reg.Ctl.base % Abi.Reg.Ctl.size = 0)
 let cell_bits = address_bits_for Abi.Reg.Ctl.size
 
 module Ctl_regfile = Regfile.Make (struct
@@ -91,7 +94,7 @@ let create (i : _ I.t) : _ O.t =
   let sm = State_machine.create (module Fsm) spec in
   let capture_index = Variable.reg spec ~width:7 in
   let drop = Variable.reg spec ~width:1 in
-  let header = Array.init 4 (fun _ -> Variable.reg spec ~width:8) in
+  let header = Array.init 4 ~f:(fun _ -> Variable.reg spec ~width:8) in
   let request_length = Variable.reg spec ~width:7 in
   let status = Variable.reg spec ~width:8 in
   let response_length = Variable.reg spec ~width:7 in
@@ -160,7 +163,7 @@ let create (i : _ I.t) : _ O.t =
   let cell_write_data =
     mux2
       (sm.is Init)
-      (mux init_index.value (List.map (of_unsigned_int ~width:8) defaults))
+      (mux init_index.value (List.map ~f:(of_unsigned_int ~width:8) defaults))
       payload_byte
     -- "cell_write_data"
   in
@@ -216,7 +219,7 @@ let create (i : _ I.t) : _ O.t =
                 [ capture_index <-- capture_index.value +:. 1
                 ; when_ (capture_index.value ==:. max_payload) [ drop <-- vdd ]
                 ; proc
-                    (List.init 4 (fun k ->
+                    (List.init 4 ~f:(fun k ->
                        when_
                          (capture_index.value ==:. k)
                          [ header.(k) <-- decoder.out_data ]))
@@ -297,7 +300,7 @@ let%expect_test "transactions against the register file" =
     Cyclesim.cycle sim;
     budget := !budget - 1
   done;
-  Printf.printf
+  Stdio.printf
     "ready after init: %b\n"
     (Bits.to_int_trunc !(out.state) = State.to_code State.Ready);
   [%expect {| ready after init: true |}];
@@ -308,18 +311,18 @@ let%expect_test "transactions against the register file" =
     if (not !complete) && Bits.to_bool !(out.out_valid)
     then (
       let byte = Bits.to_int_trunc !(out.out_data) in
-      Buffer.add_char response (Char.chr byte);
+      Buffer.add_char response (Char.of_int_exn byte);
       if byte = 0 then complete := true)
   in
   let transact frame =
     Buffer.clear response;
     complete := false;
-    Bytes.iter
-      (fun b ->
-        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+    String.iter
+      ~f:(fun b ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
         inp.in_valid := Bits.vdd;
         cycle ())
-      frame;
+      (Bytes.to_string frame);
     inp.in_valid := Bits.gnd;
     let budget = ref 500 in
     while (not !complete) && !budget > 0 do
@@ -327,19 +330,18 @@ let%expect_test "transactions against the register file" =
       budget := !budget - 1
     done;
     if Buffer.length response = 0
-    then print_endline "no response"
+    then Stdio.print_endline "no response"
     else (
-      match Abi.decode_response (Buffer.to_bytes response) with
-      | Error e -> Printf.printf "bad response: %s\n" e
+      match Abi.decode_response (Buffer.contents_bytes response) with
+      | Error e -> Stdio.printf "bad response: %s\n" e
       | Ok { op; status; data } ->
         let hex =
           data
-          |> Bytes.to_seq
-          |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
-          |> List.of_seq
-          |> String.concat " "
+          |> Bytes.to_list
+          |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
+          |> String.concat ~sep:" "
         in
-        Printf.printf
+        Stdio.printf
           "op %d status %s%s\n"
           op
           (match status with
@@ -383,12 +385,12 @@ let%expect_test "transactions against the register file" =
   Buffer.clear response;
   complete := false;
   let feed frame =
-    Bytes.iter
-      (fun b ->
-        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+    String.iter
+      ~f:(fun b ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
         inp.in_valid := Bits.vdd;
         cycle ())
-      frame;
+      (Bytes.to_string frame);
     inp.in_valid := Bits.gnd
   in
   feed (Abi.encode_request (Read { addr = Abi.Reg.Ctl.velocity; len = 1 }));
@@ -404,16 +406,19 @@ let%expect_test "transactions against the register file" =
     cycle ();
     budget := !budget - 1
   done;
-  (match Abi.decode_response (Buffer.to_bytes response) with
+  (match Abi.decode_response (Buffer.contents_bytes response) with
    | Ok { op; status = Abi.Status.Ok; data } ->
-     Printf.printf "during-send response: op %d data %02x\n" op (Bytes.get_uint8 data 0)
-   | _ -> print_endline "bad response");
+     Stdio.printf
+       "during-send response: op %d data %02x\n"
+       op
+       (Char.to_int (Bytes.get data 0))
+   | _ -> Stdio.print_endline "bad response");
   Buffer.clear response;
   complete := false;
   for _ = 1 to 400 do
     cycle ()
   done;
-  Printf.printf "response to the injected frame: %d bytes\n" (Buffer.length response);
+  Stdio.printf "response to the injected frame: %d bytes\n" (Buffer.length response);
   [%expect
     {|
     during-send response: op 1 data 30
@@ -436,13 +441,14 @@ let%expect_test "the waveform of a write tear" =
   for _ = 1 to 16 do
     Cyclesim.cycle sim
   done;
-  Bytes.iter
-    (fun b ->
-      inp.in_data := Bits.of_unsigned_int ~width:8 (Char.code b);
+  String.iter
+    ~f:(fun b ->
+      inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
       inp.in_valid := Bits.vdd;
       Cyclesim.cycle sim)
-    (Abi.encode_request
-       (Write { addr = Abi.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" }));
+    (Bytes.to_string
+       (Abi.encode_request
+          (Write { addr = Abi.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" })));
   inp.in_valid := Bits.gnd;
   for _ = 1 to 8 do
     Cyclesim.cycle sim

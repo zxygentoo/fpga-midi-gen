@@ -3,6 +3,8 @@
    [Abi.encode_request], samples RsTx on every cycle, decodes the waveform with a software
    receiver, and parses the responses with [Abi.decode_response]. *)
 
+open Base
+
 let cpb = Mgen.Top.host_clocks_per_bit
 
 let () =
@@ -23,15 +25,15 @@ let () =
     done
   in
   let send_frame frame =
-    Bytes.iter
-      (fun c ->
-        let byte = Char.code c in
+    String.iter
+      ~f:(fun c ->
+        let byte = Char.to_int c in
         level false cpb;
         for i = 0 to 7 do
           level ((byte lsr i) land 1 = 1) cpb
         done;
         level true cpb)
-      frame
+      (Bytes.to_string frame)
   in
   (* reset, then idle *)
   rstn := Bits.gnd;
@@ -61,33 +63,32 @@ let () =
         byte := !byte lor (bit (center k) lsl (k - 1))
       done;
       if bit (center 0) = 0 && bit (center 9) = 1
-      then Buffer.add_char received (Char.chr !byte);
+      then Buffer.add_char received (Char.of_int_exn !byte);
       i := !i + (10 * cpb))
-    else incr i
+    else Int.incr i
   done;
   (* split the byte stream at the frame delimiters and parse *)
   let frames =
-    String.split_on_char '\000' (Buffer.contents received)
-    |> List.filter (fun s -> String.length s > 0)
-    |> List.map (fun s -> Bytes.of_string (s ^ "\000"))
+    String.split (Buffer.contents received) ~on:'\000'
+    |> List.filter ~f:(fun s -> String.length s > 0)
+    |> List.map ~f:(fun s -> Bytes.of_string (s ^ "\000"))
   in
   let show frame =
     match Mgen.Abi.decode_response frame with
-    | Error e -> Printf.printf "bad response: %s\n" e
+    | Error e -> Stdio.printf "bad response: %s\n" e
     | Ok { op; status; data } ->
-      Printf.printf
+      Stdio.printf
         "op %d ok %b data %s\n"
         op
         (match status with
          | Mgen.Abi.Status.Ok -> true
          | _ -> false)
         (data
-         |> Bytes.to_seq
-         |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
-         |> List.of_seq
-         |> String.concat " ")
+         |> Bytes.to_list
+         |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
+         |> String.concat ~sep:" ")
   in
-  List.iter show frames;
+  List.iter ~f:show frames;
   assert (List.length frames = 2);
-  print_endline "txn ok"
+  Stdio.print_endline "txn ok"
 ;;

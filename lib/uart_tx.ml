@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -61,8 +62,8 @@ let%expect_test "one frame at 4 clocks per bit" =
     Buffer.add_string wave (if Bits.to_bool !(out.serial) then "1" else "0");
     Cyclesim.cycle sim
   done;
-  Printf.printf "serial  %s\n" (Buffer.contents wave);
-  Printf.printf "busy %b\n" (Bits.to_bool !(out.busy));
+  Stdio.printf "serial  %s\n" (Buffer.contents wave);
+  Stdio.printf "busy %b\n" (Bits.to_bool !(out.busy));
   [%expect
     {|
     serial  00001111000011110000111100001111000011111111

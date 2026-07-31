@@ -1,3 +1,5 @@
+open Base
+
 module Limits = struct
   let max_data_len = 32
   let max_frame_wire_bytes = 64
@@ -66,6 +68,17 @@ end
 
 (* The framing is COBS; see [Cobs] in [lib/cobs.ml]. *)
 
+(* Base.Bytes has no integer accessors; these state the wire format one time *)
+let byte b i = Char.to_int (Bytes.get b i)
+let set_byte b i v = Bytes.set b i (Char.of_int_exn (v land 0xff))
+
+let set_uint16_le b i v =
+  set_byte b i v;
+  set_byte b (i + 1) (v lsr 8)
+;;
+
+let uint16_le b i = byte b i lor (byte b (i + 1) lsl 8)
+
 type request =
   | Read of
       { addr : int
@@ -99,19 +112,19 @@ let encode_request req =
       check_addr addr;
       check_len len;
       let b = Bytes.create 4 in
-      Bytes.set_uint8 b 0 Op.read;
-      Bytes.set_uint16_le b 1 addr;
-      Bytes.set_uint8 b 3 len;
+      set_byte b 0 Op.read;
+      set_uint16_le b 1 addr;
+      set_byte b 3 len;
       b
     | Write { addr; data } ->
       check_addr addr;
       check_len (Bytes.length data);
       let n = Bytes.length data in
       let b = Bytes.create (4 + n) in
-      Bytes.set_uint8 b 0 Op.write;
-      Bytes.set_uint16_le b 1 addr;
-      Bytes.set_uint8 b 3 n;
-      Bytes.blit data 0 b 4 n;
+      set_byte b 0 Op.write;
+      set_uint16_le b 1 addr;
+      set_byte b 3 n;
+      Bytes.blit ~src:data ~src_pos:0 ~dst:b ~dst_pos:4 ~len:n;
       b
   in
   Cobs.encode payload
@@ -120,9 +133,9 @@ let encode_request req =
 let encode_response { op; status; data } =
   let n = Bytes.length data in
   let b = Bytes.create (2 + n) in
-  Bytes.set_uint8 b 0 (op lor Op.response_flag);
-  Bytes.set_uint8 b 1 (Status.to_code status);
-  Bytes.blit data 0 b 2 n;
+  set_byte b 0 (op lor Op.response_flag);
+  set_byte b 1 (Status.to_code status);
+  Bytes.blit ~src:data ~src_pos:0 ~dst:b ~dst_pos:2 ~len:n;
   Cobs.encode b
 ;;
 
@@ -134,9 +147,9 @@ let decode_request frame =
     if n < 4
     then Error "the request is too short"
     else (
-      let op = Bytes.get_uint8 b 0 in
-      let addr = Bytes.get_uint16_le b 1 in
-      let len = Bytes.get_uint8 b 3 in
+      let op = byte b 0 in
+      let addr = uint16_le b 1 in
+      let len = byte b 3 in
       if len < 1 || len > Limits.max_data_len
       then Error "the length is out of range"
       else if op = Op.read
@@ -144,7 +157,7 @@ let decode_request frame =
       else if op = Op.write
       then
         if n = 4 + len
-        then Ok (Write { addr; data = Bytes.sub b 4 len })
+        then Ok (Write { addr; data = Bytes.sub b ~pos:4 ~len })
         else Error "the write length does not agree with the frame"
       else Error "the operation is not known")
 ;;
@@ -157,18 +170,24 @@ let decode_response frame =
     if n < 2
     then Error "the response is too short"
     else (
-      let op = Bytes.get_uint8 b 0 in
+      let op = byte b 0 in
       if op land Op.response_flag = 0
       then Error "the response flag is not set"
       else (
-        match Status.of_code (Bytes.get_uint8 b 1) with
+        match Status.of_code (byte b 1) with
         | None -> Error "the status is not known"
         | Some status ->
-          Ok { op = op land lnot Op.response_flag; status; data = Bytes.sub b 2 (n - 2) }))
+          Ok
+            { op = op land lnot Op.response_flag
+            ; status
+            ; data = Bytes.sub b ~pos:2 ~len:(n - 2)
+            }))
 ;;
 
 let%expect_test "request round trips" =
-  let check r = Printf.printf "%b\n" (decode_request (encode_request r) = Ok r) in
+  let check r =
+    Stdio.printf "%b\n" (Poly.equal (decode_request (encode_request r)) (Ok r))
+  in
   check (Read { addr = Reg.Ctl.run; len = 1 });
   check (Read { addr = Reg.Ctl.base; len = Reg.Ctl.size });
   check (Write { addr = Reg.Ctl.step_ms; data = Bytes.of_string "\xFA\x00" });
@@ -182,11 +201,13 @@ let%expect_test "request round trips" =
 ;;
 
 let%expect_test "response round trips" =
-  let check r = Printf.printf "%b\n" (decode_response (encode_response r) = Ok r) in
+  let check r =
+    Stdio.printf "%b\n" (Poly.equal (decode_response (encode_response r)) (Ok r))
+  in
   check { op = Op.read; status = Status.Ok; data = Bytes.of_string "\x01" };
-  check { op = Op.write; status = Status.Ok; data = Bytes.empty };
-  check { op = Op.read; status = Status.Bad_address; data = Bytes.empty };
-  check { op = Op.write; status = Status.Bad_length; data = Bytes.empty };
+  check { op = Op.write; status = Status.Ok; data = Bytes.create 0 };
+  check { op = Op.read; status = Status.Bad_address; data = Bytes.create 0 };
+  check { op = Op.write; status = Status.Bad_length; data = Bytes.create 0 };
   [%expect {|
     true
     true
@@ -199,19 +220,18 @@ let%expect_test "the one-shot doorbell frame on the wire" =
   (* MSG, MSG_LEN and MSG_GO in one ascending write: Note On, channel 3, C4, velocity 100 *)
   encode_request
     (Write { addr = Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
-  |> Bytes.to_seq
-  |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
-  |> List.of_seq
-  |> String.concat " "
-  |> print_endline;
+  |> Bytes.to_list
+  |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
+  |> String.concat ~sep:" "
+  |> Stdio.print_endline;
   [%expect {| 0a 02 f0 ff 05 92 3c 64 03 01 00 |}]
 ;;
 
 let%expect_test "the encoder rejects values that do not fit" =
   let attempt f =
     match f () with
-    | exception Invalid_argument m -> print_endline m
-    | _ -> print_endline "accepted"
+    | exception Invalid_argument m -> Stdio.print_endline m
+    | _ -> Stdio.print_endline "accepted"
   in
   attempt (fun () -> encode_request (Read { addr = 0x10000; len = 1 }));
   [%expect {| address 65536 is not a 16-bit value |}];
@@ -223,7 +243,7 @@ let%expect_test "the encoder rejects values that do not fit" =
 
 let%expect_test "a frame without the delimiter must not decode" =
   (match decode_response (Bytes.of_string "\x02\x81") with
-   | Ok _ -> print_endline "decoded"
-   | Error e -> print_endline e);
+   | Ok _ -> Stdio.print_endline "decoded"
+   | Error e -> Stdio.print_endline e);
   [%expect {| the frame has no zero delimiter |}]
 ;;

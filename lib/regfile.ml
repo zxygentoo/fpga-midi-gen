@@ -1,3 +1,4 @@
+open Base
 open Hardcaml
 open Signal
 
@@ -25,16 +26,16 @@ struct
   let create (i : _ I.t) : _ O.t =
     let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
     let open Always in
-    let cells = Array.init Config.size (fun _ -> Variable.reg spec ~width:8) in
+    let cells = Array.init Config.size ~f:(fun _ -> Variable.reg spec ~width:8) in
     compile
       [ when_
           i.write_enable
           [ proc
-              (List.init Config.size (fun k ->
+              (List.init Config.size ~f:(fun k ->
                  when_ (i.address ==:. k) [ cells.(k) <-- i.write_data ]))
           ]
       ];
-    { O.read_data = mux i.address (Array.to_list (Array.map Variable.value cells)) }
+    { O.read_data = mux i.address (Array.to_list (Array.map cells ~f:Variable.value)) }
   ;;
 end
 
@@ -55,9 +56,9 @@ let%expect_test "zeros, write and read" =
     for k = 0 to 15 do
       inp.address := Bits.of_unsigned_int ~width:4 k;
       Cyclesim.cycle sim;
-      Printf.printf "%02x " (Bits.to_int_trunc !(out.read_data))
+      Stdio.printf "%02x " (Bits.to_int_trunc !(out.read_data))
     done;
-    print_newline ()
+    Stdio.printf "\n"
   in
   (* all cells are 0 at power-on *)
   dump ();
@@ -77,7 +78,7 @@ let%expect_test "zeros, write and read" =
   inp.write_data := Bits.of_unsigned_int ~width:8 0x2a;
   Cyclesim.cycle sim;
   inp.write_enable := Bits.gnd;
-  Printf.printf
+  Stdio.printf
     "during %02x after %02x\n"
     (Bits.to_int_trunc !(out_before.read_data))
     (Bits.to_int_trunc !(out.read_data));
@@ -114,7 +115,7 @@ let%expect_test "the waveform of the port timing" =
   Cyclesim.cycle sim;
   let display_rules =
     List.map
-      (fun name ->
+      ~f:(fun name ->
         Hardcaml_waveterm.Display_rule.port_name_is
           name
           ~wave_format:Wave_format.(Bit_or Hex))
@@ -159,8 +160,8 @@ let%expect_test "the address width follows the size" =
   for k = 0 to 3 do
     inp.address := Bits.of_unsigned_int ~width:2 k;
     Cyclesim.cycle sim;
-    Printf.printf "%02x " (Bits.to_int_trunc !(out.read_data))
+    Stdio.printf "%02x " (Bits.to_int_trunc !(out.read_data))
   done;
-  print_newline ();
+  Stdio.printf "\n";
   [%expect {| 00 00 5a 00 |}]
 ;;

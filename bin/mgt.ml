@@ -6,6 +6,7 @@
    ADDR and BYTE take the OCaml integer syntax: 0xFFF9 or 65529. The device default is
    /dev/ttyUSB1, the Nexys 4 console UART. *)
 
+open Core
 module Abi = Mgen.Abi
 module Control_transport = Mgen.Control_transport
 
@@ -18,18 +19,16 @@ let usage () : 'a =
 ;;
 
 let int_arg s =
-  match int_of_string_opt s with
+  match Option.try_with (fun () -> Int.of_string s) with
   | Some v -> v
   | None -> usage ()
 ;;
 
 (* raw 8N1: no echo, no signals, no flow control, no translation *)
 let serial_transport_exn device =
-  let fd = Unix.openfile device [ Unix.O_RDWR; Unix.O_NOCTTY ] 0 in
-  let tio = Unix.tcgetattr fd in
-  Unix.tcsetattr
-    fd
-    Unix.TCSANOW
+  let fd = Core_unix.openfile device ~mode:[ O_RDWR; O_NOCTTY ] in
+  let tio = Core_unix.Terminal_io.tcgetattr fd in
+  Core_unix.Terminal_io.tcsetattr
     { tio with
       c_ibaud = baud
     ; c_obaud = baud
@@ -57,15 +56,17 @@ let serial_transport_exn device =
     ; c_opost = false
     ; c_vmin = 1
     ; c_vtime = 0
-    };
-  Unix.tcflush fd Unix.TCIOFLUSH;
+    }
+    fd
+    ~mode:TCSANOW;
+  Core_unix.Terminal_io.tcflush fd ~mode:TCIOFLUSH;
   let send frame =
-    let n = Bytes.length frame in
-    if Unix.write fd frame 0 n <> n then failwith "short write to the serial port"
+    if Core_unix.write fd ~buf:frame <> Bytes.length frame
+    then failwith "short write to the serial port"
   in
   let receive () =
     let one = Bytes.create 1 in
-    match Unix.read fd one 0 1 with
+    match Core_unix.read fd ~buf:one with
     | 1 -> Bytes.get one 0
     | _ -> failwith "the serial port closed"
   in
@@ -74,17 +75,15 @@ let serial_transport_exn device =
 
 let serial_transport device =
   try serial_transport_exn device with
-  | Unix.Unix_error (error, _, _) ->
-    Printf.eprintf "cannot open %s: %s\n" device (Unix.error_message error);
+  | Core_unix.Unix_error (error, _, _) ->
+    Printf.eprintf "cannot open %s: %s\n" device (Core_unix.Error.message error);
     exit 1
 ;;
 
 let hex_line bytes =
-  bytes
-  |> Bytes.to_seq
-  |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
-  |> List.of_seq
-  |> String.concat " "
+  String.concat
+    ~sep:" "
+    (List.map (Bytes.to_list bytes) ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c)))
 ;;
 
 let check = function
@@ -111,7 +110,7 @@ let dump t =
   Printf.printf "%04x  %s\n" Abi.Reg.Ctl.base (hex_line bytes);
   let fields =
     List.sort
-      (fun (_, a, _) (_, b, _) -> compare a b)
+      ~compare:(fun (_, a, _) (_, b, _) -> Int.compare a b)
       [ "run", Abi.Reg.Ctl.run, 1
       ; "channel", Abi.Reg.Ctl.channel, 1
       ; "step_ms", Abi.Reg.Ctl.step_ms, 2
@@ -124,21 +123,21 @@ let dump t =
       ]
   in
   List.iter
-    (fun (name, address, width) ->
+    ~f:(fun (name, address, width) ->
       (* little-endian, as the ABI stores multi-byte values *)
       let value =
-        List.fold_left
-          (fun acc k ->
-            (acc lsl 8) lor Bytes.get_uint8 bytes (address - Abi.Reg.Ctl.base + k))
-          0
-          (List.rev (List.init width Fun.id))
+        List.fold
+          (List.rev (List.init width ~f:Fn.id))
+          ~init:0
+          ~f:(fun acc k ->
+            (acc lsl 8) lor Char.to_int (Bytes.get bytes (address - Abi.Reg.Ctl.base + k)))
       in
       Printf.printf "%04x  %-8s  %d (0x%x)\n" address name value value)
     fields
 ;;
 
 let () =
-  let args = List.tl (Array.to_list Sys.argv) in
+  let args = List.tl_exn (Array.to_list (Sys.get_argv ())) in
   let device, args =
     match args with
     | "--device" :: path :: rest -> path, rest
@@ -154,8 +153,9 @@ let () =
     print_endline (hex_line data)
   | "write" :: address :: (_ :: _ as bytes) ->
     let data =
-      Bytes.of_seq
-        (List.to_seq (List.map (fun b -> Char.chr (int_arg b land 0xff)) bytes))
+      Bytes.of_string
+        (String.of_char_list
+           (List.map bytes ~f:(fun b -> Char.of_int_exn (int_arg b land 0xff))))
     in
     check (Control_transport.write t ~address:(int_arg address) ~data)
   | [ "dump" ] -> dump t
