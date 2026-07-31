@@ -11,9 +11,9 @@ the host control" lists them. Correct that document with the code.
 
 ## The problem
 
-The control cells are 8-bit cells in a flat address space, thus the first
-design put them in `Regfile`, a byte memory with one address port. This is
-the wrong shape.
+The wire protocol gives an address to each control cell, thus the first
+design put the cells in `Regfile`, a byte memory with one address port.
+This is the wrong shape.
 
 A control cell is not a memory location. Many blocks look at a control cell
 continuously, and one block writes it. A memory with one address port
@@ -76,8 +76,8 @@ second source of MIDI messages.
 | `Midi_merge` | which source gives the next message |
 | `Midi_out` | one message to the MIDI line, and the transmitter |
 
-`Regfile` goes away. Its own interface says that a large memory needs a
-different contract, thus the model window cannot use it either.
+`Regfile` goes away. No other block needs it, because a control cell is not
+a memory location.
 
 `cell_bits` is `address_bits_for Control.Reg.Ctl.size`, which is 4. A cell
 address is an index into the control section, and not a full address.
@@ -445,9 +445,6 @@ are `read_data` in `I` against `read_address` in `O`, and `write_data` in
 
 - It does not add the model block. `Midi_merge` gets a second source, and
   the source stays unconnected.
-- It does not map the model window. `Control_port` keeps one address range.
-  A second range is a bounded change to the decode, and this design does
-  not make it more difficult.
 - It does not connect the board button.
 
 ## Changes to the host control

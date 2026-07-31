@@ -46,9 +46,10 @@ module Status = struct
 end
 
 module Reg = struct
-  (* Control: 0xFFF0 to 0xFFFF, read and write — the full register file. Cells with a
-     fixed nature sit at the top. MSG, the one payload with a variable nature, sits at the
-     low edge so it can grow with no change to the other addresses. *)
+  (* The control registers, at 0xFFF0 to 0xFFFF. They are the local storage of the control
+     unit, and not a window into a larger memory. Cells with a fixed nature sit at the
+     top. MIDI_MSG, the one payload with a variable nature, sits at the low edge so it can
+     grow with no change to the other addresses. *)
   module Ctl = struct
     let base = 0xFFF0
     let size = 16
@@ -57,15 +58,11 @@ module Reg = struct
     let step_ms = 0xFFFC (* 2 bytes *)
     let gate_ms = 0xFFFA (* 2 bytes *)
     let velocity = 0xFFF9
-    let seed = 0xFFF5 (* 4 bytes; the PRNG loads on a write to the last byte *)
+    let seed = 0xFFF5 (* 4 bytes; the PRNG loads at the end of a write that covers it *)
     let msg_go = 0xFFF4 (* write: send; read: 1 while a message waits *)
     let msg_len = 0xFFF3
     let msg = 0xFFF0 (* 3 bytes, at the growth edge *)
   end
-
-  (* The model window grows up from 0x0000: byte [i] of the blob is at address [i]. The
-     wire protocol does not map it in this version. *)
-  let window_base = 0x0000
 end
 
 module Default = struct

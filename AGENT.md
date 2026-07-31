@@ -152,10 +152,10 @@ Model (RTL/Hardcaml) -- host control -- Drivers (OCaml)
 
 - Model: the FPGA does the inference. Train the model on the host computer if
   it is necessary. Possible models are a Markov chain, an RNN and a UNet.
-- Host control: one interface for all drivers — a flat memory map and a
+- Host control: one interface for all drivers — the control registers and a
   read/write wire protocol on the UART. The specification is
-  `docs/host_control.md`. The model
-  weights are not runtime state: the bitstream initializes them.
+  `docs/host_control.md`. The model weights are not runtime state: the
+  bitstream initializes them.
 - Drivers: self-check, control and other functions.
 
 Rules:

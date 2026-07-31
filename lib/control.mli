@@ -43,9 +43,10 @@ module Status : sig
 end
 
 module Reg : sig
-  (** Control: [0xFFF0] to [0xFFFF], read and write — the full register file. Cells with a
-      fixed nature sit at the top. MSG, the one payload with a variable nature, sits at
-      the low edge so it can grow with no change to the other addresses. *)
+  (** The control registers, at [0xFFF0] to [0xFFFF]. They are the local storage of the
+      control unit, and not a window into a larger memory. Cells with a fixed nature sit
+      at the top. MIDI_MSG, the one payload with a variable nature, sits at the low edge
+      so it can grow with no change to the other addresses. *)
   module Ctl : sig
     val base : int
     val size : int
@@ -63,7 +64,7 @@ module Reg : sig
 
     val velocity : int
 
-    (** 4 bytes, little-endian; the PRNG loads on a write to the last byte. *)
+    (** 4 bytes, little-endian; the PRNG loads at the end of a write that covers it. *)
     val seed : int
 
     (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
@@ -74,10 +75,6 @@ module Reg : sig
     (** 3 bytes, at the growth edge of the section. *)
     val msg : int
   end
-
-  (** The model window grows up from address 0: byte [i] of the blob is at address [i].
-      The wire protocol does not map it in this version. *)
-  val window_base : int
 end
 
 (** The power-on values of the control cells. *)

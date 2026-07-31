@@ -5,27 +5,23 @@
 The host control is the interface between the host drivers and the FPGA. It defines
 two things:
 
-1. The memory map: the state that the host can read and write at run time.
+1. The control registers: the state that the host can read and write at run
+   time.
 2. The wire protocol: the way to read and write this state through the UART.
 
-## The memory map
+## The control registers
 
-The memory has 8-bit cells and one flat 16-bit address space. The map has
-two parts:
+The control registers are the local storage of the control unit in the
+FPGA. There are 16 of them, each one 8 bits. They are not a window into a
+larger memory: they are the complete state that the host can touch.
 
-- Control: `0xFFF0` to `0xFFFF`, read and write. This is the full control
-  register file, 16 bytes.
-- The model window: from `0x0000`, up. Byte `i` of the blob is at address `i`.
+The wire protocol gives an address to each register, from `0xFFF0` to
+`0xFFFF`. An access that touches an address outside this range gets STATUS
+`02`, and the FPGA changes no register.
 
-### Control
+One read at `0xFFF0` with length 16 gets each register in one transaction.
 
-An access that touches an address outside the control cells gets STATUS
-`02`, and the FPGA changes no cell.
-
-One read at `0xFFF0` with length 16 gets the full register file in one
-transaction.
-
-Control cells:
+The registers:
 
 | Address | Name | Content | Default |
 |---|---|---|---|
@@ -81,10 +77,6 @@ The MIDI output:
   far below this rate, thus the output queue cannot overflow in correct
   operation.
 
-### The model window
-
-In this version the wire protocol does not map the window.
-
 ## The wire protocol
 
 The host link is the USB UART, 115200 baud, 8N1. The host is the master.
@@ -122,7 +114,7 @@ The response payload, before the COBS encoding:
 Rules:
 
 - All values with more than one byte are little-endian. This rule applies to
-  ADDR on the wire and to the cell values in the memory map.
+  ADDR on the wire and to the values in the registers.
 - A write applies its bytes in the sequence of increasing addresses.
 - The largest payload is 36 bytes: the request header of 4 bytes and DATA of
   32 bytes. The FPGA discards a frame with a longer payload, and also a
