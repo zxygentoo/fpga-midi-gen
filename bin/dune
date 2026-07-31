@@ -7,3 +7,8 @@
  (name mgt)
  (modules mgt)
  (libraries core core_unix mgen))
+
+(executable
+ (name play_pink)
+ (modules play_pink)
+ (libraries core core_unix mgen))
