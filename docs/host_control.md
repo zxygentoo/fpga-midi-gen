@@ -118,8 +118,9 @@ Rules:
 - All values with more than one byte are little-endian. This rule applies to
   ADDR on the wire and to the cell values in the memory map.
 - A write applies its bytes in the sequence of increasing addresses.
-- The maximum frame on the wire is 64 bytes. The FPGA discards a longer
-  frame and each frame that does not decode, and sends no response for it.
+- The largest payload is 36 bytes: the request header of 4 bytes and DATA of
+  32 bytes. The FPGA discards a frame with a longer payload, and also a
+  frame that does not decode. It sends no response for these frames.
 - A driver decides how long it waits for a response, and it can send the
   request again. This is safe, because each read and each write is
   idempotent. The one exception is a write that covers MSG_GO: it sends the

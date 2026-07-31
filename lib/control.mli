@@ -15,8 +15,9 @@ module Constants : sig
   (** The maximum data bytes in one read or write. *)
   val max_data_len : int
 
-  (** The maximum encoded frame on the wire; the FPGA discards a longer frame. *)
-  val max_frame_wire_bytes : int
+  (** The largest payload: the request header and the largest DATA. The FPGA discards a
+      frame with a longer payload. *)
+  val max_payload_bytes : int
 
   (** The maximum bytes in one test message: the width of the MSG cells. *)
   val max_msg_len : int

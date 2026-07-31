@@ -67,9 +67,9 @@ let defaults =
 let request_header_bytes = Control.Constants.request_header_bytes
 let response_header_bytes = Control.Constants.response_header_bytes
 
-(* payload capacity: the header plus the largest write burst; the buffer size and its
-   address width follow *)
-let max_payload = request_header_bytes + Control.Constants.max_data_len
+(* the buffer holds the largest legal payload, and it discards a longer one; the buffer
+   size and its address width follow *)
+let max_payload = Control.Constants.max_payload_bytes
 let buffer_address_bits = address_bits_for (max_payload + 1)
 let buffer_size = 1 lsl buffer_address_bits
 
@@ -554,6 +554,59 @@ let%expect_test "transactions against the register file" =
     |}];
   transact (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}]
+;;
+
+let%expect_test "the payload bound" =
+  (* the discard rule of the host control: the port takes a payload of
+     [Control.Constants.max_payload_bytes] and discards a longer one. Each payload byte is
+     0x41, thus the frame decodes but its LEN field is out of range: an accepted frame
+     answers Bad_length, and a discarded frame is silent. The silence is the signal, and
+     the status of the answer is not. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let try_payload n =
+    let sim = Sim.create create in
+    let inp = Cyclesim.inputs sim in
+    let out = Cyclesim.outputs ~clock_edge:Before sim in
+    let response = Buffer.create 8 in
+    let cycle () =
+      Cyclesim.cycle sim;
+      if Bits.to_bool !(out.out_valid)
+      then Buffer.add_char response (Char.of_int_exn (Bits.to_int_trunc !(out.out_data)))
+    in
+    inp.clear := Bits.vdd;
+    cycle ();
+    inp.clear := Bits.gnd;
+    (* the init walk *)
+    for _ = 1 to 30 do
+      cycle ()
+    done;
+    Buffer.clear response;
+    String.iter
+      ~f:(fun b ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
+        inp.in_valid := Bits.vdd;
+        cycle ())
+      (Bytes.to_string (Cobs.encode (Bytes.make n 'A')));
+    inp.in_valid := Bits.gnd;
+    for _ = 1 to 400 do
+      cycle ()
+    done;
+    Stdio.printf
+      "payload %d: %s\n"
+      n
+      (match Control.decode_response (Buffer.contents_bytes response) with
+       | Ok { status; _ } -> Control.Status.to_string status
+       | Error _ -> "no response")
+  in
+  try_payload (Control.Constants.max_payload_bytes - 1);
+  try_payload Control.Constants.max_payload_bytes;
+  try_payload (Control.Constants.max_payload_bytes + 1);
+  [%expect
+    {|
+    payload 35: bad-length
+    payload 36: bad-length
+    payload 37: no response
+    |}]
 ;;
 
 let%expect_test "the waveform of a write tear" =

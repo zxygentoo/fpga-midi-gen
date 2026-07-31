@@ -6,7 +6,7 @@ module Constants = struct
   let request_header_bytes = 4 (* OP, ADDR low, ADDR high, LEN *)
   let response_header_bytes = 2 (* OP, STATUS *)
   let max_data_len = 32
-  let max_frame_wire_bytes = 64
+  let max_payload_bytes = request_header_bytes + max_data_len
   let max_msg_len = 3
 end
 
