@@ -1,11 +1,16 @@
 (** The top level of the Nexys 4 board.
 
-    Step 6 of the bring-up: the control port serves the wire protocol on the host UART,
-    and the doorbell sends the test message on the MIDI output, [JD 0].
+    The control port serves the wire protocol on the host UART, [Control_regs] holds the
+    cells, and the MIDI path is [Midi_merge] and [Midi_out]. The structure is the one of
+    [docs/host_control_rtl.md].
 
     The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
-    [led 2], MIDI activity on [led 3]. The MIDI line idles at 1, the no-current level of
-    the current loop; the other JD pins stay at 1. *)
+    [led 2], MIDI activity on [led 3], and the busy state of the port on [led 4]. The MIDI
+    line idles at 1, the no-current level of the current loop; the other JD pins stay
+    at 1.
+
+    Two inputs of the design have no source yet, and the top level ties each one to 0: the
+    board button that toggles RUN, and the model that gives MIDI messages. *)
 
 open Hardcaml
 open Signal
@@ -30,8 +35,12 @@ let create () =
       ~clocks_per_bit:host_clocks_per_bit
       { Uart_rx.I.clock = clk; clear; serial = rx_pin }
   in
+  (* each wire breaks the order of one connection that goes in both directions; no path is
+     a loop, because the far end of each one comes from a register *)
   let tx_busy = wire 1 in
-  let midi_busy = wire 1 in
+  let read_data = wire 8 in
+  let doorbell_ready = wire 1 in
+  let out_ready = wire 1 in
   let control_port =
     Control_port.create
       { Control_port.I.clock = clk
@@ -39,9 +48,41 @@ let create () =
       ; in_data = uart_rx.data
       ; in_valid = uart_rx.valid
       ; hold = tx_busy
-      ; midi_hold = midi_busy
+      ; read_data
       }
   in
+  let control_regs =
+    Control_regs.create
+      { Control_regs.I.clock = clk
+      ; clear
+      ; write_enable = control_port.write_enable
+      ; write_address = control_port.write_address
+      ; write_data = control_port.write_data
+      ; commit = control_port.commit
+      ; read_address = control_port.read_address
+      ; run_toggle = gnd
+      ; doorbell_ready
+      }
+  in
+  assign read_data control_regs.read_data;
+  let midi_merge =
+    Midi_merge.create
+      { Midi_merge.I.doorbell = control_regs.doorbell
+      ; model =
+          { Midi.Message.data = zero (Midi.max_message_bytes * 8)
+          ; len = zero 8
+          ; valid = gnd
+          }
+      ; out_ready
+      }
+  in
+  assign doorbell_ready midi_merge.doorbell_ready;
+  let midi_out =
+    Midi_out.create
+      ~clocks_per_bit:midi_clocks_per_bit
+      { Midi_out.I.clock = clk; clear; message = midi_merge.out }
+  in
+  assign out_ready midi_out.ready;
   let uart_tx =
     Uart_tx.create
       ~clocks_per_bit:host_clocks_per_bit
@@ -52,23 +93,20 @@ let create () =
       }
   in
   assign tx_busy uart_tx.busy;
-  let midi_tx =
-    Uart_tx.create
-      ~clocks_per_bit:midi_clocks_per_bit
-      { Uart_tx.I.clock = clk
-      ; clear
-      ; data = control_port.midi_data
-      ; valid = control_port.midi_valid
-      }
-  in
-  assign midi_busy midi_tx.busy;
   let led =
-    concat_msb [ zero 12; ~:(midi_tx.serial); ~:(uart_tx.serial); ~:rx_pin; heartbeat ]
+    concat_msb
+      [ zero 11
+      ; control_port.busy
+      ; ~:(midi_out.serial)
+      ; ~:(uart_tx.serial)
+      ; ~:rx_pin
+      ; heartbeat
+      ]
   in
   Circuit.create_exn
     ~name:"top"
     [ output "led" led
     ; output "RsTx" uart_tx.serial
-    ; output "JD" (concat_msb [ ones 7; midi_tx.serial ])
+    ; output "JD" (concat_msb [ ones 7; midi_out.serial ])
     ]
 ;;

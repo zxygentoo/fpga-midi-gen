@@ -52,9 +52,11 @@ Semantics:
   driver sets its channel.
 - If GATE_MS is not less than STEP_MS, the FPGA sends the Note Off
   immediately before the subsequent Note On.
-- The PRNG loads the seed when the host writes address `0xFFF8`, the last
-  seed byte. Thus one ascending write of the four seed bytes loads the
-  PRNG one time, at the end.
+- A write applies at one time, at its end. Therefore a value of more than
+  one byte never shows a part of one write and a part of the next, and a
+  block in the FPGA can look at a cell in each cycle.
+- The PRNG loads the seed at the end of a write that covers a SEED cell.
+  Thus one write of the four seed bytes loads the PRNG one time.
 - The MIDI_MSG cells are the test-message doorbell. The host writes
   MIDI_MSG and MIDI_LEN, then writes a value with bit 0 = 1 to MIDI_GO.
   The FPGA sends the message to the MIDI output. A write with bit 0 = 0
@@ -62,9 +64,13 @@ Semantics:
   increasing addresses, one write of 5 bytes at `0xFFF0` does the complete
   operation: the payload, the length, and the send.
 - The FPGA ignores the send bit while a message waits, and also when
-  MIDI_LEN is not 1 to 3. The driver must read MIDI_GO as 0 before a write
-  that covers a cell of MIDI_MSG, MIDI_LEN or MIDI_GO. This rule keeps
-  each test message complete on the MIDI output.
+  MIDI_LEN is not 1 to 3. MIDI_GO reads 1 from the ring until the MIDI
+  transmitter takes the message, and not until the last byte is on the
+  line. The driver reads MIDI_GO as 0 to know that the FPGA accepts the
+  subsequent ring.
+- The FPGA takes a copy of MIDI_MSG and MIDI_LEN at the ring. Therefore a
+  write to those cells after MIDI_GO reads 0 cannot damage a message that
+  is on the line.
 
 The MIDI output:
 

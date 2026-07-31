@@ -249,8 +249,15 @@ not a cost. The change is:
 | the init index that goes away | −4 |
 | net | about +157 |
 
-This is 0.12% of the XC7A100T. The design removes the defaults mux, the
-second write decode and the read override, thus the LUT count goes down.
+The measurement agrees: the `reg` bits of the generated Verilog go from 562
+to 722, which is +160. This count also holds the temporary registers that
+the `Always` DSL makes, thus it is a little more than the flip-flops. It is
+0.13% of the XC7A100T.
+
+The combinational logic goes up, and it does not go down. The shadow needs
+its own write decode and its own follow mux, and these are larger than the
+defaults mux, the second write decode and the read override that go away.
+The AND operators of the Verilog go from 11 to 31.
 
 ## Control_port
 
