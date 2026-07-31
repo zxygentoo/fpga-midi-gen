@@ -626,3 +626,198 @@ let%expect_test "the waveform of a write tear" =
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]
 ;;
+
+let%expect_test "the doorbell rules" =
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create create in
+  let inp = Cyclesim.inputs sim in
+  let out = Cyclesim.outputs ~clock_edge:Before sim in
+  (* a fake transmitter that counts every byte: after it takes one, it holds for [pace]
+     cycles; [stall] holds the stream still for as long as a case needs *)
+  let pace = 8 in
+  let stall = ref false in
+  let busy_left = ref 0 in
+  let taken = Buffer.create 8 in
+  let response = Buffer.create 64 in
+  let complete = ref false in
+  let cycle () =
+    inp.midi_hold := if !stall || !busy_left > 0 then Bits.vdd else Bits.gnd;
+    Cyclesim.cycle sim;
+    if !busy_left > 0
+    then busy_left := !busy_left - 1
+    else if (not !stall) && Bits.to_bool !(out.midi_valid)
+    then (
+      Buffer.add_char taken (Char.of_int_exn (Bits.to_int_trunc !(out.midi_data)));
+      busy_left := pace);
+    if (not !complete) && Bits.to_bool !(out.out_valid)
+    then (
+      let byte = Bits.to_int_trunc !(out.out_data) in
+      Buffer.add_char response (Char.of_int_exn byte);
+      if byte = 0 then complete := true)
+  in
+  let transact frame =
+    Buffer.clear response;
+    complete := false;
+    String.iter
+      ~f:(fun b ->
+        inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
+        inp.in_valid := Bits.vdd;
+        cycle ())
+      (Bytes.to_string frame);
+    inp.in_valid := Bits.gnd;
+    let budget = ref 500 in
+    while (not !complete) && !budget > 0 do
+      cycle ();
+      budget := !budget - 1
+    done
+  in
+  let write addr data =
+    transact (Abi.encode_request (Write { addr; data = Bytes.of_string data }))
+  in
+  let msg_go () =
+    transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
+    match Abi.decode_response (Buffer.contents_bytes response) with
+    | Ok { status = Abi.Status.Ok; data; _ } when Bytes.length data = 1 ->
+      Char.to_int (Bytes.get data 0)
+    | _ -> -1
+  in
+  let hex b =
+    Bytes.to_list b
+    |> List.map ~f:(fun c -> Printf.sprintf "%02x" (Char.to_int c))
+    |> String.concat ~sep:" "
+  in
+  let show tag =
+    Stdio.printf
+      "%s: go %d, line [%s]\n"
+      tag
+      (msg_go ())
+      (hex (Buffer.contents_bytes taken))
+  in
+  let drain () =
+    let budget = ref 200 in
+    while Buffer.length taken < Abi.Limits.max_msg_len && !budget > 0 do
+      cycle ();
+      budget := !budget - 1
+    done;
+    (* room for one more message: a wrongly queued ring would show here *)
+    for _ = 1 to 5 * Abi.Limits.max_msg_len * pace do
+      cycle ()
+    done
+  in
+  inp.clear := Bits.vdd;
+  Cyclesim.cycle sim;
+  inp.clear := Bits.gnd;
+  for _ = 1 to 20 do
+    cycle ()
+  done;
+  (* the send bit is bit 0 alone: a burst with a GO byte of 00 loads the cells and does
+     not ring, and 02 has bit 0 clear *)
+  write Abi.Reg.Ctl.msg "\x92\x3C\x64\x03\x00";
+  show "go byte 00";
+  write Abi.Reg.Ctl.msg_go "\x02";
+  show "go byte 02";
+  (* MSG_LEN outside 1 to 3: the bell does not ring *)
+  write Abi.Reg.Ctl.msg_len "\x00\x01";
+  show "len 0";
+  write Abi.Reg.Ctl.msg_len "\x04\x01";
+  show "len 4";
+  (* a ring while a message waits is ignored: hold the transmitter, ring twice, release —
+     one message goes out *)
+  stall := true;
+  write Abi.Reg.Ctl.msg "\x92\x3C\x64\x03\x01";
+  show "stalled ring";
+  write Abi.Reg.Ctl.msg_go "\x01";
+  show "ring while waiting";
+  stall := false;
+  drain ();
+  show "released";
+  (* the sender reads the live cells: change one MSG byte, ring the stored message *)
+  Buffer.clear taken;
+  write Abi.Reg.Ctl.msg "\x93";
+  write Abi.Reg.Ctl.msg_go "\x01";
+  drain ();
+  show "live cells";
+  [%expect
+    {|
+    go byte 00: go 0, line []
+    go byte 02: go 0, line []
+    len 0: go 0, line []
+    len 4: go 0, line []
+    stalled ring: go 1, line []
+    ring while waiting: go 1, line []
+    released: go 0, line [92 3c 64]
+    live cells: go 0, line [93 3c 64]
+    |}]
+;;
+
+let%expect_test "the waveform of a doorbell ring" =
+  (* the one-shot burst rings the bell: the trigger fires on the [Apply] write of the
+     MSG_GO cell, [send_fsm] walks one state for each byte, and MSG_GO reads [msg_pending]
+     — 1 exactly while the message waits. The transmitter is free in this test, thus one
+     byte goes each cycle. The tags are compact for the narrow cells: the fsm ones follow
+     [Fsm.t], the send ones [Send_fsm.t]. *)
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
+  let waves, sim = Cyclesim.Waveform.create sim in
+  let inp = Cyclesim.inputs sim in
+  (* the init walk *)
+  for _ = 1 to 16 do
+    Cyclesim.cycle sim
+  done;
+  String.iter
+    ~f:(fun b ->
+      inp.in_data := Bits.of_unsigned_int ~width:8 (Char.to_int b);
+      inp.in_valid := Bits.vdd;
+      Cyclesim.cycle sim)
+    (Bytes.to_string
+       (Abi.encode_request
+          (Write { addr = Abi.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })));
+  inp.in_valid := Bits.gnd;
+  for _ = 1 to 10 do
+    Cyclesim.cycle sim
+  done;
+  let rules =
+    let signal name =
+      Hardcaml_waveterm.Display_rule.port_name_is
+        name
+        ~wave_format:Wave_format.(Bit_or Hex)
+    in
+    [ signal "clock"
+    ; signal "in_valid"
+    ; Hardcaml_waveterm.Display_rule.port_name_is
+        "fsm"
+        ~wave_format:(Wave_format.Index [ "Init"; "Rcv"; "Prs"; "App"; "Rsp"; "Snd" ])
+    ; Hardcaml_waveterm.Display_rule.port_name_is
+        "send_fsm"
+        ~wave_format:(Wave_format.Index [ "Idl"; "B0"; "B1"; "B2" ])
+    ; signal "msg_pending"
+    ; signal "midi_data"
+    ]
+  in
+  Hardcaml_waveterm.Waveform.expect
+    ~display_rules:rules
+    ~show_digest:false
+    ~wave_width:1
+    ~start_cycle:26
+    waves;
+  [%expect
+    {|
+    ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
+    │clock          ││┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐│
+    │               ││  └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └─┘ └│
+    │in_valid       ││────┐                                              │
+    │               ││    └───────────────────────────────────────       │
+    │               ││────┬───┬───────────────────┬───┬───────────       │
+    │fsm            ││ Rcv│Prs│App                │Rsp│Snd               │
+    │               ││────┴───┴───────────────────┴───┴───────────       │
+    │               ││────────────────────────────┬───┬───┬───┬───       │
+    │send_fsm       ││ Idl                        │B0 │B1 │B2 │Idl       │
+    │               ││────────────────────────────┴───┴───┴───┴───       │
+    │msg_pending    ││                            ┌───────────┐          │
+    │               ││────────────────────────────┘           └───       │
+    │               ││────────────────────────────┬───┬───┬───┬───       │
+    │midi_data      ││ 00                         │92 │3C │64 │00        │
+    │               ││────────────────────────────┴───┴───┴───┴───       │
+    └───────────────┘└───────────────────────────────────────────────────┘
+    |}]
+;;
