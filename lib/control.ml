@@ -3,7 +3,7 @@ open Bytes_util
 
 (* the sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
 module Constants = struct
-  let request_header_bytes = 4 (* OP, ADDR low, ADDR high, LEN *)
+  let request_header_bytes = 3 (* OP, ADDR, LEN *)
   let response_header_bytes = 2 (* OP, STATUS *)
   let max_data_len = 32
   let max_payload_bytes = request_header_bytes + max_data_len
@@ -45,24 +45,20 @@ module Status = struct
   ;;
 end
 
+(* The control registers. They are the local storage of the control unit, thus one byte of
+   address names each one. *)
 module Reg = struct
-  (* The control registers, at 0xFFF0 to 0xFFFF. They are the local storage of the control
-     unit, and not a window into a larger memory. Cells with a fixed nature sit at the
-     top. MIDI_MSG, the one payload with a variable nature, sits at the low edge so it can
-     grow with no change to the other addresses. *)
-  module Ctl = struct
-    let base = 0xFFF0
-    let size = 16
-    let run = 0xFFFF (* bit 0; the board button also toggles it *)
-    let channel = 0xFFFE
-    let step_ms = 0xFFFC (* 2 bytes *)
-    let gate_ms = 0xFFFA (* 2 bytes *)
-    let velocity = 0xFFF9
-    let seed = 0xFFF5 (* 4 bytes; the PRNG loads at the end of a write that covers it *)
-    let msg_go = 0xFFF4 (* write: send; read: 1 while a message waits *)
-    let msg_len = 0xFFF3
-    let msg = 0xFFF0 (* 3 bytes, at the growth edge *)
-  end
+  let base = 0x00
+  let size = 16
+  let run = 0x0F (* bit 0; the board button also toggles it *)
+  let channel = 0x0E
+  let step_ms = 0x0C (* 2 bytes *)
+  let gate_ms = 0x0A (* 2 bytes *)
+  let velocity = 0x09
+  let seed = 0x05 (* 4 bytes; the PRNG loads at the end of a write that covers it *)
+  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
+  let midi_len = 0x03
+  let midi_msg = 0x00 (* 3 bytes *)
 end
 
 module Default = struct
@@ -95,8 +91,8 @@ type response =
   }
 
 let check_addr addr =
-  if addr < 0 || addr > 0xFFFF
-  then invalid_arg (Printf.sprintf "address %d is not a 16-bit value" addr)
+  if addr < 0 || addr > 0xFF
+  then invalid_arg (Printf.sprintf "address %d is not an 8-bit value" addr)
 ;;
 
 let check_len len =
@@ -112,8 +108,8 @@ let encode_request req =
       check_len len;
       let b = Bytes.create Constants.request_header_bytes in
       set_byte b 0 Op.read;
-      set_uint_le b ~pos:1 ~width:2 addr;
-      set_byte b 3 len;
+      set_byte b 1 addr;
+      set_byte b 2 len;
       b
     | Write { addr; data } ->
       check_addr addr;
@@ -121,8 +117,8 @@ let encode_request req =
       let n = Bytes.length data in
       let b = Bytes.create (Constants.request_header_bytes + n) in
       set_byte b 0 Op.write;
-      set_uint_le b ~pos:1 ~width:2 addr;
-      set_byte b 3 n;
+      set_byte b 1 addr;
+      set_byte b 2 n;
       Bytes.blit
         ~src:data
         ~src_pos:0
@@ -152,8 +148,8 @@ let decode_request frame =
     then Error "the request is too short"
     else (
       let op = byte b 0 in
-      let addr = uint_le b ~pos:1 ~width:2 in
-      let len = byte b 3 in
+      let addr = byte b 1 in
+      let len = byte b 2 in
       if len < 1 || len > Constants.max_data_len
       then Error "the length is out of range"
       else if op = Op.read
@@ -200,10 +196,10 @@ let%expect_test "request round trips" =
   let check r =
     Stdio.printf "%b\n" (Poly.equal (decode_request (encode_request r)) (Ok r))
   in
-  check (Read { addr = Reg.Ctl.run; len = 1 });
-  check (Read { addr = Reg.Ctl.base; len = Reg.Ctl.size });
-  check (Write { addr = Reg.Ctl.step_ms; data = Bytes.of_string "\xFA\x00" });
-  check (Write { addr = Reg.Ctl.seed; data = Bytes.of_string "\xEE\xFF\xC0\x00" });
+  check (Read { addr = Reg.run; len = 1 });
+  check (Read { addr = Reg.base; len = Reg.size });
+  check (Write { addr = Reg.step_ms; data = Bytes.of_string "\xFA\x00" });
+  check (Write { addr = Reg.seed; data = Bytes.of_string "\xEE\xFF\xC0\x00" });
   [%expect {|
     true
     true
@@ -231,10 +227,10 @@ let%expect_test "response round trips" =
 let%expect_test "the one-shot doorbell frame on the wire" =
   (* MSG, MSG_LEN and MSG_GO in one ascending write: Note On, channel 3, C4, velocity 100 *)
   encode_request
-    (Write { addr = Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
+    (Write { addr = Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
   |> hex
   |> Stdio.print_endline;
-  [%expect {| 0a 02 f0 ff 05 92 3c 64 03 01 00 |}]
+  [%expect {| 02 02 07 05 92 3c 64 03 01 00 |}]
 ;;
 
 let%expect_test "the encoder rejects values that do not fit" =
@@ -244,7 +240,7 @@ let%expect_test "the encoder rejects values that do not fit" =
     | _ -> Stdio.print_endline "accepted"
   in
   attempt (fun () -> encode_request (Read { addr = 0x10000; len = 1 }));
-  [%expect {| address 65536 is not a 16-bit value |}];
+  [%expect {| address 65536 is not an 8-bit value |}];
   attempt (fun () -> encode_request (Read { addr = 0; len = 0 }));
   [%expect {| length 0 is out of range |}];
   attempt (fun () -> encode_request (Write { addr = 0; data = Bytes.create 33 }));

@@ -15,25 +15,25 @@ The control registers are the local storage of the control unit in the
 FPGA. There are 16 of them, each one 8 bits. They are not a window into a
 larger memory: they are the complete state that the host can touch.
 
-The wire protocol gives an address to each register, from `0xFFF0` to
-`0xFFFF`. An access that touches an address outside this range gets STATUS
+The wire protocol gives one byte of address to each register, from `00` to
+`0F`. An access that touches an address outside this range gets STATUS
 `02`, and the FPGA changes no register.
 
-One read at `0xFFF0` with length 16 gets each register in one transaction.
+One read at `00` with length 16 gets each register in one transaction.
 
 The registers:
 
 | Address | Name | Content | Default |
 |---|---|---|---|
-| `0xFFFF` | RUN | the run state, bit 0 | 0 |
-| `0xFFFE` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
-| `0xFFFC`–`0xFFFD` | STEP_MS | step period in ms, minimum 1 | 250 |
-| `0xFFFA`–`0xFFFB` | GATE_MS | gate time in ms | 125 |
-| `0xFFF9` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `0xFFF5`–`0xFFF8` | SEED | PRNG seed, 32 bits, not 0 | see `lib/control.ml` |
-| `0xFFF4` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
-| `0xFFF3` | MIDI_LEN | length of the test message, 1 to 3 | 0 |
-| `0xFFF0`–`0xFFF2` | MIDI_MSG | the test message bytes | 0 |
+| `0F` | RUN | the run state, bit 0 | 0 |
+| `0E` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
+| `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 250 |
+| `0A`–`0B` | GATE_MS | gate time in ms | 125 |
+| `09` | VELOCITY | note velocity, 1 to 127 | 100 |
+| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | see `lib/control.ml` |
+| `04` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
+| `03` | MIDI_LEN | length of the test message, 1 to 3 | 0 |
+| `00`–`02` | MIDI_MSG | the test message bytes | 0 |
 
 Semantics:
 
@@ -56,9 +56,9 @@ Semantics:
 - The MIDI_MSG cells are the test-message doorbell. The host writes
   MIDI_MSG and MIDI_LEN, then writes a value with bit 0 = 1 to MIDI_GO.
   The FPGA sends the message to the MIDI output. A write with bit 0 = 0
-  does not send. Because a write applies its bytes in the sequence of
-  increasing addresses, one write of 5 bytes at `0xFFF0` does the complete
-  operation: the payload, the length, and the send.
+  does not send. Because a write applies at one time, one write of 5 bytes
+  at `00` does the complete operation: the payload, the length, and the
+  send.
 - The FPGA ignores the send bit while a message waits, and also when
   MIDI_LEN is not 1 to 3. MIDI_GO reads 1 from the ring until the MIDI
   transmitter takes the message, and not until the last byte is on the
@@ -92,7 +92,7 @@ The request payload, before the COBS encoding:
 | Field | Bytes | Content |
 |---|---|---|
 | OP | 1 | `01`: read, `02`: write |
-| ADDR | 2 | the start address |
+| ADDR | 1 | the start address |
 | LEN | 1 | 1 to 32. Read: the number of bytes. Write: the length of DATA |
 | DATA | LEN | write only: the bytes to write |
 
@@ -116,7 +116,7 @@ Rules:
 - All values with more than one byte are little-endian. This rule applies to
   ADDR on the wire and to the values in the registers.
 - A write applies its bytes in the sequence of increasing addresses.
-- The largest payload is 36 bytes: the request header of 4 bytes and DATA of
+- The largest payload is 35 bytes: the request header of 3 bytes and DATA of
   32 bytes. The FPGA discards a frame with a longer payload, and also a
   frame that does not decode. It sends no response for these frames.
 - A driver decides how long it waits for a response, and it can send the

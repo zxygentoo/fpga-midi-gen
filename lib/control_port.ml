@@ -28,8 +28,8 @@ let buffer_size = 1 lsl buffer_address_bits
 let index_bits = address_bits_for (Control.Constants.max_data_len + 1)
 
 (* the low bits of a control address select the cell: the base must be aligned *)
-let () = assert (Control.Reg.Ctl.base % Control.Reg.Ctl.size = 0)
-let cell_bits = address_bits_for Control.Reg.Ctl.size
+let () = assert (Control.Reg.base % Control.Reg.size = 0)
+let cell_bits = address_bits_for Control.Reg.size
 
 module O = struct
   type 'a t =
@@ -81,8 +81,8 @@ let create (i : _ I.t) : _ O.t =
      whole transaction: [capture] is gated on [Receive], and the op echo of
      [response_byte] already depends on this *)
   let op = header.(0).value in
-  let header_address = header.(2).value @: header.(1).value in
-  let header_length = header.(3).value in
+  let header_address = header.(1).value in
+  let header_length = header.(2).value in
   (* the decoder *)
   let decoder =
     Cobs_decoder.create
@@ -139,12 +139,12 @@ let create (i : _ I.t) : _ O.t =
       (mux2 (j ==:. 1) status.value i.read_data)
   in
   assign response_data (reg spec (response_byte encoder.address));
-  (* the range check, in 17 bits so the top of the space cannot wrap *)
-  let range_end = uresize header_address ~width:17 +: uresize header_length ~width:17 in
+  (* the range check, in 9 bits so the top of the space cannot wrap *)
+  let range_end = uresize header_address ~width:9 +: uresize header_length ~width:9 in
   let address_ok =
     header_address
-    >=:. Control.Reg.Ctl.base
-    &: (range_end <=:. Control.Reg.Ctl.base + Control.Reg.Ctl.size)
+    >=:. Control.Reg.base
+    &: (range_end <=:. Control.Reg.base + Control.Reg.size)
   in
   let length_ok =
     header_length >=:. 1 &: (header_length <=:. Control.Constants.max_data_len)
@@ -366,14 +366,13 @@ let%expect_test "transactions against the cells" =
   (* the first request needs no start-up: the cells carry their defaults from the
      bitstream, thus there is no init walk to wait for *)
   transact
-    (Control.encode_request
-       (Read { addr = Control.Reg.Ctl.base; len = Control.Reg.Ctl.size }));
+    (Control.encode_request (Read { addr = Control.Reg.base; len = Control.Reg.size }));
   [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
   (* write, then read back *)
   transact
     (Control.encode_request
-       (Write { addr = Control.Reg.Ctl.velocity; data = Bytes.of_string "\x30" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.velocity; len = 1 }));
+       (Write { addr = Control.Reg.velocity; data = Bytes.of_string "\x30" }));
+  transact (Control.encode_request (Read { addr = Control.Reg.velocity; len = 1 }));
   [%expect {|
     op 2 status ok
     op 1 status ok data 30
@@ -383,8 +382,8 @@ let%expect_test "transactions against the cells" =
   transact
     (Control.encode_request
        (Write
-          { addr = Control.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg; len = 5 }));
+          { addr = Control.Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
+  transact (Control.encode_request (Read { addr = Control.Reg.midi_msg; len = 5 }));
   [%expect {|
     op 2 status ok
     op 1 status ok data 92 3c 64 03 00
@@ -394,20 +393,20 @@ let%expect_test "transactions against the cells" =
   inp.doorbell_ready := Bits.gnd;
   transact
     (Control.encode_request
-       (Write { addr = Control.Reg.Ctl.msg_go; data = Bytes.of_string "\x01" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg_go; len = 1 }));
+       (Write { addr = Control.Reg.midi_go; data = Bytes.of_string "\x01" }));
+  transact (Control.encode_request (Read { addr = Control.Reg.midi_go; len = 1 }));
   inp.doorbell_ready := Bits.vdd;
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg_go; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.midi_go; len = 1 }));
   [%expect
     {|
     op 2 status ok
     op 1 status ok data 01
     op 1 status ok data 00
     |}];
-  (* errors *)
-  transact (Control.encode_request (Read { addr = 0x0000; len = 1 }));
-  transact (Cobs.encode (Bytes.of_string "\x07\x00\x00\x01"));
-  transact (Cobs.encode (Bytes.of_string "\x01\xF0\xFF\x00"));
+  (* errors. The raw frames are the request payload: OP, ADDR, LEN. *)
+  transact (Control.encode_request (Read { addr = Control.Reg.size; len = 1 }));
+  transact (Cobs.encode (Bytes.of_string "\x07\x00\x01"));
+  transact (Cobs.encode (Bytes.of_string "\x01\x00\xF0"));
   [%expect
     {|
     op 1 status bad-address
@@ -416,7 +415,7 @@ let%expect_test "transactions against the cells" =
     |}];
   (* a frame with the wrong shape gets no response, and the engine recovers *)
   transact (Cobs.encode (Bytes.of_string "\xAA\xBB"));
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
   [%expect {|
     no response
     op 1 status ok data 02
@@ -425,9 +424,9 @@ let%expect_test "transactions against the cells" =
      request transacts normally *)
   Buffer.clear response;
   complete := false;
-  feed (Control.encode_request (Read { addr = Control.Reg.Ctl.velocity; len = 1 }));
+  feed (Control.encode_request (Read { addr = Control.Reg.velocity; len = 1 }));
   run_until ~budget:200 (fun () -> Buffer.length response > 0);
-  feed (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
+  feed (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
   run_until ~budget:500 (fun () -> !complete);
   (match Control.decode_response (Buffer.contents_bytes response) with
    | Ok { op; status = Control.Status.Ok; data } ->
@@ -447,7 +446,7 @@ let%expect_test "transactions against the cells" =
     during-send response: op 1 data 30
     response to the injected frame: 0 bytes
     |}];
-  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}]
 ;;
 
@@ -468,9 +467,9 @@ let%expect_test "the payload bound" =
   try_payload (Control.Constants.max_payload_bytes + 1);
   [%expect
     {|
+    payload 34: op 65 status bad-length
     payload 35: op 65 status bad-length
-    payload 36: op 65 status bad-length
-    payload 37: no response
+    payload 36: no response
     |}]
 ;;
 
@@ -490,7 +489,7 @@ let%expect_test "the waveform of a write and its commit" =
       Cyclesim.cycle sim)
     (Bytes.to_string
        (Control.encode_request
-          (Write { addr = Control.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" })));
+          (Write { addr = Control.Reg.step_ms; data = Bytes.of_string "\x11\x22" })));
   inp.in_valid := Bits.gnd;
   Cyclesim.cycle ~n:8 sim;
   let rules =
@@ -518,26 +517,26 @@ let%expect_test "the waveform of a write and its commit" =
     ┌Signals────────┐┌Waves──────────────────────────────────────────────┐
     │clock          ││┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──│
     │               ││   └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  │
-    │               ││──────┬────────────────────────────────────────────│
-    │in_data        ││ 22   │00                                          │
-    │               ││──────┴────────────────────────────────────────────│
-    │in_valid       ││────────────┐                                      │
-    │               ││            └──────────────────────────────────────│
-    │               ││────────────┬─────┬───────────┬─────┬─────┬────────│
-    │fsm            ││ Recv       │Parse│Apply      │Cmit │Rspnd│Send    │
-    │               ││────────────┴─────┴───────────┴─────┴─────┴────────│
-    │write_enable   ││                  ┌───────────┐                    │
-    │               ││──────────────────┘           └────────────────────│
-    │               ││────────────────────────┬─────┬────────────────────│
-    │write_address  ││ C                      │D    │E                   │
-    │               ││────────────────────────┴─────┴────────────────────│
-    │               ││────────────────────────┬─────┬────────────────────│
-    │write_data     ││ 11                     │22   │00                  │
-    │               ││────────────────────────┴─────┴────────────────────│
-    │commit         ││                              ┌─────┐              │
-    │               ││──────────────────────────────┘     └──────────────│
-    │busy           ││            ┌──────────────────────────────────────│
-    │               ││────────────┘                                      │
+    │               ││───────────────────────────────────────────────────│
+    │in_data        ││ 00                                                │
+    │               ││───────────────────────────────────────────────────│
+    │in_valid       ││──────┐                                            │
+    │               ││      └────────────────────────────────────────────│
+    │               ││──────┬─────┬───────────┬─────┬─────┬──────────────│
+    │fsm            ││ Recv │Parse│Apply      │Cmit │Rspnd│Send          │
+    │               ││──────┴─────┴───────────┴─────┴─────┴──────────────│
+    │write_enable   ││            ┌───────────┐                          │
+    │               ││────────────┘           └──────────────────────────│
+    │               ││──────────────────┬─────┬──────────────────────────│
+    │write_address  ││ C                │D    │E                         │
+    │               ││──────────────────┴─────┴──────────────────────────│
+    │               ││──────────────────┬─────┬──────────────────────────│
+    │write_data     ││ 11               │22   │00                        │
+    │               ││──────────────────┴─────┴──────────────────────────│
+    │commit         ││                        ┌─────┐                    │
+    │               ││────────────────────────┘     └────────────────────│
+    │busy           ││      ┌────────────────────────────────────────────│
+    │               ││──────┘                                            │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]
 ;;

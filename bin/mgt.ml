@@ -3,7 +3,7 @@
    mgt [--device PATH] read ADDR LEN mgt [--device PATH] write ADDR BYTE.. mgt
    [--device PATH] doorbell BYTE.. mgt [--device PATH] dump
 
-   ADDR and BYTE take the OCaml integer syntax: 0xFFF9 or 65529. The device default is
+   ADDR and BYTE take the OCaml integer syntax: 0x09 or 9. The device default is
    /dev/ttyUSB1, the Nexys 4 console UART. *)
 
 open Core
@@ -51,30 +51,26 @@ let check = function
 
 let dump t =
   let bytes =
-    check
-      (Control_transport.read
-         t
-         ~address:Control.Reg.Ctl.base
-         ~length:Control.Reg.Ctl.size)
+    check (Control_transport.read t ~address:Control.Reg.base ~length:Control.Reg.size)
   in
-  Printf.printf "%04x  %s\n" Control.Reg.Ctl.base (Bytes_util.hex bytes);
+  Printf.printf "%04x  %s\n" Control.Reg.base (Bytes_util.hex bytes);
   let fields =
     List.sort
       ~compare:(fun (_, a, _) (_, b, _) -> Int.compare a b)
-      [ "run", Control.Reg.Ctl.run, 1
-      ; "channel", Control.Reg.Ctl.channel, 1
-      ; "step_ms", Control.Reg.Ctl.step_ms, 2
-      ; "gate_ms", Control.Reg.Ctl.gate_ms, 2
-      ; "velocity", Control.Reg.Ctl.velocity, 1
-      ; "seed", Control.Reg.Ctl.seed, 4
-      ; "msg_go", Control.Reg.Ctl.msg_go, 1
-      ; "msg_len", Control.Reg.Ctl.msg_len, 1
-      ; "msg", Control.Reg.Ctl.msg, Mgen.Midi.max_message_bytes
+      [ "run", Control.Reg.run, 1
+      ; "channel", Control.Reg.channel, 1
+      ; "step_ms", Control.Reg.step_ms, 2
+      ; "gate_ms", Control.Reg.gate_ms, 2
+      ; "velocity", Control.Reg.velocity, 1
+      ; "seed", Control.Reg.seed, 4
+      ; "midi_go", Control.Reg.midi_go, 1
+      ; "midi_len", Control.Reg.midi_len, 1
+      ; "midi_msg", Control.Reg.midi_msg, Mgen.Midi.max_message_bytes
       ]
   in
   List.iter
     ~f:(fun (name, address, width) ->
-      let value = Bytes_util.uint_le bytes ~pos:(address - Control.Reg.Ctl.base) ~width in
+      let value = Bytes_util.uint_le bytes ~pos:(address - Control.Reg.base) ~width in
       Printf.printf "%04x  %-8s  %d (0x%x)\n" address name value value)
     fields
 ;;
@@ -85,14 +81,14 @@ let dump t =
 let doorbell t bytes =
   let n = List.length bytes in
   if n < 1 || n > Mgen.Midi.max_message_bytes then usage ();
-  let msg_go_clear () =
-    let b = check (Control_transport.read t ~address:Control.Reg.Ctl.msg_go ~length:1) in
+  let midi_go_clear () =
+    let b = check (Control_transport.read t ~address:Control.Reg.midi_go ~length:1) in
     Char.to_int (Bytes.get b 0) = 0
   in
   let wait_clear () =
     (* one poll is about 1 ms of wire time, and a message takes at most 1 ms *)
     let rec wait tries =
-      if not (msg_go_clear ())
+      if not (midi_go_clear ())
       then
         if tries = 0
         then (
@@ -103,11 +99,11 @@ let doorbell t bytes =
     wait 100
   in
   wait_clear ();
-  let burst = Bytes.make (Control.Reg.Ctl.msg_go - Control.Reg.Ctl.msg + 1) '\x00' in
+  let burst = Bytes.make (Control.Reg.midi_go - Control.Reg.midi_msg + 1) '\x00' in
   List.iteri bytes ~f:(fun k b -> Bytes.set burst k (Char.of_int_exn b));
-  Bytes.set burst (Control.Reg.Ctl.msg_len - Control.Reg.Ctl.msg) (Char.of_int_exn n);
-  Bytes.set burst (Control.Reg.Ctl.msg_go - Control.Reg.Ctl.msg) '\x01';
-  check (Control_transport.write t ~address:Control.Reg.Ctl.msg ~data:burst);
+  Bytes.set burst (Control.Reg.midi_len - Control.Reg.midi_msg) (Char.of_int_exn n);
+  Bytes.set burst (Control.Reg.midi_go - Control.Reg.midi_msg) '\x01';
+  check (Control_transport.write t ~address:Control.Reg.midi_msg ~data:burst);
   wait_clear ()
 ;;
 

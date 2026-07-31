@@ -42,39 +42,35 @@ module Status : sig
   val to_string : t -> string
 end
 
+(** The control registers. They are the local storage of the control unit, thus one byte
+    of address names each one. *)
 module Reg : sig
-  (** The control registers, at [0xFFF0] to [0xFFFF]. They are the local storage of the
-      control unit, and not a window into a larger memory. Cells with a fixed nature sit
-      at the top. MIDI_MSG, the one payload with a variable nature, sits at the low edge
-      so it can grow with no change to the other addresses. *)
-  module Ctl : sig
-    val base : int
-    val size : int
+  val base : int
+  val size : int
 
-    (** Bit 0 holds the run state; the board button also toggles it. *)
-    val run : int
+  (** Bit 0 holds the run state; the board button also toggles it. *)
+  val run : int
 
-    val channel : int
+  val channel : int
 
-    (** 2 bytes, little-endian. *)
-    val step_ms : int
+  (** 2 bytes, little-endian. *)
+  val step_ms : int
 
-    (** 2 bytes, little-endian. *)
-    val gate_ms : int
+  (** 2 bytes, little-endian. *)
+  val gate_ms : int
 
-    val velocity : int
+  val velocity : int
 
-    (** 4 bytes, little-endian; the PRNG loads at the end of a write that covers it. *)
-    val seed : int
+  (** 4 bytes, little-endian; the PRNG loads at the end of a write that covers it. *)
+  val seed : int
 
-    (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
-    val msg_go : int
+  (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
+  val midi_go : int
 
-    val msg_len : int
+  val midi_len : int
 
-    (** 3 bytes, at the growth edge of the section. *)
-    val msg : int
-  end
+  (** 3 bytes. *)
+  val midi_msg : int
 end
 
 (** The power-on values of the control cells. *)

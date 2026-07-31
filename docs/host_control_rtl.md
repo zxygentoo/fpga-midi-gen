@@ -79,7 +79,7 @@ second source of MIDI messages.
 `Regfile` goes away. No other block needs it, because a control cell is not
 a memory location.
 
-`cell_bits` is `address_bits_for Control.Reg.Ctl.size`, which is 4. A cell
+`cell_bits` is `address_bits_for Control.Reg.size`, which is 4. A cell
 address is an index into the control section, and not a full address.
 `Control_port` owns the address map, because it must give STATUS `02` for
 an address outside the range.
@@ -452,10 +452,10 @@ are `read_data` in `I` against `read_address` in `O`, and `write_data` in
 These three rules of `docs/host_control.md` change.
 
 1. The SEED rule. The PRNG loads the seed at the end of a write that covers
-   a SEED cell. The old rule was a load on the write of address `0xFFF8`,
-   the last seed byte, and the atomic commit deletes that event, because
-   the burst commits one time. The design has no PRNG, thus no block obeys
-   this rule yet, as no block obeys the old one today.
+   a SEED cell. The old rule was a load on the write of the last seed byte,
+   and the atomic commit deletes that event, because the burst commits one
+   time. The design has no PRNG, thus no block obeys this rule yet, as no
+   block obeys the old one today.
 2. The tearing rule. A write no longer tears a value of more than one byte.
    `Control_port` loses the note that tells a consumer to sample the cells
    only in the `Ready` state.

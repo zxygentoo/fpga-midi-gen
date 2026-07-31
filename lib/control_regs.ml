@@ -14,7 +14,7 @@ module Params = struct
   [@@deriving hardcaml]
 end
 
-let size = Control.Reg.Ctl.size
+let size = Control.Reg.size
 let cell_bits = address_bits_for size
 
 module I = struct
@@ -42,20 +42,20 @@ module O = struct
 end
 
 (* the cell index of an address in the control section *)
-let cell address = address - Control.Reg.Ctl.base
+let cell address = address - Control.Reg.base
 
 (* Each field of the control section: the cell of its first byte, the width in bytes, and
    the power-on value. The views and the defaults both come from this one table. *)
 let fields =
-  [ cell Control.Reg.Ctl.run, 1, 0
-  ; cell Control.Reg.Ctl.channel, 1, Control.Default.channel
-  ; cell Control.Reg.Ctl.step_ms, 2, Control.Default.step_ms
-  ; cell Control.Reg.Ctl.gate_ms, 2, Control.Default.gate_ms
-  ; cell Control.Reg.Ctl.velocity, 1, Control.Default.velocity
-  ; cell Control.Reg.Ctl.seed, 4, Control.Default.seed
-  ; cell Control.Reg.Ctl.msg, Midi.max_message_bytes, 0
-  ; cell Control.Reg.Ctl.msg_len, 1, 0
-  ; cell Control.Reg.Ctl.msg_go, 1, 0
+  [ cell Control.Reg.run, 1, 0
+  ; cell Control.Reg.channel, 1, Control.Default.channel
+  ; cell Control.Reg.step_ms, 2, Control.Default.step_ms
+  ; cell Control.Reg.gate_ms, 2, Control.Default.gate_ms
+  ; cell Control.Reg.velocity, 1, Control.Default.velocity
+  ; cell Control.Reg.seed, 4, Control.Default.seed
+  ; cell Control.Reg.midi_msg, Midi.max_message_bytes, 0
+  ; cell Control.Reg.midi_len, 1, 0
+  ; cell Control.Reg.midi_go, 1, 0
   ]
 ;;
 
@@ -85,10 +85,10 @@ let defaults =
     Option.value ~default:0 (List.Assoc.find bytes k ~equal:Int.equal))
 ;;
 
-let msg_cell = cell Control.Reg.Ctl.msg
-let len_cell = cell Control.Reg.Ctl.msg_len
-let go_cell = cell Control.Reg.Ctl.msg_go
-let run_cell = cell Control.Reg.Ctl.run
+let msg_cell = cell Control.Reg.midi_msg
+let len_cell = cell Control.Reg.midi_len
+let go_cell = cell Control.Reg.midi_go
+let run_cell = cell Control.Reg.run
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -163,12 +163,12 @@ let create (i : _ I.t) : _ O.t =
     concat_lsb (List.init (width_of address) ~f:(fun k -> live.(cell address + k).value))
   in
   { O.params =
-      { Params.run = view Control.Reg.Ctl.run
-      ; channel = view Control.Reg.Ctl.channel
-      ; step_ms = view Control.Reg.Ctl.step_ms
-      ; gate_ms = view Control.Reg.Ctl.gate_ms
-      ; velocity = view Control.Reg.Ctl.velocity
-      ; seed = view Control.Reg.Ctl.seed
+      { Params.run = view Control.Reg.run
+      ; channel = view Control.Reg.channel
+      ; step_ms = view Control.Reg.step_ms
+      ; gate_ms = view Control.Reg.gate_ms
+      ; velocity = view Control.Reg.velocity
+      ; seed = view Control.Reg.seed
       }
       (* MIDI_GO gives the pending flag; each other cell gives its stored byte *)
   ; read_data =
@@ -218,7 +218,7 @@ let%expect_test "the defaults need no init walk" =
   let sim, inp, _out, dump, burst = harness () in
   (* the first cycle: the cells are already correct, with no walk and no clear *)
   Stdio.printf "power-on   %s\n" (Bytes_util.hex (dump ()));
-  burst Control.Reg.Ctl.velocity [ 0x30 ];
+  burst Control.Reg.velocity [ 0x30 ];
   Stdio.printf "after write %s\n" (Bytes_util.hex (dump ()));
   inp.clear := Bits.vdd;
   Cyclesim.cycle sim;
@@ -249,9 +249,9 @@ let%expect_test "the write is atomic" =
     inp.write_data := Bits.of_unsigned_int ~width:8 b;
     Cyclesim.cycle sim
   in
-  write (cell Control.Reg.Ctl.step_ms) 0x11;
+  write (cell Control.Reg.step_ms) 0x11;
   show "byte 0 written";
-  write (cell Control.Reg.Ctl.step_ms + 1) 0x22;
+  write (cell Control.Reg.step_ms + 1) 0x22;
   show "byte 1 written";
   inp.write_enable := Bits.gnd;
   inp.commit := Bits.vdd;
@@ -285,7 +285,7 @@ let%expect_test "the RUN toggle" =
   show "one push";
   toggle ();
   show "two pushes";
-  burst Control.Reg.Ctl.run [ 0x01 ];
+  burst Control.Reg.run [ 0x01 ];
   show "the host writes 1";
   toggle ();
   show "and one push";
@@ -302,8 +302,7 @@ let%expect_test "the RUN toggle" =
 let%expect_test "the doorbell" =
   let sim, inp, out, _dump, burst = harness () in
   let show tag =
-    inp.read_address
-    := Bits.of_unsigned_int ~width:cell_bits (cell Control.Reg.Ctl.msg_go);
+    inp.read_address := Bits.of_unsigned_int ~width:cell_bits (cell Control.Reg.midi_go);
     Cyclesim.cycle sim;
     Stdio.printf
       "%-22s MIDI_GO %d | valid %b data %06x len %d\n"
@@ -320,24 +319,24 @@ let%expect_test "the doorbell" =
     Cyclesim.cycle sim
   in
   (* one ascending burst does the whole operation: MIDI_MSG, MIDI_LEN, MIDI_GO *)
-  burst Control.Reg.Ctl.msg [ 0x92; 0x3C; 0x64; 0x03; 0x01 ];
+  burst Control.Reg.midi_msg [ 0x92; 0x3C; 0x64; 0x03; 0x01 ];
   show "after the ring";
   take ();
   show "after the transfer";
   (* the send bit is bit 0 alone *)
-  burst Control.Reg.Ctl.msg_go [ 0x00 ];
+  burst Control.Reg.midi_go [ 0x00 ];
   show "go byte 00";
-  burst Control.Reg.Ctl.msg_go [ 0x02 ];
+  burst Control.Reg.midi_go [ 0x02 ];
   show "go byte 02";
   (* MIDI_LEN outside 1 to 3 *)
-  burst Control.Reg.Ctl.msg_len [ 0x00; 0x01 ];
+  burst Control.Reg.midi_len [ 0x00; 0x01 ];
   show "len 0";
-  burst Control.Reg.Ctl.msg_len [ 0x04; 0x01 ];
+  burst Control.Reg.midi_len [ 0x04; 0x01 ];
   show "len 4";
   (* a ring while a message waits is ignored, and the first message holds *)
-  burst Control.Reg.Ctl.msg [ 0xB2; 0x4A; 0x00; 0x02; 0x01 ];
+  burst Control.Reg.midi_msg [ 0xB2; 0x4A; 0x00; 0x02; 0x01 ];
   show "a good ring";
-  burst Control.Reg.Ctl.msg [ 0xF8; 0x00; 0x00; 0x01; 0x01 ];
+  burst Control.Reg.midi_msg [ 0xF8; 0x00; 0x00; 0x01; 0x01 ];
   show "a ring while pending";
   take ();
   show "after the transfer";
@@ -370,8 +369,8 @@ let%expect_test "the waveform of the atomic commit" =
     inp.write_data := Bits.of_unsigned_int ~width:8 b;
     Cyclesim.cycle sim
   in
-  write (cell Control.Reg.Ctl.step_ms) 0x11;
-  write (cell Control.Reg.Ctl.step_ms + 1) 0x22;
+  write (cell Control.Reg.step_ms) 0x11;
+  write (cell Control.Reg.step_ms + 1) 0x22;
   inp.write_enable := Bits.gnd;
   inp.commit := Bits.vdd;
   Cyclesim.cycle sim;
