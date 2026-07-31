@@ -35,7 +35,7 @@ Control cells:
 | `0xFFFA`–`0xFFFB` | GATE_MS | gate time in ms | 125 |
 | `0xFFF9` | VELOCITY | note velocity, 1 to 127 | 100 |
 | `0xFFF5`–`0xFFF8` | SEED | PRNG seed, 32 bits, not 0 | see `lib/abi.ml` |
-| `0xFFF4` | MSG_GO | write: send the test message. Read: 1 while a message waits | 0 |
+| `0xFFF4` | MSG_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
 | `0xFFF3` | MSG_LEN | length of the test message, 1 to 3 | 0 |
 | `0xFFF0`–`0xFFF2` | MSG | the test message bytes | 0 |
 
@@ -56,11 +56,15 @@ Semantics:
   seed byte. Thus one ascending write of the four seed bytes loads the
   PRNG one time, at the end.
 - The MSG cells are the test-message doorbell. The host writes MSG and
-  MSG_LEN, then writes MSG_GO. The FPGA sends the message to the MIDI
-  output. The FPGA ignores a write to MSG_GO while a message waits; the
-  driver must read MSG_GO as 0 first. Because a write applies its bytes in
-  the sequence of increasing addresses, one write of 5 bytes at `0xFFF0`
-  does the complete operation: the payload, the length, and the send.
+  MSG_LEN, then writes a value with bit 0 = 1 to MSG_GO. The FPGA sends the
+  message to the MIDI output. A write with bit 0 = 0 does not send. Because
+  a write applies its bytes in the sequence of increasing addresses, one
+  write of 5 bytes at `0xFFF0` does the complete operation: the payload,
+  the length, and the send.
+- The FPGA ignores the send bit while a message waits, and also when
+  MSG_LEN is not 1 to 3. The driver must read MSG_GO as 0 before a write
+  that covers a cell of MSG, MSG_LEN or MSG_GO. This rule keeps each test
+  message complete on the MIDI output.
 
 The MIDI output:
 

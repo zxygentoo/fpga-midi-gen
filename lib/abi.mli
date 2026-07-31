@@ -10,6 +10,9 @@ module Limits : sig
 
   (** The maximum encoded frame on the wire; the FPGA discards a longer frame. *)
   val max_frame_wire_bytes : int
+
+  (** The maximum bytes in one test message: the width of the MSG cells. *)
+  val max_msg_len : int
 end
 
 module Op : sig
@@ -55,7 +58,7 @@ module Reg : sig
     (** 4 bytes, little-endian; the PRNG loads on a write to the last byte. *)
     val seed : int
 
-    (** A write sends the test message; a read is 1 while a message waits. *)
+    (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
     val msg_go : int
 
     val msg_len : int

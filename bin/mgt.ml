@@ -1,7 +1,7 @@
 (* mgt, the MIDI gen tool: reads and writes the control cells over the console UART.
 
-   mgt [--device PATH] read ADDR LEN mgt [--device PATH] write ADDR BYTE.. poke
-   [--device PATH] dump
+   mgt [--device PATH] read ADDR LEN mgt [--device PATH] write ADDR BYTE.. mgt
+   [--device PATH] doorbell BYTE.. mgt [--device PATH] dump
 
    ADDR and BYTE take the OCaml integer syntax: 0xFFF9 or 65529. The device default is
    /dev/ttyUSB1, the Nexys 4 console UART. *)
@@ -14,7 +14,9 @@ let default_device = "/dev/ttyUSB1"
 let baud = 115200
 
 let usage () : 'a =
-  prerr_endline "usage: mgt [--device PATH] (read ADDR LEN | write ADDR BYTE.. | dump)";
+  prerr_endline
+    "usage: mgt [--device PATH] (read ADDR LEN | write ADDR BYTE.. | doorbell BYTE.. | \
+     dump)";
   exit 2
 ;;
 
@@ -75,7 +77,7 @@ let dump t =
       ; "seed", Abi.Reg.Ctl.seed, 4
       ; "msg_go", Abi.Reg.Ctl.msg_go, 1
       ; "msg_len", Abi.Reg.Ctl.msg_len, 1
-      ; "msg", Abi.Reg.Ctl.msg, 3
+      ; "msg", Abi.Reg.Ctl.msg, Abi.Limits.max_msg_len
       ]
   in
   List.iter
@@ -90,6 +92,38 @@ let dump t =
       in
       Printf.printf "%04x  %-8s  %d (0x%x)\n" address name value value)
     fields
+;;
+
+(* the doorbell: poll MSG_GO to 0, ring with one ascending burst, poll to 0 again as the
+   confirmation that the send ran. The poll before the ring is the ABI rule; the poll
+   after it bounds the exit at "the message went out". *)
+let doorbell t bytes =
+  let n = List.length bytes in
+  if n < 1 || n > Abi.Limits.max_msg_len then usage ();
+  let msg_go_clear () =
+    let b = check (Control_transport.read t ~address:Abi.Reg.Ctl.msg_go ~length:1) in
+    Char.to_int (Bytes.get b 0) = 0
+  in
+  let wait_clear () =
+    (* one poll is about 1 ms of wire time, and a message takes at most 1 ms *)
+    let rec wait tries =
+      if not (msg_go_clear ())
+      then
+        if tries = 0
+        then (
+          prerr_endline "a message waits and does not go out";
+          exit 1)
+        else wait (tries - 1)
+    in
+    wait 100
+  in
+  wait_clear ();
+  let burst = Bytes.make (Abi.Reg.Ctl.msg_go - Abi.Reg.Ctl.msg + 1) '\x00' in
+  List.iteri bytes ~f:(fun k b -> Bytes.set burst k (Char.of_int_exn b));
+  Bytes.set burst (Abi.Reg.Ctl.msg_len - Abi.Reg.Ctl.msg) (Char.of_int_exn n);
+  Bytes.set burst (Abi.Reg.Ctl.msg_go - Abi.Reg.Ctl.msg) '\x01';
+  check (Control_transport.write t ~address:Abi.Reg.Ctl.msg ~data:burst);
+  wait_clear ()
 ;;
 
 let () =
@@ -114,6 +148,8 @@ let () =
            (List.map bytes ~f:(fun b -> Char.of_int_exn (int_arg b land 0xff))))
     in
     check (Control_transport.write t ~address:(int_arg address) ~data)
+  | "doorbell" :: (_ :: _ as bytes) ->
+    doorbell t (List.map bytes ~f:(fun b -> int_arg b land 0xff))
   | [ "dump" ] -> dump t
   | _ -> usage ()
 ;;

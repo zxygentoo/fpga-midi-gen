@@ -9,6 +9,7 @@ module I = struct
     ; in_data : 'a [@bits 8]
     ; in_valid : 'a
     ; hold : 'a
+    ; midi_hold : 'a
     }
   [@@deriving hardcaml]
 end
@@ -17,6 +18,8 @@ module O = struct
   type 'a t =
     { out_data : 'a [@bits 8]
     ; out_valid : 'a
+    ; midi_data : 'a [@bits 8]
+    ; midi_valid : 'a
     ; state : 'a [@bits 2]
     }
   [@@deriving hardcaml]
@@ -69,6 +72,16 @@ let buffer_size = 1 lsl buffer_address_bits
 let () = assert (Abi.Reg.Ctl.base % Abi.Reg.Ctl.size = 0)
 let cell_bits = address_bits_for Abi.Reg.Ctl.size
 
+(* the doorbell cells, as indices into the control section. The read override and the
+   write decode build in this layout: MSG at the bottom, then MSG_LEN, then MSG_GO. *)
+let msg_cell = Abi.Reg.Ctl.msg - Abi.Reg.Ctl.base
+let len_cell = Abi.Reg.Ctl.msg_len - Abi.Reg.Ctl.base
+let go_cell = Abi.Reg.Ctl.msg_go - Abi.Reg.Ctl.base
+
+let () =
+  assert (msg_cell = 0 && len_cell = Abi.Limits.max_msg_len && go_cell = len_cell + 1)
+;;
+
 module Ctl_regfile = Regfile.Make (struct
     let size = Abi.Reg.Ctl.size
   end)
@@ -88,6 +101,24 @@ module Fsm = struct
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
+(* the sender: one state for each byte of the test message, [Idle] when no message waits.
+   The port registers of the doorbell cells are the one storage of the message: each
+   [Byte_k] state offers the live MSG cell [k] on the message stream, and its exit
+   compares the live MSG_LEN. The trigger is the [Idle] arm alone, thus a ring while a
+   message waits has no arm to fire in — the ignore rule of the ABI is the shape of the
+   machine — and [Byte_2] always ends, thus the send is bounded for every cell content. *)
+module Send_fsm = struct
+  type t =
+    | Idle (** no message waits; the [Idle] arm holds the trigger *)
+    | Byte_0
+    | Byte_1
+    | Byte_2
+  [@@deriving compare ~localize, enumerate, sexp_of]
+end
+
+(* one [Byte_] state for each MSG cell *)
+let () = assert (Abi.Limits.max_msg_len = 3)
+
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
@@ -102,10 +133,23 @@ let create (i : _ I.t) : _ O.t =
   let init_index = Variable.reg spec ~width:cell_bits in
   let write_enable = Variable.wire ~default:gnd () in
   let frame_start = Variable.wire ~default:gnd () in
-  (* the names put the machine and the write strobe into the waveform tests; the port
-     already owns the name [state], thus the machine shows as [fsm] *)
+  let send = State_machine.create (module Send_fsm) spec in
+  let midi_byte = Variable.wire ~default:(zero 8) () in
+  let pending = ~:(send.is Idle) in
+  (* the doorbell cells are port registers: the sender and the response path read them at
+     independent times, and the register file has one address port. These registers are
+     the one storage of the cells; the regfile copies of cells 0 to [go_cell] are written
+     by the uniform walks but never read. *)
+  let msg_store =
+    Array.init Abi.Limits.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
+  in
+  let len_store = Variable.reg spec ~width:8 in
+  (* the names put the machines and the write strobe into the waveform tests; the port
+     already owns the name [state], thus the main machine shows as [fsm] *)
   let _ = sm.current -- "fsm" in
+  let _ = send.current -- "send_fsm" in
   let _ = write_enable.value -- "write_enable" in
+  let _ = pending -- "msg_pending" in
   (* the header fields, as views of the header registers. The registers hold through the
      whole transaction: [capture] is gated on [Receive], and the op echo of
      [response_byte] already depends on this *)
@@ -176,12 +220,28 @@ let create (i : _ I.t) : _ O.t =
       ; write_data = cell_write_data
       }
   in
+  let msg_length = len_store.value in
+  (* the doorbell cells and MSG_GO answer from the port registers; the plain cells answer
+     from the register file *)
+  let cell_read =
+    mux2
+      (response_cell <=:. go_cell)
+      (mux
+         response_cell
+         [ msg_store.(0).value
+         ; msg_store.(1).value
+         ; msg_store.(2).value
+         ; len_store.value
+         ; uresize pending ~width:8
+         ])
+      regfile.read_data
+  in
   (* response byte [j]: the op echo, the status, then the cells *)
   let response_byte j =
     mux2
       (j ==:. 0)
       (op |: of_unsigned_int ~width:8 0x80)
-      (mux2 (j ==:. 1) status.value regfile.read_data)
+      (mux2 (j ==:. 1) status.value cell_read)
   in
   assign response_data (reg spec (response_byte encoder.address));
   (* the range check, in 17 bits so the top of the space cannot wrap *)
@@ -272,9 +332,55 @@ let create (i : _ I.t) : _ O.t =
         ; Respond, [ frame_start <-- vdd; sm.set_next Sending ]
         ; Sending, [ when_ ~:(encoder.busy) [ sm.set_next Receive ] ]
         ]
+      (* the write decode of the doorbell cells: the same walks that fill the regfile —
+         the [Init] defaults and the [Apply] bytes — fill the port registers *)
+    ; when_
+        write_enable.value
+        [ proc
+            (List.init Abi.Limits.max_msg_len ~f:(fun k ->
+               when_
+                 (cell_address ==:. msg_cell + k)
+                 [ msg_store.(k) <-- cell_write_data ]))
+        ; when_ (cell_address ==:. len_cell) [ len_store <-- cell_write_data ]
+        ]
+    ; send.switch
+        [ ( Idle
+          , [ (* the ring: an [Apply] write of a value with bit 0 = 1 to MSG_GO, with a
+                 length in range. The ascending write order has already put MSG and
+                 MSG_LEN of the same burst into the cells. *)
+              when_
+                (sm.is Apply
+                 &: (cell_address ==:. go_cell)
+                 &: lsb cell_write_data
+                 &: (msg_length >=:. 1)
+                 &: (msg_length <=:. Abi.Limits.max_msg_len))
+                [ send.set_next Byte_0 ]
+            ] )
+          (* each [Byte_k]: offer the cell; the transmitter takes it when [midi_hold] is 0 *)
+        ; ( Byte_0
+          , [ midi_byte <-- msg_store.(0).value
+            ; when_
+                ~:(i.midi_hold)
+                [ if_ (msg_length ==:. 1) [ send.set_next Idle ] [ send.set_next Byte_1 ]
+                ]
+            ] )
+        ; ( Byte_1
+          , [ midi_byte <-- msg_store.(1).value
+            ; when_
+                ~:(i.midi_hold)
+                [ if_ (msg_length ==:. 2) [ send.set_next Idle ] [ send.set_next Byte_2 ]
+                ]
+            ] )
+        ; ( Byte_2
+          , [ midi_byte <-- msg_store.(2).value
+            ; when_ ~:(i.midi_hold) [ send.set_next Idle ]
+            ] )
+        ]
     ];
   { O.out_data = encoder.data
   ; out_valid = encoder.valid
+  ; midi_data = midi_byte.value
+  ; midi_valid = pending
   ; state =
       mux2
         (sm.is Init)
@@ -361,13 +467,26 @@ let%expect_test "transactions against the register file" =
   [%expect {| op 2 status ok |}];
   transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.velocity; len = 1 }));
   [%expect {| op 1 status ok data 30 |}];
-  (* the one-shot doorbell write: MSG, MSG_LEN, MSG_GO ascending *)
+  (* the one-shot doorbell write: MSG, MSG_LEN, MSG_GO ascending. [midi_hold] is 0, thus
+     the doorbell within sends at once, and the read shows MSG_GO back at 0 *)
   transact
     (Abi.encode_request
        (Write { addr = Abi.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
   [%expect {| op 2 status ok |}];
   transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg; len = 5 }));
-  [%expect {| op 1 status ok data 92 3c 64 03 01 |}];
+  [%expect {| op 1 status ok data 92 3c 64 03 00 |}];
+  (* a ring against a stalled transmitter: MSG_GO reads the wait state, and 0 again after
+     the release *)
+  inp.midi_hold := Bits.vdd;
+  transact
+    (Abi.encode_request
+       (Write { addr = Abi.Reg.Ctl.msg_go; data = Bytes.of_string "\x01" }));
+  [%expect {| op 2 status ok |}];
+  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
+  [%expect {| op 1 status ok data 01 |}];
+  inp.midi_hold := Bits.gnd;
+  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
+  [%expect {| op 1 status ok data 00 |}];
   (* errors *)
   transact (Abi.encode_request (Read { addr = 0x0000; len = 1 }));
   [%expect {| op 1 status bad-address |}];

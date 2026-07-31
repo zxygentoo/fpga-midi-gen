@@ -3,6 +3,7 @@ open Base
 module Limits = struct
   let max_data_len = 32
   let max_frame_wire_bytes = 64
+  let max_msg_len = 3
 end
 
 module Op = struct
