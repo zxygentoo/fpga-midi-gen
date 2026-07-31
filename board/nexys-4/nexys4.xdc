@@ -5,6 +5,13 @@
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 
+# QSPI boot: the flash is quad-wide, 33 MHz is a safe config clock for the S25FL128S,
+# and the compression makes both the flash image and the boot much smaller.
+set_property CONFIG_MODE SPIx4 [current_design]
+set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
+set_property BITSTREAM.CONFIG.CONFIGRATE 33 [current_design]
+set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
+
 # Clock: 100 MHz
 set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports clk]
 create_clock -period 10.000 -name clk [get_ports clk]
