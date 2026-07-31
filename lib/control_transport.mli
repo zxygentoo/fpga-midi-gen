@@ -1,4 +1,4 @@
-(** The host side of the ABI: transactions with the control port.
+(** The driver side of the host control: transactions with the control port.
 
     A [t] is the transport: it carries request frames to the control port and response
     frames back. [serial] makes the transport over an open serial port; the tests inside
@@ -14,7 +14,7 @@ type t
 type error =
   | Garbled
   (** the response does not decode or does not answer the request; run the command again *)
-  | Nak of Abi.Status.t (** the port rejected the access; no cell changed *)
+  | Nak of Control.Status.t (** the port rejected the access; no cell changed *)
 
 (** [serial ~baud fd] is the transport over an open serial port: raw 8N1 at [baud] and a
     blocking read. The caller opens [fd] and owns its lifetime. *)

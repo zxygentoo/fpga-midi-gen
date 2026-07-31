@@ -1,8 +1,8 @@
-(** The ABI between the host drivers and the FPGA.
+(** The host control: the contract between the host drivers and the FPGA.
 
-    This module is the single definition of the ABI constants and of the wire-frame codec.
-    The drivers use it directly. The RTL reads the constants at elaboration time. The
-    normative description is [docs/abi.md]. *)
+    This module is the single definition of the host-control constants and of the
+    wire-frame codec. The drivers use it directly. The RTL reads the constants at
+    elaboration time. The normative description is [docs/host_control.md]. *)
 
 module Limits : sig
   (** The maximum data bytes in one read or write. *)

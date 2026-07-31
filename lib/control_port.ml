@@ -38,16 +38,17 @@ module State = struct
   ;;
 end
 
-(* The power-on values of the control cells, from the ABI constants. The port writes them
-   into the register file in the init state. A field is (address, width, value);
-   multi-byte values take the little-endian order of the ABI. A cell of no field is 0. *)
+(* The power-on values of the control cells, from the host-control constants. The port
+   writes them into the register file in the init state. A field is (address, width,
+   value); multi-byte values take the little-endian order of the host control. A cell of
+   no field is 0. *)
 let defaults =
   let fields =
-    [ Abi.Reg.Ctl.channel, 1, Abi.Default.channel
-    ; Abi.Reg.Ctl.step_ms, 2, Abi.Default.step_ms
-    ; Abi.Reg.Ctl.gate_ms, 2, Abi.Default.gate_ms
-    ; Abi.Reg.Ctl.velocity, 1, Abi.Default.velocity
-    ; Abi.Reg.Ctl.seed, 4, Abi.Default.seed
+    [ Control.Reg.Ctl.channel, 1, Control.Default.channel
+    ; Control.Reg.Ctl.step_ms, 2, Control.Default.step_ms
+    ; Control.Reg.Ctl.gate_ms, 2, Control.Default.gate_ms
+    ; Control.Reg.Ctl.velocity, 1, Control.Default.velocity
+    ; Control.Reg.Ctl.seed, 4, Control.Default.seed
     ]
   in
   let bytes =
@@ -56,34 +57,34 @@ let defaults =
         List.init width ~f:(fun k -> address + k, (value lsr (8 * k)) land 0xff))
       fields
   in
-  List.init Abi.Reg.Ctl.size ~f:(fun k ->
+  List.init Control.Reg.Ctl.size ~f:(fun k ->
     Option.value
       ~default:0
-      (List.Assoc.find bytes (Abi.Reg.Ctl.base + k) ~equal:Int.equal))
+      (List.Assoc.find bytes (Control.Reg.Ctl.base + k) ~equal:Int.equal))
 ;;
 
 (* payload capacity: the header plus the largest write burst; the buffer size and its
    address width follow *)
-let max_payload = 4 + Abi.Limits.max_data_len
+let max_payload = 4 + Control.Limits.max_data_len
 let buffer_address_bits = address_bits_for (max_payload + 1)
 let buffer_size = 1 lsl buffer_address_bits
 
-(* the low bits of an ABI address select the cell: the base must be aligned *)
-let () = assert (Abi.Reg.Ctl.base % Abi.Reg.Ctl.size = 0)
-let cell_bits = address_bits_for Abi.Reg.Ctl.size
+(* the low bits of a control address select the cell: the base must be aligned *)
+let () = assert (Control.Reg.Ctl.base % Control.Reg.Ctl.size = 0)
+let cell_bits = address_bits_for Control.Reg.Ctl.size
 
 (* the doorbell cells, as indices into the control section. The read override and the
    write decode build in this layout: MSG at the bottom, then MSG_LEN, then MSG_GO. *)
-let msg_cell = Abi.Reg.Ctl.msg - Abi.Reg.Ctl.base
-let len_cell = Abi.Reg.Ctl.msg_len - Abi.Reg.Ctl.base
-let go_cell = Abi.Reg.Ctl.msg_go - Abi.Reg.Ctl.base
+let msg_cell = Control.Reg.Ctl.msg - Control.Reg.Ctl.base
+let len_cell = Control.Reg.Ctl.msg_len - Control.Reg.Ctl.base
+let go_cell = Control.Reg.Ctl.msg_go - Control.Reg.Ctl.base
 
 let () =
-  assert (msg_cell = 0 && len_cell = Abi.Limits.max_msg_len && go_cell = len_cell + 1)
+  assert (msg_cell = 0 && len_cell = Control.Limits.max_msg_len && go_cell = len_cell + 1)
 ;;
 
 module Ctl_regfile = Regfile.Make (struct
-    let size = Abi.Reg.Ctl.size
+    let size = Control.Reg.Ctl.size
   end)
 
 (* one transaction at a time: Receive buffers a frame, Parse judges it, Apply writes the
@@ -105,8 +106,9 @@ end
    The port registers of the doorbell cells are the one storage of the message: each
    [Byte_k] state offers the live MSG cell [k] on the message stream, and its exit
    compares the live MSG_LEN. The trigger is the [Idle] arm alone, thus a ring while a
-   message waits has no arm to fire in — the ignore rule of the ABI is the shape of the
-   machine — and [Byte_2] always ends, thus the send is bounded for every cell content. *)
+   message waits has no arm to fire in — the ignore rule of the host control is the shape
+   of the machine — and [Byte_2] always ends, thus the send is bounded for every cell
+   content. *)
 module Send_fsm = struct
   type t =
     | Idle (** no message waits; the [Idle] arm holds the trigger *)
@@ -117,7 +119,7 @@ module Send_fsm = struct
 end
 
 (* one [Byte_] state for each MSG cell *)
-let () = assert (Abi.Limits.max_msg_len = 3)
+let () = assert (Control.Limits.max_msg_len = 3)
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -141,7 +143,7 @@ let create (i : _ I.t) : _ O.t =
      the one storage of the cells; the regfile copies of cells 0 to [go_cell] are written
      by the uniform walks but never read. *)
   let msg_store =
-    Array.init Abi.Limits.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
+    Array.init Control.Limits.max_msg_len ~f:(fun _ -> Variable.reg spec ~width:8)
   in
   let len_store = Variable.reg spec ~width:8 in
   (* the names put the machines and the write strobe into the waveform tests; the port
@@ -248,12 +250,14 @@ let create (i : _ I.t) : _ O.t =
   let range_end = uresize header_address ~width:17 +: uresize header_length ~width:17 in
   let address_ok =
     header_address
-    >=:. Abi.Reg.Ctl.base
-    &: (range_end <=:. Abi.Reg.Ctl.base + Abi.Reg.Ctl.size)
+    >=:. Control.Reg.Ctl.base
+    &: (range_end <=:. Control.Reg.Ctl.base + Control.Reg.Ctl.size)
   in
-  let length_ok = header_length >=:. 1 &: (header_length <=:. Abi.Limits.max_data_len) in
-  let is_read = op ==:. Abi.Op.read in
-  let is_write = op ==:. Abi.Op.write in
+  let length_ok =
+    header_length >=:. 1 &: (header_length <=:. Control.Limits.max_data_len)
+  in
+  let is_read = op ==:. Control.Op.read in
+  let is_write = op ==:. Control.Op.write in
   (* a frame with the wrong shape gets no response *)
   let structural_ok =
     mux2
@@ -263,7 +267,7 @@ let create (i : _ I.t) : _ O.t =
   in
   let reset_frame = proc [ capture_index <--. 0; drop <-- gnd ] in
   let respond_with code =
-    proc [ status <--. Abi.Status.to_code code; sm.set_next Respond ]
+    proc [ status <--. Control.Status.to_code code; sm.set_next Respond ]
   in
   compile
     [ sm.switch
@@ -271,7 +275,9 @@ let create (i : _ I.t) : _ O.t =
           , [ (* one default each cycle; the cells are not valid before the end *)
               write_enable <-- vdd
             ; init_index <-- init_index.value +:. 1
-            ; when_ (init_index.value ==:. Abi.Reg.Ctl.size - 1) [ sm.set_next Receive ]
+            ; when_
+                (init_index.value ==:. Control.Reg.Ctl.size - 1)
+                [ sm.set_next Receive ]
             ] )
         ; ( Receive
           , [ when_
@@ -299,7 +305,7 @@ let create (i : _ I.t) : _ O.t =
             ; if_
                 ~:structural_ok
                 [ sm.set_next Receive ]
-                [ status <--. Abi.Status.to_code Abi.Status.Ok
+                [ status <--. Control.Status.to_code Control.Status.Ok
                 ; response_length <--. 2
                 ; if_
                     ~:length_ok
@@ -337,7 +343,7 @@ let create (i : _ I.t) : _ O.t =
     ; when_
         write_enable.value
         [ proc
-            (List.init Abi.Limits.max_msg_len ~f:(fun k ->
+            (List.init Control.Limits.max_msg_len ~f:(fun k ->
                when_
                  (cell_address ==:. msg_cell + k)
                  [ msg_store.(k) <-- cell_write_data ]))
@@ -353,7 +359,7 @@ let create (i : _ I.t) : _ O.t =
                  &: (cell_address ==:. go_cell)
                  &: lsb cell_write_data
                  &: (msg_length >=:. 1)
-                 &: (msg_length <=:. Abi.Limits.max_msg_len))
+                 &: (msg_length <=:. Control.Limits.max_msg_len))
                 [ send.set_next Byte_0 ]
             ] )
           (* each [Byte_k]: offer the cell; the transmitter takes it when [midi_hold] is 0 *)
@@ -438,7 +444,7 @@ let%expect_test "transactions against the register file" =
     if Buffer.length response = 0
     then Stdio.print_endline "no response"
     else (
-      match Abi.decode_response (Buffer.contents_bytes response) with
+      match Control.decode_response (Buffer.contents_bytes response) with
       | Error e -> Stdio.printf "bad response: %s\n" e
       | Ok { op; status; data } ->
         let hex =
@@ -451,44 +457,47 @@ let%expect_test "transactions against the register file" =
           "op %d status %s%s\n"
           op
           (match status with
-           | Abi.Status.Ok -> "ok"
+           | Control.Status.Ok -> "ok"
            | Bad_op -> "bad-op"
            | Bad_address -> "bad-address"
            | Bad_length -> "bad-length")
           (if String.length hex = 0 then "" else " data " ^ hex))
   in
   (* the register file has its defaults at power-on *)
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.base; len = Abi.Reg.Ctl.size }));
+  transact
+    (Control.encode_request
+       (Read { addr = Control.Reg.Ctl.base; len = Control.Reg.Ctl.size }));
   [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
   (* write, then read back *)
   transact
-    (Abi.encode_request
-       (Write { addr = Abi.Reg.Ctl.velocity; data = Bytes.of_string "\x30" }));
+    (Control.encode_request
+       (Write { addr = Control.Reg.Ctl.velocity; data = Bytes.of_string "\x30" }));
   [%expect {| op 2 status ok |}];
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.velocity; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.velocity; len = 1 }));
   [%expect {| op 1 status ok data 30 |}];
   (* the one-shot doorbell write: MSG, MSG_LEN, MSG_GO ascending. [midi_hold] is 0, thus
      the doorbell within sends at once, and the read shows MSG_GO back at 0 *)
   transact
-    (Abi.encode_request
-       (Write { addr = Abi.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
+    (Control.encode_request
+       (Write
+          { addr = Control.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
   [%expect {| op 2 status ok |}];
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg; len = 5 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg; len = 5 }));
   [%expect {| op 1 status ok data 92 3c 64 03 00 |}];
   (* a ring against a stalled transmitter: MSG_GO reads the wait state, and 0 again after
      the release *)
   inp.midi_hold := Bits.vdd;
   transact
-    (Abi.encode_request
-       (Write { addr = Abi.Reg.Ctl.msg_go; data = Bytes.of_string "\x01" }));
+    (Control.encode_request
+       (Write { addr = Control.Reg.Ctl.msg_go; data = Bytes.of_string "\x01" }));
   [%expect {| op 2 status ok |}];
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg_go; len = 1 }));
   [%expect {| op 1 status ok data 01 |}];
   inp.midi_hold := Bits.gnd;
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg_go; len = 1 }));
   [%expect {| op 1 status ok data 00 |}];
   (* errors *)
-  transact (Abi.encode_request (Read { addr = 0x0000; len = 1 }));
+  transact (Control.encode_request (Read { addr = 0x0000; len = 1 }));
   [%expect {| op 1 status bad-address |}];
   transact (Cobs.encode (Bytes.of_string "\x07\x00\x00\x01"));
   [%expect {| op 7 status bad-op |}];
@@ -497,7 +506,7 @@ let%expect_test "transactions against the register file" =
   (* a frame with the wrong shape gets no response, and the engine recovers *)
   transact (Cobs.encode (Bytes.of_string "\xAA\xBB"));
   [%expect {| no response |}];
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}];
   (* the port ignores a frame that arrives while it sends: one response only, and the next
      request transacts normally *)
@@ -512,21 +521,21 @@ let%expect_test "transactions against the register file" =
       (Bytes.to_string frame);
     inp.in_valid := Bits.gnd
   in
-  feed (Abi.encode_request (Read { addr = Abi.Reg.Ctl.velocity; len = 1 }));
+  feed (Control.encode_request (Read { addr = Control.Reg.Ctl.velocity; len = 1 }));
   let budget = ref 200 in
   while Buffer.length response = 0 && !budget > 0 do
     cycle ();
     budget := !budget - 1
   done;
   (* the response has begun: the port is in Sending; inject a complete frame *)
-  feed (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
+  feed (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
   let budget = ref 500 in
   while (not !complete) && !budget > 0 do
     cycle ();
     budget := !budget - 1
   done;
-  (match Abi.decode_response (Buffer.contents_bytes response) with
-   | Ok { op; status = Abi.Status.Ok; data } ->
+  (match Control.decode_response (Buffer.contents_bytes response) with
+   | Ok { op; status = Control.Status.Ok; data } ->
      Stdio.printf
        "during-send response: op %d data %02x\n"
        op
@@ -543,7 +552,7 @@ let%expect_test "transactions against the register file" =
     during-send response: op 1 data 30
     response to the injected frame: 0 bytes
     |}];
-  transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.channel; len = 1 }));
+  transact (Control.encode_request (Read { addr = Control.Reg.Ctl.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}]
 ;;
 
@@ -566,8 +575,8 @@ let%expect_test "the waveform of a write tear" =
       inp.in_valid := Bits.vdd;
       Cyclesim.cycle sim)
     (Bytes.to_string
-       (Abi.encode_request
-          (Write { addr = Abi.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" })));
+       (Control.encode_request
+          (Write { addr = Control.Reg.Ctl.step_ms; data = Bytes.of_string "\x11\x22" })));
   inp.in_valid := Bits.gnd;
   for _ = 1 to 8 do
     Cyclesim.cycle sim
@@ -672,12 +681,12 @@ let%expect_test "the doorbell rules" =
     done
   in
   let write addr data =
-    transact (Abi.encode_request (Write { addr; data = Bytes.of_string data }))
+    transact (Control.encode_request (Write { addr; data = Bytes.of_string data }))
   in
   let msg_go () =
-    transact (Abi.encode_request (Read { addr = Abi.Reg.Ctl.msg_go; len = 1 }));
-    match Abi.decode_response (Buffer.contents_bytes response) with
-    | Ok { status = Abi.Status.Ok; data; _ } when Bytes.length data = 1 ->
+    transact (Control.encode_request (Read { addr = Control.Reg.Ctl.msg_go; len = 1 }));
+    match Control.decode_response (Buffer.contents_bytes response) with
+    | Ok { status = Control.Status.Ok; data; _ } when Bytes.length data = 1 ->
       Char.to_int (Bytes.get data 0)
     | _ -> -1
   in
@@ -695,12 +704,12 @@ let%expect_test "the doorbell rules" =
   in
   let drain () =
     let budget = ref 200 in
-    while Buffer.length taken < Abi.Limits.max_msg_len && !budget > 0 do
+    while Buffer.length taken < Control.Limits.max_msg_len && !budget > 0 do
       cycle ();
       budget := !budget - 1
     done;
     (* room for one more message: a wrongly queued ring would show here *)
-    for _ = 1 to 5 * Abi.Limits.max_msg_len * pace do
+    for _ = 1 to 5 * Control.Limits.max_msg_len * pace do
       cycle ()
     done
   in
@@ -712,29 +721,29 @@ let%expect_test "the doorbell rules" =
   done;
   (* the send bit is bit 0 alone: a burst with a GO byte of 00 loads the cells and does
      not ring, and 02 has bit 0 clear *)
-  write Abi.Reg.Ctl.msg "\x92\x3C\x64\x03\x00";
+  write Control.Reg.Ctl.msg "\x92\x3C\x64\x03\x00";
   show "go byte 00";
-  write Abi.Reg.Ctl.msg_go "\x02";
+  write Control.Reg.Ctl.msg_go "\x02";
   show "go byte 02";
   (* MSG_LEN outside 1 to 3: the bell does not ring *)
-  write Abi.Reg.Ctl.msg_len "\x00\x01";
+  write Control.Reg.Ctl.msg_len "\x00\x01";
   show "len 0";
-  write Abi.Reg.Ctl.msg_len "\x04\x01";
+  write Control.Reg.Ctl.msg_len "\x04\x01";
   show "len 4";
   (* a ring while a message waits is ignored: hold the transmitter, ring twice, release —
      one message goes out *)
   stall := true;
-  write Abi.Reg.Ctl.msg "\x92\x3C\x64\x03\x01";
+  write Control.Reg.Ctl.msg "\x92\x3C\x64\x03\x01";
   show "stalled ring";
-  write Abi.Reg.Ctl.msg_go "\x01";
+  write Control.Reg.Ctl.msg_go "\x01";
   show "ring while waiting";
   stall := false;
   drain ();
   show "released";
   (* the sender reads the live cells: change one MSG byte, ring the stored message *)
   Buffer.clear taken;
-  write Abi.Reg.Ctl.msg "\x93";
-  write Abi.Reg.Ctl.msg_go "\x01";
+  write Control.Reg.Ctl.msg "\x93";
+  write Control.Reg.Ctl.msg_go "\x01";
   drain ();
   show "live cells";
   [%expect
@@ -770,8 +779,9 @@ let%expect_test "the waveform of a doorbell ring" =
       inp.in_valid := Bits.vdd;
       Cyclesim.cycle sim)
     (Bytes.to_string
-       (Abi.encode_request
-          (Write { addr = Abi.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })));
+       (Control.encode_request
+          (Write
+             { addr = Control.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })));
   inp.in_valid := Bits.gnd;
   for _ = 1 to 10 do
     Cyclesim.cycle sim

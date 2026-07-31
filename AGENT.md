@@ -147,22 +147,24 @@ output with no loss of quality. The format is S32_LE, 44100 Hz, 2 channels. It i
 # Design
 
 ```
-Model (RTL/Hardcaml) -- ABI -- Drivers (OCaml)
+Model (RTL/Hardcaml) -- host control -- Drivers (OCaml)
 ```
 
 - Model: the FPGA does the inference. Train the model on the host computer if
   it is necessary. Possible models are a Markov chain, an RNN and a UNet.
-- ABI: one interface for all drivers — a flat memory map and a read/write
-  wire protocol on the UART. The specification is `docs/abi.md`. The model
+- Host control: one interface for all drivers — a flat memory map and a
+  read/write wire protocol on the UART. The specification is
+  `docs/host_control.md`. The model
   weights are not runtime state: the bitstream initializes them.
 - Drivers: self-check, control and other functions.
 
 Rules:
 
-- `lib/abi.ml` defines all constants of the ABI one time. The RTL elaboration
-  and the drivers must use the constants from that module. If `docs/abi.md`
-  and `lib/abi.ml` do not agree, correct one of them before you continue.
-- The ABI has no runtime version. The driver and the bitstream must come from
+- `lib/control.ml` defines all constants of the host control one time. The
+  RTL elaboration and the drivers must use the constants from that module. If
+  `docs/host_control.md` and `lib/control.ml` do not agree, correct one of
+  them before you continue.
+- The host control has no runtime version. The driver and the bitstream must come from
   the same repository state. If the board behavior does not agree with the
   specification, program the board again with the current bitstream.
 
@@ -185,7 +187,7 @@ Run all tests with `dune runtest`.
   against Cyclesim is a cheap extra test. The Markov chain is this case.
 - Randomness is pseudo-randomness, and the seed is an input. The same seed
   gives the same sequence in the simulation and on the board.
-- Diagnostics are on the board: the LEDs and the display. The ABI has no
+- Diagnostics are on the board: the LEDs and the display. The host control has no
   status or counter cells.
 
 # Traps

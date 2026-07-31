@@ -1,7 +1,7 @@
 (** The control port: the wire-protocol engine and the control register file.
 
-    The behavior is the one of [docs/abi.md]: a frame that does not decode gets no
-    response, a write applies its bytes in the sequence of increasing addresses, and a
+    The behavior is the one of [docs/host_control.md]: a frame that does not decode gets
+    no response, a write applies its bytes in the sequence of increasing addresses, and a
     rejected access changes no cell.
 
     After power-on and after clear, the port writes the control defaults into the register
@@ -12,17 +12,17 @@
     A write applies one byte each cycle: a multi-byte value is torn between these cycles.
     The wire protocol cannot observe this, because the response comes after the last byte.
     A hardware block that consumes a multi-byte cell must take the value on the write of
-    its last byte, as the SEED rule of the ABI does, or sample the cells only when [state]
-    is [State.Ready].
+    its last byte, as the SEED rule of the host control does, or sample the cells only
+    when [state] is [State.Ready].
 
-    The MSG cells are the test-message doorbell of the ABI, and the port holds its send
-    machine. A write of a value with bit 0 = 1 to MSG_GO sends MSG_LEN bytes of MSG on the
-    [midi_data] stream, and a read of MSG_GO is 1 while the message waits. The cells are
-    the one storage of the message: the sender reads them as it sends. Thus the poll rule
-    of the ABI — read MSG_GO as 0 before a write that covers a cell of MSG, MSG_LEN or
-    MSG_GO — is the rule that keeps each message complete on the stream. The port ignores
-    the send bit while a message waits, and also when MSG_LEN is not in 1 to
-    [Abi.Limits.max_msg_len]. *)
+    The MSG cells are the test-message doorbell of the host control, and the port holds
+    its send machine. A write of a value with bit 0 = 1 to MSG_GO sends MSG_LEN bytes of
+    MSG on the [midi_data] stream, and a read of MSG_GO is 1 while the message waits. The
+    cells are the one storage of the message: the sender reads them as it sends. Thus the
+    poll rule of the host control — read MSG_GO as 0 before a write that covers a cell of
+    MSG, MSG_LEN or MSG_GO — is the rule that keeps each message complete on the stream.
+    The port ignores the send bit while a message waits, and also when MSG_LEN is not in 1
+    to [Control.Limits.max_msg_len]. *)
 
 open Hardcaml
 

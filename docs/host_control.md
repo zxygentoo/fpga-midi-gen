@@ -1,8 +1,8 @@
-# The ABI
+# The host control
 
 ## Scope
 
-The ABI is the interface between the host drivers and the FPGA. It defines
+The host control is the interface between the host drivers and the FPGA. It defines
 two things:
 
 1. The memory map: the state that the host can read and write at run time.
@@ -13,7 +13,7 @@ two things:
 The memory has 8-bit cells and one flat 16-bit address space. The map has
 two parts:
 
-- Control: `0xFFF0` to `0xFFFF`, read and write. This is the full ABI
+- Control: `0xFFF0` to `0xFFFF`, read and write. This is the full control
   register file, 16 bytes.
 - The model window: from `0x0000`, up. Byte `i` of the blob is at address `i`.
 
@@ -34,7 +34,7 @@ Control cells:
 | `0xFFFC`–`0xFFFD` | STEP_MS | step period in ms, minimum 1 | 250 |
 | `0xFFFA`–`0xFFFB` | GATE_MS | gate time in ms | 125 |
 | `0xFFF9` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `0xFFF5`–`0xFFF8` | SEED | PRNG seed, 32 bits, not 0 | see `lib/abi.ml` |
+| `0xFFF5`–`0xFFF8` | SEED | PRNG seed, 32 bits, not 0 | see `lib/control.ml` |
 | `0xFFF4` | MSG_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
 | `0xFFF3` | MSG_LEN | length of the test message, 1 to 3 | 0 |
 | `0xFFF0`–`0xFFF2` | MSG | the test message bytes | 0 |

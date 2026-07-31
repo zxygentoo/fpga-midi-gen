@@ -1,9 +1,9 @@
-(* Integration test: ABI transactions through the board top level at the real UART
-   divisors. The test drives the RsRx waveform bit by bit with frames from
-   [Abi.encode_request], samples RsTx and the MIDI line JD[0] on every cycle, decodes the
-   waveforms with a software receiver, and parses the responses with
-   [Abi.decode_response]. The doorbell write must put the test message on the MIDI line at
-   31250 baud. *)
+(* Integration test: host-control transactions through the board top level at the real
+   UART divisors. The test drives the RsRx waveform bit by bit with frames from
+   [Control.encode_request], samples RsTx and the MIDI line JD[0] on every cycle, decodes
+   the waveforms with a software receiver, and parses the responses with
+   [Control.decode_response]. The doorbell write must put the test message on the MIDI
+   line at 31250 baud. *)
 
 open Base
 
@@ -77,17 +77,19 @@ let () =
   level true (2 * cpb);
   (* write VELOCITY, then read it back *)
   send_frame
-    (Mgen.Abi.encode_request
-       (Write { addr = Mgen.Abi.Reg.Ctl.velocity; data = Bytes.of_string "\x42" }));
+    (Mgen.Control.encode_request
+       (Write { addr = Mgen.Control.Reg.Ctl.velocity; data = Bytes.of_string "\x42" }));
   level true (60 * cpb);
   send_frame
-    (Mgen.Abi.encode_request (Read { addr = Mgen.Abi.Reg.Ctl.velocity; len = 1 }));
+    (Mgen.Control.encode_request (Read { addr = Mgen.Control.Reg.Ctl.velocity; len = 1 }));
   level true (80 * cpb);
   (* the one-shot doorbell write: the message must appear on the MIDI line *)
   send_frame
-    (Mgen.Abi.encode_request
+    (Mgen.Control.encode_request
        (Write
-          { addr = Mgen.Abi.Reg.Ctl.msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
+          { addr = Mgen.Control.Reg.Ctl.msg
+          ; data = Bytes.of_string "\x92\x3C\x64\x03\x01"
+          }));
   level true (40 * midi_cpb);
   (* split the response byte stream at the frame delimiters and parse *)
   let frames =
@@ -96,14 +98,14 @@ let () =
     |> List.map ~f:(fun s -> Bytes.of_string (s ^ "\000"))
   in
   let show frame =
-    match Mgen.Abi.decode_response frame with
+    match Mgen.Control.decode_response frame with
     | Error e -> Stdio.printf "bad response: %s\n" e
     | Ok { op; status; data } ->
       Stdio.printf
         "op %d ok %b data %s\n"
         op
         (match status with
-         | Mgen.Abi.Status.Ok -> true
+         | Mgen.Control.Status.Ok -> true
          | _ -> false)
         (hex (Bytes.to_string data))
   in
