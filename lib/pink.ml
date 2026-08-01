@@ -31,16 +31,9 @@ module Params = struct
     }
 
   let pentatonic = [ 0; 2; 4; 7; 9 ]
+  let a_pentatonic = [ 0; 3; 5; 7; 10 ]
   let default = { rows = 8; root = 60; degrees = 15; scale = pentatonic; stretch = 2 }
 end
-
-type t =
-  { params : Params.t
-  ; map : int -> int (* the sum-to-note map, from [mapper] *)
-  ; prng : Prng.t
-  ; rows : int list (* the row values; the head is row 0 *)
-  ; step : int (* the number of the steps taken *)
-  }
 
 (* re-rolls the first [count] rows, with one draw for each row, in ascending order *)
 let rec reroll prng rows ~count =
@@ -52,7 +45,7 @@ let rec reroll prng rows ~count =
   | rows -> prng, rows
 ;;
 
-(* one definition serves [create] and the RTL elaboration *)
+(* one definition serves the reference and the RTL elaboration *)
 let degree_offsets (params : Params.t) =
   if List.is_empty params.scale then invalid_arg "Pink.degree_offsets: the scale is empty";
   let scale = Array.of_list params.scale in
@@ -73,7 +66,55 @@ let mapper (params : Params.t) =
     root + offsets.(x * degrees / window)
 ;;
 
-let create (params : Params.t) ~seed =
+module Voice = struct
+  type t =
+    { params : Params.t
+    ; restrike : bool
+    }
+end
+
+(* The voices from row 0 upward: the soprano takes the fastest rows, the bass the slowest,
+   and the partition is the rhythm — a group that starts at row [r] re-articulates every
+   [2**r] steps, thus 2+2+2+2 gives the periods 1, 4, 16 and 64. The registers are
+   disjoint, and the A-rooted ones take the rotation of the pentatonic that starts on A,
+   thus every voice stays on the pitch classes of C major pentatonic. *)
+let default_voices : Voice.t list =
+  [ (* the soprano: every step, A4 to A6, gated by the player *)
+    { params =
+        { rows = 2; root = 69; degrees = 11; scale = Params.a_pentatonic; stretch = 2 }
+    ; restrike = true
+    }
+  ; (* the alto: every 4th step, C4 to G4 *)
+    { params =
+        { rows = 2; root = 60; degrees = 4; scale = Params.pentatonic; stretch = 2 }
+    ; restrike = true
+    }
+  ; (* the tenor: every 16th step, C3 to A3 *)
+    { params =
+        { rows = 2; root = 48; degrees = 5; scale = Params.pentatonic; stretch = 2 }
+    ; restrike = false
+    }
+  ; (* the bass: every 64th step, A1 to A2; it speaks only when it moves *)
+    { params =
+        { rows = 2; root = 33; degrees = 6; scale = Params.a_pentatonic; stretch = 2 }
+    ; restrike = false
+    }
+  ]
+;;
+
+type state =
+  { note : int
+  ; due : bool
+  }
+
+type t =
+  { voices : Voice.t list
+  ; prng : Prng.t
+  ; rows : int list (* the row values; the head is row 0 *)
+  ; step : int (* the number of the steps taken *)
+  }
+
+let validate (params : Params.t) =
   let { Params.rows; root; degrees; scale; stretch } = params in
   if List.is_empty scale then invalid_arg "Pink.create: the scale is empty";
   if rows < 1 || degrees < 1 || stretch < 1
@@ -81,24 +122,44 @@ let create (params : Params.t) ~seed =
   if rows * 256 / stretch < 1 then invalid_arg "Pink.create: the stretch window is empty";
   List.iter (degree_offsets params) ~f:(fun offset ->
     if root + offset < 0 || root + offset > 127
-    then invalid_arg "Pink.create: a degree gives a note outside 0 to 127");
+    then invalid_arg "Pink.create: a degree gives a note outside 0 to 127")
+;;
+
+let total_rows voices = List.sum (module Int) voices ~f:(fun v -> v.Voice.params.rows)
+
+let create ~voices ~seed =
+  if List.is_empty voices then invalid_arg "Pink.create: the model needs a voice";
+  List.iter voices ~f:(fun v -> validate v.Voice.params);
+  let total = total_rows voices in
   let prng = Prng.create ~seed in
-  let prng, rows = reroll prng (List.init rows ~f:(fun _ -> 0)) ~count:rows in
-  { params; map = mapper params; prng; rows; step = 0 }
+  let prng, rows = reroll prng (List.init total ~f:(fun _ -> 0)) ~count:total in
+  { voices; prng; rows; step = 0 }
 ;;
 
-let next_note t =
+let next_step t =
   let step = t.step + 1 in
-  let count = Int.min (List.length t.rows) (Int.ctz step + 1) in
+  let count = Int.min (total_rows t.voices) (Int.ctz step + 1) in
   let prng, rows = reroll t.prng t.rows ~count in
-  let sum = List.sum (module Int) rows ~f:Fn.id in
-  { t with prng; rows; step }, t.map sum
+  (* walk the groups from row 0: a voice is due when the re-roll count reaches into its
+     group *)
+  let states =
+    List.folding_map t.voices ~init:(0, rows) ~f:(fun (start, remaining) v ->
+      let params = v.Voice.params in
+      let mine = List.take remaining params.rows in
+      let rest = List.drop remaining params.rows in
+      let sum = List.sum (module Int) mine ~f:Fn.id in
+      ( (start + params.rows, rest)
+      , { note = mapper params sum; due = step = 1 || count > start } ))
+  in
+  { t with prng; rows; step }, List.rev states
 ;;
 
+(* the one-voice model: the whole row set in one group, the shape of the shipped circuit *)
 let notes params ~seed =
-  Sequence.unfold ~init:(create params ~seed) ~f:(fun t ->
-    let t, note = next_note t in
-    Some (note, t))
+  let voices = [ { Voice.params; restrike = true } ] in
+  Sequence.unfold ~init:(create ~voices ~seed) ~f:(fun t ->
+    let t, states = next_step t in
+    Some ((List.hd_exn states).note, t))
 ;;
 
 let%expect_test "the prng walk from seed 1" =
@@ -172,5 +233,59 @@ let%expect_test "the note histogram, stretch 1 against stretch 2" =
        88 ####
        91 ##
        93 ##
+    |}]
+;;
+
+let%expect_test "the first steps of the power-on seed" =
+  let t = ref (create ~voices:default_voices ~seed:Control.Default.seed) in
+  Stdio.printf "step   bass   tenor   alto  soprano\n";
+  for step = 1 to 10 do
+    let t', states = next_step !t in
+    t := t';
+    Stdio.printf
+      "%4d %s\n"
+      step
+      (String.concat
+         (List.map states ~f:(fun s ->
+            Printf.sprintf "  %3d%s" s.note (if s.due then "*" else " "))))
+  done;
+  [%expect
+    {|
+    step   bass   tenor   alto  soprano
+       1    45*   57*   62*   88*
+       2    45    57    62    84*
+       3    45    57    62    84*
+       4    45    57    67*   88*
+       5    45    57    67    93*
+       6    45    57    67    91*
+       7    45    57    67    93*
+       8    45    57    62*   74*
+       9    45    57    62    76*
+      10    45    57    62    86*
+    |}]
+;;
+
+let%expect_test "the articulation grid is the ctz schedule" =
+  let t = ref (create ~voices:default_voices ~seed:7) in
+  let due_steps = Array.create ~len:(List.length default_voices) [] in
+  for step = 1 to 128 do
+    let t', states = next_step !t in
+    t := t';
+    List.iteri states ~f:(fun k s -> if s.due then due_steps.(k) <- step :: due_steps.(k))
+  done;
+  let count k = List.length due_steps.(k) in
+  Stdio.printf
+    "bass %d (every 64), tenor %d (every 16), alto %d (every 4), soprano %d (every step)\n"
+    (count 0)
+    (count 1)
+    (count 2)
+    (count 3);
+  Stdio.printf
+    "bass at steps %s\n"
+    (String.concat ~sep:" " (List.rev_map due_steps.(0) ~f:Int.to_string));
+  [%expect
+    {|
+    bass 3 (every 64), tenor 9 (every 16), alto 33 (every 4), soprano 128 (every step)
+    bass at steps 1 64 128
     |}]
 ;;

@@ -74,3 +74,28 @@ through the thru port of the S-1, byte for byte the reference.
 
 On the board: timing is met, 651 LUTs and 775 flip-flops, no block RAM.
 The bitstream is in the QSPI flash, and the board powers on into it.
+
+## 2026-08-02 — the register decomposition (feat/pink-voices)
+
+The pink model grows from one voice to four. The shipped model summed all
+eight rows into one pitch; the decomposition splits them into voices —
+soprano, alto, tenor, bass — and maps each group's sum onto its own
+register. The partition is the rhythm: a group that starts at row r
+re-articulates every 2^r steps, thus the note-rate hierarchy is the 1/f
+structure made audible, with no rhythm generator. Three partitions went
+through the ear test, and 2+2+2+2 won: the periods 1, 4, 16 and 64 steps.
+The low voices speak only when they move.
+
+The experiment measured the S-1 on the way, with the speaker off, through
+USB MIDI in and USB audio capture out: the synth has four true voices, the
+fifth note steals the oldest, and a Note Off releases a voice by pitch —
+thus two voices must never hold one pitch, and the registers are disjoint.
+The A-rooted registers take the rotation of the pentatonic that starts on
+A, and every voice stays on the pitch classes of C major pentatonic.
+
+The decomposition replaced the mono model: `Pink` is the four-voice model,
+and the mono model is its one-voice case, kept as `Pink.notes` — the
+reference of the shipped circuit, proven by the stream comparisons that
+pass unchanged. `play_pink` is the four-voice player, on `Core.Command`,
+and `Midi.Host` is the one home of the host-side senders. The board still
+plays the one-voice model; the four-voice circuit is the next RTL design.
