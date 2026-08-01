@@ -5,12 +5,12 @@
     [docs/host_control_rtl.md].
 
     The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
-    [led 2], MIDI activity on [led 3], and the busy state of the port on [led 4]. The MIDI
-    line idles at 1, the no-current level of the current loop; the other JD pins stay
-    at 1.
+    [led 2], MIDI activity on [led 3], the busy state of the port on [led 4], and the run
+    state on [led 5]. The MIDI line idles at 1, the no-current level of the current loop;
+    the other JD pins stay at 1.
 
-    Two inputs of the design have no source yet, and the top level ties each one to 0: the
-    board button that toggles RUN, and the model that gives MIDI messages. *)
+    The model plays while RUN is 1: a host write sets the run state, and a push of the
+    center button [btnC] toggles it. [led 5] shows it. *)
 
 open Hardcaml
 open Signal
@@ -21,10 +21,15 @@ let host_clocks_per_bit = 868
 (* 100 MHz / 31250 baud = 3200, exact *)
 let midi_clocks_per_bit = 3200
 
+(* the 100 MHz clock *)
+let clocks_per_ms = 100_000
+let button_debounce_ms = 10
+
 let create () =
   let clk = input "clk" 1 in
   let rstn = input "btnCpuReset" 1 in
   let rx_pin = input "RsRx" 1 in
+  let run_pin = input "btnC" 1 in
   let clear = ~:rstn in
   let spec = Reg_spec.create ~clock:clk ~clear () in
   (* bit 26 of a 100 MHz counter toggles with a period of 1.34 s *)
@@ -40,7 +45,13 @@ let create () =
   let tx_busy = wire 1 in
   let read_data = wire 8 in
   let doorbell_ready = wire 1 in
+  let model_ready = wire 1 in
   let out_ready = wire 1 in
+  let button =
+    Button.create
+      ~debounce_clocks:(button_debounce_ms * clocks_per_ms)
+      { Button.I.clock = clk; clear; button = run_pin }
+  in
   let control_port =
     Control_port.create
       { Control_port.I.clock = clk
@@ -60,23 +71,27 @@ let create () =
       ; write_data = control_port.write_data
       ; commit = control_port.commit
       ; read_address = control_port.read_address
-      ; run_toggle = gnd
+      ; run_toggle = button.toggle
       ; doorbell_ready
       }
   in
   assign read_data control_regs.read_data;
-  let midi_merge =
-    Midi_merge.create
-      { Midi_merge.I.doorbell = control_regs.doorbell
-      ; model =
-          { Midi.Message.data = zero (Midi.max_message_bytes * 8)
-          ; len = zero 8
-          ; valid = gnd
-          }
-      ; out_ready
+  let model =
+    Model.create
+      ~clocks_per_ms
+      ~source:(Voss.create ~params:Pink.Params.default ~seed:control_regs.params.seed)
+      { Model.I.clock = clk
+      ; clear
+      ; params = control_regs.params
+      ; midi_ready = model_ready
       }
   in
+  let midi_merge =
+    Midi_merge.create
+      { Midi_merge.I.doorbell = control_regs.doorbell; model = model.midi; out_ready }
+  in
   assign doorbell_ready midi_merge.doorbell_ready;
+  assign model_ready midi_merge.model_ready;
   let midi_out =
     Midi_out.create
       ~clocks_per_bit:midi_clocks_per_bit
@@ -95,7 +110,8 @@ let create () =
   assign tx_busy uart_tx.busy;
   let led =
     concat_msb
-      [ zero 11
+      [ zero 10
+      ; lsb control_regs.params.run
       ; control_port.busy
       ; ~:(midi_out.serial)
       ; ~:(uart_tx.serial)

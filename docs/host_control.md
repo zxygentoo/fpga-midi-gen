@@ -42,17 +42,23 @@ Semantics:
   change without a host write.
 - Power-on is silent. One button push makes the board play, with no host.
 - A change of RUN or STEP_MS applies at the next step. When RUN goes to 0,
-  the FPGA sends a Note Off for each open note.
+  the FPGA sends a Note Off for each open note. The FPGA counts a STEP_MS
+  of 0 as 1.
 - The default CHANNEL is 2, because the S-1 receives on channel 3. CHANNEL
   applies to the model messages only. A test message is raw bytes, and the
   driver sets its channel.
+- A Note Off uses the channel of its Note On, and not the current CHANNEL.
+  Therefore a CHANNEL write during an open note cannot leave the note hang
+  on the old channel.
 - If GATE_MS is not less than STEP_MS, the FPGA sends the Note Off
   immediately before the subsequent Note On.
 - A write applies at one time, at its end. Therefore a value of more than
   one byte never shows a part of one write and a part of the next, and a
   block in the FPGA can look at a cell in each cycle.
-- The PRNG loads the seed at the end of a write that covers a SEED cell.
-  Thus one write of the four seed bytes loads the PRNG one time.
+- The PRNG loads the seed at the run start: when RUN goes to 1, the model
+  reads SEED one time. A write to SEED during a run applies at the next run
+  start. Therefore one run plays one sequence, and the same seed replays
+  it.
 - The MIDI_MSG cells are the test-message doorbell. The host writes
   MIDI_MSG and MIDI_LEN, then writes a value with bit 0 = 1 to MIDI_GO.
   The FPGA sends the message to the MIDI output. A write with bit 0 = 0

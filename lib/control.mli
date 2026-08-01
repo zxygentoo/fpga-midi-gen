@@ -61,7 +61,7 @@ module Reg : sig
 
   val velocity : int
 
-  (** 4 bytes, little-endian; the PRNG loads at the end of a write that covers it. *)
+  (** 4 bytes, little-endian; the PRNG loads it at the run start. *)
   val seed : int
 
   (** A write with bit 0 = 1 sends the test message; a read is 1 while a message waits. *)
