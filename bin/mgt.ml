@@ -10,6 +10,7 @@ open Core
 module Bytes_util = Mgen.Bytes_util
 module Control = Mgen.Control
 module Control_transport = Mgen.Control_transport
+module Midi = Mgen.Midi
 
 let default_device = "/dev/ttyUSB1"
 let baud = 115200
@@ -65,7 +66,7 @@ let dump t =
       ; "seed", Control.Reg.seed, 4
       ; "midi_go", Control.Reg.midi_go, 1
       ; "midi_len", Control.Reg.midi_len, 1
-      ; "midi_msg", Control.Reg.midi_msg, Mgen.Midi.max_message_bytes
+      ; "midi_msg", Control.Reg.midi_msg, Midi.max_message_bytes
       ]
   in
   List.iter
@@ -80,7 +81,7 @@ let dump t =
    poll after it bounds the exit at "the message went out". *)
 let doorbell t bytes =
   let n = List.length bytes in
-  if n < 1 || n > Mgen.Midi.max_message_bytes then usage ();
+  if n < 1 || n > Midi.max_message_bytes then usage ();
   let midi_go_clear () =
     let b = check (Control_transport.read t ~address:Control.Reg.midi_go ~length:1) in
     Char.to_int (Bytes.get b 0) = 0

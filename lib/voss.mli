@@ -2,9 +2,9 @@
 
     The block is the note source of this era, on the [Source_intf] interface. It holds the
     row bytes and the step count, and it owns the PRNG: the draw stream has exactly one
-    consumer, thus no other block can move the sequence. The reference is [Pink]: [rewind]
-    is [Pink.create], and each [step] is [Pink.next_note]. The stream-comparison test
-    drives the two side by side.
+    consumer, thus no other block can move the sequence. The reference is the one-voice
+    model of [Pink]: [rewind] starts [Pink.notes] at the seed, and each [step] gives its
+    next note. The stream-comparison test drives the two side by side.
 
     The walk is sequential, with one draw in two cycles. A walk takes at most
     [2 * rows + 2] cycles, and the step budget of the sequencer is at least one

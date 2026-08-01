@@ -7,9 +7,13 @@
 describes the blocks that fill the two seats: the pink-noise algorithm as a
 circuit, the run engine that plays it, and the board button.
 
-The reference implementation is `lib/pink.ml`. The circuit and the reference
+The reference implementation is the one-voice model of `lib/pink.ml`, the
+`Pink.notes` view: every row in one group. The circuit and the reference
 compute the same integer arithmetic, therefore the same seed gives the same
-note sequence in the reference, in the simulation and on the board.
+note sequence in the reference, in the simulation and on the board. The host
+model has since grown the register decomposition — four voices from the row
+groups — and this circuit is its one-voice case; the four-voice circuit is a
+later design.
 
 ## The constants
 
@@ -149,8 +153,8 @@ val create : params:Pink.Params.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O
 
 `Voss` is the note source of this era. `seed` is the live view of the SEED
 cell; a `rewind` captures its value, puts the step count at 0, and draws
-every row in ascending order — `Pink.create` with the seed of that moment.
-Each `step` is `Pink.next_note`.
+every row in ascending order — the origin of `Pink.notes` with the seed of
+that moment. Each `step` gives the next note of that sequence.
 
 The block holds the eight row bytes and a step count. The walk is
 sequential, with one draw in two cycles: the PRNG steps in one cycle, and
