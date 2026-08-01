@@ -50,3 +50,27 @@ On the board: timing is met, 418 LUTs and 522 flip-flops, no block RAM.
 `mgt dump` gives the same 16 bytes as the simulation, and the doorbell
 sends a Note On, a Note Off and a one-byte real-time message. The bitstream
 is in the QSPI flash.
+
+## 2026-08-01 — the pink model (feat/pink-model)
+
+The board composes. The first model is pink noise — the Voss-McCartney
+1/f generator — chosen because it is small and it does not learn: no
+trainer, no weight table. The reference is `lib/pink.ml`, in the integer
+arithmetic of the circuit; `play_pink` plays it on the S-1 through USB,
+and the ear settled the constants: 8 rows, stretch 2.
+
+The design is in `docs/pink_rtl.md`. `Prng`, `Voss`, `Sequencer` and
+`Button` fill the seats that the control redesign left open, and `Model`
+is the one seat that the top level sees. The socket between a model core
+and the sequencer is `Source_intf`: `rewind` and `step` in, `note`,
+`valid` and `ready` out. No configuration crosses it — a core takes what
+it needs by closure, and one line of `top.ml` names the model of the era.
+
+The seed loads at the run start, thus the same seed replays the same
+sequence; a Note Off uses the channel of its Note On; power-on is silent,
+and one push of BTNC plays. The exactness holds at three levels: the
+stream comparisons in Cyclesim, and 32 notes captured on the board
+through the thru port of the S-1, byte for byte the reference.
+
+On the board: timing is met, 651 LUTs and 775 flip-flops, no block RAM.
+The bitstream is in the QSPI flash, and the board powers on into it.
