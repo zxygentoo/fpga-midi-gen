@@ -14,6 +14,15 @@ open Hardcaml
     real-time message is 1 byte. A System Exclusive message does not fit. *)
 val max_message_bytes : int
 
+(** The Note On status. The high nibble is the status, and the low nibble carries the
+    channel. *)
+val note_on : int
+
+val note_off : int
+
+(** The velocity byte of each Note Off that this design sends. *)
+val release_velocity : int
+
 module Message : sig
   type 'a t =
     { data : 'a (** the message bytes; the first byte is in the low 8 bits *)

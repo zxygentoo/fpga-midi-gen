@@ -48,6 +48,11 @@ module Params : sig
   val default : t
 end
 
+(** [degree_offsets params] is the semitone offset above the root of each degree, from
+    degree 0 upward. The RTL elaboration reads this table, thus one definition serves the
+    reference and the circuit. It raises [Invalid_argument] when the scale is empty. *)
+val degree_offsets : Params.t -> int list
+
 type t
 
 (** [create params ~seed] is the model in its power-on state. It raises [Invalid_argument]
@@ -56,8 +61,8 @@ type t
     stretch window must not be empty, and each degree must give a note in 0 to 127. *)
 val create : Params.t -> seed:int -> t
 
-(** [next t] is the model after one step and the MIDI note of that step. *)
-val next : t -> t * int
+(** [next_note t] is the model after one step and the MIDI note of that step. *)
+val next_note : t -> t * int
 
 (** [notes params ~seed] is the note sequence: pure, with no end, and equal for equal
     arguments. *)

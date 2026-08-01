@@ -52,18 +52,22 @@ let rec reroll prng rows ~count =
   | rows -> prng, rows
 ;;
 
+(* one definition serves [create] and the RTL elaboration *)
+let degree_offsets (params : Params.t) =
+  if List.is_empty params.scale then invalid_arg "Pink.degree_offsets: the scale is empty";
+  let scale = Array.of_list params.scale in
+  let length = Array.length scale in
+  List.init params.degrees ~f:(fun degree ->
+    (12 * (degree / length)) + scale.(degree % length))
+;;
+
 let create (params : Params.t) ~seed =
   let { Params.rows; root; degrees; scale; stretch } = params in
   if List.is_empty scale then invalid_arg "Pink.create: the scale is empty";
   if rows < 1 || degrees < 1 || stretch < 1
   then invalid_arg "Pink.create: rows, degrees and stretch must be at least 1";
   if rows * 256 / stretch < 1 then invalid_arg "Pink.create: the stretch window is empty";
-  let scale = Array.of_list scale in
-  let length = Array.length scale in
-  let offsets =
-    Array.init degrees ~f:(fun degree ->
-      (12 * (degree / length)) + scale.(degree % length))
-  in
+  let offsets = Array.of_list (degree_offsets params) in
   Array.iter offsets ~f:(fun offset ->
     if root + offset < 0 || root + offset > 127
     then invalid_arg "Pink.create: a degree gives a note outside 0 to 127");
@@ -81,7 +85,7 @@ let note_of_sum t sum =
   root + t.offsets.(x * degrees / window)
 ;;
 
-let next t =
+let next_note t =
   let step = t.step + 1 in
   let count = Int.min (List.length t.rows) (Int.ctz step + 1) in
   let prng, rows = reroll t.prng t.rows ~count in
@@ -91,7 +95,7 @@ let next t =
 
 let notes params ~seed =
   Sequence.unfold ~init:(create params ~seed) ~f:(fun t ->
-    let t, note = next t in
+    let t, note = next_note t in
     Some (note, t))
 ;;
 

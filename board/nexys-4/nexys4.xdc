@@ -19,6 +19,9 @@ create_clock -period 10.000 -name clk [get_ports clk]
 # Reset button, active low
 set_property -dict { PACKAGE_PIN C12 IOSTANDARD LVCMOS33 } [get_ports btnCpuReset]
 
+# Center button: toggles the run state
+set_property -dict { PACKAGE_PIN E16 IOSTANDARD LVCMOS33 } [get_ports btnC]
+
 # USB-UART
 set_property -dict { PACKAGE_PIN C4 IOSTANDARD LVCMOS33 } [get_ports RsRx]
 set_property -dict { PACKAGE_PIN D4 IOSTANDARD LVCMOS33 } [get_ports RsTx]

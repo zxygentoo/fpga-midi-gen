@@ -117,7 +117,7 @@ let play options fd =
   let rec loop model remaining =
     if remaining <> 0
     then (
-      let model, note = Pink.next model in
+      let model, note = Pink.next_note model in
       note_on fd ~channel:options.channel ~note ~velocity:options.velocity;
       sounding := Some note;
       sleep_ms gate;
