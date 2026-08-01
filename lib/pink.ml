@@ -36,7 +36,7 @@ end
 
 type t =
   { params : Params.t
-  ; offsets : int array (* the semitones above the root, one for each degree *)
+  ; map : int -> int (* the sum-to-note map, from [mapper] *)
   ; prng : Prng.t
   ; rows : int list (* the row values; the head is row 0 *)
   ; step : int (* the number of the steps taken *)
@@ -61,28 +61,30 @@ let degree_offsets (params : Params.t) =
     (12 * (degree / length)) + scale.(degree % length))
 ;;
 
+let mapper (params : Params.t) =
+  let { Params.rows; root; degrees; stretch; scale = _ } = params in
+  let offsets = Array.of_list (degree_offsets params) in
+  let full = rows * 256 in
+  let window = full / stretch in
+  if window < 1 then invalid_arg "Pink.mapper: the stretch window is empty";
+  let low = (full - window) / 2 in
+  fun sum ->
+    let x = Int.clamp_exn (sum - low) ~min:0 ~max:(window - 1) in
+    root + offsets.(x * degrees / window)
+;;
+
 let create (params : Params.t) ~seed =
   let { Params.rows; root; degrees; scale; stretch } = params in
   if List.is_empty scale then invalid_arg "Pink.create: the scale is empty";
   if rows < 1 || degrees < 1 || stretch < 1
   then invalid_arg "Pink.create: rows, degrees and stretch must be at least 1";
   if rows * 256 / stretch < 1 then invalid_arg "Pink.create: the stretch window is empty";
-  let offsets = Array.of_list (degree_offsets params) in
-  Array.iter offsets ~f:(fun offset ->
+  List.iter (degree_offsets params) ~f:(fun offset ->
     if root + offset < 0 || root + offset > 127
     then invalid_arg "Pink.create: a degree gives a note outside 0 to 127");
   let prng = Prng.create ~seed in
   let prng, rows = reroll prng (List.init rows ~f:(fun _ -> 0)) ~count:rows in
-  { params; offsets; prng; rows; step = 0 }
-;;
-
-let note_of_sum t sum =
-  let { Params.rows; root; degrees; stretch; scale = _ } = t.params in
-  let full = rows * 256 in
-  let window = full / stretch in
-  let low = (full - window) / 2 in
-  let x = Int.clamp_exn (sum - low) ~min:0 ~max:(window - 1) in
-  root + t.offsets.(x * degrees / window)
+  { params; map = mapper params; prng; rows; step = 0 }
 ;;
 
 let next_note t =
@@ -90,7 +92,7 @@ let next_note t =
   let count = Int.min (List.length t.rows) (Int.ctz step + 1) in
   let prng, rows = reroll t.prng t.rows ~count in
   let sum = List.sum (module Int) rows ~f:Fn.id in
-  { t with prng; rows; step }, note_of_sum t sum
+  { t with prng; rows; step }, t.map sum
 ;;
 
 let notes params ~seed =

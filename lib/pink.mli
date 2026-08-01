@@ -53,6 +53,17 @@ end
     reference and the circuit. It raises [Invalid_argument] when the scale is empty. *)
 val degree_offsets : Params.t -> int list
 
+(** [reroll prng values ~count] re-rolls the first [count] values, with one draw for each,
+    in ascending order — the walk of the model. The circuit does the same walk, thus the
+    draw order is part of the contract. *)
+val reroll : Prng.t -> int list -> count:int -> Prng.t * int list
+
+(** [mapper params] is the map from a row sum to a MIDI note: the centered [1/stretch]
+    window of the sum range, quantized to the degrees, on the scale from the root. The
+    degree table is computed one time, at the partial application. It raises
+    [Invalid_argument] when the window is empty. *)
+val mapper : Params.t -> int -> int
+
 type t
 
 (** [create params ~seed] is the model in its power-on state. It raises [Invalid_argument]

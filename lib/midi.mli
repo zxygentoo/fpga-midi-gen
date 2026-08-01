@@ -31,3 +31,13 @@ module Message : sig
     }
   [@@deriving hardcaml]
 end
+
+(** The host side: the raw senders for the USB MIDI device of the synthesizer. The bytes
+    go directly to the rawmidi device; there is no driver stack and no timing. *)
+module Host : sig
+  (** [open_device path] opens the device for writing. It raises on a system error. *)
+  val open_device : string -> Core_unix.File_descr.t
+
+  val note_on : Core_unix.File_descr.t -> channel:int -> note:int -> velocity:int -> unit
+  val note_off : Core_unix.File_descr.t -> channel:int -> note:int -> unit
+end

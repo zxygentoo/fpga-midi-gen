@@ -5,12 +5,14 @@
 
    The defaults are the power-on values of the control cells, thus the tool with no
    arguments is a preview of the board at power-on plus RUN. --notes 0 plays with no end.
-   The device default is the one rawmidi device in /dev/snd, the S-1. The FPGA is not in
-   this loop. *)
+   The device default is /dev/snd/midiC2D0, the S-1. The FPGA is not in this loop. *)
 
 open Core
 module Control = Mgen.Control
+module Midi = Mgen.Midi
 module Pink = Mgen.Pink
+
+let default_device = "/dev/snd/midiC2D0"
 
 let usage () : 'a =
   prerr_endline
@@ -72,39 +74,6 @@ let rec parse options = function
   | _ -> usage ()
 ;;
 
-(* the one rawmidi device is the S-1; more than one needs --device *)
-let find_device () =
-  let dir = Core_unix.opendir "/dev/snd" in
-  let rec entries acc =
-    match Core_unix.readdir_opt dir with
-    | None -> acc
-    | Some name ->
-      entries
-        (if String.is_prefix name ~prefix:"midiC"
-         then ("/dev/snd/" ^ name) :: acc
-         else acc)
-  in
-  let found = entries [] in
-  Core_unix.closedir dir;
-  match found with
-  | [ device ] -> device
-  | [] ->
-    prerr_endline "no rawmidi device in /dev/snd: is the synthesizer on?";
-    exit 1
-  | _ ->
-    Printf.eprintf
-      "more than one rawmidi device, give --device: %s\n"
-      (String.concat ~sep:", " (List.sort found ~compare:String.compare));
-    exit 1
-;;
-
-let send fd bytes =
-  let buf = Bytes.of_char_list (List.map bytes ~f:Char.of_int_exn) in
-  ignore (Core_unix.write fd ~buf : int)
-;;
-
-let note_on fd ~channel ~note ~velocity = send fd [ 0x90 lor channel; note; velocity ]
-let note_off fd ~channel ~note = send fd [ 0x80 lor channel; note; 0x40 ]
 let sleep_ms ms = ignore (Core_unix.nanosleep (Float.of_int ms /. 1000.) : float)
 
 (* the note now on the line, so that an interrupt can silence it before the exit: state at
@@ -118,10 +87,10 @@ let play options fd =
     if remaining <> 0
     then (
       let model, note = Pink.next_note model in
-      note_on fd ~channel:options.channel ~note ~velocity:options.velocity;
+      Midi.Host.note_on fd ~channel:options.channel ~note ~velocity:options.velocity;
       sounding := Some note;
       sleep_ms gate;
-      note_off fd ~channel:options.channel ~note;
+      Midi.Host.note_off fd ~channel:options.channel ~note;
       sounding := None;
       sleep_ms pause;
       loop model (remaining - 1))
@@ -137,7 +106,8 @@ let play options fd =
   Stdlib.Sys.catch_break true;
   try loop model (if options.notes <= 0 then -1 else options.notes) with
   | Stdlib.Sys.Break ->
-    Option.iter !sounding ~f:(fun note -> note_off fd ~channel:options.channel ~note);
+    Option.iter !sounding ~f:(fun note ->
+      Midi.Host.note_off fd ~channel:options.channel ~note);
     exit 130
 ;;
 
@@ -154,13 +124,9 @@ let () =
       "the channel is 0 to 15, the velocity 1 to 127, step-ms at least 1, gate-ms at \
        least 0";
     exit 1);
-  let device =
-    match options.device with
-    | Some device -> device
-    | None -> find_device ()
-  in
+  let device = Option.value options.device ~default:default_device in
   let fd =
-    try Core_unix.openfile device ~mode:[ O_WRONLY ] with
+    try Midi.Host.open_device device with
     | Core_unix.Unix_error (error, _, _) ->
       Printf.eprintf "cannot open %s: %s\n" device (Core_unix.Error.message error);
       exit 1

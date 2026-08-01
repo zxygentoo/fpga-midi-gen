@@ -12,3 +12,10 @@
  (name play_pink)
  (modules play_pink)
  (libraries core core_unix mgen))
+
+(executable
+ (name play_voices)
+ (modules play_voices)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen))
