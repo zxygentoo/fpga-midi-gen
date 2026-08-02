@@ -15,8 +15,27 @@
   - local mutation with a large, measured performance win
   - an idiomatic use of a mutable data structure
   - code that is much more clear in the imperative style
+- Software and RTL are in the same `lib/` directory, thus code sharing between
+  OCaml and Hardcaml is natural. If a software module and a circuit want the
+  same name, put them in one file: the top level holds the OCaml code (the
+  hardware can share some of it), and an `Rtl` module holds the Hardcaml
+  definitions.
+- A module in a file should have a purpose: a group of functions over a data
+  abstraction, or a grouping like a namespace that makes the consumer code
+  much more clear. Do not use a module as an escape hatch to prevent a simple
+  collision of names, or only to make the code compile. Each of these is a
+  common signal that the code needs a proper refactor.
 - A library module has a documented `.mli` file. A top-level module — an
   executable in `bin/`, the board top level — can omit it.
+- Module exports and refactors:
+  - If an OCaml export is used only by tests outside the module, export it in
+    a `For_test` module. A Hardcaml circuit usually does not have this
+    problem; if the circumstances call for it, ask the user for direction.
+  - If nothing outside the module uses it, do not export it.
+  - If nothing inside the module uses it either (this sometimes happens after
+    a refactor), then it is dead code: remove it.
+  - Be vigilant for stale tests. An export can stay alive only because a test
+    uses it, and that test can itself need a refactor or a removal.
 - Use Janestreet's Base/Core instead of Stdlib.
 - Format all code with ocamlformat, profile `janestreet`.
 - Write each Hardcaml block in the standard idiom: the interface modules `I`

@@ -75,27 +75,60 @@ through the thru port of the S-1, byte for byte the reference.
 On the board: timing is met, 651 LUTs and 775 flip-flops, no block RAM.
 The bitstream is in the QSPI flash, and the board powers on into it.
 
-## 2026-08-02 — the register decomposition (feat/pink-voices)
+## 2026-08-02 — the four voices (feat/pink-voices, feat/pink-voices-rtl)
 
-The pink model grows from one voice to four. The shipped model summed all
-eight rows into one pitch; the decomposition splits them into voices —
-soprano, alto, tenor, bass — and maps each group's sum onto its own
-register. The partition is the rhythm: a group that starts at row r
-re-articulates every 2^r steps, thus the note-rate hierarchy is the 1/f
-structure made audible, with no rhythm generator. Three partitions went
-through the ear test, and 2+2+2+2 won: the periods 1, 4, 16 and 64 steps.
-The low voices speak only when they move.
+The pink model grows from one voice to four, on the host and then in the
+circuit. The shipped model summed all eight rows into one pitch; the
+decomposition splits them into voices — soprano, alto, tenor, bass — and
+maps each group's sum onto its own register. The partition is the rhythm: a
+group that starts at row r re-articulates every 2^r steps, thus the
+note-rate hierarchy is the 1/f structure made audible, with no rhythm
+generator. Three partitions went through the ear test, and 2+2+2+2 won: the
+periods 1, 4, 16 and 64 steps. The low voices speak only when they move.
 
 The experiment measured the S-1 on the way, with the speaker off, through
 USB MIDI in and USB audio capture out: the synth has four true voices, the
 fifth note steals the oldest, and a Note Off releases a voice by pitch —
 thus two voices must never hold one pitch, and the registers are disjoint.
-The A-rooted registers take the rotation of the pentatonic that starts on
-A, and every voice stays on the pitch classes of C major pentatonic.
+Each root is a pitch class of one scale, and a voice takes its offsets from
+that scale rotated to its own root. Therefore the harmony holds by
+construction, and a root outside the scale is an error of the elaboration
+and not a silent break.
 
-The decomposition replaced the mono model: `Pink` is the four-voice model,
-and the mono model is its one-voice case, kept as `Pink.notes` — the
-reference of the shipped circuit, proven by the stream comparisons that
-pass unchanged. `play_pink` is the four-voice player, on `Core.Command`,
-and `Midi.Host` is the one home of the host-side senders. The board still
-plays the one-voice model; the four-voice circuit is the next RTL design.
+The circuit needed a new socket. `Source_intf` gave one note for one step,
+which four voices cannot use. The first answer gave the state of all four
+voices at each step, and it was wrong for a reason that is worth keeping:
+an interface of that shape makes every source describe four voices, thus a
+model that makes one note at a time must invent three silent ones for the
+sequencer to discard. The socket is now a stream. A source answers `step`
+with the notes that speak, one at a time and from the lowest voice upward,
+and a note that will not sound never crosses. Each note carries the voice
+that sounds it, because the sequencer keeps one open note for each voice
+and the voice number is the key of that state — the key that lets a Note
+Off take the channel of its Note On. The transfer is the rule of
+`Midi.Rtl.Message`, thus the design has one flow control and not two.
+
+The reference is now in two parts, and they answer the two blocks: `Pink`
+holds the model and `Voss` computes the same arithmetic; `Player` holds the
+rule that makes note events and `Sequencer` does the same on the wire. The
+review that found that split also added three rules to `AGENT.md`: what a
+top-level export is for, when an export belongs in a `For_test` module, and
+where the software and the circuit of one name live — in one file, with the
+OCaml at the top and an `Rtl` module below it. `Prng` is the first of those.
+
+The exactness holds at four levels. The circuit of `Prng` walks with the
+software beside it for 1000 steps; `Voss` rebuilds the note of every voice
+from its own reports and equals `Pink.next_step` for 200 steps; `Model`
+gives the messages that `Player` composes, byte for byte; and the board,
+captured through the thru port of the S-1, gave 330 bytes that agree with
+the reference and then close each open voice at the stop. The same 330
+bytes came from both socket designs, thus the stream changed the interface
+and not the music.
+
+On the board: timing is met with 3.168 ns of slack, 735 LUTs and 830
+flip-flops, no block RAM and no DSP. The count of DSPs is the proof that
+the four constant multipliers are shifts and adds. The stream costs 22 LUTs
+against the design that gave all four voices at one time, because the
+report of the source and the walk of the sequencer are the same work in one
+place instead of two. The bitstream is in the QSPI flash, and the board
+powers on into it.

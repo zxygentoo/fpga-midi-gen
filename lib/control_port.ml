@@ -258,7 +258,7 @@ module Harness_o = struct
     { out_data : 'a [@bits 8]
     ; out_valid : 'a
     ; busy : 'a
-    ; doorbell : 'a Midi.Message.t
+    ; doorbell : 'a Midi.Rtl.Message.t
         (* the cell port, so that a waveform test can show the walk and the commit *)
     ; write_enable : 'a
     ; write_address : 'a [@bits cell_bits]

@@ -79,7 +79,7 @@ let create () =
   let model =
     Model.create
       ~clocks_per_ms
-      ~source:(Voss.create ~params:Pink.Params.default ~seed:control_regs.params.seed)
+      ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
       { Model.I.clock = clk
       ; clear
       ; params = control_regs.params

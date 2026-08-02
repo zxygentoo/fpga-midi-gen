@@ -6,7 +6,7 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; message : 'a Midi.Message.t
+    ; message : 'a Midi.Rtl.Message.t
     }
   [@@deriving hardcaml]
 end

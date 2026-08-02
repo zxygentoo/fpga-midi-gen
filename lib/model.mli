@@ -20,7 +20,8 @@ module I : sig
 end
 
 module O : sig
-  type 'a t = { midi : 'a Midi.Message.t (** the model source *) } [@@deriving hardcaml]
+  type 'a t = { midi : 'a Midi.Rtl.Message.t (** the model source *) }
+  [@@deriving hardcaml]
 end
 
 val create

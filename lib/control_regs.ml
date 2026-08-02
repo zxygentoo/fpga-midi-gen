@@ -36,7 +36,7 @@ module O = struct
   type 'a t =
     { params : 'a Params.t
     ; read_data : 'a [@bits 8]
-    ; doorbell : 'a Midi.Message.t
+    ; doorbell : 'a Midi.Rtl.Message.t
     }
   [@@deriving hardcaml]
 end
@@ -177,7 +177,7 @@ let create (i : _ I.t) : _ O.t =
         (List.init size ~f:(fun k ->
            if k = go_cell then uresize pending.value ~width:8 else live.(k).value))
   ; doorbell =
-      { Midi.Message.data = doorbell_data.value
+      { Midi.Rtl.Message.data = doorbell_data.value
       ; len = doorbell_len.value
       ; valid = pending.value
       }

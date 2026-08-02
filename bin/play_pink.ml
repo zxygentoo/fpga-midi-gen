@@ -7,76 +7,56 @@ open Core
 module Control = Mgen.Control
 module Midi = Mgen.Midi
 module Pink = Mgen.Pink
-
-let voices = List.length Pink.default_voices
-
-(* bass first, aligned with the states of [Pink.next_step] *)
-let restrikes =
-  Array.of_list (List.rev_map Pink.default_voices ~f:(fun v -> v.Pink.Voice.restrike))
-;;
+module Player = Mgen.Player
 
 let sleep_ms ms = ignore (Core_unix.nanosleep (Float.of_int ms /. 1000.) : float)
-
-(* the open note of each voice, so that an interrupt and the exit can silence them: state
-   at the process edge *)
-let sounding : int option array = Array.create ~len:voices None
-
-let silence fd ~channel =
-  Array.iteri sounding ~f:(fun k note ->
-    Option.iter note ~f:(fun note -> Midi.Host.note_off fd ~channel ~note);
-    sounding.(k) <- None)
-;;
-
 let default_device = "/dev/snd/midiC2D0"
 
 let play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold =
   let fd =
     let path = Option.value device ~default:default_device in
-    try Midi.Host.open_device path with
+    try Midi.open_device path with
     | Core_unix.Unix_error (error, _, _) ->
       Printf.eprintf "cannot open %s: %s\n" path (Core_unix.Error.message error);
       exit 1
   in
+  (* -hold makes every voice speak only when it moves *)
+  let model =
+    if hold
+    then
+      { Pink.default with
+        voices =
+          List.map Pink.default.voices ~f:(fun v ->
+            { v with Pink.Voice.restrike = false })
+      }
+    else Pink.default
+  in
   let gate = Int.min gate_ms step_ms in
-  let model = ref (Pink.create ~voices:Pink.default_voices ~seed) in
+  let player = ref (Player.create ~model ~seed) in
+  let advance f =
+    let player', events = f !player in
+    player := player';
+    List.iter events ~f:(function
+      | Player.Event.On note -> Midi.send_note_on fd ~channel ~note ~velocity
+      | Player.Event.Off note -> Midi.send_note_off fd ~channel ~note)
+  in
   Stdlib.Sys.catch_break true;
   (try
      let step = ref 0 in
      while steps = 0 || !step < steps do
        Int.incr step;
-       let model', states = Pink.next_step !model in
-       model := model';
-       (* strike from the bass upward; each due voice closes its note first, thus the four
-          voices of the S-1 are never exceeded *)
-       List.iteri states ~f:(fun k (s : Pink.state) ->
-         (* a due voice strikes when nothing is open, when its pitch moved, or when its
-            policy re-strikes held pitches (and -hold does not override it) *)
-         let restrike =
-           s.due
-           &&
-           match sounding.(k) with
-           | None -> true
-           | Some open_note -> open_note <> s.note || (restrikes.(k) && not hold)
-         in
-         if restrike
-         then (
-           Option.iter sounding.(k) ~f:(fun note -> Midi.Host.note_off fd ~channel ~note);
-           Midi.Host.note_on fd ~channel ~note:s.note ~velocity;
-           sounding.(k) <- Some s.note));
+       advance Player.step;
        sleep_ms gate;
-       (* the soprano — the last voice — is the gated one; the others sustain to their
-          next articulation *)
-       let soprano = voices - 1 in
-       Option.iter sounding.(soprano) ~f:(fun note ->
-         Midi.Host.note_off fd ~channel ~note;
-         sounding.(soprano) <- None);
+       (* the gate closes the highest voice only. When the gate is not less than the step
+          it never comes, and that voice closes at its next articulation. *)
+       if gate_ms < step_ms then advance Player.gate;
        sleep_ms (step_ms - gate)
      done
    with
    | Stdlib.Sys.Break ->
-     silence fd ~channel;
+     advance Player.stop;
      exit 130);
-  silence fd ~channel
+  advance Player.stop
 ;;
 
 let command =

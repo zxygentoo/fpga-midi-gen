@@ -4,8 +4,8 @@ open Signal
 
 module I = struct
   type 'a t =
-    { doorbell : 'a Midi.Message.t
-    ; model : 'a Midi.Message.t
+    { doorbell : 'a Midi.Rtl.Message.t
+    ; model : 'a Midi.Rtl.Message.t
     ; out_ready : 'a
     }
   [@@deriving hardcaml]
@@ -13,7 +13,7 @@ end
 
 module O = struct
   type 'a t =
-    { out : 'a Midi.Message.t
+    { out : 'a Midi.Rtl.Message.t
     ; doorbell_ready : 'a
     ; model_ready : 'a
     }
@@ -24,7 +24,7 @@ let create (i : _ I.t) : _ O.t =
   let granted_doorbell = i.doorbell.valid in
   let granted_model = i.model.valid &: ~:(i.doorbell.valid) in
   { O.out =
-      { Midi.Message.data = mux2 granted_doorbell i.doorbell.data i.model.data
+      { Midi.Rtl.Message.data = mux2 granted_doorbell i.doorbell.data i.model.data
       ; len = mux2 granted_doorbell i.doorbell.len i.model.len
       ; valid = i.doorbell.valid |: i.model.valid
       }

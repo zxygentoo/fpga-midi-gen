@@ -159,7 +159,7 @@ module O = struct
   type 'a t =
     { params : 'a Params.t (** the named views; each one is stable *)
     ; read_data : 'a [@bits 8] (** the byte at [read_address] *)
-    ; doorbell : 'a Midi.Message.t (** the test message, as a message source *)
+    ; doorbell : 'a Midi.Rtl.Message.t (** the test message, as a message source *)
     }
   [@@deriving hardcaml]
 end
@@ -324,8 +324,8 @@ a wrong connection is easy to see.
 ```ocaml
 module I = struct
   type 'a t =
-    { doorbell : 'a Midi.Message.t (** the test-message source *)
-    ; model : 'a Midi.Message.t (** the model source *)
+    { doorbell : 'a Midi.Rtl.Message.t (** the test-message source *)
+    ; model : 'a Midi.Rtl.Message.t (** the model source *)
     ; out_ready : 'a (** from [Midi_out]: 1 when it can take a message *)
     }
   [@@deriving hardcaml]
@@ -333,7 +333,7 @@ end
 
 module O = struct
   type 'a t =
-    { out : 'a Midi.Message.t (** the message of the source that has the grant *)
+    { out : 'a Midi.Rtl.Message.t (** the message of the source that has the grant *)
     ; doorbell_ready : 'a (** 1 when [Midi_out] takes the doorbell message *)
     ; model_ready : 'a (** 1 when [Midi_out] takes the model message *)
     }
@@ -377,7 +377,7 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; message : 'a Midi.Message.t
+    ; message : 'a Midi.Rtl.Message.t
     (** the block takes the message when [ready] is 1 *)
     }
   [@@deriving hardcaml]
@@ -469,7 +469,7 @@ These three rules of `docs/host_control.md` change.
 
 ## The steps
 
-1. `Midi.Message`, the message interface.
+1. `Midi.Rtl.Message`, the message interface.
 2. `Midi_out`, with tests: the byte walk, the `ready` envelope, and the
    line at 31250 baud.
 3. `Midi_merge`, with tests: the priority, and the `ready` of each source.

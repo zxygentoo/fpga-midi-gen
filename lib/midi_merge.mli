@@ -14,8 +14,8 @@ open Hardcaml
 
 module I : sig
   type 'a t =
-    { doorbell : 'a Midi.Message.t (** the test-message source; it has the priority *)
-    ; model : 'a Midi.Message.t (** the model source *)
+    { doorbell : 'a Midi.Rtl.Message.t (** the test-message source; it has the priority *)
+    ; model : 'a Midi.Rtl.Message.t (** the model source *)
     ; out_ready : 'a (** from [Midi_out]: 1 when it can take a message *)
     }
   [@@deriving hardcaml]
@@ -23,7 +23,7 @@ end
 
 module O : sig
   type 'a t =
-    { out : 'a Midi.Message.t (** the message of the source that has the grant *)
+    { out : 'a Midi.Rtl.Message.t (** the message of the source that has the grant *)
     ; doorbell_ready : 'a (** 1 when [Midi_out] takes the doorbell message *)
     ; model_ready : 'a (** 1 when [Midi_out] takes the model message *)
     }

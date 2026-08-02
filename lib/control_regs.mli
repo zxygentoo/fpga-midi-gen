@@ -54,7 +54,7 @@ module O : sig
     ; read_data : 'a
     (** the byte at [read_address]; the read is combinational. MIDI_GO gives 1 while a
         doorbell message waits, and each other cell gives its stored byte *)
-    ; doorbell : 'a Midi.Message.t (** the test message, as a message source *)
+    ; doorbell : 'a Midi.Rtl.Message.t (** the test message, as a message source *)
     }
   [@@deriving hardcaml]
 end
