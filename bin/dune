@@ -6,7 +6,9 @@
 (executable
  (name mgt)
  (modules mgt)
- (libraries core core_unix mgen))
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen))
 
 (executable
  (name play_pink)

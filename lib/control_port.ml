@@ -379,10 +379,8 @@ let%expect_test "transactions against the cells" =
     |}];
   (* the one-shot doorbell write: MIDI_MSG, MIDI_LEN, MIDI_GO ascending. The MIDI path is
      free, thus the message goes at once and MIDI_GO reads 0 again *)
-  transact
-    (Control.encode_request
-       (Write
-          { addr = Control.Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
+  let addr, data = Control.doorbell_write [ 0x92; 0x3C; 0x64 ] in
+  transact (Control.encode_request (Write { addr; data }));
   transact (Control.encode_request (Read { addr = Control.Reg.midi_msg; len = 5 }));
   [%expect {|
     op 2 status ok

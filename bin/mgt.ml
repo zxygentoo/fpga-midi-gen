@@ -1,10 +1,7 @@
 (* mgt, the MIDI gen tool: reads and writes the control cells over the console UART.
 
-   mgt [--device PATH] read ADDR LEN mgt [--device PATH] write ADDR BYTE.. mgt
-   [--device PATH] doorbell BYTE.. mgt [--device PATH] dump
-
-   ADDR and BYTE take the OCaml integer syntax: 0x09 or 9. The device default is
-   /dev/ttyUSB1, the Nexys 4 console UART. *)
+   Each subcommand takes -help. ADDR and BYTE take the OCaml integer syntax: 0x09 or 9.
+   The device default is /dev/ttyUSB1, the Nexys 4 console UART. *)
 
 open Core
 module Bytes_util = Mgen.Bytes_util
@@ -15,29 +12,52 @@ module Midi = Mgen.Midi
 let default_device = "/dev/ttyUSB1"
 let baud = 115200
 
-let usage () : 'a =
-  prerr_endline
-    "usage: mgt [--device PATH] (read ADDR LEN | write ADDR BYTE.. | doorbell BYTE.. | \
-     dump)";
-  exit 2
+(* The tool rejects a value that the wire format cannot carry, and it does that here: the
+   codec raises for a value outside its range, and an exception is not a diagnostic for a
+   person at a command line. *)
+let ensure name ~low ~high v =
+  if v < low || v > high
+  then (
+    Printf.eprintf "%s must be %d to %d, not %d\n" name low high v;
+    exit 2)
 ;;
 
-let int_arg s =
-  match Option.try_with (fun () -> Int.of_string s) with
-  | Some v -> v
-  | None -> usage ()
+let checked name ~low ~high v =
+  ensure name ~low ~high v;
+  v
 ;;
 
-let serial_transport_exn device =
-  let fd = Core_unix.openfile device ~mode:[ O_RDWR; O_NOCTTY ] in
-  Control_transport.serial ~baud fd
+let address_arg =
+  Command.Arg_type.create (fun s -> checked "ADDR" ~low:0 ~high:0xFF (Int.of_string s))
 ;;
 
-let serial_transport device =
-  try serial_transport_exn device with
-  | Core_unix.Unix_error (error, _, _) ->
-    Printf.eprintf "cannot open %s: %s\n" device (Core_unix.Error.message error);
-    exit 1
+let length_arg =
+  Command.Arg_type.create (fun s ->
+    checked "LEN" ~low:1 ~high:Control.Constants.max_data_len (Int.of_string s))
+;;
+
+let byte_arg =
+  Command.Arg_type.create (fun s -> checked "BYTE" ~low:0 ~high:0xFF (Int.of_string s))
+;;
+
+let device_param =
+  let open Command.Param in
+  flag
+    "-device"
+    (optional_with_default default_device string)
+    ~doc:"PATH the console UART (default /dev/ttyUSB1)"
+;;
+
+let transport device =
+  let fd =
+    try Core_unix.openfile device ~mode:[ O_RDWR; O_NOCTTY ] with
+    | Core_unix.Unix_error (error, _, _) ->
+      Printf.eprintf "cannot open %s: %s\n" device (Core_unix.Error.message error);
+      exit 1
+  in
+  let t = Control_transport.serial ~baud fd in
+  Control_transport.resync t;
+  t
 ;;
 
 let check = function
@@ -55,36 +75,20 @@ let dump t =
     check (Control_transport.read t ~address:Control.Reg.base ~length:Control.Reg.size)
   in
   Printf.printf "%04x  %s\n" Control.Reg.base (Bytes_util.hex bytes);
-  let fields =
-    List.sort
-      ~compare:(fun (_, a, _) (_, b, _) -> Int.compare a b)
-      [ "run", Control.Reg.run, 1
-      ; "channel", Control.Reg.channel, 1
-      ; "step_ms", Control.Reg.step_ms, 2
-      ; "gate_ms", Control.Reg.gate_ms, 2
-      ; "velocity", Control.Reg.velocity, 1
-      ; "seed", Control.Reg.seed, 4
-      ; "midi_go", Control.Reg.midi_go, 1
-      ; "midi_len", Control.Reg.midi_len, 1
-      ; "midi_msg", Control.Reg.midi_msg, Midi.max_message_bytes
-      ]
-  in
-  List.iter
-    ~f:(fun (name, address, width) ->
-      let value = Bytes_util.uint_le bytes ~pos:(address - Control.Reg.base) ~width in
-      Printf.printf "%04x  %-8s  %d (0x%x)\n" address name value value)
-    fields
+  List.iter Control.Reg.fields ~f:(fun (f : Control.Reg.field) ->
+    let value =
+      Bytes_util.uint_le bytes ~pos:(f.address - Control.Reg.base) ~width:f.width
+    in
+    Printf.printf "%04x  %-8s  %d (0x%x)\n" f.address f.name value value)
 ;;
 
-(* the doorbell: poll MSG_GO to 0, ring with one ascending burst, poll to 0 again as the
+(* the doorbell: poll MIDI_GO to 0, ring with one ascending burst, poll to 0 again as the
    confirmation that the send ran. The poll before the ring is the host-control rule; the
    poll after it bounds the exit at "the message went out". *)
-let doorbell t bytes =
-  let n = List.length bytes in
-  if n < 1 || n > Midi.max_message_bytes then usage ();
+let doorbell t message =
   let midi_go_clear () =
     let b = check (Control_transport.read t ~address:Control.Reg.midi_go ~length:1) in
-    Char.to_int (Bytes.get b 0) = 0
+    Bytes_util.byte b 0 = 0
   in
   let wait_clear () =
     (* one poll is about 1 ms of wire time, and a message takes at most 1 ms *)
@@ -100,38 +104,67 @@ let doorbell t bytes =
     wait 100
   in
   wait_clear ();
-  let burst = Bytes.make (Control.Reg.midi_go - Control.Reg.midi_msg + 1) '\x00' in
-  List.iteri bytes ~f:(fun k b -> Bytes.set burst k (Char.of_int_exn b));
-  Bytes.set burst (Control.Reg.midi_len - Control.Reg.midi_msg) (Char.of_int_exn n);
-  Bytes.set burst (Control.Reg.midi_go - Control.Reg.midi_msg) '\x01';
-  check (Control_transport.write t ~address:Control.Reg.midi_msg ~data:burst);
+  let address, data = Control.doorbell_write message in
+  check (Control_transport.write t ~address ~data);
   wait_clear ()
 ;;
 
-let () =
-  let args = List.tl_exn (Array.to_list (Sys.get_argv ())) in
-  let device, args =
-    match args with
-    | "--device" :: path :: rest -> path, rest
-    | _ -> default_device, args
-  in
-  let t = serial_transport device in
-  Control_transport.resync t;
-  match args with
-  | [ "read"; address; length ] ->
-    let data =
-      check (Control_transport.read t ~address:(int_arg address) ~length:(int_arg length))
-    in
-    print_endline (Bytes_util.hex data)
-  | "write" :: address :: (_ :: _ as bytes) ->
-    let data =
-      Bytes.of_string
-        (String.of_char_list
-           (List.map bytes ~f:(fun b -> Char.of_int_exn (int_arg b land 0xff))))
-    in
-    check (Control_transport.write t ~address:(int_arg address) ~data)
-  | "doorbell" :: (_ :: _ as bytes) ->
-    doorbell t (List.map bytes ~f:(fun b -> int_arg b land 0xff))
-  | [ "dump" ] -> dump t
-  | _ -> usage ()
+let read_command =
+  Command.basic
+    ~summary:"read LEN cells at ADDR"
+    (let%map_open.Command device = device_param
+     and address = anon ("ADDR" %: address_arg)
+     and length = anon ("LEN" %: length_arg) in
+     fun () ->
+       let data = check (Control_transport.read (transport device) ~address ~length) in
+       print_endline (Bytes_util.hex data))
 ;;
+
+let write_command =
+  Command.basic
+    ~summary:"write the BYTEs to the cells at ADDR"
+    (let%map_open.Command device = device_param
+     and address = anon ("ADDR" %: address_arg)
+     and bytes = anon (sequence ("BYTE" %: byte_arg)) in
+     fun () ->
+       ensure
+         "the number of BYTEs"
+         ~low:1
+         ~high:Control.Constants.max_data_len
+         (List.length bytes);
+       let data = Bytes.of_char_list (List.map bytes ~f:Char.of_int_exn) in
+       check (Control_transport.write (transport device) ~address ~data))
+;;
+
+let doorbell_command =
+  Command.basic
+    ~summary:"send the BYTEs to the MIDI output as one test message"
+    (let%map_open.Command device = device_param
+     and bytes = anon (sequence ("BYTE" %: byte_arg)) in
+     fun () ->
+       ensure
+         "the number of BYTEs"
+         ~low:1
+         ~high:Midi.max_message_bytes
+         (List.length bytes);
+       doorbell (transport device) bytes)
+;;
+
+let dump_command =
+  Command.basic
+    ~summary:"read every cell and name each register"
+    (let%map_open.Command device = device_param in
+     fun () -> dump (transport device))
+;;
+
+let command =
+  Command.group
+    ~summary:"the control cells of the FPGA, over the console UART"
+    [ "read", read_command
+    ; "write", write_command
+    ; "doorbell", doorbell_command
+    ; "dump", dump_command
+    ]
+;;
+
+let () = Command_unix.run command

@@ -44,20 +44,6 @@ module Status = struct
   ;;
 end
 
-module Reg = struct
-  let base = 0x00
-  let size = 16
-  let run = 0x0F (* bit 0; the board button also toggles it *)
-  let channel = 0x0E
-  let step_ms = 0x0C (* 2 bytes *)
-  let gate_ms = 0x0A (* 2 bytes *)
-  let velocity = 0x09
-  let seed = 0x05 (* 4 bytes *)
-  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
-  let midi_len = 0x03
-  let midi_msg = 0x00 (* 3 bytes *)
-end
-
 module Default = struct
   (* MIDI channel 3, the S-1 factory default. *)
   let channel = 2
@@ -66,6 +52,75 @@ module Default = struct
   let velocity = 100
   let seed = 42 (* must not be 0 *)
 end
+
+module Reg = struct
+  let base = 0x00
+  let size = 16
+  let run = 0x0F (* bit 0; the board button also toggles it *)
+  let channel = 0x0E
+  let step_ms = 0x0C
+  let gate_ms = 0x0A
+  let velocity = 0x09
+  let seed = 0x05
+  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
+  let midi_len = 0x03
+  let midi_msg = 0x00
+
+  type field =
+    { name : string
+    ; address : int
+    ; width : int
+    ; default : int
+    }
+
+  (* Each register, from the first address upward. The RTL cells, their power-on values
+     and the driver dump all read this one table. *)
+  let fields =
+    [ { name = "midi_msg"
+      ; address = midi_msg
+      ; width = Midi.max_message_bytes
+      ; default = 0
+      }
+    ; { name = "midi_len"; address = midi_len; width = 1; default = 0 }
+    ; { name = "midi_go"; address = midi_go; width = 1; default = 0 }
+    ; { name = "seed"; address = seed; width = 4; default = Default.seed }
+    ; { name = "velocity"; address = velocity; width = 1; default = Default.velocity }
+    ; { name = "gate_ms"; address = gate_ms; width = 2; default = Default.gate_ms }
+    ; { name = "step_ms"; address = step_ms; width = 2; default = Default.step_ms }
+    ; { name = "channel"; address = channel; width = 1; default = Default.channel }
+    ; { name = "run"; address = run; width = 1; default = 0 }
+    ]
+  ;;
+
+  (* the table must cover each address of the section one time: this catches a width that
+     does not agree with the addresses *)
+  let () =
+    let covered =
+      List.concat_map fields ~f:(fun f -> List.init f.width ~f:(fun k -> f.address + k))
+    in
+    assert (List.length covered = size);
+    assert (List.length (List.dedup_and_sort covered ~compare:Int.compare) = size);
+    assert (List.for_all covered ~f:(fun a -> a >= base && a < base + size))
+  ;;
+
+  let width_of address = (List.find_exn fields ~f:(fun f -> f.address = address)).width
+end
+
+(* The one-shot test message: MIDI_MSG, MIDI_LEN and MIDI_GO in one ascending write. A
+   write applies at one time, thus this one burst does the whole operation. The layout of
+   the burst has one definition, here with the addresses that make it. *)
+let doorbell_write message =
+  let n = List.length message in
+  if n < 1 || n > Midi.max_message_bytes
+  then
+    invalid_arg
+      (Printf.sprintf "a test message has 1 to %d bytes, not %d" Midi.max_message_bytes n);
+  let data = Bytes.make (Reg.midi_go - Reg.midi_msg + 1) '\x00' in
+  List.iteri message ~f:(fun k b -> set_byte data k b);
+  set_byte data (Reg.midi_len - Reg.midi_msg) n;
+  set_byte data (Reg.midi_go - Reg.midi_msg) 1;
+  Reg.midi_msg, data
+;;
 
 (* The framing is COBS; see [Cobs] in [lib/cobs.ml]. The byte accessors and the
    little-endian codec are in [Bytes_util]: all values of more than one byte are
@@ -228,11 +283,9 @@ let%expect_test "response round trips" =
 ;;
 
 let%expect_test "the one-shot doorbell frame on the wire" =
-  (* MSG, MSG_LEN and MSG_GO in one ascending write: Note On, channel 3, C4, velocity 100 *)
-  encode_request
-    (Write { addr = Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
-  |> hex
-  |> Stdio.print_endline;
+  (* Note On, channel 3, C4, velocity 100 *)
+  let addr, data = doorbell_write [ 0x92; 0x3C; 0x64 ] in
+  encode_request (Write { addr; data }) |> hex |> Stdio.print_endline;
   [%expect {| 02 02 07 05 92 3c 64 03 01 00 |}]
 ;;
 

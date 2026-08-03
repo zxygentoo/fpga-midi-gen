@@ -62,12 +62,8 @@ let () =
     (Mgen.Control.encode_request (Read { addr = Mgen.Control.Reg.velocity; len = 1 }));
   level true (80 * cpb);
   (* the one-shot doorbell write: the message must appear on the MIDI line *)
-  send_frame
-    (Mgen.Control.encode_request
-       (Write
-          { addr = Mgen.Control.Reg.midi_msg
-          ; data = Bytes.of_string "\x92\x3C\x64\x03\x01"
-          }));
+  let addr, data = Mgen.Control.doorbell_write [ 0x92; 0x3C; 0x64 ] in
+  send_frame (Mgen.Control.encode_request (Write { addr; data }));
   level true (40 * midi_cpb);
   (* split the response byte stream at the frame delimiters and parse *)
   let frames =

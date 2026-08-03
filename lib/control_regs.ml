@@ -44,44 +44,15 @@ end
 (* the cell index of an address in the control section *)
 let cell address = address - Control.Reg.base
 
-(* Each field of the control section: the cell of its first byte, the width in bytes, and
-   the power-on value. The views and the defaults both come from this one table. *)
-let fields =
-  [ cell Control.Reg.run, 1, 0
-  ; cell Control.Reg.channel, 1, Control.Default.channel
-  ; cell Control.Reg.step_ms, 2, Control.Default.step_ms
-  ; cell Control.Reg.gate_ms, 2, Control.Default.gate_ms
-  ; cell Control.Reg.velocity, 1, Control.Default.velocity
-  ; cell Control.Reg.seed, 4, Control.Default.seed
-  ; cell Control.Reg.midi_msg, Midi.max_message_bytes, 0
-  ; cell Control.Reg.midi_len, 1, 0
-  ; cell Control.Reg.midi_go, 1, 0
-  ]
-;;
-
-(* the table must cover each cell of the section one time: this catches a width that does
-   not agree with the addresses *)
-let () =
-  let covered =
-    List.concat_map fields ~f:(fun (first, width, _) ->
-      List.init width ~f:(fun k -> first + k))
-  in
-  assert (List.length covered = size);
-  assert (List.length (List.dedup_and_sort covered ~compare:Int.compare) = size)
-;;
-
-let width_of address =
-  List.find_map_exn fields ~f:(fun (first, width, _) ->
-    if first = cell address then Some width else None)
-;;
-
-(* the power-on value of each cell, in the little-endian order of the host control *)
+(* the power-on value of each cell, in the little-endian order of the host control.
+   [Control.Reg.fields] is the one table of the widths and the values, and its coverage
+   assert proves that each cell is here exactly one time. *)
 let defaults =
   let bytes =
-    List.concat_map fields ~f:(fun (first, width, value) ->
-      List.init width ~f:(fun k -> first + k, (value lsr (8 * k)) land 0xff))
+    List.concat_map Control.Reg.fields ~f:(fun (f : Control.Reg.field) ->
+      List.init f.width ~f:(fun k ->
+        cell f.address + k, (f.default lsr (8 * k)) land 0xff))
   in
-  (* the coverage assert above proves that each cell is in [bytes] exactly one time *)
   List.init size ~f:(fun k -> List.Assoc.find_exn bytes k ~equal:Int.equal)
 ;;
 
@@ -160,7 +131,9 @@ let create (i : _ I.t) : _ O.t =
     ; when_ taken [ pending <-- gnd ]
     ];
   let view address =
-    concat_lsb (List.init (width_of address) ~f:(fun k -> live.(cell address + k).value))
+    concat_lsb
+      (List.init (Control.Reg.width_of address) ~f:(fun k ->
+         live.(cell address + k).value))
   in
   (* each view has the natural width of its value, thus no consumer knows where the value
      sits in the cell byte *)
@@ -321,7 +294,8 @@ let%expect_test "the doorbell" =
     Cyclesim.cycle sim
   in
   (* one ascending burst does the whole operation: MIDI_MSG, MIDI_LEN, MIDI_GO *)
-  burst Control.Reg.midi_msg [ 0x92; 0x3C; 0x64; 0x03; 0x01 ];
+  let address, data = Control.doorbell_write [ 0x92; 0x3C; 0x64 ] in
+  burst address (List.map (Bytes.to_list data) ~f:Char.to_int);
   show "after the ring";
   take ();
   show "after the transfer";
