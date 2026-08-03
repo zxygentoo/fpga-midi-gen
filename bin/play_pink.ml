@@ -9,24 +9,29 @@ module Midi = Mgen.Midi
 module Pink = Mgen.Pink
 module Player = Mgen.Player
 
-(* The ranges of the control cells that these flags set. A value outside them either
-   raises out of the library — [Prng.create] for the seed, [Char.of_int_exn] for a
-   velocity above a byte — or makes a wrong MIDI status byte, and neither is a diagnostic
-   for a person at a command line. The check is on the argument, thus it comes before the
-   tool opens the device. *)
-let ranged name ~low ~high =
+(* These flags set a control cell, thus [Control_intf.Reg] states their range and this
+   tool does not repeat it. A value outside the range either raises out of the library —
+   [Prng.create] for the seed, [Char.of_int_exn] for a velocity above a byte — or makes a
+   wrong MIDI status byte, and neither is a diagnostic for a person at a command line. The
+   check is on the argument, thus it comes before the tool opens the device. *)
+let ranged name address =
+  let { Control_intf.Reg.lower; upper } =
+    Option.value_exn
+      (Control_intf.Reg.bounds_of address)
+      ~message:(name ^ " has no range in Control_intf.Reg")
+  in
   Command.Arg_type.create (fun s ->
     let value = Int.of_string s in
-    if value < low || value > high
+    if value < lower || value > upper
     then (
-      Printf.eprintf "%s must be %d to %d, not %d\n" name low high value;
+      Printf.eprintf "%s must be %d to %d, not %d\n" name lower upper value;
       exit 2);
     value)
 ;;
 
-let seed_arg = ranged "the seed" ~low:1 ~high:0xFFFF_FFFF
-let channel_arg = ranged "the channel" ~low:0 ~high:15
-let velocity_arg = ranged "the velocity" ~low:1 ~high:127
+let seed_arg = ranged "the seed" Control_intf.Reg.seed
+let channel_arg = ranged "the channel" Control_intf.Reg.channel
+let velocity_arg = ranged "the velocity" Control_intf.Reg.velocity
 let sleep_ms ms = ignore (Core_unix.nanosleep (Float.of_int ms /. 1000.) : float)
 let default_device = "/dev/snd/midiC2D0"
 

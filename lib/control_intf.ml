@@ -87,13 +87,27 @@ module Reg = struct
   let midi_len = 0x03
   let midi_msg = 0x00
 
-  (** One register: its name, the address of its first byte, the number of bytes, and its
-      power-on value. A value of more than one byte is little-endian. *)
+  (** The range of the values that a register accepts. *)
+  type bounds =
+    { lower : int
+    ; upper : int
+    }
+
+  (** One register: its name, the address of its first byte, the number of bytes, its
+      power-on value, and its range when it has one. A value of more than one byte is
+      little-endian.
+
+      [bounds] is [None] for a cell that holds no scalar: RUN and MIDI_GO are bit fields
+      and the circuit reads bit 0 alone; MIDI_MSG takes any bytes; GATE_MS takes any
+      value, and one that is not less than STEP_MS only means that the gate never comes;
+      STEP_MS takes any value, and 0 counts as 1; MIDI_LEN rings for 1 to 3 but rests at
+      0, thus a range would not agree with its own power-on value. *)
   type field =
     { name : string
     ; address : int
     ; width : int
     ; default : int
+    ; bounds : bounds option
     }
 
   (* Each register, from the first address upward. The RTL cells, their power-on values
@@ -103,16 +117,50 @@ module Reg = struct
       ; address = midi_msg
       ; width = Midi.max_message_bytes
       ; default = 0
+      ; bounds = None
       }
-    ; { name = "midi_len"; address = midi_len; width = 1; default = 0 }
-    ; { name = "midi_go"; address = midi_go; width = 1; default = 0 }
-    ; { name = "seed"; address = seed; width = 4; default = Default.seed }
-    ; { name = "velocity"; address = velocity; width = 1; default = Default.velocity }
-    ; { name = "gate_ms"; address = gate_ms; width = 2; default = Default.gate_ms }
-    ; { name = "step_ms"; address = step_ms; width = 2; default = Default.step_ms }
-    ; { name = "channel"; address = channel; width = 1; default = Default.channel }
-    ; { name = "run"; address = run; width = 1; default = 0 }
+    ; { name = "midi_len"; address = midi_len; width = 1; default = 0; bounds = None }
+    ; { name = "midi_go"; address = midi_go; width = 1; default = 0; bounds = None }
+    ; { name = "seed"
+      ; address = seed
+      ; width = 4
+      ; default = Default.seed
+      ; bounds = Some { lower = 1; upper = 0xFFFF_FFFF }
+      }
+    ; { name = "velocity"
+      ; address = velocity
+      ; width = 1
+      ; default = Default.velocity
+      ; bounds = Some { lower = 1; upper = 127 }
+      }
+    ; { name = "gate_ms"
+      ; address = gate_ms
+      ; width = 2
+      ; default = Default.gate_ms
+      ; bounds = None
+      }
+    ; { name = "step_ms"
+      ; address = step_ms
+      ; width = 2
+      ; default = Default.step_ms
+      ; bounds = None
+      }
+    ; { name = "channel"
+      ; address = channel
+      ; width = 1
+      ; default = Default.channel
+      ; bounds = Some { lower = 0; upper = 15 }
+      }
+    ; { name = "run"; address = run; width = 1; default = 0; bounds = None }
     ]
+  ;;
+
+  (* each default must agree with its own range: the table cannot state a power-on value
+     that the same row forbids *)
+  let () =
+    List.iter fields ~f:(fun f ->
+      Option.iter f.bounds ~f:(fun b ->
+        assert (f.default >= b.lower && f.default <= b.upper)))
   ;;
 
   (* the table must cover each address of the section one time: this catches a width that
@@ -126,8 +174,13 @@ module Reg = struct
     assert (List.for_all covered ~f:(fun a -> a >= base && a < base + size))
   ;;
 
+  let field_at address = List.find_exn fields ~f:(fun f -> f.address = address)
+
   (* the number of bytes of the register at [address]; it raises when none starts there *)
-  let width_of address = (List.find_exn fields ~f:(fun f -> f.address = address)).width
+  let width_of address = (field_at address).width
+
+  (* the range of the register at [address], when it has one *)
+  let bounds_of address = (field_at address).bounds
 end
 
 (** [build_doorbell message] is the address and the bytes of the one ascending write that
