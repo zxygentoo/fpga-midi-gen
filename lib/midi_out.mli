@@ -5,8 +5,8 @@
     on the line. Therefore no other source can put a byte between the bytes of the message
     that goes out.
 
-    [Midi.Message.len] must be 1 to [Midi.max_message_bytes]. The walk also ends at the
-    last byte, thus a length outside the range cannot hold the block. *)
+    [Midi.Rtl.Message.len] must be 1 to [Midi.max_message_bytes]. The walk also ends at
+    the last byte, thus a length outside the range cannot hold the block. *)
 
 open Hardcaml
 
@@ -14,7 +14,7 @@ module I : sig
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; message : 'a Midi.Message.t (** the block takes it when [ready] is 1 *)
+    ; message : 'a Midi.Rtl.Message.t (** the block takes it when [ready] is 1 *)
     }
   [@@deriving hardcaml]
 end

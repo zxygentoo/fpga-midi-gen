@@ -28,9 +28,9 @@ The registers:
 | `0F` | RUN | the run state, bit 0 | 0 |
 | `0E` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
 | `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 250 |
-| `0A`–`0B` | GATE_MS | gate time in ms | 125 |
+| `0A`–`0B` | GATE_MS | gate time of the highest voice, in ms | 125 |
 | `09` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | see `lib/control.ml` |
+| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | 42 |
 | `04` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
 | `03` | MIDI_LEN | length of the test message, 1 to 3 | 0 |
 | `00`–`02` | MIDI_MSG | the test message bytes | 0 |
@@ -44,14 +44,23 @@ Semantics:
 - A change of RUN or STEP_MS applies at the next step. When RUN goes to 0,
   the FPGA sends a Note Off for each open note. The FPGA counts a STEP_MS
   of 0 as 1.
+- The model has four voices, and they play on one MIDI channel. Therefore
+  CHANNEL and VELOCITY apply to all four, and their note registers are
+  disjoint: a Note Off releases a voice by pitch, thus two voices must
+  never hold one pitch.
 - The default CHANNEL is 2, because the S-1 receives on channel 3. CHANNEL
   applies to the model messages only. A test message is raw bytes, and the
   driver sets its channel.
 - A Note Off uses the channel of its Note On, and not the current CHANNEL.
   Therefore a CHANNEL write during an open note cannot leave the note hang
   on the old channel.
-- If GATE_MS is not less than STEP_MS, the FPGA sends the Note Off
-  immediately before the subsequent Note On.
+- GATE_MS is the gate of the highest voice only. The three lower voices
+  sustain to their next articulation, and GATE_MS does not touch them.
+- If GATE_MS is not less than STEP_MS, the gate never comes. The highest
+  voice then sends its Note Off immediately before its subsequent Note On.
+- One step sends at most two messages for each voice, which is about 7.7 ms
+  of line time. A step that is shorter than its messages stretches to fit
+  them. Therefore STEP_MS below about 8 does not make the step faster.
 - A write applies at one time, at its end. Therefore a value of more than
   one byte never shows a part of one write and a part of the next, and a
   block in the FPGA can look at a cell in each cycle.
@@ -119,8 +128,8 @@ The response payload, before the COBS encoding:
 
 Rules:
 
-- All values with more than one byte are little-endian. This rule applies to
-  ADDR on the wire and to the values in the registers.
+- All values with more than one byte are little-endian. ADDR has one byte.
+  The rule applies to the register values, and thus to DATA on the wire.
 - A write applies its bytes in the sequence of increasing addresses.
 - The largest payload is 35 bytes: the request header of 3 bytes and DATA of
   32 bytes. The FPGA discards a frame with a longer payload, and also a

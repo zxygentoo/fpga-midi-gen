@@ -6,7 +6,7 @@
 
 (** The sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
 module Constants : sig
-  (** The number of bytes in OP, ADDR low, ADDR high and LEN. *)
+  (** The number of bytes in OP, ADDR and LEN. *)
   val request_header_bytes : int
 
   (** The number of bytes in OP and STATUS. *)
@@ -106,11 +106,11 @@ type response =
     delimiter. It raises [Invalid_argument] when a field does not fit the wire format. *)
 val encode_request : request -> Bytes.t
 
-(** [decode_request frame] parses one delimited wire frame. *)
-val decode_request : Bytes.t -> (request, string) result
-
-(** [encode_response r] is the complete wire frame for a response. *)
-val encode_response : response -> Bytes.t
-
 (** [decode_response frame] parses one delimited wire frame. *)
 val decode_response : Bytes.t -> (response, string) result
+
+(** The board side of the codec. The hardware encodes each response, thus only a test that
+    fakes a board needs this. *)
+module For_test : sig
+  val encode_response : response -> Bytes.t
+end

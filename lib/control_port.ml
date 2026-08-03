@@ -135,7 +135,7 @@ let create (i : _ I.t) : _ O.t =
   let response_byte j =
     mux2
       (j ==:. 0)
-      (op |: of_unsigned_int ~width:8 0x80)
+      (op |: of_unsigned_int ~width:8 Control.Op.response_flag)
       (mux2 (j ==:. 1) status.value i.read_data)
   in
   assign response_data (reg spec (response_byte encoder.address));
@@ -258,7 +258,7 @@ module Harness_o = struct
     { out_data : 'a [@bits 8]
     ; out_valid : 'a
     ; busy : 'a
-    ; doorbell : 'a Midi.Message.t
+    ; doorbell : 'a Midi.Rtl.Message.t
         (* the cell port, so that a waveform test can show the walk and the commit *)
     ; write_enable : 'a
     ; write_address : 'a [@bits cell_bits]
@@ -430,10 +430,7 @@ let%expect_test "transactions against the cells" =
   run_until ~budget:500 (fun () -> !complete);
   (match Control.decode_response (Buffer.contents_bytes response) with
    | Ok { op; status = Control.Status.Ok; data } ->
-     Stdio.printf
-       "during-send response: op %d data %02x\n"
-       op
-       (Char.to_int (Bytes.get data 0))
+     Stdio.printf "during-send response: op %d data %02x\n" op (Bytes_util.byte data 0)
    | _ -> Stdio.print_endline "bad response");
   Buffer.clear response;
   complete := false;

@@ -4,8 +4,8 @@ open Signal
 
 module Params = struct
   type 'a t =
-    { run : 'a [@bits 8]
-    ; channel : 'a [@bits 8]
+    { run : 'a [@bits 1]
+    ; channel : 'a [@bits 4]
     ; step_ms : 'a [@bits 16]
     ; gate_ms : 'a [@bits 16]
     ; velocity : 'a [@bits 8]
@@ -36,7 +36,7 @@ module O = struct
   type 'a t =
     { params : 'a Params.t
     ; read_data : 'a [@bits 8]
-    ; doorbell : 'a Midi.Message.t
+    ; doorbell : 'a Midi.Rtl.Message.t
     }
   [@@deriving hardcaml]
 end
@@ -81,8 +81,8 @@ let defaults =
     List.concat_map fields ~f:(fun (first, width, value) ->
       List.init width ~f:(fun k -> first + k, (value lsr (8 * k)) land 0xff))
   in
-  List.init size ~f:(fun k ->
-    Option.value ~default:0 (List.Assoc.find bytes k ~equal:Int.equal))
+  (* the coverage assert above proves that each cell is in [bytes] exactly one time *)
+  List.init size ~f:(fun k -> List.Assoc.find_exn bytes k ~equal:Int.equal)
 ;;
 
 let msg_cell = cell Control.Reg.midi_msg
@@ -162,9 +162,11 @@ let create (i : _ I.t) : _ O.t =
   let view address =
     concat_lsb (List.init (width_of address) ~f:(fun k -> live.(cell address + k).value))
   in
+  (* each view has the natural width of its value, thus no consumer knows where the value
+     sits in the cell byte *)
   { O.params =
-      { Params.run = view Control.Reg.run
-      ; channel = view Control.Reg.channel
+      { Params.run = lsb (view Control.Reg.run)
+      ; channel = sel_bottom (view Control.Reg.channel) ~width:4
       ; step_ms = view Control.Reg.step_ms
       ; gate_ms = view Control.Reg.gate_ms
       ; velocity = view Control.Reg.velocity
@@ -177,7 +179,7 @@ let create (i : _ I.t) : _ O.t =
         (List.init size ~f:(fun k ->
            if k = go_cell then uresize pending.value ~width:8 else live.(k).value))
   ; doorbell =
-      { Midi.Message.data = doorbell_data.value
+      { Midi.Rtl.Message.data = doorbell_data.value
       ; len = doorbell_len.value
       ; valid = pending.value
       }

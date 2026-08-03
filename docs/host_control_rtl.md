@@ -118,7 +118,9 @@ message. A System Exclusive message does not fit. A later design can add a
 byte-stream source for it, and the merge rule then applies to that source
 alone.
 
-`Midi` is also the home of the MIDI status bytes that the model needs.
+`Midi` is also the home of the MIDI status bytes that the model needs, and
+it makes the bytes of a channel voice message. Therefore no other block
+holds the byte layout.
 
 ## Control_regs
 
@@ -127,8 +129,8 @@ alone.
 ```ocaml
 module Params = struct
   type 'a t =
-    { run : 'a [@bits 8] (** the run state, in bit 0 *)
-    ; channel : 'a [@bits 8] (** the MIDI channel of the model, 0 to 15 *)
+    { run : 'a [@bits 1] (** the run state *)
+    ; channel : 'a [@bits 4] (** the MIDI channel of the model, 0 to 15 *)
     ; step_ms : 'a [@bits 16] (** the step period in ms *)
     ; gate_ms : 'a [@bits 16] (** the gate time in ms *)
     ; velocity : 'a [@bits 8] (** the note velocity *)
@@ -159,7 +161,7 @@ module O = struct
   type 'a t =
     { params : 'a Params.t (** the named views; each one is stable *)
     ; read_data : 'a [@bits 8] (** the byte at [read_address] *)
-    ; doorbell : 'a Midi.Message.t (** the test message, as a message source *)
+    ; doorbell : 'a Midi.Rtl.Message.t (** the test message, as a message source *)
     }
   [@@deriving hardcaml]
 end
@@ -324,8 +326,8 @@ a wrong connection is easy to see.
 ```ocaml
 module I = struct
   type 'a t =
-    { doorbell : 'a Midi.Message.t (** the test-message source *)
-    ; model : 'a Midi.Message.t (** the model source *)
+    { doorbell : 'a Midi.Rtl.Message.t (** the test-message source *)
+    ; model : 'a Midi.Rtl.Message.t (** the model source *)
     ; out_ready : 'a (** from [Midi_out]: 1 when it can take a message *)
     }
   [@@deriving hardcaml]
@@ -333,7 +335,7 @@ end
 
 module O = struct
   type 'a t =
-    { out : 'a Midi.Message.t (** the message of the source that has the grant *)
+    { out : 'a Midi.Rtl.Message.t (** the message of the source that has the grant *)
     ; doorbell_ready : 'a (** 1 when [Midi_out] takes the doorbell message *)
     ; model_ready : 'a (** 1 when [Midi_out] takes the model message *)
     }
@@ -377,7 +379,7 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; message : 'a Midi.Message.t
+    ; message : 'a Midi.Rtl.Message.t
     (** the block takes the message when [ready] is 1 *)
     }
   [@@deriving hardcaml]
@@ -469,7 +471,7 @@ These three rules of `docs/host_control.md` change.
 
 ## The steps
 
-1. `Midi.Message`, the message interface.
+1. `Midi.Rtl.Message`, the message interface.
 2. `Midi_out`, with tests: the byte walk, the `ready` envelope, and the
    line at 31250 baud.
 3. `Midi_merge`, with tests: the priority, and the `ready` of each source.

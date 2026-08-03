@@ -79,7 +79,7 @@ let create () =
   let model =
     Model.create
       ~clocks_per_ms
-      ~source:(Voss.create ~params:Pink.Params.default ~seed:control_regs.params.seed)
+      ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
       { Model.I.clock = clk
       ; clear
       ; params = control_regs.params
@@ -111,7 +111,7 @@ let create () =
   let led =
     concat_msb
       [ zero 10
-      ; lsb control_regs.params.run
+      ; control_regs.params.run
       ; control_port.busy
       ; ~:(midi_out.serial)
       ; ~:(uart_tx.serial)

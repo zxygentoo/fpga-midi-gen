@@ -137,7 +137,7 @@ let show = function
 let%expect_test "a read, with the wire vectors of the hardware session" =
   let t, pending, sent = fake () in
   let response =
-    Control.encode_response
+    Control.For_test.encode_response
       { op = Control.Op.read; status = Control.Status.Ok; data = Bytes.of_string "\x64" }
   in
   Stdio.printf "response frame %s\n" (Bytes_util.hex response);
@@ -164,7 +164,7 @@ let%expect_test "the wrong shape is Garbled" =
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.encode_response
+    (Control.For_test.encode_response
        { op = Control.Op.read
        ; status = Control.Status.Ok
        ; data = Bytes.of_string "\x64\x64"
@@ -173,7 +173,7 @@ let%expect_test "the wrong shape is Garbled" =
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.encode_response
+    (Control.For_test.encode_response
        { op = Control.Op.write; status = Control.Status.Ok; data = Bytes.create 0 });
   show (read t ~address:Control.Reg.velocity ~length:1);
   [%expect {|
@@ -186,7 +186,7 @@ let%expect_test "a rejection is a rejection, not a garble" =
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.encode_response
+    (Control.For_test.encode_response
        { op = Control.Op.read
        ; status = Control.Status.Bad_address
        ; data = Bytes.create 0

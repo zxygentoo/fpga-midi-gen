@@ -6,7 +6,7 @@ module I = struct
   type 'a t =
     { clock : 'a
     ; clear : 'a
-    ; message : 'a Midi.Message.t
+    ; message : 'a Midi.Rtl.Message.t
     }
   [@@deriving hardcaml]
 end
@@ -90,28 +90,6 @@ let create ~clocks_per_bit (i : _ I.t) : _ O.t =
   { O.serial = tx.serial; ready }
 ;;
 
-(* recover the bytes of an 8N1 waveform that is sampled one time in each cycle *)
-let decode_line wave ~clocks_per_bit =
-  let n = String.length wave in
-  let bit k = if k < n && Char.equal wave.[k] '1' then 1 else 0 in
-  let bytes = Buffer.create 8 in
-  let i = ref 1 in
-  while !i < n do
-    if bit (!i - 1) = 1 && bit !i = 0
-    then (
-      let center k = !i + (clocks_per_bit / 2) + (k * clocks_per_bit) in
-      let byte = ref 0 in
-      for k = 1 to 8 do
-        byte := !byte lor (bit (center k) lsl (k - 1))
-      done;
-      if bit (center 0) = 0 && bit (center 9) = 1
-      then Buffer.add_char bytes (Char.of_int_exn !byte);
-      i := !i + (10 * clocks_per_bit))
-    else Int.incr i
-  done;
-  Buffer.contents_bytes bytes
-;;
-
 let clocks_per_bit = 4
 
 let harness () =
@@ -152,7 +130,7 @@ let%expect_test "the messages on the line" =
   send [ 0xF8 ];
   Stdio.printf
     "line [%s]\nready at the end: %b\n"
-    (Bytes_util.hex (decode_line (Buffer.contents wave) ~clocks_per_bit))
+    (Bytes_util.hex (Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit))
     (Bits.to_bool !(out.ready));
   [%expect {|
     line [92 3c 64 b2 4a f8]
@@ -169,7 +147,7 @@ let%expect_test "a length outside the range cannot hold the block" =
   idle (14 * clocks_per_bit * Midi.max_message_bytes);
   Stdio.printf
     "bytes out %d, ready %b\n"
-    (Bytes.length (decode_line (Buffer.contents wave) ~clocks_per_bit))
+    (Bytes.length (Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit))
     (Bits.to_bool !(out.ready));
   [%expect {| bytes out 3, ready true |}]
 ;;
