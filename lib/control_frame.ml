@@ -1,75 +1,6 @@
 open Base
 open Bytes_util
-
-module Constants = struct
-  let request_header_bytes = 3 (* OP, ADDR, LEN *)
-  let response_header_bytes = 2 (* OP, STATUS *)
-  let max_data_len = 32
-  let max_payload_bytes = request_header_bytes + max_data_len
-end
-
-module Op = struct
-  let read = 0x01
-  let write = 0x02
-  let response_flag = 0x80
-end
-
-module Status = struct
-  type t =
-    | Ok
-    | Bad_op
-    | Bad_address
-    | Bad_length
-
-  let to_code = function
-    | Ok -> 0x00
-    | Bad_op -> 0x01
-    | Bad_address -> 0x02
-    | Bad_length -> 0x03
-  ;;
-
-  let of_code = function
-    | 0x00 -> Some Ok
-    | 0x01 -> Some Bad_op
-    | 0x02 -> Some Bad_address
-    | 0x03 -> Some Bad_length
-    | _ -> None
-  ;;
-
-  let to_string = function
-    | Ok -> "ok"
-    | Bad_op -> "bad-op"
-    | Bad_address -> "bad-address"
-    | Bad_length -> "bad-length"
-  ;;
-end
-
-module Reg = struct
-  let base = 0x00
-  let size = 16
-  let run = 0x0F (* bit 0; the board button also toggles it *)
-  let channel = 0x0E
-  let step_ms = 0x0C (* 2 bytes *)
-  let gate_ms = 0x0A (* 2 bytes *)
-  let velocity = 0x09
-  let seed = 0x05 (* 4 bytes *)
-  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
-  let midi_len = 0x03
-  let midi_msg = 0x00 (* 3 bytes *)
-end
-
-module Default = struct
-  (* MIDI channel 3, the S-1 factory default. *)
-  let channel = 2
-  let step_ms = 250
-  let gate_ms = 125
-  let velocity = 100
-  let seed = 42 (* must not be 0 *)
-end
-
-(* The framing is COBS; see [Cobs] in [lib/cobs.ml]. The byte accessors and the
-   little-endian codec are in [Bytes_util]: all values of more than one byte are
-   little-endian, on the wire and in the cells. *)
+open Control_intf
 
 type request =
   | Read of
@@ -228,11 +159,9 @@ let%expect_test "response round trips" =
 ;;
 
 let%expect_test "the one-shot doorbell frame on the wire" =
-  (* MSG, MSG_LEN and MSG_GO in one ascending write: Note On, channel 3, C4, velocity 100 *)
-  encode_request
-    (Write { addr = Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" })
-  |> hex
-  |> Stdio.print_endline;
+  (* Note On, channel 3, C4, velocity 100 *)
+  let addr, data = build_doorbell [ 0x92; 0x3C; 0x64 ] in
+  encode_request (Write { addr; data }) |> hex |> Stdio.print_endline;
   [%expect {| 02 02 07 05 92 3c 64 03 01 00 |}]
 ;;
 

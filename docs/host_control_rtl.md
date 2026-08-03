@@ -79,7 +79,7 @@ second source of MIDI messages.
 `Regfile` goes away. No other block needs it, because a control cell is not
 a memory location.
 
-`cell_bits` is `address_bits_for Control.Reg.size`, which is 4. A cell
+`cell_bits` is `address_bits_for Control_intf.Reg.size`, which is 4. A cell
 address is an index into the control section, and not a full address.
 `Control_port` owns the address map, because it must give STATUS `02` for
 an address outside the range.

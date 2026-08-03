@@ -166,7 +166,7 @@ let%expect_test "the note histogram of the soprano, stretch 1 against stretch 2"
     Stdio.printf "stretch %d:\n" stretch;
     let params = { soprano with Params.stretch } in
     let model = { default with voices = [ { Voice.params; restrike = true } ] } in
-    notes ~model ~seed:Control.Default.seed
+    notes ~model ~seed:Control_intf.Default.seed
     |> (fun sequence -> Sequence.take sequence 4096)
     |> Sequence.to_list
     |> List.sort_and_group ~compare:Int.compare

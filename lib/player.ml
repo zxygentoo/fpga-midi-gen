@@ -81,7 +81,7 @@ let stop t =
 (* the events of the player are the piece: at step 1 the four voices enter from the bass,
    and after that the low voices are silent until they move *)
 let%expect_test "the events of the first steps, with the gate" =
-  let player = ref (create ~model:Pink.default ~seed:Control.Default.seed) in
+  let player = ref (create ~model:Pink.default ~seed:Control_intf.Default.seed) in
   let show label events =
     if not (List.is_empty events)
     then

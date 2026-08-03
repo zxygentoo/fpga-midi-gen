@@ -15,21 +15,21 @@ module I = struct
 end
 
 (* the two header sizes get short names: the engine uses them at each stage *)
-let request_header_bytes = Control.Constants.request_header_bytes
-let response_header_bytes = Control.Constants.response_header_bytes
+let request_header_bytes = Control_intf.Constants.request_header_bytes
+let response_header_bytes = Control_intf.Constants.response_header_bytes
 
 (* the buffer holds the largest legal payload, and it discards a longer one; the buffer
    size and its address width follow *)
-let max_payload = Control.Constants.max_payload_bytes
+let max_payload = Control_intf.Constants.max_payload_bytes
 let buffer_address_bits = address_bits_for (max_payload + 1)
 let buffer_size = 1 lsl buffer_address_bits
 
 (* the width of a cursor over the data bytes of one burst *)
-let index_bits = address_bits_for (Control.Constants.max_data_len + 1)
+let index_bits = address_bits_for (Control_intf.Constants.max_data_len + 1)
 
 (* the low bits of a control address select the cell: the base must be aligned *)
-let () = assert (Control.Reg.base % Control.Reg.size = 0)
-let cell_bits = address_bits_for Control.Reg.size
+let () = assert (Control_intf.Reg.base % Control_intf.Reg.size = 0)
+let cell_bits = address_bits_for Control_intf.Reg.size
 
 module O = struct
   type 'a t =
@@ -135,7 +135,7 @@ let create (i : _ I.t) : _ O.t =
   let response_byte j =
     mux2
       (j ==:. 0)
-      (op |: of_unsigned_int ~width:8 Control.Op.response_flag)
+      (op |: of_unsigned_int ~width:8 Control_intf.Op.response_flag)
       (mux2 (j ==:. 1) status.value i.read_data)
   in
   assign response_data (reg spec (response_byte encoder.address));
@@ -143,14 +143,14 @@ let create (i : _ I.t) : _ O.t =
   let range_end = uresize header_address ~width:9 +: uresize header_length ~width:9 in
   let address_ok =
     header_address
-    >=:. Control.Reg.base
-    &: (range_end <=:. Control.Reg.base + Control.Reg.size)
+    >=:. Control_intf.Reg.base
+    &: (range_end <=:. Control_intf.Reg.base + Control_intf.Reg.size)
   in
   let length_ok =
-    header_length >=:. 1 &: (header_length <=:. Control.Constants.max_data_len)
+    header_length >=:. 1 &: (header_length <=:. Control_intf.Constants.max_data_len)
   in
-  let is_read = op ==:. Control.Op.read in
-  let is_write = op ==:. Control.Op.write in
+  let is_read = op ==:. Control_intf.Op.read in
+  let is_write = op ==:. Control_intf.Op.write in
   (* a frame with the wrong shape gets no response *)
   let structural_ok =
     mux2
@@ -160,7 +160,7 @@ let create (i : _ I.t) : _ O.t =
   in
   let reset_frame = proc [ capture_index <--. 0; drop <-- gnd ] in
   let respond_with code =
-    proc [ status <--. Control.Status.to_code code; sm.set_next Respond ]
+    proc [ status <--. Control_intf.Status.to_code code; sm.set_next Respond ]
   in
   (* the header checks of [Parse], in the priority order of the host control: the first
      check that fails gives the status, and [accept] runs when each one passes *)
@@ -197,13 +197,13 @@ let create (i : _ I.t) : _ O.t =
             ; if_
                 ~:structural_ok
                 [ sm.set_next Receive ]
-                ([ status <--. Control.Status.to_code Control.Status.Ok
+                ([ status <--. Control_intf.Status.to_code Control_intf.Status.Ok
                  ; response_length <--. response_header_bytes
                  ]
                  @ reject_first
-                     [ ~:length_ok, Control.Status.Bad_length
-                     ; ~:(is_read |: is_write), Control.Status.Bad_op
-                     ; ~:address_ok, Control.Status.Bad_address
+                     [ ~:length_ok, Control_intf.Status.Bad_length
+                     ; ~:(is_read |: is_write), Control_intf.Status.Bad_op
+                     ; ~:address_ok, Control_intf.Status.Bad_address
                      ]
                      ~accept:
                        [ if_
@@ -239,7 +239,9 @@ let create (i : _ I.t) : _ O.t =
 ;;
 
 (* The test harness: the port with the cells that answer it, as the top level wires them.
-   [doorbell_ready] takes the test message, in place of the MIDI path. *)
+   The port needs a cell array to talk to, and the real block cannot drift from itself.
+   The doorbell is a behavior of the cells, thus [Control_regs] tests the ring and this
+   harness only holds its sink ready. *)
 
 module Harness_i = struct
   type 'a t =
@@ -248,7 +250,6 @@ module Harness_i = struct
     ; in_data : 'a [@bits 8]
     ; in_valid : 'a
     ; hold : 'a
-    ; doorbell_ready : 'a
     }
   [@@deriving hardcaml]
 end
@@ -258,7 +259,6 @@ module Harness_o = struct
     { out_data : 'a [@bits 8]
     ; out_valid : 'a
     ; busy : 'a
-    ; doorbell : 'a Midi.Rtl.Message.t
         (* the cell port, so that a waveform test can show the walk and the commit *)
     ; write_enable : 'a
     ; write_address : 'a [@bits cell_bits]
@@ -290,14 +290,13 @@ let harness (h : _ Harness_i.t) : _ Harness_o.t =
       ; commit = port.commit
       ; read_address = port.read_address
       ; run_toggle = gnd
-      ; doorbell_ready = h.doorbell_ready
+      ; doorbell_ready = vdd
       }
   in
   assign read_data regs.read_data;
   { Harness_o.out_data = port.out_data
   ; out_valid = port.out_valid
   ; busy = port.busy
-  ; doorbell = regs.doorbell
   ; write_enable = port.write_enable
   ; write_address = port.write_address
   ; write_data = port.write_data
@@ -344,14 +343,14 @@ let sim_harness () =
     if Buffer.length response = 0
     then Stdio.print_endline "no response"
     else (
-      match Control.decode_response (Buffer.contents_bytes response) with
+      match Control_frame.decode_response (Buffer.contents_bytes response) with
       | Error e -> Stdio.printf "bad response: %s\n" e
       | Ok { op; status; data } ->
         let hex = Bytes_util.hex data in
         Stdio.printf
           "op %d status %s%s\n"
           op
-          (Control.Status.to_string status)
+          (Control_intf.Status.to_string status)
           (if String.length hex = 0 then "" else " data " ^ hex))
   in
   sim, inp, out, response, complete, cycle, feed, run_until, transact
@@ -362,49 +361,35 @@ let%expect_test "transactions against the cells" =
     sim_harness ()
   in
   (* the MIDI path takes the test message at once *)
-  inp.doorbell_ready := Bits.vdd;
   (* the first request needs no start-up: the cells carry their defaults from the
      bitstream, thus there is no init walk to wait for *)
   transact
-    (Control.encode_request (Read { addr = Control.Reg.base; len = Control.Reg.size }));
+    (Control_frame.encode_request
+       (Read { addr = Control_intf.Reg.base; len = Control_intf.Reg.size }));
   [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
   (* write, then read back *)
   transact
-    (Control.encode_request
-       (Write { addr = Control.Reg.velocity; data = Bytes.of_string "\x30" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.velocity; len = 1 }));
+    (Control_frame.encode_request
+       (Write { addr = Control_intf.Reg.velocity; data = Bytes.of_string "\x30" }));
+  transact
+    (Control_frame.encode_request (Read { addr = Control_intf.Reg.velocity; len = 1 }));
   [%expect {|
     op 2 status ok
     op 1 status ok data 30
     |}];
-  (* the one-shot doorbell write: MIDI_MSG, MIDI_LEN, MIDI_GO ascending. The MIDI path is
-     free, thus the message goes at once and MIDI_GO reads 0 again *)
+  (* a burst of more than one byte: the port applies each byte in the sequence of
+     increasing addresses, and the commit moves them at one time. The doorbell is a
+     behavior of the cells, thus [Control_regs] tests the ring and this block does not. *)
   transact
-    (Control.encode_request
-       (Write
-          { addr = Control.Reg.midi_msg; data = Bytes.of_string "\x92\x3C\x64\x03\x01" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.midi_msg; len = 5 }));
+    (Control_frame.encode_request
+       (Write { addr = Control_intf.Reg.seed; data = Bytes.of_string "\xEE\xFF\xC0\x00" }));
+  transact (Control_frame.encode_request (Read { addr = Control_intf.Reg.seed; len = 4 }));
   [%expect {|
     op 2 status ok
-    op 1 status ok data 92 3c 64 03 00
-    |}];
-  (* a ring against a MIDI path that cannot take it: MIDI_GO reads the wait state, and 0
-     again after the release *)
-  inp.doorbell_ready := Bits.gnd;
-  transact
-    (Control.encode_request
-       (Write { addr = Control.Reg.midi_go; data = Bytes.of_string "\x01" }));
-  transact (Control.encode_request (Read { addr = Control.Reg.midi_go; len = 1 }));
-  inp.doorbell_ready := Bits.vdd;
-  transact (Control.encode_request (Read { addr = Control.Reg.midi_go; len = 1 }));
-  [%expect
-    {|
-    op 2 status ok
-    op 1 status ok data 01
-    op 1 status ok data 00
+    op 1 status ok data ee ff c0 00
     |}];
   (* errors. The raw frames are the request payload: OP, ADDR, LEN. *)
-  transact (Control.encode_request (Read { addr = Control.Reg.size; len = 1 }));
+  transact (Control_frame.encode_request (Read { addr = Control_intf.Reg.size; len = 1 }));
   transact (Cobs.encode (Bytes.of_string "\x07\x00\x01"));
   transact (Cobs.encode (Bytes.of_string "\x01\x00\xF0"));
   [%expect
@@ -415,7 +400,8 @@ let%expect_test "transactions against the cells" =
     |}];
   (* a frame with the wrong shape gets no response, and the engine recovers *)
   transact (Cobs.encode (Bytes.of_string "\xAA\xBB"));
-  transact (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
+  transact
+    (Control_frame.encode_request (Read { addr = Control_intf.Reg.channel; len = 1 }));
   [%expect {|
     no response
     op 1 status ok data 02
@@ -424,12 +410,12 @@ let%expect_test "transactions against the cells" =
      request transacts normally *)
   Buffer.clear response;
   complete := false;
-  feed (Control.encode_request (Read { addr = Control.Reg.velocity; len = 1 }));
+  feed (Control_frame.encode_request (Read { addr = Control_intf.Reg.velocity; len = 1 }));
   run_until ~budget:200 (fun () -> Buffer.length response > 0);
-  feed (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
+  feed (Control_frame.encode_request (Read { addr = Control_intf.Reg.channel; len = 1 }));
   run_until ~budget:500 (fun () -> !complete);
-  (match Control.decode_response (Buffer.contents_bytes response) with
-   | Ok { op; status = Control.Status.Ok; data } ->
+  (match Control_frame.decode_response (Buffer.contents_bytes response) with
+   | Ok { op; status = Control_intf.Status.Ok; data } ->
      Stdio.printf "during-send response: op %d data %02x\n" op (Bytes_util.byte data 0)
    | _ -> Stdio.print_endline "bad response");
   Buffer.clear response;
@@ -443,15 +429,16 @@ let%expect_test "transactions against the cells" =
     during-send response: op 1 data 30
     response to the injected frame: 0 bytes
     |}];
-  transact (Control.encode_request (Read { addr = Control.Reg.channel; len = 1 }));
+  transact
+    (Control_frame.encode_request (Read { addr = Control_intf.Reg.channel; len = 1 }));
   [%expect {| op 1 status ok data 02 |}]
 ;;
 
 let%expect_test "the payload bound" =
   (* the discard rule of the host control: the port takes a payload of
-     [Control.Constants.max_payload_bytes] and discards a longer one. Each payload byte is
-     0x41, thus the frame decodes but its LEN field is out of range: an accepted frame
-     answers Bad_length, and a discarded frame is silent. *)
+     [Control_intf.Constants.max_payload_bytes] and discards a longer one. Each payload
+     byte is 0x41, thus the frame decodes but its LEN field is out of range: an accepted
+     frame answers Bad_length, and a discarded frame is silent. *)
   let try_payload n =
     let _sim, _inp, _out, _response, _complete, _cycle, _feed, _run_until, transact =
       sim_harness ()
@@ -459,9 +446,9 @@ let%expect_test "the payload bound" =
     Stdio.printf "payload %d: " n;
     transact (Cobs.encode (Bytes.make n 'A'))
   in
-  try_payload (Control.Constants.max_payload_bytes - 1);
-  try_payload Control.Constants.max_payload_bytes;
-  try_payload (Control.Constants.max_payload_bytes + 1);
+  try_payload (Control_intf.Constants.max_payload_bytes - 1);
+  try_payload Control_intf.Constants.max_payload_bytes;
+  try_payload (Control_intf.Constants.max_payload_bytes + 1);
   [%expect
     {|
     payload 34: op 65 status bad-length
@@ -485,8 +472,8 @@ let%expect_test "the waveform of a write and its commit" =
       inp.in_valid := Bits.vdd;
       Cyclesim.cycle sim)
     (Bytes.to_string
-       (Control.encode_request
-          (Write { addr = Control.Reg.step_ms; data = Bytes.of_string "\x11\x22" })));
+       (Control_frame.encode_request
+          (Write { addr = Control_intf.Reg.step_ms; data = Bytes.of_string "\x11\x22" })));
   inp.in_valid := Bits.gnd;
   Cyclesim.cycle ~n:8 sim;
   let rules =

@@ -41,7 +41,7 @@ and not a silent break of the harmony.
 | button debounce | 10 ms | `lib/top.ml` |
 
 The RTL elaboration reads the constants from `Pink.default`, as it
-reads the control constants from `Control`, and `Pink.degree_offsets` gives
+reads the control constants from `Control_intf`, and `Pink.degree_offsets` gives
 the semitone offset of each degree. One definition serves the reference and
 the circuit.
 

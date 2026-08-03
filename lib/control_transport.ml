@@ -8,7 +8,7 @@ type t =
 
 type error =
   | Garbled
-  | Nak of Control.Status.t
+  | Nak of Control_intf.Status.t
 
 (* the transport over an open serial port: raw 8N1, a blocking read, and a resync of
    tcflush plus one delimiter. The caller opens the descriptor and owns its lifetime. *)
@@ -79,31 +79,36 @@ let collect_frame t =
 (* a response is usable when it decodes and echoes the op of this request *)
 let usable_response ~op response_frame =
   let ( let* ) x f = Option.bind x ~f in
-  let* response = Result.ok (Control.decode_response response_frame) in
-  if response.Control.op = op then Some response else None
+  let* response = Result.ok (Control_frame.decode_response response_frame) in
+  if response.Control_frame.op = op then Some response else None
 ;;
 
 (* the three outcomes: the answer, a rejection, or garble — and each operation is
    idempotent, thus after a garble the caller can simply run it again *)
 let transact t request ~op ~data_length =
-  t.send (Control.encode_request request);
+  t.send (Control_frame.encode_request request);
   match usable_response ~op (collect_frame t) with
-  | Some { status = Control.Status.Ok; data; _ } when Bytes.length data = data_length ->
-    Ok data
-  | Some { status = Control.Status.Ok; _ } (* the wrong shape *) | None -> Error Garbled
+  | Some { status = Control_intf.Status.Ok; data; _ } when Bytes.length data = data_length
+    -> Ok data
+  | Some { status = Control_intf.Status.Ok; _ } (* the wrong shape *) | None ->
+    Error Garbled
   | Some { status; _ } -> Error (Nak status)
 ;;
 
 let read t ~address ~length =
   transact
     t
-    (Control.Read { addr = address; len = length })
-    ~op:Control.Op.read
+    (Control_frame.Read { addr = address; len = length })
+    ~op:Control_intf.Op.read
     ~data_length:length
 ;;
 
 let write t ~address ~data =
-  transact t (Control.Write { addr = address; data }) ~op:Control.Op.write ~data_length:0
+  transact
+    t
+    (Control_frame.Write { addr = address; data })
+    ~op:Control_intf.Op.write
+    ~data_length:0
   |> Result.map ~f:(fun (_ : Bytes.t) -> ())
 ;;
 
@@ -131,18 +136,21 @@ let reply pending frame = String.iter (Bytes.to_string frame) ~f:(Queue.enqueue 
 let show = function
   | Ok data -> Stdio.printf "ok %s\n" (Bytes_util.hex data)
   | Error Garbled -> Stdio.print_endline "garbled"
-  | Error (Nak status) -> Stdio.printf "nak %s\n" (Control.Status.to_string status)
+  | Error (Nak status) -> Stdio.printf "nak %s\n" (Control_intf.Status.to_string status)
 ;;
 
 let%expect_test "a read, with the wire vectors of the hardware session" =
   let t, pending, sent = fake () in
   let response =
-    Control.For_test.encode_response
-      { op = Control.Op.read; status = Control.Status.Ok; data = Bytes.of_string "\x64" }
+    Control_frame.For_test.encode_response
+      { op = Control_intf.Op.read
+      ; status = Control_intf.Status.Ok
+      ; data = Bytes.of_string "\x64"
+      }
   in
   Stdio.printf "response frame %s\n" (Bytes_util.hex response);
   reply pending response;
-  show (read t ~address:Control.Reg.velocity ~length:1);
+  show (read t ~address:Control_intf.Reg.velocity ~length:1);
   Stdio.printf "sent %s\n" (Bytes_util.hex (Buffer.contents_bytes sent));
   [%expect {|
     response frame 02 81 02 64 00
@@ -154,7 +162,7 @@ let%expect_test "a read, with the wire vectors of the hardware session" =
 let%expect_test "a corrupt frame is Garbled" =
   let t, pending, _ = fake () in
   reply pending (Bytes.of_string "\xAA\xBB\x00");
-  show (read t ~address:Control.Reg.velocity ~length:1);
+  show (read t ~address:Control_intf.Reg.velocity ~length:1);
   [%expect {| garbled |}]
 ;;
 
@@ -164,18 +172,21 @@ let%expect_test "the wrong shape is Garbled" =
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.For_test.encode_response
-       { op = Control.Op.read
-       ; status = Control.Status.Ok
+    (Control_frame.For_test.encode_response
+       { op = Control_intf.Op.read
+       ; status = Control_intf.Status.Ok
        ; data = Bytes.of_string "\x64\x64"
        });
-  show (read t ~address:Control.Reg.velocity ~length:1);
+  show (read t ~address:Control_intf.Reg.velocity ~length:1);
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.For_test.encode_response
-       { op = Control.Op.write; status = Control.Status.Ok; data = Bytes.create 0 });
-  show (read t ~address:Control.Reg.velocity ~length:1);
+    (Control_frame.For_test.encode_response
+       { op = Control_intf.Op.write
+       ; status = Control_intf.Status.Ok
+       ; data = Bytes.create 0
+       });
+  show (read t ~address:Control_intf.Reg.velocity ~length:1);
   [%expect {|
     garbled
     garbled
@@ -186,9 +197,9 @@ let%expect_test "a rejection is a rejection, not a garble" =
   let t, pending, _ = fake () in
   reply
     pending
-    (Control.For_test.encode_response
-       { op = Control.Op.read
-       ; status = Control.Status.Bad_address
+    (Control_frame.For_test.encode_response
+       { op = Control_intf.Op.read
+       ; status = Control_intf.Status.Bad_address
        ; data = Bytes.create 0
        });
   show (read t ~address:0x0000 ~length:1);

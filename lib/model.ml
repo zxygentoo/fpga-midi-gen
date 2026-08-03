@@ -115,8 +115,8 @@ let reference_messages ~model ~seed ~channel ~velocity ~steps ~gated =
 let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
   let inp, set, play = harness ~model () in
   set inp.params.seed seed;
-  set inp.params.channel Control.Default.channel;
-  set inp.params.velocity Control.Default.velocity;
+  set inp.params.channel Control_intf.Default.channel;
+  set inp.params.velocity Control_intf.Default.velocity;
   set inp.params.step_ms step_ms;
   set inp.params.gate_ms gate_ms;
   let circuit = play ~steps in
@@ -124,8 +124,8 @@ let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
     reference_messages
       ~model
       ~seed
-      ~channel:Control.Default.channel
-      ~velocity:Control.Default.velocity
+      ~channel:Control_intf.Default.channel
+      ~velocity:Control_intf.Default.velocity
       ~steps
       ~gated:(gate_ms < step_ms)
   in
@@ -142,7 +142,7 @@ let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
 let%expect_test "the four voices agree with the player, message for message" =
   compare_run
     ~model:Pink.default
-    ~seed:Control.Default.seed
+    ~seed:Control_intf.Default.seed
     ~step_ms:20
     ~gate_ms:8
     ~steps:32;
@@ -154,7 +154,7 @@ let%expect_test "the four voices agree with no gate" =
      Note Off immediately before its next Note On, and the stop closes every voice *)
   compare_run
     ~model:Pink.default
-    ~seed:Control.Default.seed
+    ~seed:Control_intf.Default.seed
     ~step_ms:20
     ~gate_ms:40
     ~steps:16;

@@ -14,7 +14,7 @@ module Params = struct
   [@@deriving hardcaml]
 end
 
-let size = Control.Reg.size
+let size = Control_intf.Reg.size
 let cell_bits = address_bits_for size
 
 module I = struct
@@ -42,53 +42,24 @@ module O = struct
 end
 
 (* the cell index of an address in the control section *)
-let cell address = address - Control.Reg.base
+let cell address = address - Control_intf.Reg.base
 
-(* Each field of the control section: the cell of its first byte, the width in bytes, and
-   the power-on value. The views and the defaults both come from this one table. *)
-let fields =
-  [ cell Control.Reg.run, 1, 0
-  ; cell Control.Reg.channel, 1, Control.Default.channel
-  ; cell Control.Reg.step_ms, 2, Control.Default.step_ms
-  ; cell Control.Reg.gate_ms, 2, Control.Default.gate_ms
-  ; cell Control.Reg.velocity, 1, Control.Default.velocity
-  ; cell Control.Reg.seed, 4, Control.Default.seed
-  ; cell Control.Reg.midi_msg, Midi.max_message_bytes, 0
-  ; cell Control.Reg.midi_len, 1, 0
-  ; cell Control.Reg.midi_go, 1, 0
-  ]
-;;
-
-(* the table must cover each cell of the section one time: this catches a width that does
-   not agree with the addresses *)
-let () =
-  let covered =
-    List.concat_map fields ~f:(fun (first, width, _) ->
-      List.init width ~f:(fun k -> first + k))
-  in
-  assert (List.length covered = size);
-  assert (List.length (List.dedup_and_sort covered ~compare:Int.compare) = size)
-;;
-
-let width_of address =
-  List.find_map_exn fields ~f:(fun (first, width, _) ->
-    if first = cell address then Some width else None)
-;;
-
-(* the power-on value of each cell, in the little-endian order of the host control *)
+(* the power-on value of each cell, in the little-endian order of the host control.
+   [Control_intf.Reg.fields] is the one table of the widths and the values, and its
+   coverage assert proves that each cell is here exactly one time. *)
 let defaults =
   let bytes =
-    List.concat_map fields ~f:(fun (first, width, value) ->
-      List.init width ~f:(fun k -> first + k, (value lsr (8 * k)) land 0xff))
+    List.concat_map Control_intf.Reg.fields ~f:(fun (f : Control_intf.Reg.field) ->
+      List.init f.width ~f:(fun k ->
+        cell f.address + k, (f.default lsr (8 * k)) land 0xff))
   in
-  (* the coverage assert above proves that each cell is in [bytes] exactly one time *)
   List.init size ~f:(fun k -> List.Assoc.find_exn bytes k ~equal:Int.equal)
 ;;
 
-let msg_cell = cell Control.Reg.midi_msg
-let len_cell = cell Control.Reg.midi_len
-let go_cell = cell Control.Reg.midi_go
-let run_cell = cell Control.Reg.run
+let msg_cell = cell Control_intf.Reg.midi_msg
+let len_cell = cell Control_intf.Reg.midi_len
+let go_cell = cell Control_intf.Reg.midi_go
+let run_cell = cell Control_intf.Reg.run
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -160,17 +131,19 @@ let create (i : _ I.t) : _ O.t =
     ; when_ taken [ pending <-- gnd ]
     ];
   let view address =
-    concat_lsb (List.init (width_of address) ~f:(fun k -> live.(cell address + k).value))
+    concat_lsb
+      (List.init (Control_intf.Reg.width_of address) ~f:(fun k ->
+         live.(cell address + k).value))
   in
   (* each view has the natural width of its value, thus no consumer knows where the value
      sits in the cell byte *)
   { O.params =
-      { Params.run = lsb (view Control.Reg.run)
-      ; channel = sel_bottom (view Control.Reg.channel) ~width:4
-      ; step_ms = view Control.Reg.step_ms
-      ; gate_ms = view Control.Reg.gate_ms
-      ; velocity = view Control.Reg.velocity
-      ; seed = view Control.Reg.seed
+      { Params.run = lsb (view Control_intf.Reg.run)
+      ; channel = sel_bottom (view Control_intf.Reg.channel) ~width:4
+      ; step_ms = view Control_intf.Reg.step_ms
+      ; gate_ms = view Control_intf.Reg.gate_ms
+      ; velocity = view Control_intf.Reg.velocity
+      ; seed = view Control_intf.Reg.seed
       }
       (* MIDI_GO gives the pending flag; each other cell gives its stored byte *)
   ; read_data =
@@ -220,7 +193,7 @@ let%expect_test "the defaults need no init walk" =
   let sim, inp, _out, dump, burst = harness () in
   (* the first cycle: the cells are already correct, with no walk and no clear *)
   Stdio.printf "power-on   %s\n" (Bytes_util.hex (dump ()));
-  burst Control.Reg.velocity [ 0x30 ];
+  burst Control_intf.Reg.velocity [ 0x30 ];
   Stdio.printf "after write %s\n" (Bytes_util.hex (dump ()));
   inp.clear := Bits.vdd;
   Cyclesim.cycle sim;
@@ -251,9 +224,9 @@ let%expect_test "the write is atomic" =
     inp.write_data := Bits.of_unsigned_int ~width:8 b;
     Cyclesim.cycle sim
   in
-  write (cell Control.Reg.step_ms) 0x11;
+  write (cell Control_intf.Reg.step_ms) 0x11;
   show "byte 0 written";
-  write (cell Control.Reg.step_ms + 1) 0x22;
+  write (cell Control_intf.Reg.step_ms + 1) 0x22;
   show "byte 1 written";
   inp.write_enable := Bits.gnd;
   inp.commit := Bits.vdd;
@@ -287,7 +260,7 @@ let%expect_test "the RUN toggle" =
   show "one push";
   toggle ();
   show "two pushes";
-  burst Control.Reg.run [ 0x01 ];
+  burst Control_intf.Reg.run [ 0x01 ];
   show "the host writes 1";
   toggle ();
   show "and one push";
@@ -304,7 +277,8 @@ let%expect_test "the RUN toggle" =
 let%expect_test "the doorbell" =
   let sim, inp, out, _dump, burst = harness () in
   let show tag =
-    inp.read_address := Bits.of_unsigned_int ~width:cell_bits (cell Control.Reg.midi_go);
+    inp.read_address
+    := Bits.of_unsigned_int ~width:cell_bits (cell Control_intf.Reg.midi_go);
     Cyclesim.cycle sim;
     Stdio.printf
       "%-22s MIDI_GO %d | valid %b data %06x len %d\n"
@@ -321,24 +295,25 @@ let%expect_test "the doorbell" =
     Cyclesim.cycle sim
   in
   (* one ascending burst does the whole operation: MIDI_MSG, MIDI_LEN, MIDI_GO *)
-  burst Control.Reg.midi_msg [ 0x92; 0x3C; 0x64; 0x03; 0x01 ];
+  let address, data = Control_intf.build_doorbell [ 0x92; 0x3C; 0x64 ] in
+  burst address (List.map (Bytes.to_list data) ~f:Char.to_int);
   show "after the ring";
   take ();
   show "after the transfer";
   (* the send bit is bit 0 alone *)
-  burst Control.Reg.midi_go [ 0x00 ];
+  burst Control_intf.Reg.midi_go [ 0x00 ];
   show "go byte 00";
-  burst Control.Reg.midi_go [ 0x02 ];
+  burst Control_intf.Reg.midi_go [ 0x02 ];
   show "go byte 02";
   (* MIDI_LEN outside 1 to 3 *)
-  burst Control.Reg.midi_len [ 0x00; 0x01 ];
+  burst Control_intf.Reg.midi_len [ 0x00; 0x01 ];
   show "len 0";
-  burst Control.Reg.midi_len [ 0x04; 0x01 ];
+  burst Control_intf.Reg.midi_len [ 0x04; 0x01 ];
   show "len 4";
   (* a ring while a message waits is ignored, and the first message holds *)
-  burst Control.Reg.midi_msg [ 0xB2; 0x4A; 0x00; 0x02; 0x01 ];
+  burst Control_intf.Reg.midi_msg [ 0xB2; 0x4A; 0x00; 0x02; 0x01 ];
   show "a good ring";
-  burst Control.Reg.midi_msg [ 0xF8; 0x00; 0x00; 0x01; 0x01 ];
+  burst Control_intf.Reg.midi_msg [ 0xF8; 0x00; 0x00; 0x01; 0x01 ];
   show "a ring while pending";
   take ();
   show "after the transfer";
@@ -371,8 +346,8 @@ let%expect_test "the waveform of the atomic commit" =
     inp.write_data := Bits.of_unsigned_int ~width:8 b;
     Cyclesim.cycle sim
   in
-  write (cell Control.Reg.step_ms) 0x11;
-  write (cell Control.Reg.step_ms + 1) 0x22;
+  write (cell Control_intf.Reg.step_ms) 0x11;
+  write (cell Control_intf.Reg.step_ms + 1) 0x22;
   inp.write_enable := Bits.gnd;
   inp.commit := Bits.vdd;
   Cyclesim.cycle sim;
