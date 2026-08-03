@@ -111,7 +111,7 @@ let create () =
   let led =
     concat_msb
       [ zero 10
-      ; lsb control_regs.params.run
+      ; control_regs.params.run
       ; control_port.busy
       ; ~:(midi_out.serial)
       ; ~:(uart_tx.serial)

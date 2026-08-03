@@ -14,10 +14,6 @@ val set_byte : Bytes.t -> int -> int -> unit
     little-endian order. *)
 val uint_le : Bytes.t -> pos:int -> width:int -> int
 
-(** [set_uint_le b ~pos ~width v] writes the low [width] bytes of [v] to [pos], in the
-    little-endian order. *)
-val set_uint_le : Bytes.t -> pos:int -> width:int -> int -> unit
-
 (** [hex b] is the bytes of [b] as hexadecimal text: two lowercase digits for each byte,
     and one space between the bytes. *)
 val hex : Bytes.t -> string

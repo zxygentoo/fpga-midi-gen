@@ -94,20 +94,22 @@ let harness ~model () =
    tool and this test. *)
 let reference_messages ~model ~seed ~channel ~velocity ~steps ~gated =
   let encode = function
-    | Player.Event.On note -> [ Midi.note_on lor channel; note; velocity ]
-    | Player.Event.Off note -> [ Midi.note_off lor channel; note; Midi.release_velocity ]
+    | Player.Event.On note -> Midi.note_on_bytes ~channel ~note ~velocity
+    | Player.Event.Off note -> Midi.note_off_bytes ~channel ~note
   in
-  let player, messages =
+  (* the fold pushes each step in front and one [List.rev_append] puts the run in order:
+     an append inside the fold is quadratic *)
+  let player, reversed =
     List.fold
       (List.range 0 steps)
       ~init:(Player.create ~model ~seed, [])
       ~f:(fun (player, acc) _ ->
         let player, struck = Player.step player in
         let player, closed = if gated then Player.gate player else player, [] in
-        player, acc @ List.map (struck @ closed) ~f:encode)
+        player, List.rev_append (struck @ closed) acc)
   in
   let _, stopped = Player.stop player in
-  messages @ List.map stopped ~f:encode
+  List.map (List.rev_append reversed stopped) ~f:encode
 ;;
 
 let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =

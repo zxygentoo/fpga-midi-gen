@@ -21,9 +21,6 @@ let next t =
   t, t land 0xff
 ;;
 
-(* the 32-bit state, for the comparison against the circuit below *)
-let state t = t
-
 module Rtl = struct
   module I = struct
     type 'a t =
@@ -129,7 +126,7 @@ let%expect_test "the circuit walks with the software" =
       let reference, byte = next reference in
       let value = Bits.to_int_trunc !(out.value) in
       if n > 996 then Stdio.printf "%08x %02x\n" value (value land 0xff);
-      walk reference (n - 1) (agree && value = state reference && byte = value land 0xff))
+      walk reference (n - 1) (agree && value = reference && byte = value land 0xff))
   in
   let agree = walk (create ~seed:1) 1000 true in
   Stdio.printf "1000 steps agree: %b\n" agree;

@@ -68,7 +68,7 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
   let _ = sm.current -- "state" in
   let _ = ms.value -- "ms" in
   let _ = seat.value -- "seat" in
-  let run_bit = lsb i.params.run in
+  let run_bit = i.params.run in
   let tick = prescaler.value ==:. clocks_per_ms - 1 in
   let transfer = msg_valid.value &: i.midi_ready in
   (* a sampled STEP_MS of 0 counts as 1: the boundary must always come *)
@@ -87,35 +87,24 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
   let incoming_open = mux incoming (values open_flag) in
   let seat_open = mux seat.value (values open_flag) in
   let last_seat = seat.value ==:. voices - 1 in
-  (* the message bytes; the status low nibble carries the channel *)
+  (* the messages; [Midi] holds the byte layout *)
   let on_data =
-    concat_lsb
-      [ concat_msb
-          [ of_unsigned_int ~width:4 (Midi.note_on lsr 4)
-          ; sel_bottom i.params.channel ~width:4
-          ]
-      ; i.source.note.pitch
-      ; i.params.velocity
-      ]
+    Midi.Rtl.note_on_data
+      ~channel:i.params.channel
+      ~pitch:i.source.note.pitch
+      ~velocity:i.params.velocity
   in
-  let off_data ~note ~channel =
-    concat_lsb
-      [ concat_msb [ of_unsigned_int ~width:4 (Midi.note_off lsr 4); channel ]
-      ; note
-      ; of_unsigned_int ~width:8 Midi.release_velocity
-      ]
+  (* the Note Off of the voice that [index] names, from its own open-note registers *)
+  let off_at index =
+    Midi.Rtl.note_off_data
+      ~channel:(mux index (values open_channel))
+      ~pitch:(mux index (values open_note))
   in
-  let off_incoming =
-    off_data
-      ~note:(mux incoming (values open_note))
-      ~channel:(mux incoming (values open_channel))
+  let off_incoming = off_at incoming in
+  let off_seat = off_at seat.value in
+  let off_top =
+    Midi.Rtl.note_off_data ~channel:open_channel.(top).value ~pitch:open_note.(top).value
   in
-  let off_seat =
-    off_data
-      ~note:(mux seat.value (values open_note))
-      ~channel:(mux seat.value (values open_channel))
-  in
-  let off_top = off_data ~note:open_note.(top).value ~channel:open_channel.(top).value in
   let at_seat f = proc (List.init voices ~f:(fun k -> when_ (seat.value ==:. k) (f k))) in
   let next_seat ~all_done ~more =
     [ seat <-- seat.value +:. 1

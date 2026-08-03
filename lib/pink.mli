@@ -64,6 +64,15 @@ val default : t
     [Invalid_argument] when the scale is empty, or when the root is not a degree of it. *)
 val degree_offsets : scale:int list -> Params.t -> int list
 
+(** [window params] is the low bound and the size of the mapping window, in that order.
+    The RTL elaboration reads them, thus the reference and the circuit clamp the same sum
+    to the same range. It raises [Invalid_argument] when the window is empty. *)
+val window : Params.t -> int * int
+
+(** [total_rows voices] is the number of rows that the voices share. It sets the size of
+    the row set, thus the RTL elaboration reads it. *)
+val total_rows : Voice.t list -> int
+
 (** The state of one run: the row values, the PRNG and the step count. [Player] drives it,
     and the RTL tests compare [Voss] against it. *)
 type walk

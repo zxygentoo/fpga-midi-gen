@@ -18,16 +18,26 @@ module State = struct
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
+(* the state of one voice: its seat number, the register that holds its pitch — which is
+   also the pitch of the step before — the flag that it still owes a report, and the note
+   and the speak decision of this step *)
+type voice_state =
+  { voice : int
+  ; note : Always.Variable.t
+  ; owed : Always.Variable.t
+  ; value : Signal.t
+  ; speaks : Signal.t
+  }
+
 let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
-  let voices = model.voices in
-  assert (List.length voices >= 1 && List.length voices <= Source_intf.voices);
+  assert (List.length model.voices >= 1 && List.length model.voices <= Source_intf.voices);
   (* the voices take the rows in order: the head of the list takes the first rows, thus it
      re-rolls at every step and it is the fastest voice *)
   let groups =
-    List.folding_map voices ~init:0 ~f:(fun start (v : Pink.Voice.t) ->
+    List.folding_map model.voices ~init:0 ~f:(fun start (v : Pink.Voice.t) ->
       start + v.params.rows, (start, v))
   in
-  let rows = List.fold voices ~init:0 ~f:(fun acc v -> acc + v.Pink.Voice.params.rows) in
+  let rows = Pink.total_rows model.voices in
   assert (rows >= 2);
   let count_bits = rows - 1 in
   let index_bits = address_bits_for rows in
@@ -66,26 +76,23 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
      reference *)
   let next_count = count.value +:. 1 in
   let reroll_count =
-    let rec go k =
-      if k = rows - 1
-      then of_unsigned_int ~width:target_bits rows
-      else
+    List.fold_right
+      (List.range 0 (rows - 1))
+      ~init:(of_unsigned_int ~width:target_bits rows)
+      ~f:(fun k rest ->
         mux2
           (select next_count ~high:k ~low:k)
           (of_unsigned_int ~width:target_bits (k + 1))
-          (go (k + 1))
-    in
-    go 0
+          rest)
   in
   let last = uresize index.value ~width:target_bits +:. 1 ==: target.value in
   (* the note of one voice: the sum of its own rows, mapped with its own constants. The
      conditions of the elaboration make the mapping shifts, adds and one constant multiply
      — no divider. *)
   let mapped (params : Pink.Params.t) ~start =
-    let { Pink.Params.rows = n; root; degrees; stretch } = params in
+    let { Pink.Params.rows = n; root; degrees; _ } = params in
     let offsets = Pink.degree_offsets ~scale:model.scale params in
-    let window = n * 256 / stretch in
-    let low = ((n * 256) - window) / 2 in
+    let low, window = Pink.window params in
     assert (Int.is_pow2 window);
     assert (degrees >= 2);
     List.iter offsets ~f:(fun offset ->
@@ -115,10 +122,10 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
     let offset = mux degree (List.map offsets ~f:(of_unsigned_int ~width:8)) in
     of_unsigned_int ~width:8 root +: offset
   in
-  (* one register pair for each voice: its note, and 1 while it still owes a report. The
-     voice number counts down while the list counts up, thus a source with fewer voices
-     takes the high numbers — the melody seats. *)
-  let answers =
+  (* the voices in row order, one register pair for each: its note, and 1 while it still
+     owes a report. The voice number counts down while the list counts up, thus a source
+     with fewer voices takes the high numbers — the melody seats. *)
+  let by_row =
     List.mapi groups ~f:(fun position (start, (v : Pink.Voice.t)) ->
       let note = Variable.reg spec ~width:8 in
       let owed = Variable.reg spec ~width:1 in
@@ -129,27 +136,32 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
          the note register one cycle before it takes the new value, thus it costs no
          register. *)
       let speaks = if v.restrike then rerolled else rerolled &: (value <>: note.value) in
-      Source_intf.voices - 1 - position, note, owed, value, first_step.value |: speaks)
+      { voice = Source_intf.voices - 1 - position
+      ; note
+      ; owed
+      ; value
+      ; speaks = first_step.value |: speaks
+      })
   in
   (* the report goes from the lowest voice upward — the order of the wire, and the order
      of the reference *)
-  let by_voice = List.rev answers in
+  let by_voice = List.rev by_row in
   let pending =
-    List.fold by_voice ~init:gnd ~f:(fun acc (_, _, owed, _, _) -> acc |: owed.value)
+    List.fold by_voice ~init:gnd ~f:(fun acc (a : voice_state) -> acc |: a.owed.value)
   in
   (* the lowest voice that still owes a report, and its note *)
   let selected_voice, selected_pitch =
     List.fold_right
       by_voice
       ~init:(zero voice_bits, zero 8)
-      ~f:(fun (voice, note, owed, _, _) (rest_voice, rest_pitch) ->
-        ( mux2 owed.value (of_unsigned_int ~width:voice_bits voice) rest_voice
-        , mux2 owed.value note.value rest_pitch ))
+      ~f:(fun (a : voice_state) (rest_voice, rest_pitch) ->
+        ( mux2 a.owed.value (of_unsigned_int ~width:voice_bits a.voice) rest_voice
+        , mux2 a.owed.value a.note.value rest_pitch ))
   in
   (* 1 when a voice other than the selected one still owes a report *)
   let others =
-    List.fold by_voice ~init:gnd ~f:(fun acc (voice, _, owed, _, _) ->
-      acc |: (owed.value &: ~:(selected_voice ==:. voice)))
+    List.fold by_voice ~init:gnd ~f:(fun acc (a : voice_state) ->
+      acc |: (a.owed.value &: ~:(selected_voice ==:. a.voice)))
   in
   let valid = sm.is Report &: pending in
   compile
@@ -184,8 +196,8 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
             ; when_ ~:last [ sm.set_next Draw ]
             ] )
         ; ( Note
-          , List.concat_map answers ~f:(fun (_, note, owed, value, speaks) ->
-              [ note <-- value; owed <-- speaks ])
+          , List.concat_map by_row ~f:(fun (a : voice_state) ->
+              [ a.note <-- a.value; a.owed <-- a.speaks ])
             @ [ first_step <-- gnd; sm.set_next Report ] )
         ; ( Report
           , [ if_
@@ -193,8 +205,8 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
                 [ when_
                     i.ready
                     [ proc
-                        (List.map by_voice ~f:(fun (voice, _, owed, _, _) ->
-                           when_ (selected_voice ==:. voice) [ owed <-- gnd ]))
+                        (List.map by_voice ~f:(fun (a : voice_state) ->
+                           when_ (selected_voice ==:. a.voice) [ a.owed <-- gnd ]))
                     ; when_ ~:others [ sm.set_next Idle ]
                     ]
                 ]
@@ -217,19 +229,17 @@ let harness ~model ~seed =
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let rows =
-    List.fold model.Pink.voices ~init:0 ~f:(fun acc v -> acc + v.Pink.Voice.params.rows)
-  in
-  let budget () = (4 * rows) + (4 * Source_intf.voices) + 8 in
+  let rows = Pink.total_rows model.Pink.voices in
   inp.ready := Bits.vdd;
-  (* the source is still in [Idle] in the cycle that takes the command, thus the wait must
-     cycle before it reads [idle] *)
-  let wait_idle () =
-    let budget = ref (budget ()) in
+  (* Cycle until [ends] reports the end of the walk; the budget catches a stall. The
+     source is still in [Idle] in the cycle that takes the command, thus the wait must
+     cycle before it reads [idle]. *)
+  let run_until ends =
+    let budget = ref ((4 * rows) + (4 * Source_intf.voices) + 8) in
     let finished = ref false in
     while (not !finished) && !budget > 0 do
       Cyclesim.cycle sim;
-      if Bits.to_bool !(out.idle) then finished := true;
+      finished := ends ();
       Int.decr budget
     done;
     assert !finished
@@ -238,27 +248,21 @@ let harness ~model ~seed =
     inp.rewind := Bits.vdd;
     Cyclesim.cycle sim;
     inp.rewind := Bits.gnd;
-    wait_idle ()
+    run_until (fun () -> Bits.to_bool !(out.idle))
   in
   let step () =
     inp.step := Bits.vdd;
     Cyclesim.cycle sim;
     inp.step := Bits.gnd;
     let notes = ref [] in
-    let budget = ref (budget ()) in
-    let finished = ref false in
-    while (not !finished) && !budget > 0 do
-      Cyclesim.cycle sim;
+    run_until (fun () ->
       if Bits.to_bool !(out.valid)
-      then
+      then (
         notes
         := (Bits.to_int_trunc !(out.note.voice), Bits.to_int_trunc !(out.note.pitch))
-           :: !notes
-      else if Bits.to_bool !(out.idle)
-      then finished := true;
-      Int.decr budget
-    done;
-    assert !finished;
+           :: !notes;
+        false)
+      else Bits.to_bool !(out.idle));
     List.rev !notes
   in
   rewind, step

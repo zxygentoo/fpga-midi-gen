@@ -22,8 +22,8 @@ open Hardcaml
     and MIDI_GO have no view, because the block gives the doorbell as a message source. *)
 module Params : sig
   type 'a t =
-    { run : 'a (** the run state, in bit 0 *)
-    ; channel : 'a (** the MIDI channel of the model, 0 to 15 *)
+    { run : 'a (** the run state, 1 bit *)
+    ; channel : 'a (** the MIDI channel of the model, 4 bits *)
     ; step_ms : 'a (** the step period in ms *)
     ; gate_ms : 'a (** the gate time in ms *)
     ; velocity : 'a (** the note velocity *)

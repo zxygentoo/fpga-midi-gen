@@ -118,7 +118,9 @@ message. A System Exclusive message does not fit. A later design can add a
 byte-stream source for it, and the merge rule then applies to that source
 alone.
 
-`Midi` is also the home of the MIDI status bytes that the model needs.
+`Midi` is also the home of the MIDI status bytes that the model needs, and
+it makes the bytes of a channel voice message. Therefore no other block
+holds the byte layout.
 
 ## Control_regs
 
@@ -127,8 +129,8 @@ alone.
 ```ocaml
 module Params = struct
   type 'a t =
-    { run : 'a [@bits 8] (** the run state, in bit 0 *)
-    ; channel : 'a [@bits 8] (** the MIDI channel of the model, 0 to 15 *)
+    { run : 'a [@bits 1] (** the run state *)
+    ; channel : 'a [@bits 4] (** the MIDI channel of the model, 0 to 15 *)
     ; step_ms : 'a [@bits 16] (** the step period in ms *)
     ; gate_ms : 'a [@bits 16] (** the gate time in ms *)
     ; velocity : 'a [@bits 8] (** the note velocity *)

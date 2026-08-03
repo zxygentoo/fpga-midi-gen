@@ -26,6 +26,12 @@ val note_off : int
 (** The velocity byte of each Note Off that this design sends. *)
 val release_velocity : int
 
+(** The bytes of one channel voice message, the first byte first. The reference model and
+    the senders both compose a note with these, thus the byte layout has one definition. *)
+val note_on_bytes : channel:int -> note:int -> velocity:int -> int list
+
+val note_off_bytes : channel:int -> note:int -> int list
+
 (** [open_device path] opens the device for writing. It raises on a system error. *)
 val open_device : string -> Core_unix.File_descr.t
 
@@ -48,4 +54,11 @@ module Rtl : sig
       }
     [@@deriving hardcaml]
   end
+
+  (** The [Message.data] of one channel voice message: the same layout as [note_on_bytes]
+      and [note_off_bytes]. [channel] is 4 bits, [pitch] and [velocity] are 8 bits. A
+      message source composes a note with these, thus no block holds the byte layout. *)
+  val note_on_data : channel:Signal.t -> pitch:Signal.t -> velocity:Signal.t -> Signal.t
+
+  val note_off_data : channel:Signal.t -> pitch:Signal.t -> Signal.t
 end

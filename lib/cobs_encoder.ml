@@ -136,15 +136,8 @@ module Harness_i = struct
   [@@deriving hardcaml]
 end
 
-module Harness_o = struct
-  type 'a t =
-    { address : 'a [@bits 7]
-    ; data : 'a [@bits 8]
-    ; valid : 'a
-    ; busy : 'a
-    }
-  [@@deriving hardcaml]
-end
+(* the harness closes the read port; each output of the block goes out as it is *)
+module Harness_o = O
 
 let harness payload (h : _ Harness_i.t) : _ Harness_o.t =
   let bytes = List.map ~f:Char.to_int (String.to_list payload) in
@@ -170,7 +163,7 @@ let harness payload (h : _ Harness_i.t) : _ Harness_o.t =
       }
   in
   assign address t.address;
-  { Harness_o.address = t.address; data = t.data; valid = t.valid; busy = t.busy }
+  t
 ;;
 
 let%expect_test "the encoder agrees with Cobs.encode" =

@@ -30,7 +30,7 @@ The registers:
 | `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 250 |
 | `0A`–`0B` | GATE_MS | gate time of the highest voice, in ms | 125 |
 | `09` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | see `lib/control.ml` |
+| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | 42 |
 | `04` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
 | `03` | MIDI_LEN | length of the test message, 1 to 3 | 0 |
 | `00`–`02` | MIDI_MSG | the test message bytes | 0 |
@@ -128,8 +128,8 @@ The response payload, before the COBS encoding:
 
 Rules:
 
-- All values with more than one byte are little-endian. This rule applies to
-  ADDR on the wire and to the values in the registers.
+- All values with more than one byte are little-endian. ADDR has one byte.
+  The rule applies to the register values, and thus to DATA on the wire.
 - A write applies its bytes in the sequence of increasing addresses.
 - The largest payload is 35 bytes: the request header of 3 bytes and DATA of
   32 bytes. The FPGA discards a frame with a longer payload, and also a

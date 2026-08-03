@@ -64,6 +64,32 @@ let create ~clocks_per_bit (i : _ I.t) : _ O.t =
   { O.data = byte.value; valid = valid.value }
 ;;
 
+module For_test = struct
+  (* The software mirror of the block: it recovers the bytes of an 8N1 waveform that is
+     sampled one time in each cycle. A test that watches a serial line reads it with this,
+     whatever the baud rate of that line. *)
+  let decode_line wave ~clocks_per_bit =
+    let n = String.length wave in
+    let bit k = if k < n && Char.equal wave.[k] '1' then 1 else 0 in
+    let bytes = Buffer.create 8 in
+    let i = ref 1 in
+    while !i < n do
+      if bit (!i - 1) = 1 && bit !i = 0
+      then (
+        let center k = !i + (clocks_per_bit / 2) + (k * clocks_per_bit) in
+        let byte = ref 0 in
+        for k = 1 to 8 do
+          byte := !byte lor (bit (center k) lsl (k - 1))
+        done;
+        if bit (center 0) = 0 && bit (center 9) = 1
+        then Buffer.add_char bytes (Char.of_int_exn !byte);
+        i := !i + (10 * clocks_per_bit))
+      else Int.incr i
+    done;
+    Buffer.contents_bytes bytes
+  ;;
+end
+
 let%expect_test "frames at 4 clocks per bit" =
   let clocks_per_bit = 4 in
   let module Sim = Cyclesim.With_interface (I) (O) in

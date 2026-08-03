@@ -44,16 +44,23 @@ let degree_offsets ~scale (params : Params.t) =
     (12 * (degree / length)) + offsets.(degree % length))
 ;;
 
+(* The mapping window: its low bound and its size. The sum of the rows concentrates in the
+   middle of the full range, thus [stretch] takes the centered part of it. One definition
+   serves the reference and the RTL elaboration. *)
+let window (params : Params.t) =
+  let full = params.rows * 256 in
+  let size = full / params.stretch in
+  if size < 1 then invalid_arg "Pink: the stretch window is empty";
+  (full - size) / 2, size
+;;
+
 let mapper ~scale (params : Params.t) =
-  let { Params.rows; root; degrees; stretch } = params in
+  let { Params.root; degrees; _ } = params in
   let offsets = Array.of_list (degree_offsets ~scale params) in
-  let full = rows * 256 in
-  let window = full / stretch in
-  if window < 1 then invalid_arg "Pink: the stretch window is empty";
-  let low = (full - window) / 2 in
+  let low, size = window params in
   fun sum ->
-    let x = Int.clamp_exn (sum - low) ~min:0 ~max:(window - 1) in
-    root + offsets.(x * degrees / window)
+    let x = Int.clamp_exn (sum - low) ~min:0 ~max:(size - 1) in
+    root + offsets.(x * degrees / size)
 ;;
 
 module Voice = struct
@@ -104,7 +111,7 @@ let validate ~scale (params : Params.t) =
   let { Params.rows; root; degrees; stretch } = params in
   if rows < 1 || degrees < 1 || stretch < 1
   then invalid_arg "Pink: rows, degrees and stretch must be at least 1";
-  if rows * 256 / stretch < 1 then invalid_arg "Pink: the stretch window is empty";
+  ignore (window params : int * int);
   List.iter (degree_offsets ~scale params) ~f:(fun offset ->
     if root + offset < 0 || root + offset > 127
     then invalid_arg "Pink: a degree gives a note outside 0 to 127")

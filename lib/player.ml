@@ -7,22 +7,30 @@ module Event = struct
   [@@deriving sexp_of]
 end
 
+(* one voice of the performance: its re-strike policy, and the note that it holds *)
+module Voice = struct
+  type t =
+    { restrike : bool
+    ; opened : int option
+    }
+end
+
 type t =
   { walk : Pink.walk
-  ; restrikes : bool list (* the lowest voice first, as the states come *)
-  ; open_notes : int option list (* the note that each voice holds, or none *)
+  ; voices : Voice.t list (* the lowest voice first, as the states come *)
   }
 
 let create ~(model : Pink.t) ~seed =
   { walk = Pink.create ~model ~seed
-  ; restrikes = List.rev_map model.voices ~f:(fun v -> v.Pink.Voice.restrike)
-  ; open_notes = List.map model.voices ~f:(fun _ -> None)
+  ; voices =
+      List.rev_map model.voices ~f:(fun v ->
+        { Voice.restrike = v.Pink.Voice.restrike; opened = None })
   }
 ;;
 
 (* a voice speaks when it is due and it holds no note, or its pitch moved, or its policy
    re-strikes a held pitch *)
-let speaks (state : Pink.state) ~restrike ~opened =
+let speaks (state : Pink.state) ({ restrike; opened } : Voice.t) =
   state.due
   &&
   match opened with
@@ -30,35 +38,44 @@ let speaks (state : Pink.state) ~restrike ~opened =
   | Some note -> note <> state.note || restrike
 ;;
 
-let step t =
-  let walk, states = Pink.next_step t.walk in
-  let voices =
-    List.map3_exn states t.restrikes t.open_notes ~f:(fun state restrike opened ->
-      if speaks state ~restrike ~opened
-      then (
-        let off = Option.to_list (Option.map opened ~f:(fun note -> Event.Off note)) in
-        Some state.Pink.note, off @ [ Event.On state.Pink.note ])
-      else opened, [])
-  in
-  { t with walk; open_notes = List.map voices ~f:fst }, List.concat_map voices ~f:snd
+(* a voice closes the note that it holds, and it holds none after that *)
+let close (voice : Voice.t) =
+  ( { voice with Voice.opened = None }
+  , Option.to_list (Option.map voice.opened ~f:(fun note -> Event.Off note)) )
 ;;
 
-let highest t = List.length t.open_notes - 1
+(* each rule gives a new voice and the events of that voice; the events come out from the
+   lowest voice upward, the order of the wire *)
+let collect pairs = List.map pairs ~f:fst, List.concat_map pairs ~f:snd
+
+let step t =
+  let walk, states = Pink.next_step t.walk in
+  let voices, events =
+    collect
+      (List.map2_exn states t.voices ~f:(fun state (voice : Voice.t) ->
+         if speaks state voice
+         then (
+           let closed, off = close voice in
+           ( { closed with Voice.opened = Some state.Pink.note }
+           , off @ [ Event.On state.Pink.note ] ))
+         else voice, []))
+  in
+  { walk; voices }, events
+;;
 
 let gate t =
-  let top = highest t in
-  ( { t with
-      open_notes =
-        List.mapi t.open_notes ~f:(fun k note -> if k = top then None else note)
-    }
-  , match List.nth t.open_notes top with
-    | Some (Some note) -> [ Event.Off note ]
-    | Some None | None -> [] )
+  (* the highest voice is the last of the list, and the gate closes no other *)
+  let top = List.length t.voices - 1 in
+  let voices, events =
+    collect
+      (List.mapi t.voices ~f:(fun k voice -> if k = top then close voice else voice, []))
+  in
+  { t with voices }, events
 ;;
 
 let stop t =
-  ( { t with open_notes = List.map t.open_notes ~f:(fun _ -> None) }
-  , List.filter_map t.open_notes ~f:(Option.map ~f:(fun note -> Event.Off note)) )
+  let voices, events = collect (List.map t.voices ~f:close) in
+  { t with voices }, events
 ;;
 
 (* the events of the player are the piece: at step 1 the four voices enter from the bass,

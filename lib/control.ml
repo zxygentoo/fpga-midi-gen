@@ -1,7 +1,6 @@
 open Base
 open Bytes_util
 
-(* the sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
 module Constants = struct
   let request_header_bytes = 3 (* OP, ADDR, LEN *)
   let response_header_bytes = 2 (* OP, STATUS *)
@@ -45,8 +44,6 @@ module Status = struct
   ;;
 end
 
-(* The control registers. They are the local storage of the control unit, thus one byte of
-   address names each one. *)
 module Reg = struct
   let base = 0x00
   let size = 16
@@ -55,7 +52,7 @@ module Reg = struct
   let step_ms = 0x0C (* 2 bytes *)
   let gate_ms = 0x0A (* 2 bytes *)
   let velocity = 0x09
-  let seed = 0x05 (* 4 bytes; the PRNG loads at the end of a write that covers it *)
+  let seed = 0x05 (* 4 bytes *)
   let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
   let midi_len = 0x03
   let midi_msg = 0x00 (* 3 bytes *)
@@ -191,6 +188,12 @@ let decode_response frame =
                   ~len:(n - Constants.response_header_bytes)
             }))
 ;;
+
+(* the board side of the codec: the drivers encode a request and decode a response, and
+   the hardware does the other two. [Control_transport] fakes a board with this one. *)
+module For_test = struct
+  let encode_response = encode_response
+end
 
 let%expect_test "request round trips" =
   let check r =

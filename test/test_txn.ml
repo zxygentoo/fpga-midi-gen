@@ -10,26 +10,9 @@ open Base
 let cpb = Mgen.Top.host_clocks_per_bit
 let midi_cpb = Mgen.Top.midi_clocks_per_bit
 
-(* recover the bytes of an 8N1 waveform sampled one character per cycle *)
+(* the two lines run at different baud rates, thus each call names its own divisor *)
 let decode_uart wave cpb =
-  let n = String.length wave in
-  let bit i = if i < n && Char.equal wave.[i] '1' then 1 else 0 in
-  let received = Buffer.create 16 in
-  let i = ref 1 in
-  while !i < n do
-    if bit (!i - 1) = 1 && bit !i = 0
-    then (
-      let center k = !i + (cpb / 2) + (k * cpb) in
-      let byte = ref 0 in
-      for k = 1 to 8 do
-        byte := !byte lor (bit (center k) lsl (k - 1))
-      done;
-      if bit (center 0) = 0 && bit (center 9) = 1
-      then Buffer.add_char received (Char.of_int_exn !byte);
-      i := !i + (10 * cpb))
-    else Int.incr i
-  done;
-  Buffer.contents received
+  Bytes.to_string (Mgen.Uart_rx.For_test.decode_line wave ~clocks_per_bit:cpb)
 ;;
 
 let hex s = Mgen.Bytes_util.hex (Bytes.of_string s)

@@ -352,7 +352,7 @@ board, and the first step has the full length.
 
 ### The run
 
-The run state is bit 0 of `params.run`. `Control_regs` owns the state; the
+The run state is `params.run`, one bit. `Control_regs` owns the state; the
 sequencer only reads it.
 
 - Idle, and the bit goes to 1: the run starts. The sequencer strobes
