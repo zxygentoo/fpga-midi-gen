@@ -179,10 +179,11 @@ Model (RTL/Hardcaml) -- host control -- Drivers (OCaml)
 
 Rules:
 
-- `lib/control.ml` defines all constants of the host control one time. The
-  RTL elaboration and the drivers must use the constants from that module. If
-  `docs/host_control.md` and `lib/control.ml` do not agree, correct one of
-  them before you continue.
+- `lib/control_intf.ml` defines all constants of the host control one time.
+  The RTL elaboration and the drivers must use the constants from that module,
+  and `Control_frame` is the wire codec that carries them. If
+  `docs/host_control.md` and `lib/control_intf.ml` do not agree, correct one
+  of them before you continue.
 - The host control has no runtime version. The driver and the bitstream must come from
   the same repository state. If the board behavior does not agree with the
   specification, program the board again with the current bitstream.

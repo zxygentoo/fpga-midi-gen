@@ -4,7 +4,7 @@
    the bare tool previews the model at the power-on values. *)
 
 open Core
-module Control = Mgen.Control
+module Control_intf = Mgen.Control_intf
 module Midi = Mgen.Midi
 module Pink = Mgen.Pink
 module Player = Mgen.Player
@@ -70,7 +70,7 @@ let command =
      and seed =
        flag
          "-seed"
-         (optional_with_default Control.Default.seed int)
+         (optional_with_default Control_intf.Default.seed int)
          ~doc:"N the PRNG seed, 32 bits, not 0"
      and steps =
        flag
@@ -80,22 +80,22 @@ let command =
      and step_ms =
        flag
          "-step-ms"
-         (optional_with_default Control.Default.step_ms int)
+         (optional_with_default Control_intf.Default.step_ms int)
          ~doc:"MS the step period"
      and gate_ms =
        flag
          "-gate-ms"
-         (optional_with_default Control.Default.gate_ms int)
+         (optional_with_default Control_intf.Default.gate_ms int)
          ~doc:"MS the soprano gate time"
      and channel =
        flag
          "-channel"
-         (optional_with_default Control.Default.channel int)
+         (optional_with_default Control_intf.Default.channel int)
          ~doc:"N MIDI channel 0 to 15 (default: the S-1 channel 3)"
      and velocity =
        flag
          "-velocity"
-         (optional_with_default Control.Default.velocity int)
+         (optional_with_default Control_intf.Default.velocity int)
          ~doc:"N note velocity 1 to 127"
      and hold =
        flag

@@ -1,130 +1,6 @@
 open Base
 open Bytes_util
-
-module Constants = struct
-  let request_header_bytes = 3 (* OP, ADDR, LEN *)
-  let response_header_bytes = 2 (* OP, STATUS *)
-  let max_data_len = 32
-  let max_payload_bytes = request_header_bytes + max_data_len
-end
-
-module Op = struct
-  let read = 0x01
-  let write = 0x02
-  let response_flag = 0x80
-end
-
-module Status = struct
-  type t =
-    | Ok
-    | Bad_op
-    | Bad_address
-    | Bad_length
-
-  let to_code = function
-    | Ok -> 0x00
-    | Bad_op -> 0x01
-    | Bad_address -> 0x02
-    | Bad_length -> 0x03
-  ;;
-
-  let of_code = function
-    | 0x00 -> Some Ok
-    | 0x01 -> Some Bad_op
-    | 0x02 -> Some Bad_address
-    | 0x03 -> Some Bad_length
-    | _ -> None
-  ;;
-
-  let to_string = function
-    | Ok -> "ok"
-    | Bad_op -> "bad-op"
-    | Bad_address -> "bad-address"
-    | Bad_length -> "bad-length"
-  ;;
-end
-
-module Default = struct
-  (* MIDI channel 3, the S-1 factory default. *)
-  let channel = 2
-  let step_ms = 250
-  let gate_ms = 125
-  let velocity = 100
-  let seed = 42 (* must not be 0 *)
-end
-
-module Reg = struct
-  let base = 0x00
-  let size = 16
-  let run = 0x0F (* bit 0; the board button also toggles it *)
-  let channel = 0x0E
-  let step_ms = 0x0C
-  let gate_ms = 0x0A
-  let velocity = 0x09
-  let seed = 0x05
-  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
-  let midi_len = 0x03
-  let midi_msg = 0x00
-
-  type field =
-    { name : string
-    ; address : int
-    ; width : int
-    ; default : int
-    }
-
-  (* Each register, from the first address upward. The RTL cells, their power-on values
-     and the driver dump all read this one table. *)
-  let fields =
-    [ { name = "midi_msg"
-      ; address = midi_msg
-      ; width = Midi.max_message_bytes
-      ; default = 0
-      }
-    ; { name = "midi_len"; address = midi_len; width = 1; default = 0 }
-    ; { name = "midi_go"; address = midi_go; width = 1; default = 0 }
-    ; { name = "seed"; address = seed; width = 4; default = Default.seed }
-    ; { name = "velocity"; address = velocity; width = 1; default = Default.velocity }
-    ; { name = "gate_ms"; address = gate_ms; width = 2; default = Default.gate_ms }
-    ; { name = "step_ms"; address = step_ms; width = 2; default = Default.step_ms }
-    ; { name = "channel"; address = channel; width = 1; default = Default.channel }
-    ; { name = "run"; address = run; width = 1; default = 0 }
-    ]
-  ;;
-
-  (* the table must cover each address of the section one time: this catches a width that
-     does not agree with the addresses *)
-  let () =
-    let covered =
-      List.concat_map fields ~f:(fun f -> List.init f.width ~f:(fun k -> f.address + k))
-    in
-    assert (List.length covered = size);
-    assert (List.length (List.dedup_and_sort covered ~compare:Int.compare) = size);
-    assert (List.for_all covered ~f:(fun a -> a >= base && a < base + size))
-  ;;
-
-  let width_of address = (List.find_exn fields ~f:(fun f -> f.address = address)).width
-end
-
-(* The one-shot test message: MIDI_MSG, MIDI_LEN and MIDI_GO in one ascending write. A
-   write applies at one time, thus this one burst does the whole operation. The layout of
-   the burst has one definition, here with the addresses that make it. *)
-let doorbell_write message =
-  let n = List.length message in
-  if n < 1 || n > Midi.max_message_bytes
-  then
-    invalid_arg
-      (Printf.sprintf "a test message has 1 to %d bytes, not %d" Midi.max_message_bytes n);
-  let data = Bytes.make (Reg.midi_go - Reg.midi_msg + 1) '\x00' in
-  List.iteri message ~f:(fun k b -> set_byte data k b);
-  set_byte data (Reg.midi_len - Reg.midi_msg) n;
-  set_byte data (Reg.midi_go - Reg.midi_msg) 1;
-  Reg.midi_msg, data
-;;
-
-(* The framing is COBS; see [Cobs] in [lib/cobs.ml]. The byte accessors and the
-   little-endian codec are in [Bytes_util]: all values of more than one byte are
-   little-endian, on the wire and in the cells. *)
+open Control_intf
 
 type request =
   | Read of
@@ -284,7 +160,7 @@ let%expect_test "response round trips" =
 
 let%expect_test "the one-shot doorbell frame on the wire" =
   (* Note On, channel 3, C4, velocity 100 *)
-  let addr, data = doorbell_write [ 0x92; 0x3C; 0x64 ] in
+  let addr, data = build_doorbell [ 0x92; 0x3C; 0x64 ] in
   encode_request (Write { addr; data }) |> hex |> Stdio.print_endline;
   [%expect {| 02 02 07 05 92 3c 64 03 01 00 |}]
 ;;

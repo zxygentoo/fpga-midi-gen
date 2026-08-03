@@ -5,7 +5,7 @@
 
 open Core
 module Bytes_util = Mgen.Bytes_util
-module Control = Mgen.Control
+module Control_intf = Mgen.Control_intf
 module Control_transport = Mgen.Control_transport
 module Midi = Mgen.Midi
 
@@ -33,7 +33,7 @@ let address_arg =
 
 let length_arg =
   Command.Arg_type.create (fun s ->
-    checked "LEN" ~low:1 ~high:Control.Constants.max_data_len (Int.of_string s))
+    checked "LEN" ~low:1 ~high:Control_intf.Constants.max_data_len (Int.of_string s))
 ;;
 
 let byte_arg =
@@ -66,18 +66,22 @@ let check = function
     prerr_endline "garbled response: run the command again";
     exit 1
   | Error (Control_transport.Nak status) ->
-    Printf.eprintf "rejected: %s\n" (Control.Status.to_string status);
+    Printf.eprintf "rejected: %s\n" (Control_intf.Status.to_string status);
     exit 1
 ;;
 
 let dump t =
   let bytes =
-    check (Control_transport.read t ~address:Control.Reg.base ~length:Control.Reg.size)
+    check
+      (Control_transport.read
+         t
+         ~address:Control_intf.Reg.base
+         ~length:Control_intf.Reg.size)
   in
-  Printf.printf "%04x  %s\n" Control.Reg.base (Bytes_util.hex bytes);
-  List.iter Control.Reg.fields ~f:(fun (f : Control.Reg.field) ->
+  Printf.printf "%04x  %s\n" Control_intf.Reg.base (Bytes_util.hex bytes);
+  List.iter Control_intf.Reg.fields ~f:(fun (f : Control_intf.Reg.field) ->
     let value =
-      Bytes_util.uint_le bytes ~pos:(f.address - Control.Reg.base) ~width:f.width
+      Bytes_util.uint_le bytes ~pos:(f.address - Control_intf.Reg.base) ~width:f.width
     in
     Printf.printf "%04x  %-8s  %d (0x%x)\n" f.address f.name value value)
 ;;
@@ -87,7 +91,9 @@ let dump t =
    poll after it bounds the exit at "the message went out". *)
 let doorbell t message =
   let midi_go_clear () =
-    let b = check (Control_transport.read t ~address:Control.Reg.midi_go ~length:1) in
+    let b =
+      check (Control_transport.read t ~address:Control_intf.Reg.midi_go ~length:1)
+    in
     Bytes_util.byte b 0 = 0
   in
   let wait_clear () =
@@ -104,7 +110,7 @@ let doorbell t message =
     wait 100
   in
   wait_clear ();
-  let address, data = Control.doorbell_write message in
+  let address, data = Control_intf.build_doorbell message in
   check (Control_transport.write t ~address ~data);
   wait_clear ()
 ;;
@@ -130,7 +136,7 @@ let write_command =
        ensure
          "the number of BYTEs"
          ~low:1
-         ~high:Control.Constants.max_data_len
+         ~high:Control_intf.Constants.max_data_len
          (List.length bytes);
        let data = Bytes.of_char_list (List.map bytes ~f:Char.of_int_exn) in
        check (Control_transport.write (transport device) ~address ~data))

@@ -284,7 +284,7 @@ let rebuild reports =
 ;;
 
 let%expect_test "the four voices agree with the reference, note for note" =
-  let seed = Control.Default.seed in
+  let seed = Control_intf.Default.seed in
   let rewind, step = harness ~model:Pink.default ~seed in
   rewind ();
   let circuit = rebuild (collect 200 step) in
@@ -304,7 +304,7 @@ let%expect_test "the four voices agree with the reference, note for note" =
 ;;
 
 let%expect_test "the report is the decomposition" =
-  let rewind, step = harness ~model:Pink.default ~seed:Control.Default.seed in
+  let rewind, step = harness ~model:Pink.default ~seed:Control_intf.Default.seed in
   rewind ();
   let steps = collect 128 step in
   Stdio.printf "step  the notes that speak, from the lowest voice\n";
@@ -376,7 +376,9 @@ let%expect_test "the waveform of one step, and the source holds a note while the
   let sim =
     Sim.create
       ~config:Cyclesim.Config.trace_all
-      (create ~model:Pink.default ~seed:(of_unsigned_int ~width:32 Control.Default.seed))
+      (create
+         ~model:Pink.default
+         ~seed:(of_unsigned_int ~width:32 Control_intf.Default.seed))
   in
   let waves, sim = Cyclesim.Waveform.create sim in
   let inp = Cyclesim.inputs sim in
