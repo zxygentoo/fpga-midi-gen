@@ -70,6 +70,31 @@ let check = function
     exit 1
 ;;
 
+(* SEED must never be 0. The board does not refuse it: the PRNG state would stay 0 for
+   ever, every voice would hold its root, and the run would be one frozen chord. The cells
+   take a partial write, thus the tool reads the cell and applies the pending bytes before
+   it judges — a one-byte write can zero a seed whose other bytes are already 0. *)
+let refuse_zero_seed t ~address ~data =
+  let first = Control_intf.Reg.seed in
+  let width = Control_intf.Reg.width_of first in
+  let n = Bytes.length data in
+  let covers = address < first + width && first < address + n in
+  if covers
+  then (
+    let current = check (Control_transport.read t ~address:first ~length:width) in
+    let after =
+      Bytes.init width ~f:(fun k ->
+        let cell = first + k in
+        if cell >= address && cell < address + n
+        then Bytes.get data (cell - address)
+        else Bytes.get current k)
+    in
+    if Bytes_util.uint_le after ~pos:0 ~width = 0
+    then (
+      prerr_endline "SEED must not be 0: every voice would hold its root";
+      exit 2))
+;;
+
 let dump t =
   let bytes =
     check
@@ -139,7 +164,9 @@ let write_command =
          ~high:Control_intf.Constants.max_data_len
          (List.length bytes);
        let data = Bytes.of_char_list (List.map bytes ~f:Char.of_int_exn) in
-       check (Control_transport.write (transport device) ~address ~data))
+       let t = transport device in
+       refuse_zero_seed t ~address ~data;
+       check (Control_transport.write t ~address ~data))
 ;;
 
 let doorbell_command =
