@@ -27,10 +27,17 @@ code of "Note Off, pitch 0". Pitch 0 is C-1, 8.18 Hz, and no music holds
 that pitch. If a corpus holds pitch 0, the tokenizer moves the note up
 one semitone.
 
+The code `0xFF` is START. START opens the walk: it is the first token
+of every training sequence, and the source writes it one time at
+rewind, before the first draw. The model never draws START, because
+the mask forbids it. START takes the code of "Note On, pitch 127".
+Pitch 127 is G9, 12544 Hz, and no music holds that pitch. If a corpus
+holds pitch 127, the tokenizer moves the note down one semitone.
+
 The zero word gives three properties for free:
 
-- A cleared context memory reads as a run of ENDs. That history is
-  silence, and silence is the correct state before the first note.
+- A cleared context memory reads as a run of ENDs, and that history is
+  silence: a safe value for every slot that the boot does not write.
 - The padding of a training batch is `0x00`, and it means silence.
 - The idle test in the circuit is a compare with zero.
 
@@ -68,6 +75,11 @@ pink model: `rewind`, `step`, then `valid`, `idle` and `ready`. The
 sequencer waits in `Take`, so a slow source is legal. The contract is
 one sentence inside one step period.
 
+At rewind the source starts from an empty context and writes START.
+The first sentence follows inside the first step: power on, music on.
+The entry draw does not see a bar position — the composer writes now —
+and the bar counter takes its boot value at rewind, a free RTL choice.
+
 The source decodes its own END: on token `0x00` it raises `idle` and
 sends no event. One field is new on the interface: each event carries
 its type bit, On or Off, because the model states the releases and the
@@ -89,12 +101,14 @@ probability zero.
 | OFF(p) | pitch p sounds now |
 | ON(p) | p does not sound, open seats < 4, p above the last ON of the sentence |
 | END | always |
+| START | never |
 
 Therefore every sentence is valid MIDI, at most four voices sound, and
 two seats never hold one pitch. The disjoint-register rule of the S-1
-holds by construction. The trainer applies the same mask inside the
-softmax of the loss. A mask in the sampler without the same mask in the
-loss moves the distribution; the two must agree.
+holds by construction. The loss is plain cross entropy over the whole
+vocabulary: the composer learns the instrument from the data, and the
+guard of the sampler holds the line at the draw. The mask inside the
+softmax of the loss stays in the trainer as the control branch.
 
 ## The network
 
@@ -138,9 +152,11 @@ Music lives on repetition. Therefore the model has at least two layers,
 at any size.
 
 The optimum comes from the data and not from the board. The rule of
-thumb is twenty training tokens per parameter. Transposition of the
-corpus is legal while each pitch stays inside the pitch field, 1 to
-127 — pitch 0 is END; count it as a gain of four to ten, not twelve.
+thumb is twenty training tokens per parameter. Transposition of a
+training piece is legal while each voice stays inside the observed
+range of its voice in the corpus: soprano 60 to 81, alto 52 to 74,
+tenor 46 to 69, bass 36 to 66. The measured gain on the training pool
+is seven to eight, not twelve.
 
 - A chorale-scale corpus gives 100 K to 200 K parameters.
 - The ceiling serves a corpus of ten million tokens or more.
@@ -165,18 +181,28 @@ walk.
 | voices | at most four sound at once; thin the middle voices |
 | order | the canonical sentence order, per step |
 | pitch 0 | move to pitch 1 |
+| pitch 127 | move to pitch 126 |
+
+The JSB corpus reads from the voice-separated file,
+`Jsb16thSeparated.json`. The voices give the transposition rule; the
+pitch sets of the walk derive from them: drop the rests, merge the
+unisons, sort ascending.
 
 The gate restores a part of the articulation that the grid removes, so
 the round-up of short notes is safe.
 
 ## The plan and the tests
 
-1. Tokenizer and trainer on the host, in OCaml. The backprop is written
-   by hand; the model is two matrices deep.
+1. Tokenizer and trainer on the host, in OCaml. Raven carries the
+   work: Nx computes, Rune differentiates, Kaun optimizes.
 2. The sweep: `d` in {64, 96, 128} and the integer ladder, on the real
    corpus. The validation loss picks the band; the audition through the
    S-1 USB picks the model. The ear decides.
 3. Freeze the config. Then the RTL document, the blocks and the board.
+
+Experiments that wait for the fast trainer: a boot phase that the
+entry draw can see, a learned silent lead after START, voice
+supervision in the loss.
 
 The tests follow the project rules. The reference model is exact
 integer arithmetic, so the stream comparison against Cyclesim is a
