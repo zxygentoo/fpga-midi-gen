@@ -1,7 +1,10 @@
 open Core
 module Json = Yojson.Safe
 
-type chorale = int list array
+type chorale =
+  { steps : int list array
+  ; legal_shifts : int list
+  }
 
 type t =
   { train : chorale list
@@ -9,27 +12,77 @@ type t =
   ; test : chorale list
   }
 
-let default_path = "corpus/JSB-Chorales-dataset/jsb-chorales-16th.json"
 let bar_steps = 16
+let default_path = "corpus/JSB-Chorales-dataset/Jsb16thSeparated.json"
 
-(* the pitch-0 rule of the design document; the JSB corpus never takes this path *)
-let escape_zero_pitch pitch = if pitch = 0 then 1 else pitch
+(* The observed range of each voice over the corpus, from the corpus study of 2026-08-06
+   and the design document: soprano, alto, tenor, bass. The transposition policy reads
+   these bounds. *)
+let voice_ranges = [| 60, 81; 52, 74; 46, 69; 36, 66 |]
 
-let pitch_of_json = function
-  | `Int pitch -> escape_zero_pitch pitch
-  | `Float pitch -> escape_zero_pitch (Int.of_float pitch)
-  | json -> invalid_argf "a pitch is not a number: %s" (Json.to_string json) ()
+(* the reserved-code rules of the design document; the JSB corpus never takes these paths.
+   A rest cell (-1) passes through. *)
+let escape_reserved pitch = if pitch = 0 then 1 else if pitch = 127 then 126 else pitch
+
+(* One step of the separated file: four cells indexed by voice, the soprano first. A cell
+   holds the pitch that its voice sings, or -1 for a rest. *)
+let cells_of_json json =
+  let cell_of_json = function
+    | `Int pitch -> if pitch < 0 then pitch else escape_reserved pitch
+    | `Float pitch ->
+      let pitch = Int.of_float pitch in
+      if pitch < 0 then pitch else escape_reserved pitch
+    | json -> invalid_argf "a cell is not a number: %s" (Json.to_string json) ()
+  in
+  let cells = json |> Json.Util.to_list |> List.map ~f:cell_of_json in
+  if List.length cells <> Array.length voice_ranges
+  then invalid_argf "a step holds %d cells, not four" (List.length cells) ();
+  cells
 ;;
 
-let step_of_json json =
-  json
-  |> Json.Util.to_list
-  |> List.map ~f:pitch_of_json
+(* The legal transpositions of one piece: every shift that keeps each voice inside the
+   observed range of its voice. The bounds intersect over the voices in closed form; a
+   piece inside the ranges always keeps shift zero, and a silent piece takes it alone. *)
+let legal_shifts_of_cells cells =
+  let widen ranges step =
+    List.iteri step ~f:(fun voice pitch ->
+      if pitch > 0
+      then (
+        let range =
+          match ranges.(voice) with
+          | None -> pitch, pitch
+          | Some (low, high) -> min low pitch, max high pitch
+        in
+        ranges.(voice) <- Some range))
+  in
+  let ranges = Array.create ~len:(Array.length voice_ranges) None in
+  List.iter cells ~f:(widen ranges);
+  if Array.for_all ranges ~f:Option.is_none
+  then [ 0 ]
+  else (
+    let low, high =
+      Array.foldi ranges ~init:(-127, 127) ~f:(fun voice (low, high) range ->
+        match range with
+        | None -> low, high
+        | Some (lowest, highest) ->
+          let corpus_low, corpus_high = voice_ranges.(voice) in
+          max low (corpus_low - lowest), min high (corpus_high - highest))
+    in
+    if low > high then [ 0 ] else List.range ~stop:`inclusive low high)
+;;
+
+(* the flat view of one step: the sounding set, ascending, unisons merged *)
+let flatten_cells cells =
+  cells
+  |> List.filter ~f:(fun pitch -> pitch > 0)
   |> List.dedup_and_sort ~compare:Int.compare
 ;;
 
 let chorale_of_json json =
-  json |> Json.Util.to_list |> List.map ~f:step_of_json |> Array.of_list
+  let cells = json |> Json.Util.to_list |> List.map ~f:cells_of_json in
+  { steps = Array.of_list_map cells ~f:flatten_cells
+  ; legal_shifts = legal_shifts_of_cells cells
+  }
 ;;
 
 let load ~path =
@@ -40,50 +93,24 @@ let load ~path =
   { train = chorales "train"; valid = chorales "valid"; test = chorales "test" }
 ;;
 
-let transpose ~by chorale =
+let transpose ~by { steps; legal_shifts } =
   let transpose_pitch pitch =
     match pitch + by with
-    | moved when moved < 1 || moved > 127 ->
-      invalid_argf "pitch %d moved by %d leaves 1 to 127" pitch by ()
+    | moved when moved < 1 || moved > 126 ->
+      invalid_argf "pitch %d moved by %d leaves 1 to 126" pitch by ()
     | transposed -> transposed
   in
   let transpose_step step = List.map step ~f:transpose_pitch in
-  Array.map chorale ~f:transpose_step
-;;
-
-(* the lowest and the highest sounding pitch, or [None] for silence *)
-let chorale_pitch_range chorale =
-  let aux_pitch acc pitch =
-    match acc with
-    | None -> Some (pitch, pitch)
-    | Some (low, high) -> Some (min low pitch, max high pitch)
-  in
-  let aux_step acc step = List.fold step ~init:acc ~f:aux_pitch in
-  Array.fold chorale ~init:None ~f:aux_step
-;;
-
-let pitch_range chorales =
-  let widen acc chorale =
-    match acc, chorale_pitch_range chorale with
-    | range, None | None, range -> range
-    | Some (low, high), Some (low', high') -> Some (min low low', max high high')
-  in
-  match List.fold chorales ~init:None ~f:widen with
-  | None -> invalid_arg "pitch_range: no pitch sounds in the chorales"
-  | Some range -> range
-;;
-
-let legal_shifts ~within:(low, high) chorale =
-  match chorale_pitch_range chorale with
-  | None -> [ 0 ]
-  | Some (lowest, highest) -> List.range ~stop:`inclusive (low - lowest) (high - highest)
+  { steps = Array.map steps ~f:transpose_step
+  ; legal_shifts = List.map legal_shifts ~f:(fun shift -> shift - by)
+  }
 ;;
 
 (* One step, one sentence: the OFFs of the pitches that stop, the ONs of the pitches that
    start, then [End]. A pitch in both neighbour steps is a held note and takes no token.
    [Set.to_list] gives the ascending order of the canonical sentence, thus one chord has
    one sentence and not a permutation family. *)
-let tokenize chorale =
+let tokenize steps =
   let sentence ~previous ~current =
     let on pitch = Token.On pitch in
     let off pitch = Token.Off pitch in
@@ -96,14 +123,14 @@ let tokenize chorale =
     @ [ Token.End ]
   in
   let aux previous current = current, sentence ~previous ~current in
-  chorale |> Array.to_list |> List.folding_map ~init:[] ~f:aux |> List.concat
+  steps |> Array.to_list |> List.folding_map ~init:[] ~f:aux |> List.concat
 ;;
 
 (* The cadential holds of one chorale, from the corpus study of 2026-08-06: a sonority
    that rings six steps or more marks a cadence, and the cadences sit on the downbeats.
    The result is the start step of each hold, ascending. *)
-let cadential_holds chorale =
-  let sonorities = Array.to_list (Array.map chorale ~f:(Set.of_list (module Int))) in
+let cadential_holds steps =
+  let sonorities = Array.to_list (Array.map steps ~f:(Set.of_list (module Int))) in
   let runs = List.group sonorities ~break:(fun a b -> not (Set.equal a b)) in
   let (_ : int), holds =
     List.fold_map runs ~init:0 ~f:(fun start run ->
@@ -125,8 +152,8 @@ let vote holds bar =
 ;;
 
 (* Fewer than three holds gives no signal: the piece keeps the plain sixteen-step grid. *)
-let metre chorale =
-  let holds = cadential_holds chorale in
+let metre steps =
+  let holds = cadential_holds steps in
   if List.length holds < 3
   then bar_steps, 0
   else (
@@ -135,53 +162,72 @@ let metre chorale =
     if lift16 >= lift12 then 16, rotation16 else 12, rotation12)
 ;;
 
-(* The leading silence: one bar of empty steps before the music, thus the walk begins with
-   bare END sentences and the model learns how a piece starts after silence. The cleared
-   context of the sampler then boots inside the training distribution. The phases align to
-   the estimated downbeats and run without a seam through the silent bar into the music. *)
-let encode ~lead_bars chorale =
-  let bar, rotation = metre chorale in
-  let padded = Array.append (Array.create ~len:(lead_bars * bar) []) chorale in
-  let tokens = tokenize padded in
-  let _, phases =
+(* The walk opens with START, per the design document: the boot writes START and the music
+   follows at once. START takes phase zero; the entry draw does not see a bar position.
+   The phases of the piece align to the estimated downbeats. *)
+let encode { steps; legal_shifts = _ } =
+  let bar, rotation = metre steps in
+  let tokens = tokenize steps in
+  let codes =
+    Array.of_list (Token.to_byte Token.Start :: List.map tokens ~f:Token.to_byte)
+  in
+  let (_ : int), piece_phases =
     List.fold_map tokens ~init:0 ~f:(fun step token ->
       let next =
         match token with
-        | Token.End -> step + 1
-        | Off _ | On _ -> step
+        | Token.Start | On _ | Off _ -> step
+        | End -> step + 1
       in
       next, (((step - rotation) mod bar) + bar) mod bar)
   in
-  ~codes:(Array.of_list_map tokens ~f:Token.to_byte), ~phases:(Array.of_list phases)
+  ~codes, ~phases:(Array.of_list (0 :: piece_phases))
 ;;
 
-let%expect_test "the legal shifts of the range-limited policy" =
-  let chorale = [| [ 60; 64; 67 ]; []; [ 59 ] |] in
-  print_s ([%sexp_of: int * int] (pitch_range [ chorale ]));
-  [%expect {| (59 67) |}];
-  print_s ([%sexp_of: int list] (legal_shifts ~within:(55, 70) chorale));
-  [%expect {| (-4 -3 -2 -1 0 1 2 3) |}];
-  print_s ([%sexp_of: int list] (legal_shifts ~within:(60, 61) chorale));
-  [%expect {| () |}]
+let%expect_test "the cells of one step" =
+  let cells json = cells_of_json (Json.from_string json) in
+  (* a full chord, the soprano first *)
+  print_s ([%sexp_of: int list] (cells "[74, 70, 65, 58]"));
+  [%expect {| (74 70 65 58) |}];
+  (* a rest in the alto; a float parses as its pitch *)
+  print_s ([%sexp_of: int list] (cells "[74.0, -1, 65, 58]"));
+  [%expect {| (74 -1 65 58) |}];
+  (* the reserved codes escape: pitch 127 falls, pitch 0 rises *)
+  print_s ([%sexp_of: int list] (cells "[127, 64, 55, 0]"));
+  [%expect {| (126 64 55 1) |}];
+  (* a step without its four voices refuses *)
+  (match cells "[74, 70, 65]" with
+   | (_ : int list) -> ()
+   | exception Invalid_argument message -> print_endline message);
+  [%expect {| a step holds 3 cells, not four |}]
 ;;
 
-let%expect_test "the walk of a small chorale" =
-  (* a chord, a hold, a move of two voices, a rest, then a unison *)
-  let chorale = [| [ 67; 64; 60 ]; [ 67; 64; 60 ]; [ 67; 65; 62 ]; []; [ 60; 60 ] |] in
-  print_s ([%sexp_of: Token.t list] (tokenize chorale));
+let%expect_test "the shifts of the range-limited policy" =
+  (* soprano 72..76, alto 64, tenor 55, bass 48: the soprano allows -12..+5, the tenor
+     -9..+14 — the intersection is -9..+5 *)
+  let cells =
+    [ [ 72; 64; 55; 48 ]; [ 76; 64; 55; 48 ]; [ 74; -1; 55; 48 ]; [ 72; 64; 55; 48 ] ]
+  in
+  print_s ([%sexp_of: int list] (legal_shifts_of_cells cells));
+  [%expect {| (-9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5) |}];
+  (* a silent piece takes the identity alone *)
+  print_s ([%sexp_of: int list] (legal_shifts_of_cells [ [ -1; -1; -1; -1 ] ]));
+  [%expect {| (0) |}]
+;;
+
+let%expect_test "the chorale of the separated json" =
+  (* two chords with a hold; a bass rest and a tenor-alto unison in the second. The flat
+     steps drop the rests, merge the unisons and sort ascending; the shifts come from the
+     voices — the tenor at 69 touches its ceiling, thus no shift up *)
+  let json =
+    {|[[74, 70, 65, 58], [74, 70, 65, 58], [76, 70, 69, -1], [76, 70, 69, -1]]|}
+  in
+  let { steps; legal_shifts } = chorale_of_json (Json.from_string json) in
+  print_s ([%sexp_of: int list array] steps);
+  print_s ([%sexp_of: int list] legal_shifts);
   [%expect
     {|
-    ((On 60) (On 64) (On 67) End End (Off 60) (Off 64) (On 62) (On 65) End
-     (Off 62) (Off 65) (Off 67) End (On 60) End)
-    |}];
-  let ~codes, ~phases = encode ~lead_bars:1 chorale in
-  print_s ([%sexp_of: int array] codes);
-  print_s ([%sexp_of: int array] phases);
-  [%expect
-    {|
-    (0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 188 192 195 0 0 60 64 190 193 0 62 65 67 0
-     188 0)
-    (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 0 0 0 0 1 2 2 2 2 2 3 3 3 3 4 4)
+    ((58 65 70 74) (58 65 70 74) (69 70 76) (69 70 76))
+    (-14 -13 -12 -11 -10 -9 -8 -7 -6 -5 -4 -3 -2 -1 0)
     |}]
 ;;
 
@@ -207,4 +253,23 @@ let%expect_test "the metre from the cadential holds" =
   let short = Array.concat [ bar_44; bar_44 ] in
   print_s ([%sexp_of: int * int] (metre short));
   [%expect {| (16 0) |}]
+;;
+
+let%expect_test "the walk of a small chorale" =
+  (* a chord, a hold, a move of two voices, a rest, then a unison *)
+  let steps = [| [ 67; 64; 60 ]; [ 67; 64; 60 ]; [ 67; 65; 62 ]; []; [ 60; 60 ] |] in
+  print_s ([%sexp_of: Token.t list] (tokenize steps));
+  [%expect
+    {|
+    ((On 60) (On 64) (On 67) End End (Off 60) (Off 64) (On 62) (On 65) End
+     (Off 62) (Off 65) (Off 67) End (On 60) End)
+    |}];
+  let ~codes, ~phases = encode { steps; legal_shifts = [ 0 ] } in
+  print_s ([%sexp_of: int array] codes);
+  print_s ([%sexp_of: int array] phases);
+  [%expect
+    {|
+    (255 188 192 195 0 0 60 64 190 193 0 62 65 67 0 188 0)
+    (0 0 0 0 0 1 2 2 2 2 2 3 3 3 3 4 4)
+    |}]
 ;;

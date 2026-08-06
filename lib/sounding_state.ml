@@ -9,8 +9,7 @@ let silence = { sounding = Set.empty (module Int); last_on = None }
 
 let is_legal t (token : Token.t) =
   match token with
-  | End -> true
-  | Off pitch -> Set.mem t.sounding pitch && Option.is_none t.last_on
+  | Start -> false
   | On pitch ->
     (not (Set.mem t.sounding pitch))
     && Set.length t.sounding < Token.seats
@@ -18,20 +17,24 @@ let is_legal t (token : Token.t) =
       (match t.last_on with
       | None -> true
       | Some last -> pitch > last)
+  | Off pitch -> Set.mem t.sounding pitch && Option.is_none t.last_on
+  | End -> true
 ;;
 
 let is_safe t (token : Token.t) =
   match token with
-  | End -> true
-  | Off _ -> true
+  | Start -> false
   | On pitch -> (not (Set.mem t.sounding pitch)) && Set.length t.sounding < Token.seats
+  | Off _ -> true
+  | End -> true
 ;;
 
 let step t (token : Token.t) =
   match token with
-  | End -> { t with last_on = None }
-  | Off pitch -> { t with sounding = Set.remove t.sounding pitch }
+  | Start -> t
   | On pitch -> { sounding = Set.add t.sounding pitch; last_on = Some pitch }
+  | Off pitch -> { t with sounding = Set.remove t.sounding pitch }
+  | End -> { t with last_on = None }
 ;;
 
 let legal_mask t = Array.init Token.vocab ~f:(fun code -> is_legal t (Token.of_byte code))
@@ -89,19 +92,22 @@ let%expect_test "the safety floor against the grammar" =
       grammar.(code)
       floor.(code)
   in
-  (* the order rule is grammar; the synthesizer does not care *)
-  show (Off 60);
-  (* an OFF of a silent pitch is a wire no-op: only the grammar refuses *)
-  show (Off 50);
+  (* START is input only: the model never draws it *)
+  show Start;
   (* the cross-kill: both refuse *)
   show (On 60);
   (* below the last ON: convention, not damage *)
   show (On 62);
+  (* the order rule is grammar; the synthesizer does not care *)
+  show (Off 60);
+  (* an OFF of a silent pitch is a wire no-op: only the grammar refuses *)
+  show (Off 50);
   [%expect
     {|
-    (Off 60)   grammar false  safe true
-    (Off 50)   grammar false  safe true
+    Start      grammar false  safe false
     (On 60)    grammar false  safe false
     (On 62)    grammar false  safe true
+    (Off 60)   grammar false  safe true
+    (Off 50)   grammar false  safe true
     |}]
 ;;

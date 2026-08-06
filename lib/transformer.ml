@@ -258,14 +258,13 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
   if Float.( <= ) temperature 0.0 then invalid_arg "the temperature is positive";
   if Float.( < ) min_p 0.0 || Float.( >= ) min_p 1.0 then invalid_arg "min_p is 0 up to 1";
   let rng = Random.State.make [| seed |] in
-  (* The priming silence: one full bar of the zero word — the boot signature the corpus
-     teaches, and the cleared memory of the circuit. A single END is ambiguous with a
-     bar-crossing hold; a bar of pure silence is not. The phases walk the bar, thus the
-     first drawn step lands on the downbeat. *)
-  let codes = ref (List.init phase_buckets ~f:(fun (_ : int) -> 0)) in
-  let phases = ref (List.rev (List.init phase_buckets ~f:Fn.id)) in
+  (* The boot of the design document: an empty context, then START — power on, music on.
+     START takes phase zero; the host takes zero as the boot value of the bar counter, the
+     choice the RTL keeps free. *)
+  let codes = ref [ Token.to_byte Token.Start ] in
+  let phases = ref [ 0 ] in
   let state = ref Sounding_state.silence in
-  let step_index = ref phase_buckets in
+  let step_index = ref 0 in
   let drawn = ref 0 in
   let current = ref [] in
   let out = ref [] in
@@ -339,12 +338,15 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
     phases := (!step_index mod phase_buckets) :: !phases;
     state := Sounding_state.step !state token;
     match token with
+    | Start ->
+      (* both guards refuse START at every draw *)
+      assert false
+    | On _ | Off _ -> current := token :: !current
     | End ->
       out := List.rev !current :: !out;
       current := [];
       incr step_index;
       incr drawn
-    | Off _ | On _ -> current := token :: !current
   done;
   let count = max 1 !draws in
   ( List.rev !out

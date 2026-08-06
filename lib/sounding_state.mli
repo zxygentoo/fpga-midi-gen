@@ -2,11 +2,12 @@
     guards of the sampler derive from it; the training loss does not see it — the model
     learns the instrument from the data, and the sampler holds the line at the draw.
 
-    [legal_mask] is the full grammar of the corpus encoding: an [Off] when its pitch
-    sounds and the sentence holds no ON yet; an [On] when its pitch does not sound, a seat
-    of the four is open, and its pitch is above the last ON of the sentence; [End] always.
-    A model whose training loss carried this mask needs it at the draw: its raw mass on
-    the codes outside is untrained.
+    [legal_mask] is the full grammar of the corpus encoding: [Start] never — it is input
+    only, and both masks refuse it; an [On] when its pitch does not sound, a seat of the
+    four is open, and its pitch is above the last ON of the sentence; an [Off] when its
+    pitch sounds and the sentence holds no ON yet; [End] always. A model whose training
+    loss carried this mask needs it at the draw: its raw mass on the codes outside is
+    untrained.
 
     [safe_mask] is the safety floor alone — the two rules whose violation damages the
     instrument state: no [On] of a sounding pitch (the cross-kill of the S-1), and no

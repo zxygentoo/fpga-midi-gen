@@ -54,8 +54,9 @@ let show_sentence sentence =
     String.concat
       ~sep:" "
       (List.map events ~f:(function
-        | Token.Off pitch -> sprintf "off:%d" pitch
+        | Token.Start -> "start"
         | Token.On pitch -> sprintf "on:%d" pitch
+        | Token.Off pitch -> sprintf "off:%d" pitch
         | Token.End -> "end"))
 ;;
 
@@ -76,12 +77,14 @@ let print_stats music =
   List.iter music ~f:(fun sentence ->
     let ons =
       List.count sentence ~f:(function
-        | Token.On _ -> true
+        | Token.Start -> false
+        | On _ -> true
         | Off _ | End -> false)
     in
     List.iter sentence ~f:(function
-      | Token.Off pitch -> sounding := Set.remove !sounding pitch
+      | Token.Start -> ()
       | Token.On pitch -> sounding := Set.add !sounding pitch
+      | Token.Off pitch -> sounding := Set.remove !sounding pitch
       | Token.End -> ());
     if ons = 1 then incr singles;
     if Set.length !sounding = 4 then incr fours;
@@ -115,12 +118,13 @@ let play music ~device ~step_ms ~channel ~velocity =
       List.iteri music ~f:(fun index sentence ->
         print_step index sentence;
         List.iter sentence ~f:(function
-          | Token.Off note ->
-            Midi.send_note_off fd ~channel ~note;
-            sounding := Set.remove !sounding note
+          | Token.Start -> ()
           | Token.On note ->
             Midi.send_note_on fd ~channel ~note ~velocity;
             sounding := Set.add !sounding note
+          | Token.Off note ->
+            Midi.send_note_off fd ~channel ~note;
+            sounding := Set.remove !sounding note
           | Token.End -> ());
         sleep_ms step_ms))
     ~finally:(fun () ->

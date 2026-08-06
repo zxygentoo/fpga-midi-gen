@@ -85,12 +85,13 @@ module Guard : sig
     | Hazards
 end
 
-(** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from
-    silence. One element of the first result is one drawn step: the events of its
-    sentence, without the [End]. The mask of the design document guards every draw, thus
-    each sentence is valid. [min_p] removes each legal token whose tempered probability is
-    below [min_p] of the peak's; the peak always stays, thus a draw always exists, and
-    zero turns the filter off. The same seed gives the same music. *)
+(** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
+    boot: an empty context, then [Start] at phase zero — power on, music on. One element
+    of the first result is one drawn step: the events of its sentence, without the [End].
+    The mask of the design document guards every draw, thus each sentence is valid.
+    [min_p] removes each legal token whose tempered probability is below [min_p] of the
+    peak's; the peak always stays, thus a draw always exists, and zero turns the filter
+    off. The same seed gives the same music. *)
 val sample
   :  Config.t
   -> Params.t

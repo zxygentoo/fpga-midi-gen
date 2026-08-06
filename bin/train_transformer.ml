@@ -51,12 +51,18 @@ let masks_after codes =
 ;;
 
 (* One train row: a window of context + 1 codes from one chorale, with a fresh
-   transposition. A short chorale takes padding: the zero word, which is silence. *)
+   transposition — a draw from the legal shifts of the piece, or from the fixed window of
+   the [-augment] control. A short chorale takes padding: the zero word, which is silence. *)
 let train_row rng pool ~context ~augment =
   let chorale = pool.(Random.State.int rng (Array.length pool)) in
-  let shift = Random.State.int rng ((2 * augment) + 1) - augment in
-  let lead_bars = 1 + Random.State.int rng 2 in
-  let ~codes, ~phases = Jsb.encode ~lead_bars (Jsb.transpose ~by:shift chorale) in
+  let shift =
+    match augment with
+    | Some window -> Random.State.int rng ((2 * window) + 1) - window
+    | None ->
+      let shifts = Array.of_list chorale.Jsb.legal_shifts in
+      shifts.(Random.State.int rng (Array.length shifts))
+  in
+  let ~codes, ~phases = Jsb.encode (Jsb.transpose ~by:shift chorale) in
   let masks = masks_after codes in
   let need = context + 1 in
   let length = Array.length codes in
@@ -93,7 +99,7 @@ let train_batch rng pool ~batch ~context ~augment =
 let eval_rows chorales ~context ~limit =
   let rows =
     List.concat_map chorales ~f:(fun chorale ->
-      let ~codes, ~phases = Jsb.encode ~lead_bars:1 chorale in
+      let ~codes, ~phases = Jsb.encode chorale in
       let need = context + 1 in
       let length = Array.length codes in
       if length < need
@@ -302,8 +308,10 @@ let command =
      and augment =
        flag
          "-augment"
-         (optional_with_default 6 int)
-         ~doc:"N the widest transposition, in semitones"
+         (optional int)
+         ~doc:
+           "N the fixed transposition window of the old policy, the control; absent \
+            draws from the legal shifts of each piece"
      and log_every =
        flag "-log-every" (optional_with_default 10 int) ~doc:"N the log period"
      and eval_every =
