@@ -10,6 +10,25 @@
 # Style
 
 - Prefer the functional style: pure functions and clear data abstractions.
+- Names:
+  - Give each function a name that states its work. A vague name (`clean`,
+    `split`, `best`) makes the reader deduce the work from the context. A
+    clear name (`escape_zero_pitch`, `chorales`, `vote`) carries the work
+    alone.
+  - Name the helper of a `map`, a `filter` or a `fold` instead of a dense
+    inline literal. The name documents the step. When no good name exists, a
+    generic `aux` still reads better than a long closure. A short literal can
+    stay inline.
+  - Decompose a dense function into named stages; the top function then reads
+    as the algorithm (`cadential_holds`, `vote`, `metre`).
+- Comments:
+  - Do not overdo comments: a comment states only what the code cannot say.
+  - The *what* is easy to see in the code; the *why* is not. Comment the why:
+    the design and the reasoning behind the code.
+  - Some *what* comments are necessary — a tie rule, a seeming inconsistency.
+    Keep them terse, especially inline.
+- Datatypes:
+  - Strongly against tuple with more than three items, use record instead and give good field names.
 - Mutation is permitted only with a real justification:
   - global state at the outer edge of the program
   - local mutation with a large, measured performance win

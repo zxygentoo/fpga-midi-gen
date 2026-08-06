@@ -1,7 +1,17 @@
 (library
  (name mgen)
  ; hardcaml_waveterm and qcheck-core serve only the inline tests
- (libraries base stdio core_unix hardcaml hardcaml_waveterm qcheck-core)
+ (libraries
+  base
+  stdio
+  core_unix
+  hardcaml
+  hardcaml_waveterm
+  qcheck-core
+  nx
+  rune
+  kaun
+  yojson)
  (inline_tests
   ; The ~preview ppx_expect records file basenames; the default
   ; -source-tree-root from the backend points one level too high.

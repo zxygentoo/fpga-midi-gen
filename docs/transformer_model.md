@@ -139,8 +139,8 @@ at any size.
 
 The optimum comes from the data and not from the board. The rule of
 thumb is twenty training tokens per parameter. Transposition of the
-corpus over the twelve keys is legal, because the pitch field covers
-the full MIDI range; count it as a gain of four to ten, not twelve.
+corpus is legal while each pitch stays inside the pitch field, 1 to
+127 — pitch 0 is END; count it as a gain of four to ten, not twelve.
 
 - A chorale-scale corpus gives 100 K to 200 K parameters.
 - The ceiling serves a corpus of ten million tokens or more.

@@ -6,6 +6,9 @@ board/_build/
 _build/
 *.install
 
+# training runs: logs and checkpoints
+_train/
+
 # opam
 _opam/
 
@@ -34,3 +37,6 @@ vivado*.log
 # Vivado batch-mode litter in the repository root
 clockInfo.txt
 tight_setup_hold_pins.txt
+
+# corpus: the pickles are binary duplicates of the JSON files
+corpus/**/*.pkl

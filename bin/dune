@@ -16,3 +16,17 @@
  (preprocess
   (pps ppx_let))
  (libraries core core_unix core_unix.command_unix mgen))
+
+(executable
+ (name train_transformer)
+ (modules train_transformer)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen nx rune kaun))
+
+(executable
+ (name play_transformer)
+ (modules play_transformer)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen nx kaun))
