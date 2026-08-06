@@ -25,8 +25,10 @@
   - Do not overdo comments: a comment states only what the code cannot say.
   - The *what* is easy to see in the code; the *why* is not. Comment the why:
     the design and the reasoning behind the code.
-  - Some *what* comments are necessary — a tie rule, a seeming inconsistency.
-    Keep them terse, especially inline.
+  - Some *what* comments are necessary — a tie rule, or a part that looks
+    unusual. For example, some software here is unconventional because it
+    must agree with the circuit.
+  - Keep inline comments sparse and terse.
 - Datatypes:
   - Strongly against tuple with more than three items, use record instead and give good field names.
 - Mutation is permitted only with a real justification:
