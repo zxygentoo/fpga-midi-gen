@@ -40,3 +40,8 @@ tight_setup_hold_pins.txt
 
 # corpus: the pickles are binary duplicates of the JSON files
 corpus/**/*.pkl
+
+# the JAX seam: the environment rebuilds from uv.lock, the data from corpus_tool
+jax/.venv/
+jax/_data/
+__pycache__/
