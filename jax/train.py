@@ -1,0 +1,256 @@
+"""train.py: the JAX twin of bin/train_transformer.ml -- the sweep vehicle.
+
+Same walk, same referee rows, same schedule shape; the recipe knobs -- dropout, weight
+decay -- are the reason this trainer exists. Checkpoints are Kaun safetensors, tensors
+"0".."N" in the OCaml Params order, so checkpoint_tool and play_transformer consume
+them directly. The final board model still comes from the OCaml trainer of record; this
+side only finds the recipe.
+
+The optimizer is a hand-rolled AdamW with the decoupled decay of Kaun's, and the
+gradient clip is the same global-norm rule. Optimizer parity with OCaml is not required
+-- Gate B pins the eval, not the trajectory.
+"""
+
+import argparse
+import time
+from pathlib import Path
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from safetensors.numpy import save_file
+
+import data
+import model
+
+JAX_ROOT = Path(__file__).resolve().parent
+
+
+def draw_params(key, d, layers):
+    def normal(k, shape):
+        return jax.random.normal(k, shape, dtype=jnp.float32) * 0.02
+
+    keys = iter(jax.random.split(key, 2 + 6 * layers))
+    return {
+        "embed": normal(next(keys), (model.VOCAB, d)),
+        "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
+        "layers": [
+            {
+                "wq": normal(next(keys), (d, d)),
+                "wk": normal(next(keys), (d, d)),
+                "wv": normal(next(keys), (d, d)),
+                "wo": normal(next(keys), (d, d)),
+                "w1": normal(next(keys), (d, 4 * d)),
+                "w2": normal(next(keys), (4 * d, d)),
+            }
+            for _ in range(layers)
+        ],
+    }
+
+
+def save_checkpoint(path, params):
+    """Kaun order: embed, phase, then wq wk wv wo w1 w2 for each layer."""
+    tensors = [params["embed"], params["phase"]] + [
+        layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS
+    ]
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    save_file({str(i): np.asarray(t) for i, t in enumerate(tensors)}, path)
+
+
+def schedule(step, peak, warmup, total):
+    """the OCaml schedule: linear warmup to the peak, cosine decay to zero; a warmup of
+    zero is the constant peak"""
+    if warmup == 0:
+        return peak
+    if step <= warmup:
+        return peak * step / warmup
+    progress = (step - warmup) / max(1, total - warmup)
+    return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
+
+
+def make_step(heads, masked, dropout, clip, weight_decay):
+    def step_fn(params, m, v, t, codes, phases, masks, lr, key):
+        def loss_fn(p):
+            if masked:
+                return model.masked_loss(
+                    p, codes, phases, masks, heads=heads, dropout=dropout, key=key
+                )
+            return model.loss(p, codes, phases, heads=heads, dropout=dropout, key=key)
+
+        value, grads = jax.value_and_grad(loss_fn)(params)
+        if clip > 0.0:
+            norm = jnp.sqrt(sum(jnp.sum(g * g) for g in jax.tree.leaves(grads)))
+            scale = clip / jnp.maximum(norm, clip)
+            grads = jax.tree.map(lambda g: g * scale, grads)
+        b1, b2, eps = 0.9, 0.999, 1e-8
+        m = jax.tree.map(lambda m_, g: b1 * m_ + (1 - b1) * g, m, grads)
+        v = jax.tree.map(lambda v_, g: b2 * v_ + (1 - b2) * g * g, v, grads)
+        m_hat = jax.tree.map(lambda m_: m_ / (1 - b1**t), m)
+        v_hat = jax.tree.map(lambda v_: v_ / (1 - b2**t), v)
+        params = jax.tree.map(
+            lambda p, mh, vh: p - lr * (mh / (jnp.sqrt(vh) + eps) + weight_decay * p),
+            params,
+            m_hat,
+            v_hat,
+        )
+        return value, params, m, v
+
+    return jax.jit(step_fn)
+
+
+def make_eval(heads, masked):
+    def eval_fn(params, codes, phases, masks):
+        if masked:
+            return model.masked_loss(params, codes, phases, masks, heads=heads)
+        return model.loss(params, codes, phases, heads=heads)
+
+    return jax.jit(eval_fn)
+
+
+def eval_loss(eval_fn, params, batches):
+    total, count = 0.0, 0
+    for codes, phases, masks, rows in batches:
+        value = float(
+            eval_fn(
+                params,
+                jnp.asarray(codes),
+                jnp.asarray(phases),
+                None if masks is None else jnp.asarray(masks),
+            )
+        )
+        total += value * rows
+        count += rows
+    return total / count
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add = parser.add_argument
+    add("--corpus", default=str(JAX_ROOT / "_data" / "corpus.safetensors"))
+    add("--d", type=int, default=64)
+    add("--layers", type=int, default=2)
+    add("--heads", type=int, default=4)
+    add("--context", type=int, default=256)
+    add("--batch", type=int, default=16)
+    add("--steps", type=int, default=200)
+    add("--lr", type=float, default=3e-4)
+    add("--seed", type=int, default=1)
+    add("--warmup", type=int, default=0)
+    add("--wd", type=float, default=0.01)
+    add("--clip", type=float, default=1.0)
+    add("--dropout", type=float, default=0.0)
+    add("--masked-loss", action="store_true")
+    add("--train-on", choices=("train", "train+test", "all"), default="train")
+    add("--log-every", type=int, default=10)
+    add("--eval-every", type=int, default=100)
+    add("--eval-limit", type=int, default=128)
+    add("--ckpt", default=None)
+    add(
+        "--average-top",
+        type=int,
+        default=0,
+        help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
+    )
+    args = parser.parse_args()
+
+    corpus = data.load_corpus(args.corpus)
+    pool = data.train_pool(corpus, args.train_on)
+    masked = args.masked_loss
+    train_eval = data.eval_batches(
+        corpus["train"], args.context, args.eval_limit, args.batch, masked
+    )
+    valid_eval = data.eval_batches(
+        corpus["valid"], args.context, args.eval_limit, args.batch, masked
+    )
+    rng = np.random.default_rng(args.seed)
+    key = jax.random.PRNGKey(args.seed)
+    key, draw_key = jax.random.split(key)
+    params = draw_params(draw_key, args.d, args.layers)
+    m = v = jax.tree.map(jnp.zeros_like, params)
+    step_fn = make_step(args.heads, masked, args.dropout, args.clip, args.wd)
+    eval_fn = make_eval(args.heads, masked)
+    count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
+    print(
+        f"corpus: {len(pool)} pool pieces; eval rows: "
+        f"{sum(b[3] for b in train_eval)} train, {sum(b[3] for b in valid_eval)} valid; "
+        f"parameters: {count}",
+        flush=True,
+    )
+
+    best = float("inf")
+    top = []  # (valid, step, host params) -- the K best snapshots for averaging
+    losses = []
+    started = time.perf_counter()
+
+    def evaluate(step, params):
+        nonlocal best
+        train_loss = eval_loss(eval_fn, params, train_eval)
+        valid_loss = eval_loss(eval_fn, params, valid_eval)
+        mark = ""
+        if valid_loss < best:
+            best = valid_loss
+            mark = "  *"
+            if args.ckpt and args.train_on != "all":
+                save_checkpoint(args.ckpt, params)
+        if args.average_top > 0:
+            top.append((valid_loss, step, jax.tree.map(np.asarray, params)))
+            top.sort(key=lambda entry: entry[0])
+            del top[args.average_top :]
+        print(
+            f"step {step:4d}  eval  train {train_loss:.4f}  valid {valid_loss:.4f}{mark}",
+            flush=True,
+        )
+
+    for step in range(1, args.steps + 1):
+        codes, phases, masks = data.train_batch(
+            rng, pool, args.batch, args.context, masked
+        )
+        lr = schedule(step, args.lr, args.warmup, args.steps)
+        key, step_key = jax.random.split(key)
+        value, params, m, v = step_fn(
+            params,
+            m,
+            v,
+            jnp.float32(step),
+            jnp.asarray(codes),
+            jnp.asarray(phases),
+            None if masks is None else jnp.asarray(masks),
+            jnp.float32(lr),
+            step_key,
+        )
+        losses.append(float(value))
+        if step % args.log_every == 0 or step == 1:
+            print(f"step {step:4d}  loss {np.mean(losses):.4f}", flush=True)
+            losses = []
+        if step % args.eval_every == 0 or step == args.steps:
+            evaluate(step, params)
+
+    seconds = time.perf_counter() - started
+    print(
+        f"time: {seconds:.0f} s, {seconds / args.steps * 1000:.0f} ms each step, "
+        f"the evaluations inside",
+        flush=True,
+    )
+    print(f"best valid {best:.4f}", flush=True)
+    if args.ckpt:
+        if args.train_on == "all":
+            save_checkpoint(args.ckpt, params)
+            print(f"checkpoint of the last step: {args.ckpt}", flush=True)
+        else:
+            print(f"checkpoint of the best: {args.ckpt}", flush=True)
+        if args.average_top > 0 and top:
+            averaged = jax.tree.map(
+                lambda *tensors: np.mean(np.stack(tensors), axis=0),
+                *[entry[2] for entry in top],
+            )
+            path = args.ckpt.replace(".ckpt", "-avg.ckpt")
+            save_checkpoint(path, averaged)
+            steps = [entry[1] for entry in top]
+            print(
+                f"average of {len(top)} best snapshots (steps {steps}): {path}",
+                flush=True,
+            )
+
+
+if __name__ == "__main__":
+    main()
