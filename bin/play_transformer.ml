@@ -112,7 +112,13 @@ let print_stats music =
    36% of its bars and the models of 2026-08-07 restate 0 to 10%. A window of a held note
    is no motif, thus a window counts only with three distinct pitches inside it: without
    that filter a drone reads as 24% repetition. The spread over seeds is six or seven
-   points, so read this over several seeds and never over one. *)
+   points, so read this over several seeds and never over one.
+
+   The number counts restatement, which is necessary for a melody and not sufficient. A
+   cold draw raises it — temperature 0.6 gave three times the restatement of 0.9 — and the
+   ear of 2026-08-07 called the result dull: the model repeats because it has nothing else
+   to say, not because it holds a motif. Read a high number with the temperature beside
+   it, and never buy repetition with entropy. *)
 let print_repetition music =
   let bar = Jsb.bar_steps in
   let sounding = ref (Set.empty (module Int)) in
@@ -212,9 +218,9 @@ let command =
          "-temperature"
          (optional_with_default 0.9 float)
          ~doc:
-           "F the temperature. The default won the ear test of 2026-08-05; the sweep of \
-            2026-08-07 measured three times the self-repetition at 0.6, with the \
-            register and the texture no worse, thus the default awaits a new ear"
+           "F the temperature. The default holds: 0.6 measured three times the \
+            self-repetition, and the ear of 2026-08-07 heard it as dull — the \
+            restatement of a cold draw is monotony, not melody"
      and min_p =
        flag
          "-min-p"
