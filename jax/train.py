@@ -69,13 +69,22 @@ def schedule(step, peak, warmup, total):
 
 
 def make_step(heads, masked, dropout, clip, weight_decay):
-    def step_fn(params, m, v, t, codes, phases, masks, lr, key):
+    def step_fn(params, m, v, t, codes, phases, masks, weights, lr, key):
         def loss_fn(p):
             if masked:
                 return model.masked_loss(
-                    p, codes, phases, masks, heads=heads, dropout=dropout, key=key
+                    p,
+                    codes,
+                    phases,
+                    masks,
+                    heads=heads,
+                    dropout=dropout,
+                    key=key,
+                    weights=weights,
                 )
-            return model.loss(p, codes, phases, heads=heads, dropout=dropout, key=key)
+            return model.loss(
+                p, codes, phases, heads=heads, dropout=dropout, key=key, weights=weights
+            )
 
         value, grads = jax.value_and_grad(loss_fn)(params)
         if clip > 0.0:
@@ -144,6 +153,16 @@ def main():
     add("--log-every", type=int, default=10)
     add("--eval-every", type=int, default=100)
     add("--eval-limit", type=int, default=128)
+    add(
+        "--eval-context",
+        type=int,
+        default=None,
+        help="evaluate at this context instead of the training one. The windows come "
+        "from whole pieces, so a long training context leaves almost none: 149 valid "
+        "rows at 256, 56 at 512, 6 at 1024, and none at 2048. ALiBi has no position "
+        "table, so a model trained long evaluates short; 256 also makes every run "
+        "comparable, as checkpoint_tool does.",
+    )
     add("--ckpt", default=None)
     add(
         "--average-top",
@@ -156,11 +175,12 @@ def main():
     corpus = data.load_corpus(args.corpus)
     pool = data.train_pool(corpus, args.train_on)
     masked = args.masked_loss
+    eval_context = args.eval_context or args.context
     train_eval = data.eval_batches(
-        corpus["train"], args.context, args.eval_limit, args.batch, masked
+        corpus["train"], eval_context, args.eval_limit, args.batch, masked
     )
     valid_eval = data.eval_batches(
-        corpus["valid"], args.context, args.eval_limit, args.batch, masked
+        corpus["valid"], eval_context, args.eval_limit, args.batch, masked
     )
     rng = np.random.default_rng(args.seed)
     key = jax.random.PRNGKey(args.seed)
@@ -202,7 +222,7 @@ def main():
         )
 
     for step in range(1, args.steps + 1):
-        codes, phases, masks = data.train_batch(
+        codes, phases, masks, weights = data.train_batch(
             rng, pool, args.batch, args.context, masked
         )
         lr = schedule(step, args.lr, args.warmup, args.steps)
@@ -215,6 +235,7 @@ def main():
             jnp.asarray(codes),
             jnp.asarray(phases),
             None if masks is None else jnp.asarray(masks),
+            jnp.asarray(weights),
             jnp.float32(lr),
             step_key,
         )

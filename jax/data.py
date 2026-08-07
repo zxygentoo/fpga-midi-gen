@@ -68,9 +68,11 @@ def train_pool(corpus, train_on):
 
 
 def train_row(rng, pool, context):
-    """one training row, as the OCaml train_row draws it: uniform piece, uniform legal
-    shift, then a random window; a short piece pads with the zero word -- silence --
-    the phases walking on and the last mask repeating"""
+    """one training row: uniform piece, uniform legal shift, then a random window. A
+    short piece pads with the zero word, and the weights drop the padded positions from
+    the loss: a padded label would teach the walk to hold the last chord of the piece and
+    emit END for ever, the drone. The padding grows with the context — one piece of 306
+    at 256 tokens, but 81 of 306 at 512."""
     split, piece = pool[rng.integers(len(pool))]
     rows = split.by_piece[piece]
     codes, phases, masks = split.variant(rows[rng.integers(len(rows))])
@@ -82,6 +84,7 @@ def train_row(rng, pool, context):
             codes[start : start + need],
             phases[start : start + context],
             masks[start : start + context],
+            np.ones(context, dtype=np.float32),
         )
     steps = int((codes == 0).sum())
     padded_codes = np.zeros(need, dtype=codes.dtype)
@@ -91,7 +94,9 @@ def train_row(rng, pool, context):
     padded_masks = np.concatenate(
         [masks[:length], np.repeat(masks[length - 1 : length], context - length, axis=0)]
     )
-    return padded_codes, padded_phases.astype(phases.dtype), padded_masks
+    # position i draws label i + 1: it is real while i + 1 is inside the piece
+    weights = (np.arange(context) + 1 < length).astype(np.float32)
+    return padded_codes, padded_phases.astype(phases.dtype), padded_masks, weights
 
 
 def train_batch(rng, pool, batch, context, with_masks):
@@ -99,7 +104,8 @@ def train_batch(rng, pool, batch, context, with_masks):
     codes = np.stack([r[0] for r in rows])
     phases = np.stack([r[1] for r in rows])
     masks = unpack_masks(np.stack([r[2] for r in rows])) if with_masks else None
-    return codes, phases, masks
+    weights = np.stack([r[3] for r in rows])
+    return codes, phases, masks, weights
 
 
 def eval_rows(split, context, limit):

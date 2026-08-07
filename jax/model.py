@@ -17,6 +17,7 @@ from safetensors.numpy import load_file
 jax.config.update("jax_default_matmul_precision", "float32")
 
 VOCAB = 256
+SLOPE_SPAN = 8  # the ALiBi paper's exponent span; wider slopes see further
 PHASE_BUCKETS = 16
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
 
@@ -42,11 +43,18 @@ def rms_norm(x):
     return x * jax.lax.rsqrt(jnp.mean(x * x, axis=-1, keepdims=True) + 1e-6)
 
 
-def attention_bias(heads, length):
-    """ALiBi plus the causal wall, [1, heads, length, length]."""
+def attention_bias(heads, length, span=SLOPE_SPAN):
+    """ALiBi plus the causal wall, [1, heads, length, length].
+
+    A head subtracts slope x distance from its logits, so the slope is a recency prior
+    and [span] sets how far the gentlest head can see: the slope of head k is
+    2^-(span (k+1) / heads), and the penalty at distance D is slope x D. At the paper's
+    span of 8 the gentlest slope is 1/256 whatever the head count -- -4 logits at 1024
+    tokens, -8 at 2048, which is blind for a chorale phrase. A wider span reaches
+    further and stays a power of two, thus a shift in the circuit."""
     pos = jnp.arange(length, dtype=jnp.float32)
     distance = pos[:, None] - pos[None, :]
-    slopes = -(2.0 ** (-8.0 * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
+    slopes = -(2.0 ** (-span * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
     alibi = slopes[None, :, None, None] * distance[None, None, :, :]
     wall = jnp.triu(jnp.ones((length, length), dtype=jnp.float32), k=1) * -1e9
     return alibi + wall[None, None, :, :]
@@ -57,7 +65,7 @@ def _dropout(x, rate, key):
     return jnp.where(jax.random.bernoulli(key, keep, x.shape), x / keep, 0.0)
 
 
-def logits(params, codes, phases, *, heads, dropout=0.0, key=None):
+def logits(params, codes, phases, *, heads, dropout=0.0, key=None, span=SLOPE_SPAN):
     """codes, phases: [batch, length] int32 -> [batch, length, vocab] float32.
 
     dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual
@@ -65,7 +73,7 @@ def logits(params, codes, phases, *, heads, dropout=0.0, key=None):
     batch, length = codes.shape
     d = params["embed"].shape[1]
     head_d = d // heads
-    bias = attention_bias(heads, length)
+    bias = attention_bias(heads, length, span)
 
     def drop(x):
         nonlocal key
@@ -92,21 +100,42 @@ def logits(params, codes, phases, *, heads, dropout=0.0, key=None):
     return rms_norm(h) @ params["embed"].T
 
 
-def _cross_entropy(raw, labels):
+def _cross_entropy(raw, labels, weights):
+    """weights [batch, length] excludes the padding of a short piece from the mean; a
+    padded position would teach the walk to hold the last chord and emit END for ever"""
     logp = jax.nn.log_softmax(raw, axis=-1)
     picked = jnp.take_along_axis(logp, labels[..., None], axis=-1)[..., 0]
-    return -jnp.mean(picked)
+    if weights is None:
+        return -jnp.mean(picked)
+    return -jnp.sum(picked * weights) / jnp.maximum(jnp.sum(weights), 1.0)
 
 
-def loss(params, codes, phases, *, heads, dropout=0.0, key=None):
+def loss(
+    params, codes, phases, *, heads, dropout=0.0, key=None, weights=None, span=SLOPE_SPAN
+):
     """Plain cross entropy over the whole vocabulary: codes [batch, length + 1]."""
-    raw = logits(params, codes[:, :-1], phases, heads=heads, dropout=dropout, key=key)
-    return _cross_entropy(raw, codes[:, 1:])
+    raw = logits(
+        params, codes[:, :-1], phases, heads=heads, dropout=dropout, key=key, span=span
+    )
+    return _cross_entropy(raw, codes[:, 1:], weights)
 
 
-def masked_loss(params, codes, phases, masks, *, heads, dropout=0.0, key=None):
+def masked_loss(
+    params,
+    codes,
+    phases,
+    masks,
+    *,
+    heads,
+    dropout=0.0,
+    key=None,
+    weights=None,
+    span=SLOPE_SPAN,
+):
     """The control loss of the mask era: the grammar inside the softmax.
 
     masks: [batch, length, vocab] bool -- the legal set of each label draw."""
-    raw = logits(params, codes[:, :-1], phases, heads=heads, dropout=dropout, key=key)
-    return _cross_entropy(raw + jnp.where(masks, 0.0, -1e9), codes[:, 1:])
+    raw = logits(
+        params, codes[:, :-1], phases, heads=heads, dropout=dropout, key=key, span=span
+    )
+    return _cross_entropy(raw + jnp.where(masks, 0.0, -1e9), codes[:, 1:], weights)
