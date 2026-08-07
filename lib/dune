@@ -9,6 +9,7 @@
   hardcaml_waveterm
   qcheck-core
   nx
+  nx.io
   rune
   kaun
   yojson)

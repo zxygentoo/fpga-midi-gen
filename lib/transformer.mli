@@ -14,10 +14,23 @@ module Config : sig
     ; layers : int
     ; heads : int
     ; context : int (** the attention window, in tokens *)
+    ; slope_span : int
+    (** The ALiBi exponent span: the slope of head k is 2 ** -(span (k+1) / heads), and a
+        head subtracts its slope times the distance from its logits. The span sets how far
+        the gentlest head sees: the paper's 8 leaves it at -4 logits by 1024 tokens and -8
+        by 2048, blind to a phrase. A wider span reaches further and stays a power of two,
+        thus a shift in the circuit. *)
     }
 
   (** the baseline of the design document: d 64, layers 2, heads 4, context 256 *)
   val baseline : t
+
+  (** [of_checkpoint path ~heads ~context] reads the width and the layer count from the
+      tensor shapes of the checkpoint, thus a player states neither. The heads and the
+      context are not in the file: no tensor shape holds them, because the heads only
+      split the width at run time and ALiBi holds no position table. The context is a
+      choice of the draw in any case — a model trained long can sample short. *)
+  val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
 module Params : sig
@@ -52,27 +65,50 @@ module Sample_stats : sig
     }
 end
 
-(** [loss config params ~codes ~phases] is the cross entropy of the next code, a scalar,
-    over the whole vocabulary. A row of [codes] holds [length + 1] codes: the inputs and
-    the shifted labels. No mask sits in the loss: the model learns the instrument from the
-    data, and the guard of the sampler holds the line at the draw. *)
+(** The dropout of one training step. The JAX sweep of 2026-08-07 found the rate scales
+    with the model: 0.1 at d 64, 0.2 at d 128 and at the long context. The masks are drawn
+    before the gradient runs and passed in, thus the step stays pure and the seed
+    reproduces it. *)
+module Dropout : sig
+  type t
+
+  (** the identity: every mask is one, and the forward pass is the inference pass *)
+  val none : t
+
+  (** [draw config ~rate ~batch ~length ~seed] draws the masks of one step: the embedding
+      sum and the two branches of each layer. A rate of zero is [none]. *)
+  val draw : Config.t -> rate:float -> batch:int -> length:int -> seed:int -> t
+end
+
+(** [loss config params ~codes ~phases ~weights ~dropout] is the cross entropy of the next
+    code, a scalar, over the whole vocabulary. A row of [codes] holds [length + 1] codes:
+    the inputs and the shifted labels. [weights] holds one weight for each label position;
+    zero drops the position from the mean, which is how the padding of a short piece stays
+    out of the loss — a padded label would teach the walk to hold the last chord and emit
+    END for ever. No mask sits in the loss: the model learns the instrument from the data,
+    and the guard of the sampler holds the line at the draw. *)
 val loss
   :  Config.t
   -> Params.t
   -> codes:int array array
   -> phases:int array array
+  -> weights:float array array
+  -> dropout:Dropout.t
   -> tensor
 
-(** [masked_loss config params ~codes ~phases ~masks] is the loss of the mask era, kept
-    for controls: the grammar mask sits inside the softmax, thus the model never learns
-    the instrument. [masks] holds the legal set of each label, from the walk of the whole
-    chorale. Its numbers live on the masked scale, not the raw scale of [loss]. *)
+(** [masked_loss config params ~codes ~phases ~masks ~weights ~dropout] is the loss of the
+    mask era, kept for controls: the grammar mask sits inside the softmax, thus the model
+    never learns the instrument. [masks] holds the legal set of each label, from the walk
+    of the whole chorale. Its numbers live on the masked scale, not the raw scale of
+    [loss]. *)
 val masked_loss
   :  Config.t
   -> Params.t
   -> codes:int array array
   -> phases:int array array
   -> masks:bool array array array
+  -> weights:float array array
+  -> dropout:Dropout.t
   -> tensor
 
 (** The guard of the sampler. [Grammar] is the full mask of the corpus encoding — a model

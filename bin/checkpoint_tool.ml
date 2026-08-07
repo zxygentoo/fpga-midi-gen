@@ -25,13 +25,14 @@ let gate_entries rows ~unmasked ~masked =
   ; ( "masks"
     , Nx_io.P
         (i32 [| batch; context; mask_words |] (fun i -> packed.(i.(0)).(i.(1)).(i.(2)))) )
-  ; "loss_unmasked", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> unmasked))
+  ; ( "loss_unmasked"
+    , Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> unmasked)) )
   ; "loss_masked", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> masked))
   ]
 ;;
 
-let eval ~checkpoint ~corpus ~d ~layers ~heads ~context ~rows ~batch ~out =
-  let config = { Transformer.Config.d; layers; heads; context } in
+let eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out =
+  let config = Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span in
   let like = Transformer.Params.to_ptree (Transformer.Params.draw config ~seed:0) in
   let tree = Kaun.Checkpoint.load checkpoint ~like in
   let params = Transformer.Params.of_ptree config tree in
@@ -60,16 +61,11 @@ let eval_command =
          "-corpus"
          (optional_with_default Jsb.default_path string)
          ~doc:"PATH the voice-separated corpus file"
-     and d =
+     and slope_span =
        flag
-         "-d"
-         (optional_with_default Transformer.Config.(baseline.d) int)
-         ~doc:"N the residual width"
-     and layers =
-       flag
-         "-layers"
-         (optional_with_default Transformer.Config.(baseline.layers) int)
-         ~doc:"N the layers"
+         "-alibi-span"
+         (optional_with_default Transformer.Config.(baseline.slope_span) int)
+         ~doc:"N the ALiBi exponent span; it must equal the span of the training run"
      and heads =
        flag
          "-heads"
@@ -83,9 +79,8 @@ let eval_command =
      and rows =
        flag "-rows" (optional_with_default 16 int) ~doc:"N the widest gate batch, in rows"
      and batch = flag "-batch" (optional_with_default 16 int) ~doc:"N the compute batch"
-     and out = flag "-out" (optional string) ~doc:"PATH write the gate file here"
-     in
-     fun () -> eval ~checkpoint ~corpus ~d ~layers ~heads ~context ~rows ~batch ~out)
+     and out = flag "-out" (optional string) ~doc:"PATH write the gate file here" in
+     fun () -> eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out)
 ;;
 
 let command =

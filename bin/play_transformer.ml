@@ -5,6 +5,7 @@
 
 open Core
 module Control_intf = Mgen.Control_intf
+module Jsb = Mgen.Jsb
 module Midi = Mgen.Midi
 module Token = Mgen.Token
 module Transformer = Mgen.Transformer
@@ -105,6 +106,58 @@ let print_stats music =
       (100. *. Float.of_int high /. Float.of_int sounded))
 ;;
 
+(* The self-repetition of the top voice: the share of one-bar windows that come again in
+   the sample, exactly and as a transposed contour. A melody is restated material, and
+   this is the one number that agreed with the ear about its absence — the corpus restates
+   36% of its bars and the models of 2026-08-07 restate 0 to 10%. A window of a held note
+   is no motif, thus a window counts only with three distinct pitches inside it: without
+   that filter a drone reads as 24% repetition. The spread over seeds is six or seven
+   points, so read this over several seeds and never over one. *)
+let print_repetition music =
+  let bar = Jsb.bar_steps in
+  let sounding = ref (Set.empty (module Int)) in
+  let tops =
+    Array.of_list_map music ~f:(fun sentence ->
+      List.iter sentence ~f:(function
+        | Token.Start | Token.End -> ()
+        | Token.On pitch -> sounding := Set.add !sounding pitch
+        | Token.Off pitch -> sounding := Set.remove !sounding pitch);
+      Set.max_elt !sounding)
+  in
+  let windows =
+    List.filter_map
+      (List.range 0 (max 0 (Array.length tops - bar)))
+      ~f:(fun at ->
+        match Option.all (Array.to_list (Array.sub tops ~pos:at ~len:bar)) with
+        | None -> None
+        | Some pitches ->
+          if List.length (List.dedup_and_sort pitches ~compare:Int.compare) < 3
+          then None
+          else Some pitches)
+  in
+  let recurring windows =
+    let compare = List.compare Int.compare in
+    List.sort windows ~compare
+    |> List.group ~break:(fun a b -> compare a b <> 0)
+    |> List.sum (module Int) ~f:(fun group ->
+      let size = List.length group in
+      if size > 1 then size else 0)
+  in
+  let contour pitches =
+    List.map2_exn (List.drop_last_exn pitches) (List.tl_exn pitches) ~f:(fun a b -> b - a)
+  in
+  match List.length windows with
+  | 0 -> printf "one-bar repeats: no window moves enough to count\n"
+  | count ->
+    let share recurring = 100. *. Float.of_int recurring /. Float.of_int count in
+    printf
+      "one-bar repeats %.0f%% exact, %.0f%% contour, over %d windows (the corpus: 36%%, \
+       40%%)\n"
+      (share (recurring windows))
+      (share (recurring (List.map windows ~f:contour)))
+      count
+;;
+
 let play music ~device ~step_ms ~channel ~velocity =
   let fd =
     try Midi.open_device device with
@@ -137,16 +190,11 @@ let command =
     ~summary:"sample the transformer checkpoint; print the steps, or play them"
     (let%map_open.Command checkpoint =
        flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
-     and d =
+     and slope_span =
        flag
-         "-d"
-         (optional_with_default Transformer.Config.(baseline.d) int)
-         ~doc:"N the residual width"
-     and layers =
-       flag
-         "-layers"
-         (optional_with_default Transformer.Config.(baseline.layers) int)
-         ~doc:"N the layers"
+         "-alibi-span"
+         (optional_with_default Transformer.Config.(baseline.slope_span) int)
+         ~doc:"N the ALiBi exponent span; it must equal the span of the training run"
      and heads =
        flag
          "-heads"
@@ -164,8 +212,9 @@ let command =
          "-temperature"
          (optional_with_default 0.9 float)
          ~doc:
-           "F the temperature. The default won the ear test of 2026-08-05 with the min-p \
-            default beside it; full temperature clashes more"
+           "F the temperature. The default won the ear test of 2026-08-05; the sweep of \
+            2026-08-07 measured three times the self-repetition at 0.6, with the \
+            register and the texture no worse, thus the default awaits a new ear"
      and min_p =
        flag
          "-min-p"
@@ -209,7 +258,9 @@ let command =
          ~doc:"N the Note On velocity"
      in
      fun () ->
-       let config = { Transformer.Config.d; layers; heads; context } in
+       let config =
+         Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
+       in
        let like = Transformer.Params.to_ptree (Transformer.Params.draw config ~seed:0) in
        let tree = Kaun.Checkpoint.load checkpoint ~like in
        let params = Transformer.Params.of_ptree config tree in
@@ -220,7 +271,10 @@ let command =
        then play music ~device ~step_ms ~channel ~velocity
        else if not stats
        then List.iteri music ~f:print_step;
-       if stats then print_stats music;
+       if stats
+       then (
+         print_stats music;
+         print_repetition music);
        printf
          "min-p refused %.4f of the legal mass; guard held %.4f of the raw mass, %.4f of \
           the raw top choices, over %d draws\n\

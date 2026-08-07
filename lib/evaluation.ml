@@ -57,12 +57,26 @@ let loss config params rows ~batch ~masked =
       ~init:(0.0, 0)
       ~f:(fun (total, count) chunk ->
         let codes, phases, masks = batch_of_rows chunk in
+        (* the rows of the referee are whole windows of a piece: none is padded, thus
+           every position weighs one *)
+        let weights =
+          Array.map phases ~f:(fun row -> Array.map row ~f:(fun (_ : int) -> 1.0))
+        in
+        let dropout = Transformer.Dropout.none in
         let value =
           Nx.item
             []
             (if masked
-             then Transformer.masked_loss config params ~codes ~phases ~masks
-             else Transformer.loss config params ~codes ~phases)
+             then
+               Transformer.masked_loss
+                 config
+                 params
+                 ~codes
+                 ~phases
+                 ~masks
+                 ~weights
+                 ~dropout
+             else Transformer.loss config params ~codes ~phases ~weights ~dropout)
         in
         total +. (value *. Float.of_int (List.length chunk)), count + List.length chunk)
   in

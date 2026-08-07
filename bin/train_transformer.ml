@@ -52,7 +52,8 @@ let train_row rng pool ~context ~augment =
     let start = Random.State.int rng (length - need + 1) in
     ( Array.sub codes ~pos:start ~len:need
     , Array.sub phases ~pos:start ~len:context
-    , Array.sub masks ~pos:start ~len:context ))
+    , Array.sub masks ~pos:start ~len:context
+    , Array.create ~len:context 1.0 ))
   else (
     let steps = Array.count codes ~f:(fun code -> code = 0) in
     let padded_codes = Array.create ~len:need 0 in
@@ -65,12 +66,18 @@ let train_row rng pool ~context ~augment =
       Array.init context ~f:(fun i ->
         if i < length then masks.(i) else masks.(length - 1))
     in
-    padded_codes, padded_phases, padded_masks)
+    (* position [i] draws label [i + 1]: it is real while the label is inside the piece *)
+    let weights = Array.init context ~f:(fun i -> if i + 1 < length then 1.0 else 0.0) in
+    padded_codes, padded_phases, padded_masks, weights)
 ;;
 
 let train_batch rng pool ~batch ~context ~augment =
-  Evaluation.batch_of_rows
-    (List.init batch ~f:(fun (_ : int) -> train_row rng pool ~context ~augment))
+  let rows = List.init batch ~f:(fun (_ : int) -> train_row rng pool ~context ~augment) in
+  let codes, phases, masks =
+    Evaluation.batch_of_rows
+      (List.map rows ~f:(fun (codes, phases, masks, _) -> codes, phases, masks))
+  in
+  codes, phases, masks, Array.of_list_map rows ~f:(fun (_, _, _, weights) -> weights)
 ;;
 
 (* The schedule story: a linear warmup to the peak, then a cosine decay to zero over the
@@ -114,15 +121,24 @@ let train
   ~weight_decay
   ~clip
   ~masked
+  ~dropout_rate
+  ~eval_context
+  ~slope_span
   =
-  let config = { Transformer.Config.d; layers; heads; context } in
+  let config = { Transformer.Config.d; layers; heads; context; slope_span } in
   let data = Jsb.load ~path:corpus in
   let pool = Array.of_list (Pool.chorales train_on data) in
-  let train_eval = Evaluation.rows data.train ~context ~limit:eval_limit in
-  let valid_eval = Evaluation.rows data.valid ~context ~limit:eval_limit in
-  (* the batch stream takes its own lane: the parameter draw reads [| seed |], thus the
-     two streams stay deterministic and distinct *)
+  (* The windows of the referee come from whole pieces, thus a long training context
+     leaves almost none: 149 valid rows at 256, 56 at 512, 6 at 1024, none at 2048. ALiBi
+     holds no position table, so a model trained long evaluates short, and one evaluation
+     context makes every run of a sweep compare. *)
+  let eval_context = Option.value eval_context ~default:context in
+  let train_eval = Evaluation.rows data.train ~context:eval_context ~limit:eval_limit in
+  let valid_eval = Evaluation.rows data.valid ~context:eval_context ~limit:eval_limit in
+  (* the batch stream takes its own lane: the parameter draw reads [| seed |], the batches
+     [| seed; 1 |] and the dropout [| seed; 2 |], thus the three stay distinct *)
   let rng = Random.State.make [| seed; 1 |] in
+  let dropout_rng = Random.State.make [| seed; 2 |] in
   let params = ref (Transformer.Params.draw config ~seed) in
   printf
     "corpus: %d train chorales; eval rows: %d train, %d valid; parameters: %d\n%!"
@@ -158,14 +174,24 @@ let train
     printf "step %4d  eval  train %.4f  valid %.4f%s\n%!" step train_loss valid_loss mark
   in
   for step = 1 to steps do
-    let codes, phases, masks = train_batch rng pool ~batch ~context ~augment in
+    let codes, phases, masks, weights = train_batch rng pool ~batch ~context ~augment in
+    (* the dropout takes its own lane, thus the draw and the batch streams stay put *)
+    let dropout =
+      Transformer.Dropout.draw
+        config
+        ~rate:dropout_rate
+        ~batch
+        ~length:context
+        ~seed:(Random.State.int dropout_rng Int.max_value)
+    in
     let value, grads =
       Rune.value_and_grads
         (fun tensors ->
           let params = Transformer.Params.of_list config tensors in
           if masked
-          then Transformer.masked_loss config params ~codes ~phases ~masks
-          else Transformer.loss config params ~codes ~phases)
+          then
+            Transformer.masked_loss config params ~codes ~phases ~masks ~weights ~dropout
+          else Transformer.loss config params ~codes ~phases ~weights ~dropout)
         (Transformer.Params.to_list !params)
     in
     let grads_tree =
@@ -264,6 +290,26 @@ let command =
          "-train-on"
          (optional_with_default Pool.Train Pool.arg)
          ~doc:"POOL train, train+test, or all (the final board model)"
+     and dropout_rate =
+       flag
+         "-dropout"
+         (optional_with_default 0.0 float)
+         ~doc:
+           "F the dropout rate; the JAX sweep of 2026-08-07 wants 0.1 at d 64 and 0.2 at \
+            d 128 or the long context"
+     and slope_span =
+       flag
+         "-alibi-span"
+         (optional_with_default Transformer.Config.(baseline.slope_span) int)
+         ~doc:
+           "N the ALiBi exponent span: the slope of head k is 2 ** -(span (k+1) / \
+            heads). The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; \
+            a wider span sees further. The draw must state the same span."
+     and eval_context =
+       flag
+         "-eval-context"
+         (optional int)
+         ~doc:"N evaluate at this context; absent takes the training context"
      and masked =
        flag
          "-masked-loss"
@@ -302,7 +348,10 @@ let command =
          ~warmup
          ~weight_decay
          ~clip
-         ~masked)
+         ~masked
+         ~dropout_rate
+         ~eval_context
+         ~slope_span)
 ;;
 
 let () = Command_unix.run command

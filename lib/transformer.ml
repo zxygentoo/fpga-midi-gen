@@ -12,9 +12,33 @@ module Config = struct
     ; layers : int
     ; heads : int
     ; context : int
+    ; slope_span : int
+    (** the ALiBi exponent span: the slope of head k is 2 ** -(span (k+1) / heads) *)
     }
 
-  let baseline = { d = 64; layers = 2; heads = 4; context = 256 }
+  let baseline = { d = 64; layers = 2; heads = 4; context = 256; slope_span = 8 }
+
+  (* The width and the layer count are in the shapes of the checkpoint: the embedding
+     table is [vocab; d], and the layers take six tensors each after the two tables. The
+     heads and the context are not there — no tensor shape holds them, because the heads
+     only split the width at run time and ALiBi holds no position table. *)
+  let of_checkpoint path ~heads ~context ~slope_span =
+    let archive = Nx_io.load_safetensors path in
+    let embed =
+      match Stdlib.Hashtbl.find_opt archive "0" with
+      | Some packed -> Nx_io.to_typed Nx.float32 packed
+      | None -> invalid_argf "%s holds no tensor named 0: not a checkpoint" path ()
+    in
+    let tensors = Stdlib.Hashtbl.length archive in
+    if tensors < 8 || (tensors - 2) % 6 <> 0
+    then
+      invalid_argf
+        "%s holds %d tensors: not two tables and six for each layer"
+        path
+        tensors
+        ();
+    { d = (Nx.shape embed).(1); layers = (tensors - 2) / 6; heads; context; slope_span }
+  ;;
 end
 
 module Params = struct
@@ -131,15 +155,18 @@ let rms_norm x =
 ;;
 
 (* ALiBi and the causal wall, shape [1; heads; length; length]. The slope of head k is
-   2 ** -(8 (k+1) / heads): a power of two, a shift in the circuit. *)
-let attention_bias ~heads ~length =
+   2 ** -(span (k+1) / heads): a power of two, a shift in the circuit. The slope is a
+   recency prior, and the span sets how far the gentlest head sees — at the paper's span
+   of 8 that head stands at -4 logits by 1024 tokens and -8 by 2048, which is blind to a
+   phrase of a chorale. A wider span reaches further and stays a power of two. *)
+let attention_bias ~heads ~length ~span =
   let positions =
     Nx.reshape [| length; 1 |] (Nx.astype Nx.float32 (Nx.arange Nx.int32 0 length 1))
   in
   let distance = Nx.sub positions (Nx.transpose positions) in
   let slopes =
     Nx.init Nx.float32 [| 1; heads; 1; 1 |] (fun index ->
-      -.(2. ** (-8. *. Float.of_int (index.(1) + 1) /. Float.of_int heads)))
+      -.(2. ** (-.Float.of_int span *. Float.of_int (index.(1) + 1) /. Float.of_int heads)))
   in
   let alibi = Nx.mul slopes (Nx.reshape [| 1; 1; length; length |] distance) in
   let wall = Nx.mul_s (Nx.triu ~k:1 (Nx.ones Nx.float32 [| length; length |])) (-1e9) in
@@ -153,6 +180,45 @@ let softmax_last x =
   Nx.div exp (Nx.sum exp ~axes:[ axis ] ~keepdims:true)
 ;;
 
+(* The dropout masks of one training step: the scaled Bernoulli draw, one mask for the
+   embedding sum and two for each layer — the attention branch and the feed-forward
+   branch, as the JAX sweep of 2026-08-07 found them. The masks are drawn before the
+   gradient runs and passed in, thus the step stays pure and the seed reproduces it. *)
+module Dropout = struct
+  type t = tensor list
+
+  let none = []
+
+  let draw (config : Config.t) ~rate ~batch ~length ~seed =
+    if Float.( <= ) rate 0.0
+    then none
+    else (
+      let rng = Random.State.make [| seed |] in
+      let keep = 1.0 -. rate in
+      let masks = 1 + (2 * config.layers) in
+      let numel = batch * length * config.d in
+      (* the fill is a loop, not [Array.init]: the draw order of [init] is not the index
+         order, and a mask must be the same for the same seed *)
+      let draws = Array.create ~len:(masks * numel) 0.0 in
+      for i = 0 to Array.length draws - 1 do
+        draws.(i)
+        <- (if Float.( < ) (Random.State.float rng 1.0) keep then 1.0 /. keep else 0.0)
+      done;
+      List.init masks ~f:(fun mask ->
+        Nx.init Nx.float32 [| batch; length; config.d |] (fun index ->
+          let flat = (((index.(0) * length) + index.(1)) * config.d) + index.(2) in
+          draws.((mask * numel) + flat))))
+  ;;
+
+  (* the head of the list applies here; the tail serves the sites that follow *)
+  let apply t h =
+    match t with
+    | [] -> [], h
+    | mask :: rest -> rest, Nx.mul h mask
+  ;;
+end
+
+(* the branch alone: the residual sum happens in [logits], where dropout can sit between *)
 let attention (config : Config.t) (layer : Params.layer) ~bias h =
   let d = config.d in
   let heads = config.heads in
@@ -181,36 +247,59 @@ let attention (config : Config.t) (layer : Params.layer) ~bias h =
       [| batch; length; d |]
       (Nx.contiguous (Nx.transpose ~axes:[ 0; 2; 1; 3 ] context))
   in
-  Nx.add h (Nx.matmul merged layer.wo)
+  Nx.matmul merged layer.wo
 ;;
 
 let feed_forward (layer : Params.layer) h =
   let normed = rms_norm h in
   let hidden = Nx.maximum_s (Nx.matmul normed layer.w1) 0.0 in
-  Nx.add h (Nx.matmul hidden layer.w2)
+  Nx.matmul hidden layer.w2
 ;;
 
-let logits (config : Config.t) (params : Params.t) ~codes ~phases =
+let logits (config : Config.t) (params : Params.t) ~codes ~phases ~dropout =
   let length = Array.length codes.(0) in
-  let bias = attention_bias ~heads:config.heads ~length in
+  let bias = attention_bias ~heads:config.heads ~length ~span:config.slope_span in
   let tokens = embed_rows params.embed ~num_classes:Token.vocab codes in
   let bar = embed_rows params.phase ~num_classes:phase_buckets phases in
-  let h =
-    Array.fold params.layers ~init:(Nx.add tokens bar) ~f:(fun h layer ->
-      feed_forward layer (attention config layer ~bias h))
+  let dropout, h = Dropout.apply dropout (Nx.add tokens bar) in
+  let (_ : Dropout.t), h =
+    Array.fold params.layers ~init:(dropout, h) ~f:(fun (dropout, h) layer ->
+      let dropout, branch = Dropout.apply dropout (attention config layer ~bias h) in
+      let h = Nx.add h branch in
+      let dropout, branch = Dropout.apply dropout (feed_forward layer h) in
+      dropout, Nx.add h branch)
   in
   Nx.matmul (rms_norm h) (Nx.transpose params.embed)
 ;;
 
+(* The cross entropy of the labels, weighted by position. A weight of zero drops a
+   position from the mean: the padding of a short piece takes it, because a padded label
+   would teach the walk to hold the last chord and emit END for ever — the drone. *)
+let weighted_cross_entropy raw labels ~weights =
+  let axis = 2 in
+  let peak = Nx.max raw ~axes:[ axis ] ~keepdims:true in
+  let shifted = Nx.sub raw peak in
+  let total = Nx.log (Nx.sum (Nx.exp shifted) ~axes:[ axis ] ~keepdims:true) in
+  let log_probability = Nx.sub shifted total in
+  let hot =
+    Nx.astype Nx.float32 (Nx.one_hot ~num_classes:Token.vocab (int32_tensor labels))
+  in
+  let picked = Nx.sum (Nx.mul log_probability hot) ~axes:[ axis ] in
+  let weights =
+    Nx.init Nx.float32 (Nx.shape picked) (fun index -> weights.(index.(0)).(index.(1)))
+  in
+  Nx.neg (Nx.div (Nx.sum (Nx.mul picked weights)) (Nx.sum weights))
+;;
+
 (* No mask sits in the loss: the model learns the instrument from the data, and the guard
    of the sampler holds the line at the draw. *)
-let loss (config : Config.t) params ~codes ~phases =
+let loss (config : Config.t) params ~codes ~phases ~weights ~dropout =
   let length = Array.length codes.(0) - 1 in
   let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
   let labels = Array.map codes ~f:(fun row -> Array.sub row ~pos:1 ~len:length) in
   let input_phases = Array.map phases ~f:(fun row -> Array.subo row ~len:length) in
-  let raw = logits config params ~codes:inputs ~phases:input_phases in
-  Kaun.Loss.cross_entropy_sparse raw (int32_tensor labels)
+  let raw = logits config params ~codes:inputs ~phases:input_phases ~dropout in
+  weighted_cross_entropy raw labels ~weights
 ;;
 
 (* the additive form of the mask, for the control loss: 0 for a legal code, -1e9 else *)
@@ -227,13 +316,13 @@ let mask_bias ~masks =
   Nx.of_bigarray bias
 ;;
 
-let masked_loss (config : Config.t) params ~codes ~phases ~masks =
+let masked_loss (config : Config.t) params ~codes ~phases ~masks ~weights ~dropout =
   let length = Array.length codes.(0) - 1 in
   let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
   let labels = Array.map codes ~f:(fun row -> Array.sub row ~pos:1 ~len:length) in
   let input_phases = Array.map phases ~f:(fun row -> Array.subo row ~len:length) in
-  let raw = logits config params ~codes:inputs ~phases:input_phases in
-  Kaun.Loss.cross_entropy_sparse (Nx.add raw (mask_bias ~masks)) (int32_tensor labels)
+  let raw = logits config params ~codes:inputs ~phases:input_phases ~dropout in
+  weighted_cross_entropy (Nx.add raw (mask_bias ~masks)) labels ~weights
 ;;
 
 module Guard = struct
@@ -276,7 +365,12 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
     let window list = Array.of_list (List.rev (List.take list config.context)) in
     let window_codes = window !codes in
     let all =
-      logits config params ~codes:[| window_codes |] ~phases:[| window !phases |]
+      logits
+        config
+        params
+        ~codes:[| window_codes |]
+        ~phases:[| window !phases |]
+        ~dropout:Dropout.none
     in
     let last = Nx.to_array (Nx.get [ 0; Array.length window_codes - 1 ] all) in
     let mask =
@@ -358,10 +452,15 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
 ;;
 
 let%expect_test "the shapes of the forward pass" =
-  let config = { Config.d = 8; layers = 1; heads = 2; context = 8 } in
+  let config = { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8 } in
   let params = Params.draw config ~seed:1 in
   let out =
-    logits config params ~codes:[| [| 0; 188; 60; 0 |] |] ~phases:[| [| 0; 1; 1; 1 |] |]
+    logits
+      config
+      params
+      ~codes:[| [| 0; 188; 60; 0 |] |]
+      ~phases:[| [| 0; 1; 1; 1 |] |]
+      ~dropout:Dropout.none
   in
   print_s ([%sexp_of: int array] (Nx.shape out));
   [%expect {| (1 4 256) |}]

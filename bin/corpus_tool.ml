@@ -28,7 +28,9 @@ let variants_of_split chorales =
 let mask_words = Token.vocab / 32
 
 let tensors_of_split variants =
-  let total = List.sum (module Int) variants ~f:(fun { codes; _ } -> Array.length codes) in
+  let total =
+    List.sum (module Int) variants ~f:(fun { codes; _ } -> Array.length codes)
+  in
   let all = Array.of_list variants in
   let codes = Array.create ~len:total 0 in
   let phases = Array.create ~len:total 0 in
@@ -56,8 +58,10 @@ let tensors_of_split variants =
     Nx.init Nx.int32 [| Array.length data |] (fun i -> Int32.of_int_exn data.(i.(0)))
   in
   let i32_matrix ~cols data =
-    Nx.init Nx.int32 [| Array.length data / cols; cols |] (fun i ->
-      Int32.of_int_exn data.((i.(0) * cols) + i.(1)))
+    Nx.init
+      Nx.int32
+      [| Array.length data / cols; cols |]
+      (fun i -> Int32.of_int_exn data.((i.(0) * cols) + i.(1)))
   in
   [ "codes", Nx_io.P (i32_vector codes)
   ; "phases", Nx_io.P (i32_vector phases)
