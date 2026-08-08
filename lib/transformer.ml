@@ -494,7 +494,11 @@ let%expect_test "each block draws from a walk of its own" =
     (agree masks.(0) masks.(1))
     (agree masks.(0) masks.(2))
     (agree masks.(0) (mask blocks.(0)));
-  [%expect {| |}]
+  [%expect
+    {|
+    a survivor weighs 2.0   kept 19, 16 and 18 of 32
+    0 and 1 agree false   0 and 2 agree false   block 0 repeats true
+    |}]
 ;;
 
 let%expect_test "the shapes of the forward pass" =
