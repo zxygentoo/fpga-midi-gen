@@ -5,8 +5,6 @@ type tensor = (float, Nx.float32_elt) Nx.t
 
 (* the rows of the bar-phase table: the steps of one bar *)
 let phase_buckets = 16
-
-(* the element count of a shape: how many draws the walk owes it *)
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
 module Config = struct
@@ -16,15 +14,10 @@ module Config = struct
     ; heads : int
     ; context : int
     ; slope_span : int
-    (** the ALiBi exponent span: the slope of head k is 2 ** -(span (k+1) / heads) *)
     }
 
   let baseline = { d = 64; layers = 2; heads = 4; context = 256; slope_span = 8 }
 
-  (* The width and the layer count are in the shapes of the checkpoint: the embedding
-     table is [vocab; d], and the layers take six tensors each after the two tables. The
-     heads and the context are not there — no tensor shape holds them, because the heads
-     only split the width at run time and ALiBi holds no position table. *)
   let of_checkpoint path ~heads ~context ~slope_span =
     let archive = Nx_io.load_safetensors path in
     let embed =
@@ -104,7 +97,6 @@ module Params = struct
      states it. *)
   let draw config ~seed =
     let open Prng in
-    (* the seam: [Prng] draws the numbers, Nx gives them a shape *)
     let normal shape =
       let+ draws = normals ~count:(numel shape) ~scale:0.02 in
       Nx.create Nx.float32 shape draws
@@ -138,8 +130,7 @@ module Params = struct
   ;;
 end
 
-(* [batch; length] rows of codes become the [batch; length; num_classes] one-hot block.
-   Float32, because the block goes into a matmul and carries a gradient. *)
+(* float32, because the block goes into a matmul and carries a gradient *)
 let one_hot_rows ~num_classes rows =
   let batch = Array.length rows in
   let length = Array.length rows.(0) in
@@ -160,11 +151,8 @@ let rms_norm x =
   Nx.mul x (Nx.rsqrt (Nx.add_s mean_square 1e-6))
 ;;
 
-(* ALiBi and the causal wall, shape [1; heads; length; length]. The slope of head k is
-   2 ** -(span (k+1) / heads): a power of two, a shift in the circuit. The slope is a
-   recency prior, and the span sets how far the gentlest head sees — at the paper's span
-   of 8 that head stands at -4 logits by 1024 tokens and -8 by 2048, which is blind to a
-   phrase of a chorale. A wider span reaches further and stays a power of two. *)
+(* ALiBi and the causal wall, shape [1; heads; length; length]. The slope is a recency
+   prior, and [Config.slope_span] of the interface holds its reasoning. *)
 let attention_bias ~heads ~length ~span =
   let positions =
     Nx.reshape [| length; 1 |] (Nx.astype Nx.float32 (Nx.arange Nx.int32 0 length 1))
@@ -186,12 +174,7 @@ let softmax x =
   Nx.div exp (Nx.sum exp ~axes:[ axis ] ~keepdims:true)
 ;;
 
-(* The dropout of one training step, at the blocks the JAX sweep of 2026-08-07 found. A
-   block draws from a walk of its own, thus a block that gains or loses draws never moves
-   the masks of the others, and the step is a function of the seed alone. *)
 module Dropout = struct
-  (* A dropout holds its own walk, thus a block that takes one draws its mask alone and no
-     state threads through the forward pass. [split] gives the blocks their walks. *)
   type t =
     | Off
     | On of
@@ -202,13 +185,11 @@ module Dropout = struct
   let none = Off
 
   let create ~rate ~seed =
-    (* a rate of 1 drops everything: the scale below divides by a keep of zero *)
     if Float.(rate >= 1.0) then invalid_arg "the dropout rate is below 1";
     if Float.(rate <= 0.0) then Off else On { rate; rng = Prng.create_folded ~seed }
   ;;
 
-  (* [split t ~count] is [count] dropouts, each on a walk of its own. The masks of one are
-     therefore independent of the masks of the others, and of how many either draws. *)
+  (* each walk is independent of the others, and of how many draws either takes *)
   let split t ~count =
     match t with
     | Off -> Array.create ~len:count Off
@@ -219,9 +200,8 @@ module Dropout = struct
       List.map rngs ~f:(fun rng -> On { rate; rng }) |> Array.of_list
   ;;
 
-  (* [run t h] drops from [h], thus the mask takes the shape of [h] and no caller states
-     the batch or the context. The scale is the inverted form of dropout: a survivor
-     carries the mass of the dropped, thus the inference pass rescales nothing. *)
+  (* the shape comes from [h]; the scale is the inverted form, thus the inference pass
+     rescales nothing *)
   let run t h =
     match t with
     | Off -> h
@@ -275,7 +255,6 @@ let feed_forward (layer : Params.layer) ~dropout h =
   Nx.matmul hidden layer.w2 |> Dropout.run dropout
 ;;
 
-(* the two tables summed, dropped: the token and the bar phase of each position *)
 let embedding (params : Params.t) ~codes ~phases ~dropout =
   let tokens = embed_rows params.embed ~num_classes:Token.vocab codes in
   let bar = embed_rows params.phase ~num_classes:phase_buckets phases in
@@ -300,9 +279,6 @@ let logits (config : Config.t) (params : Params.t) ~codes ~phases ~dropout =
   Nx.matmul (rms_norm h) (Nx.transpose params.embed)
 ;;
 
-(* The cross entropy of the labels, weighted by position. A weight of zero drops a
-   position from the mean: the padding of a short piece takes it, because a padded label
-   would teach the walk to hold the last chord and emit END for ever — the drone. *)
 let weighted_cross_entropy raw labels ~weights =
   let axis = 2 in
   let peak = Nx.max raw ~axes:[ axis ] ~keepdims:true in
@@ -331,9 +307,6 @@ let mask_bias ~masks =
   Nx.of_bigarray bias
 ;;
 
-(* The grammar sits inside the softmax, thus the model spends no mass on a code that the
-   sampler would refuse. Therefore its raw mass outside the legal set stays untrained, and
-   the same mask must guard every draw. *)
 let loss (config : Config.t) params ~codes ~phases ~masks ~weights ~dropout =
   let length = Array.length codes.(0) - 1 in
   let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
@@ -395,8 +368,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     Array.mapi raw ~f:(fun code value ->
       if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
   in
-  (* the share of the raw mass that sits outside the legal set: the rate at which a
-     sampler with no mask would emit an illegal token *)
   let illegal_share raw ~mask =
     let weights = tempered raw ~keep:(fun (_ : int) -> true) in
     let all = Array.fold weights ~init:0.0 ~f:( +. ) in
@@ -406,9 +377,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     in
     1.0 -. (legal /. all)
   in
-  (* [min_p] removes each code whose tempered weight is below [min_p] of the peak's, which
-     is one. The peak always stays, thus a draw always exists, and zero turns the filter
-     off. *)
   let above_min_p weights =
     if Float.(min_p <= 0.0)
     then weights
@@ -442,7 +410,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   while !drawn < steps do
     let raw = next_code_logits ~codes:(window !codes) ~phases:(window !phases) in
     let mask = Sounding_state.legal_mask !state in
-    (* the guard-fire instrumentation: the raw distribution against the mask *)
     tally.illegal_mass <- tally.illegal_mass +. illegal_share raw ~mask;
     if not mask.(peak_code raw) then tally.illegal_top <- tally.illegal_top + 1;
     let legal = tempered raw ~keep:(fun code -> mask.(code)) in

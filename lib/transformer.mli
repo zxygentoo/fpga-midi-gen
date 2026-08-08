@@ -11,13 +11,14 @@
     simulation and on the board. A seed here is any integer: it folds into the 32 bits of
     the state, and a seed already inside that range names itself. *)
 
+(** every tensor of the host model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
 
 module Config : sig
   type t =
     { d : int (** the width of the residual stream *)
     ; layers : int
-    ; heads : int
+    ; heads : int (** they split the width at run time, thus [d] divides by them *)
     ; context : int (** the attention window, in tokens *)
     ; slope_span : int
     (** The ALiBi exponent span: the slope of head k is 2 ** -(span (k+1) / heads), and a
@@ -30,15 +31,16 @@ module Config : sig
   (** the baseline of the design document: d 64, layers 2, heads 4, context 256 *)
   val baseline : t
 
-  (** [of_checkpoint path ~heads ~context] reads the width and the layer count from the
-      tensor shapes of the checkpoint, thus a player states neither. The heads and the
-      context are not in the file: no tensor shape holds them, because the heads only
-      split the width at run time and ALiBi holds no position table. The context is a
+  (** [of_checkpoint path ~heads ~context ~slope_span] reads the width and the layer count
+      from the tensor shapes of the checkpoint, thus a player states neither. The heads
+      and the context are not in the file: no tensor shape holds them, because the heads
+      only split the width at run time and ALiBi holds no position table. The context is a
       choice of the draw in any case — a model trained long can sample short. *)
   val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
 module Params : sig
+  (** the weights of one model: the two tables, and six tensors for each layer *)
   type t
 
   (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
@@ -60,6 +62,8 @@ module Params : sig
   (** the flat order of the tensors; [of_list] reads the same order *)
   val to_list : t -> tensor list
 
+  (** [of_list config tensors] reads the order of [to_list]. It raises [Invalid_argument]
+      when the count of tensors does not fit [config]. *)
   val of_list : Config.t -> tensor list -> t
 
   (** The flat order as a [Ptree] list, for an optimizer that walks a tree. The checkpoint
@@ -74,7 +78,8 @@ end
     mean legal probability mass that the min-p filter removed each draw. [illegal_mass] is
     the mean raw mass the model put outside the legal set each draw — the rate at which a
     sampler with no mask would emit an illegal token. [illegal_top] is the share of draws
-    whose raw argmax was itself illegal. *)
+    whose raw argmax was itself illegal, and [draws] is how many draws the run took — the
+    count the three means divide by. *)
 type sample_stats =
   { refused : float
   ; illegal_mass : float
@@ -93,11 +98,11 @@ module Dropout : sig
   (** the identity: every mask is one, and the forward pass is the inference pass *)
   val none : t
 
-  (** [create ~rate ~seed] drops [rate] of each site, and scales the survivors by 1 / (1 -
-      rate) so that the inference pass rescales nothing. The mask takes the shape of the
-      tensor it drops, thus the batch and the context are not inputs here. A rate of zero
-      or less is [none]; a rate of 1 or more raises, because the scale of the survivors
-      divides by zero. *)
+  (** [create ~rate ~seed] drops [rate] of each block, and scales the survivors by 1 /
+      (1 - rate) so that the inference pass rescales nothing. The mask takes the shape of
+      the tensor it drops, thus the batch and the context are not inputs here. A rate of
+      zero or less is [none]; a rate of 1 or more raises, because the scale of the
+      survivors divides by zero. *)
   val create : rate:float -> seed:int -> t
 end
 
@@ -122,11 +127,14 @@ val loss
 
 (** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
     boot: an empty context, then [Start] at phase zero — power on, music on. One element
-    of the first result is one drawn step: the events of its sentence, without the [End].
-    The mask of the design document guards every draw, thus each sentence is valid.
-    [min_p] removes each legal token whose tempered probability is below [min_p] of the
-    peak's; the peak always stays, thus a draw always exists, and zero turns the filter
-    off. The same seed gives the same music. *)
+    of [music] is one drawn step: the events of its sentence, without the [End]. The mask
+    of the design document guards every draw, thus each sentence is valid. [min_p] removes
+    each legal token whose tempered probability is below [min_p] of the peak's; the peak
+    always stays, thus a draw always exists, and zero turns the filter off. The same seed
+    gives the same music.
+
+    It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
+    outside 0 up to 1. *)
 val sample
   :  Config.t
   -> Params.t
