@@ -14,8 +14,24 @@ type t
     rule of the SEED cell. *)
 val create : seed:int -> t
 
+(** [fold_seed n] is the state that [n] names. Any integer names one: the fold squeezes it
+    into 32 bits, and 0 — no state of the walk — takes the top state. A seed already
+    inside the range names itself, thus [fold_seed 7] is the walk of the board's seed 7.
+    Take [create] where the seed must obey the rule of the SEED cell, and this where it
+    comes from a flag or from a stream that does not. *)
+val fold_seed : int -> t
+
 (** [next t] is the new state and one draw: the low 8 bits of the new state. *)
 val next : t -> t * int
+
+(** [uniform t] is the new state and one draw in \[0, 1). Three steps make it, thus the
+    grid is 2 ** -24: fine enough for the tail of a Box-Muller draw, which a single byte
+    would cut at 3.3 sigma. *)
+val uniform : t -> t * float
+
+(** [uniforms t ~count] is the state after [count] draws, and the draws in the order of
+    the walk. *)
+val uniforms : t -> count:int -> t * float array
 
 (** The circuit. The state register takes the new value at a [step] strobe. The clear puts
     1 into the state: the state has no use before the first [load], and 1 keeps the

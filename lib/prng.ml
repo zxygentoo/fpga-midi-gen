@@ -14,11 +14,61 @@ let create ~seed =
   seed
 ;;
 
+(* A seed from a flag, or from a stream that makes seeds, holds neither rule of [create]:
+   it can be 0, and it can be wider than the state. The fold squeezes the whole integer
+   into 32 bits, and 0 — no state of the walk — takes the top state instead. A seed
+   already inside the range names itself, thus 7 here is the walk of the board's seed 7. *)
+let fold_seed seed =
+  let folded = seed lxor (seed lsr 32) land mask in
+  create ~seed:(if folded = 0 then mask else folded)
+;;
+
 let next t =
   let t = t lxor (t lsl 13) land mask in
   let t = t lxor (t lsr 17) in
   let t = t lxor (t lsl 5) land mask in
   t, t land 0xff
+;;
+
+(* One step gives eight bits, and three steps make one uniform. The grid of 2 ** -24 keeps
+   the tail of a Box-Muller draw, which a single byte would cut at 3.3 sigma. *)
+let uniform t =
+  let t, high = next t in
+  let t, middle = next t in
+  let t, low = next t in
+  t, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
+;;
+
+(* [uniforms t ~count] is [count] draws in the order of the walk. The walk states that
+   order: [init] leaves the order of its elements free, thus it cannot carry a state. *)
+let uniforms t ~count =
+  let rec walk t n draws =
+    if n = 0
+    then t, draws
+    else (
+      let t, draw = uniform t in
+      walk t (n - 1) (draw :: draws))
+  in
+  let t, draws = walk t count [] in
+  t, Array.of_list_rev draws
+;;
+
+let%expect_test "the seed folds, and the uniforms fill the range" =
+  Stdio.printf
+    "7 -> %x   0 -> %x   wide -> %x\n"
+    (fold_seed 7)
+    (fold_seed 0)
+    (fold_seed 0x3FFF_FFFF_FFFF_FFFF);
+  let count = 100_000 in
+  let (_ : t), draws = uniforms (fold_seed 1) ~count in
+  let outside = Array.count draws ~f:(fun u -> Float.( < ) u 0.0 || Float.( >= ) u 1.0) in
+  let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. Float.of_int count in
+  Stdio.printf "outside [0, 1): %d   mean %.4f\n" outside mean;
+  [%expect
+    {|
+    7 -> 7   0 -> ffffffff   wide -> c0000000
+    outside [0, 1): 0   mean 0.4997
+    |}]
 ;;
 
 module Rtl = struct

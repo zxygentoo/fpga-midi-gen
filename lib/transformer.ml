@@ -57,40 +57,23 @@ module Params = struct
     ; layers : layer array
     }
 
-  (* a deterministic normal draw: the OCaml PRNG and Box-Muller, thus Nx keeps no hidden
-     random state and the seed is an input *)
-  let normal rng ~scale shape =
+  (* A deterministic normal draw: [Prng] and Box-Muller, thus Nx keeps no hidden random
+     state and the seed is an input. The uniforms come out as an array first, therefore
+     each element is a function of its index and the free order of [init] cannot reach the
+     walk. *)
+  let normal stream ~scale shape =
     let numel = Array.fold shape ~init:1 ~f:( * ) in
-    let draws =
-      Array.init numel ~f:(fun _ ->
-        let u1 = Float.max 1e-12 (Random.State.float rng 1.0) in
-        let u2 = Random.State.float rng 1.0 in
-        scale *. Float.sqrt (-2. *. Float.log u1) *. Float.cos (2. *. Float.pi *. u2))
+    let stream, uniforms = Prng.uniforms stream ~count:(2 * numel) in
+    let box_muller i =
+      let u1 = Float.max 1e-12 uniforms.(2 * i) in
+      let u2 = uniforms.((2 * i) + 1) in
+      scale *. Float.sqrt (-2. *. Float.log u1) *. Float.cos (2. *. Float.pi *. u2)
     in
-    Nx.init Nx.float32 shape (fun index ->
-      let flat =
-        Array.foldi index ~init:0 ~f:(fun axis acc i -> (acc * shape.(axis)) + i)
-      in
-      draws.(flat))
-  ;;
-
-  let draw (config : Config.t) ~seed =
-    let rng = Random.State.make [| seed |] in
-    let normal shape = normal rng ~scale:0.02 shape in
-    let d = config.d in
-    let embed = normal [| Token.vocab; d |] in
-    let phase = normal [| phase_buckets; d |] in
-    let layers =
-      Array.init config.layers ~f:(fun (_ : int) ->
-        { wq = normal [| d; d |]
-        ; wk = normal [| d; d |]
-        ; wv = normal [| d; d |]
-        ; wo = normal [| d; d |]
-        ; w1 = normal [| d; 4 * d |]
-        ; w2 = normal [| 4 * d; d |]
-        })
+    let draws = Array.init numel ~f:box_muller in
+    let flat index =
+      Array.foldi index ~init:0 ~f:(fun axis acc i -> (acc * shape.(axis)) + i)
     in
-    { embed; phase; layers }
+    stream, Nx.init Nx.float32 shape (fun index -> draws.(flat index))
   ;;
 
   let to_list { embed; phase; layers } =
@@ -119,6 +102,26 @@ module Params = struct
           ();
       { embed; phase; layers }
     | _ -> invalid_arg "the parameters start with the two tables"
+  ;;
+
+  (* The draw is a walk, thus the order of the tensors is part of the result. A record
+     literal and [Array.init] leave that order to the compiler; the fold over the shapes
+     of the flat order states it, and [of_list] reads the same order back. *)
+  let draw (config : Config.t) ~seed =
+    let d = config.d in
+    (* wq, wk, wv and wo, then w1 and w2 of the feed-forward *)
+    let layer_shapes =
+      [ [| d; d |]; [| d; d |]; [| d; d |]; [| d; d |]; [| d; 4 * d |]; [| 4 * d; d |] ]
+    in
+    let shapes =
+      [ [| Token.vocab; d |]; [| phase_buckets; d |] ]
+      @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
+    in
+    let (_ : Prng.t), tensors =
+      List.fold_map shapes ~init:(Prng.fold_seed seed) ~f:(fun stream shape ->
+        normal stream ~scale:0.02 shape)
+    in
+    of_list config tensors
   ;;
 
   let to_ptree t = Ptree.list (List.map (to_list t) ~f:Ptree.tensor)
@@ -193,21 +196,17 @@ module Dropout = struct
     if Float.( <= ) rate 0.0
     then none
     else (
-      let rng = Random.State.make [| seed |] in
       let keep = 1.0 -. rate in
       let masks = 1 + (2 * config.layers) in
       let numel = batch * length * config.d in
-      (* the fill is a loop, not [Array.init]: the draw order of [init] is not the index
-         order, and a mask must be the same for the same seed *)
-      let draws = Array.create ~len:(masks * numel) 0.0 in
-      for i = 0 to Array.length draws - 1 do
-        draws.(i)
-        <- (if Float.( < ) (Random.State.float rng 1.0) keep then 1.0 /. keep else 0.0)
-      done;
+      let (_ : Prng.t), draws =
+        Prng.uniforms (Prng.fold_seed seed) ~count:(masks * numel)
+      in
+      let bernoulli draw = if Float.( < ) draw keep then 1.0 /. keep else 0.0 in
       List.init masks ~f:(fun mask ->
         Nx.init Nx.float32 [| batch; length; config.d |] (fun index ->
           let flat = (((index.(0) * length) + index.(1)) * config.d) + index.(2) in
-          draws.((mask * numel) + flat))))
+          bernoulli draws.((mask * numel) + flat))))
   ;;
 
   (* the head of the list applies here; the tail serves the sites that follow *)
@@ -346,7 +345,7 @@ end
 let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
   if Float.( <= ) temperature 0.0 then invalid_arg "the temperature is positive";
   if Float.( < ) min_p 0.0 || Float.( >= ) min_p 1.0 then invalid_arg "min_p is 0 up to 1";
-  let rng = Random.State.make [| seed |] in
+  let stream = ref (Prng.fold_seed seed) in
   (* The boot of the design document: an empty context, then START — power on, music on.
      START takes phase zero; the host takes zero as the boot value of the bar counter, the
      choice the RTL keeps free. *)
@@ -415,7 +414,11 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
     let total = Array.fold weights ~init:0.0 ~f:( +. ) in
     refused := !refused +. ((legal_total -. total) /. legal_total);
     incr draws;
-    let draw = Random.State.float rng total in
+    let draw =
+      let next, uniform = Prng.uniform !stream in
+      stream := next;
+      uniform *. total
+    in
     let code =
       let rec walk code acc =
         if code = Token.vocab - 1
@@ -449,6 +452,28 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
     ; illegal_top = Float.of_int !illegal_top /. Float.of_int count
     ; draws = !draws
     } )
+;;
+
+let%expect_test "the seed names the walk" =
+  let config = { Config.baseline with d = 32; layers = 1 } in
+  let embed params = Nx.to_array (List.hd_exn (Params.to_list params)) in
+  let moments draws =
+    let count = Float.of_int (Array.length draws) in
+    let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. count in
+    let square acc draw = acc +. ((draw -. mean) ** 2.0) in
+    mean, Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. count)
+  in
+  (* 0 is a legal seed here and no state of the walk: the players draw a template with it *)
+  let zero = embed (Params.draw config ~seed:0) in
+  let one = embed (Params.draw config ~seed:1) in
+  let mean, deviation = moments one in
+  printf
+    "mean %.4f  deviation %.4f  repeats %b  differs %b\n"
+    mean
+    deviation
+    (Array.equal Float.equal one (embed (Params.draw config ~seed:1)))
+    (not (Array.equal Float.equal zero one));
+  [%expect {| mean 0.0000  deviation 0.0199  repeats true  differs true |}]
 ;;
 
 let%expect_test "the shapes of the forward pass" =

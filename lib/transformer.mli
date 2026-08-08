@@ -4,7 +4,12 @@
     with no scale, ALiBi for the position, a bar-phase table, and the embedding table tied
     with the output head. The host model is float32; the integer ladder comes after the
     audition. Raven carries the work: Nx computes, Rune differentiates, and Kaun gives
-    AdamW, the loss and the checkpoint format. *)
+    AdamW, the loss and the checkpoint format.
+
+    Every draw — the parameters, the dropout masks and the sampler — comes from [Prng],
+    the xorshift32 of the circuit. Thus one seed names one walk in the software, in the
+    simulation and on the board. A seed here is any integer: it folds into the 32 bits of
+    the state, and a seed already inside that range names itself. *)
 
 type tensor = (float, Nx.float32_elt) Nx.t
 
@@ -36,8 +41,9 @@ end
 module Params : sig
   type t
 
-  (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. The OCaml PRNG
-      makes the draw, thus the seed is an input and the same seed gives the same start. *)
+  (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
+      Box-Muller make the draw, thus the seed is an input and the same seed gives the same
+      start. The tensors come in the order of [to_list]. *)
   val draw : Config.t -> seed:int -> t
 
   (** the flat order of the tensors; [of_list] reads the same order *)
