@@ -9,8 +9,8 @@ _build/
 # training runs: logs and checkpoints
 _train/
 
-# opam
-_opam/
+# opam: "opam switch link" makes a symlink, not a directory, thus no trailing slash
+_opam
 
 # merlin
 .merlin
