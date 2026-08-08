@@ -6,6 +6,9 @@ type tensor = (float, Nx.float32_elt) Nx.t
 (* the rows of the bar-phase table: the steps of one bar *)
 let phase_buckets = 16
 
+(* the element count of a shape: how many draws the walk owes it *)
+let numel shape = Array.fold shape ~init:1 ~f:( * )
+
 module Config = struct
   type t =
     { d : int
@@ -57,25 +60,6 @@ module Params = struct
     ; layers : layer array
     }
 
-  (* A deterministic normal draw: [Prng] and Box-Muller, thus Nx keeps no hidden random
-     state and the seed is an input. The uniforms come out as an array first, therefore
-     each element is a function of its index and the free order of [init] cannot reach the
-     walk. *)
-  let normal stream ~scale shape =
-    let numel = Array.fold shape ~init:1 ~f:( * ) in
-    let stream, uniforms = Prng.uniforms stream ~count:(2 * numel) in
-    let box_muller i =
-      let u1 = Float.max 1e-12 uniforms.(2 * i) in
-      let u2 = uniforms.((2 * i) + 1) in
-      scale *. Float.sqrt (-2. *. Float.log u1) *. Float.cos (2. *. Float.pi *. u2)
-    in
-    let draws = Array.init numel ~f:box_muller in
-    let flat index =
-      Array.foldi index ~init:0 ~f:(fun axis acc i -> (acc * shape.(axis)) + i)
-    in
-    stream, Nx.init Nx.float32 shape (fun index -> draws.(flat index))
-  ;;
-
   let to_list { embed; phase; layers } =
     embed
     :: phase
@@ -117,9 +101,13 @@ module Params = struct
       [ [| Token.vocab; d |]; [| phase_buckets; d |] ]
       @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
     in
+    (* the seam: [Prng] draws the numbers, Nx gives them a shape *)
+    let normal stream shape =
+      let stream, draws = Prng.normals stream ~count:(numel shape) ~scale:0.02 in
+      stream, Nx.create Nx.float32 shape draws
+    in
     let (_ : Prng.t), tensors =
-      List.fold_map shapes ~init:(Prng.fold_seed seed) ~f:(fun stream shape ->
-        normal stream ~scale:0.02 shape)
+      List.fold_map shapes ~init:(Prng.create_folded ~seed) ~f:normal
     in
     of_list config tensors
   ;;
@@ -195,20 +183,27 @@ module Dropout = struct
   let none = []
 
   let draw (config : Config.t) ~rate ~batch ~length ~seed =
+    (* a rate of 1 drops everything: the scale below divides by a keep of zero *)
+    if Float.(rate >= 1.0) then invalid_arg "the dropout rate is below 1";
     if Float.(rate <= 0.0)
     then none
     else (
       let keep = 1.0 -. rate in
-      let masks = 1 + (2 * config.layers) in
-      let numel = batch * length * config.d in
-      let (_ : Prng.t), draws =
-        Prng.uniforms (Prng.fold_seed seed) ~count:(masks * numel)
+      let sites = 1 + (2 * config.layers) in
+      let shapes = List.init sites ~f:(fun (_ : int) -> [| batch; length; config.d |]) in
+      (* The scale is the inverted form of dropout: a survivor carries the mass of the
+         dropped, thus the inference pass rescales nothing. The seam: [Prng] draws the
+         coins, Nx gives them a shape. *)
+      let mask stream shape =
+        let stream, coins =
+          Prng.bernoullis stream ~count:(numel shape) ~probability:keep
+        in
+        stream, Nx.create Nx.float32 shape (Array.map coins ~f:(fun coin -> coin /. keep))
       in
-      let bernoulli draw = if Float.(draw < keep) then 1.0 /. keep else 0.0 in
-      List.init masks ~f:(fun mask ->
-        Nx.init Nx.float32 [| batch; length; config.d |] (fun index ->
-          let flat = (((index.(0) * length) + index.(1)) * config.d) + index.(2) in
-          bernoulli draws.((mask * numel) + flat))))
+      let (_ : Prng.t), masks =
+        List.fold_map shapes ~init:(Prng.create_folded ~seed) ~f:mask
+      in
+      masks)
   ;;
 
   (* the head of the list applies here; the tail serves the sites that follow *)
@@ -331,7 +326,7 @@ end
 let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
-  let stream = ref (Prng.fold_seed seed) in
+  let stream = ref (Prng.create_folded ~seed) in
   (* The boot of the design document: an empty context, then START — power on, music on.
      START takes phase zero; the host takes zero as the boot value of the bar counter, the
      choice the RTL keeps free. *)

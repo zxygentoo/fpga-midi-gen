@@ -2,10 +2,9 @@ open Base
 open Hardcaml
 open Signal
 
-(* the software side: the same recurrence in OCaml integers. The mask drops the bits that
-   the circuit's shifts drop. *)
 type t = int
 
+(* an OCaml integer holds 63 bits; the mask drops what the circuit's 32-bit shifts drop *)
 let mask = 0xFFFF_FFFF
 
 let create ~seed =
@@ -14,12 +13,11 @@ let create ~seed =
   seed
 ;;
 
-(* A seed from a flag, or from a stream that makes seeds, holds neither rule of [create]:
-   it can be 0, and it can be wider than the state. The fold squeezes the whole integer
-   into 32 bits, and 0 — no state of the walk — takes the top state instead. A seed
-   already inside the range names itself, thus 7 here is the walk of the board's seed 7. *)
-let fold_seed seed =
-  let folded = seed lxor (seed lsr 32) land mask in
+let create_folded ~seed =
+  (* the mask comes after the mix, not inside it: a seed wider than the state must reach
+     the low bits *)
+  let mixed = seed lxor (seed lsr 32) in
+  let folded = mixed land mask in
   create ~seed:(if folded = 0 then mask else folded)
 ;;
 
@@ -30,8 +28,6 @@ let next t =
   t, t land 0xff
 ;;
 
-(* One step gives eight bits, and three steps make one uniform. The grid of 2 ** -24 keeps
-   the tail of a Box-Muller draw, which a single byte would cut at 3.3 sigma. *)
 let uniform t =
   let t, high = next t in
   let t, middle = next t in
@@ -39,8 +35,8 @@ let uniform t =
   t, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
 ;;
 
-(* [uniforms t ~count] is [count] draws in the order of the walk. The walk states that
-   order: [init] leaves the order of its elements free, thus it cannot carry a state. *)
+(* a walk, not an [init]: the order of the elements of [init] is free, thus it cannot
+   carry a state *)
 let uniforms t ~count =
   let rec walk t n draws =
     if n = 0
@@ -53,14 +49,33 @@ let uniforms t ~count =
   t, Array.of_list_rev draws
 ;;
 
+(* the clamp holds the logarithm finite, because the grid of [uniform] holds 0 *)
+let box_muller u1 u2 =
+  Float.sqrt (-2. *. Float.log (Float.max 1e-12 u1)) *. Float.cos (2. *. Float.pi *. u2)
+;;
+
+(* the uniforms come out first, thus each normal is a function of its index alone and the
+   free order of [init] cannot reach the walk *)
+let normals t ~count ~scale =
+  let t, draws = uniforms t ~count:(2 * count) in
+  let normal i = scale *. box_muller draws.(2 * i) draws.((2 * i) + 1) in
+  t, Array.init count ~f:normal
+;;
+
+let bernoullis t ~count ~probability =
+  let t, draws = uniforms t ~count in
+  let hit u = if Float.(u < probability) then 1.0 else 0.0 in
+  t, Array.map draws ~f:hit
+;;
+
 let%expect_test "the seed folds, and the uniforms fill the range" =
   Stdio.printf
     "7 -> %x   0 -> %x   wide -> %x\n"
-    (fold_seed 7)
-    (fold_seed 0)
-    (fold_seed 0x3FFF_FFFF_FFFF_FFFF);
+    (create_folded ~seed:7)
+    (create_folded ~seed:0)
+    (create_folded ~seed:0x3FFF_FFFF_FFFF_FFFF);
   let count = 100_000 in
-  let (_ : t), draws = uniforms (fold_seed 1) ~count in
+  let (_ : t), draws = uniforms (create_folded ~seed:1) ~count in
   let outside = Array.count draws ~f:(fun u -> Float.(u < 0.0 || u >= 1.0)) in
   let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. Float.of_int count in
   Stdio.printf "outside [0, 1): %d   mean %.4f\n" outside mean;
@@ -69,6 +84,22 @@ let%expect_test "the seed folds, and the uniforms fill the range" =
     7 -> 7   0 -> ffffffff   wide -> c0000000
     outside [0, 1): 0   mean 0.4997
     |}]
+;;
+
+let%expect_test "the normals take their scale" =
+  let count = 100_000 in
+  let (_ : t), draws = normals (create_folded ~seed:1) ~count ~scale:0.02 in
+  let total = Array.fold draws ~init:0.0 ~f:( +. ) in
+  let mean = total /. Float.of_int count in
+  let square acc draw =
+    let delta = draw -. mean in
+    acc +. (delta *. delta)
+  in
+  let deviation =
+    Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. Float.of_int count)
+  in
+  Stdio.printf "mean %.4f  deviation %.4f\n" mean deviation;
+  [%expect {| mean -0.0000  deviation 0.0201 |}]
 ;;
 
 module Rtl = struct
@@ -87,8 +118,7 @@ module Rtl = struct
     type 'a t = { value : 'a [@bits 32] } [@@deriving hardcaml]
   end
 
-  (* the three layers of xorshift32; the shifts drop the bits that the OCaml reference
-     masks away *)
+  (* the shifts drop the bits that the OCaml reference masks away *)
   let advance state =
     let state = state ^: sll state ~by:13 in
     let state = state ^: srl state ~by:17 in

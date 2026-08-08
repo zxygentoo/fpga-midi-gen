@@ -82,7 +82,8 @@ module Dropout : sig
   val none : t
 
   (** [draw config ~rate ~batch ~length ~seed] draws the masks of one step: the embedding
-      sum and the two branches of each layer. A rate of zero is [none]. *)
+      sum and the two branches of each layer. A rate of zero is [none], and a rate of 1 or
+      more raises: it drops every unit, and the scale of the survivors divides by zero. *)
   val draw : Config.t -> rate:float -> batch:int -> length:int -> seed:int -> t
 end
 
