@@ -29,7 +29,7 @@ let step t (token : Token.t) =
   | End -> { t with last_on = None }
 ;;
 
-let legal_mask t = Array.init Token.vocab ~f:(fun code -> is_legal t (Token.of_byte code))
+let legal_mask t = Array.init Token.vocab ~f:(fun code -> is_legal t (Token.of_code code))
 
 let%expect_test "the legal mask enforces the sentence rules" =
   let walk tokens = List.fold tokens ~init:silence ~f:step in
@@ -78,7 +78,7 @@ let%expect_test "START never, and an OFF needs a sounding pitch" =
     printf
       "%-10s %b\n"
       (Sexp.to_string (Token.sexp_of_t token))
-      mask.(Token.to_byte token)
+      mask.(Token.to_code token)
   in
   (* START is input only: the model never draws it *)
   show Start;

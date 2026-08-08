@@ -169,7 +169,7 @@ let encode { steps; legal_shifts = _ } =
   let bar, rotation = metre steps in
   let tokens = tokenize steps in
   let codes =
-    Array.of_list (Token.to_byte Token.Start :: List.map tokens ~f:Token.to_byte)
+    Array.of_list (Token.to_code Token.Start :: List.map tokens ~f:Token.to_code)
   in
   let (_ : int), piece_phases =
     List.fold_map tokens ~init:0 ~f:(fun step token ->

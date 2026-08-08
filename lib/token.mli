@@ -13,16 +13,17 @@ type t =
   | End
 [@@deriving sexp_of]
 
-(** the size of the vocabulary: one byte *)
+(** the size of the vocabulary: every code fits one byte *)
 val vocab : int
 
 (** the seats of the sequencer: at most four pitches sound *)
 val seats : int
 
-(** [to_byte t] is the byte code of [t]. It raises for a pitch outside its range: 0 to 126
-    for [On], 1 to 127 for [Off]. *)
-val to_byte : t -> int
+(** [to_code t] is the code of [t]. It raises [Invalid_argument] for a pitch outside its
+    range: 0 to 126 for [On], and 1 to 127 for [Off]. *)
+val to_code : t -> int
 
-(** [of_byte b] decodes a byte: 0xFF is [Start], 0x80 to 0xFE is [On], 0x01 to 0x7F is
-    [Off], and 0 is [End]. *)
-val of_byte : int -> t
+(** [of_code code] is the token of [code]: 0xFF is [Start], 0x80 to 0xFE is [On], 0x01 to
+    0x7F is [Off], and 0 is [End]. A code outside the range 0 to 255 raises
+    [Invalid_argument]. *)
+val of_code : int -> t

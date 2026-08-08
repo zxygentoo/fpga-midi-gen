@@ -330,7 +330,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   (* The boot of the design document: an empty context, then START — power on, music on.
      START takes phase zero; the host takes zero as the boot value of the bar counter, the
      choice the RTL keeps free. *)
-  let codes = ref [ Token.to_byte Token.Start ] in
+  let codes = ref [ Token.to_code Token.Start ] in
   let phases = ref [ 0 ] in
   let state = ref Sounding_state.silence in
   let step_index = ref 0 in
@@ -407,7 +407,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
       let chosen = walk 0 0.0 in
       if Float.(weights.(chosen) > 0.0) then chosen else 0
     in
-    let token = Token.of_byte code in
+    let token = Token.of_code code in
     codes := code :: !codes;
     phases := (!step_index mod phase_buckets) :: !phases;
     state := Sounding_state.step !state token;

@@ -37,7 +37,7 @@ val transpose : by:int -> chorale -> chorale
 (** [encode chorale] is the walk of the design document: two parallel arrays with one
     element per token.
 
-    [codes] holds each token as its byte, per [Token.to_byte] — the stream the model
+    [codes] holds each token as its code, per [Token.to_code] — the stream the model
     trains on. The walk opens with [Start]; then each step gives the OFF events ascending,
     the ON events ascending, then [End].
 

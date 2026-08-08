@@ -5,7 +5,7 @@ type row = int array * int array * bool array array
 let masks_after codes =
   let (_ : Sounding_state.t), masks =
     Array.fold_map codes ~init:Sounding_state.silence ~f:(fun state code ->
-      let state = Sounding_state.step state (Token.of_byte code) in
+      let state = Sounding_state.step state (Token.of_code code) in
       state, Sounding_state.legal_mask state)
   in
   masks

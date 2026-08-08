@@ -22,5 +22,5 @@ val silence : t
 (** [step t token] walks one token. It does not test legality. *)
 val step : t -> Token.t -> t
 
-(** [legal_mask t] is the grammar flag of each byte code, indexed by the code. *)
+(** [legal_mask t] is the grammar flag of every code, indexed by the code. *)
 val legal_mask : t -> bool array

@@ -10,7 +10,7 @@ type t =
 let vocab = 256
 let seats = 4
 
-let to_byte = function
+let to_code = function
   | Start -> 0xff
   | On pitch ->
     if pitch < 0 || pitch > 126
@@ -23,21 +23,21 @@ let to_byte = function
   | End -> 0
 ;;
 
-let of_byte byte =
-  if byte < 0 || byte > 255 then invalid_argf "%d is not a byte" byte ();
-  if byte = 0xff
+let of_code code =
+  if code < 0 || code > 255 then invalid_argf "the code %d is outside 0 to 255" code ();
+  if code = 0xff
   then Start
-  else if byte >= 0x80
-  then On (byte land 0x7f)
-  else if byte > 0
-  then Off byte
+  else if code >= 0x80
+  then On (code land 0x7f)
+  else if code > 0
+  then Off code
   else End
 ;;
 
-let%expect_test "the byte codec goes both ways" =
+let%expect_test "the codec goes both ways" =
   List.iter [ 0xff; 0x80; 0xbc; 0xfe; 0x01; 0x3c; 0x7f; 0x00 ] ~f:(fun code ->
-    let token = of_byte code in
-    printf "0x%02x %-10s 0x%02x\n" code (Sexp.to_string (sexp_of_t token)) (to_byte token));
+    let token = of_code code in
+    printf "0x%02x %-10s 0x%02x\n" code (Sexp.to_string (sexp_of_t token)) (to_code token));
   [%expect
     {|
     0xff Start      0xff
