@@ -36,6 +36,9 @@
 - Datatypes:
   - Do not make a tuple of more than three items. Use a record, and give each
     field a good name.
+- Prefer the pipeline (`|>`) where a value passes through steps in sequence:
+  the steps stand in the order they happen, and no name holds a value that
+  only waits for the next step.
 - Mutation is permitted only with a real justification:
   - global state at the outer edge of the program
   - local mutation with a large, measured performance win
