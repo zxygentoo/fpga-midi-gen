@@ -75,29 +75,30 @@ end
     the mean raw mass the model put outside the legal set each draw — the rate at which a
     sampler with no mask would emit an illegal token. [illegal_top] is the share of draws
     whose raw argmax was itself illegal. *)
-module Sample_stats : sig
-  type t =
-    { refused : float
-    ; illegal_mass : float
-    ; illegal_top : float
-    ; draws : int
-    }
-end
+type sample_stats =
+  { refused : float
+  ; illegal_mass : float
+  ; illegal_top : float
+  ; draws : int
+  }
 
 (** The dropout of one training step. The JAX sweep of 2026-08-07 found the rate scales
-    with the model: 0.1 at d 64, 0.2 at d 128 and at the long context. The masks are drawn
-    before the gradient runs and passed in, thus the step stays pure and the seed
-    reproduces it. *)
+    with the model: 0.1 at d 64, 0.2 at d 128 and at the long context. The blocks that
+    drop are the embedding sum and the two branches of each layer, and each of them draws
+    from a walk of its own, thus the step is a function of the seed alone and the same
+    seed gives the same step. *)
 module Dropout : sig
   type t
 
   (** the identity: every mask is one, and the forward pass is the inference pass *)
   val none : t
 
-  (** [draw config ~rate ~batch ~length ~seed] draws the masks of one step: the embedding
-      sum and the two branches of each layer. A rate of zero is [none], and a rate of 1 or
-      more raises: it drops every unit, and the scale of the survivors divides by zero. *)
-  val draw : Config.t -> rate:float -> batch:int -> length:int -> seed:int -> t
+  (** [create ~rate ~seed] drops [rate] of each site, and scales the survivors by 1 / (1 -
+      rate) so that the inference pass rescales nothing. The mask takes the shape of the
+      tensor it drops, thus the batch and the context are not inputs here. A rate of zero
+      or less is [none]; a rate of 1 or more raises, because the scale of the survivors
+      divides by zero. *)
+  val create : rate:float -> seed:int -> t
 end
 
 (** [loss config params ~codes ~phases ~masks ~weights ~dropout] is the cross entropy of
@@ -133,4 +134,4 @@ val sample
   -> steps:int
   -> temperature:float
   -> min_p:float
-  -> Token.t list list * Sample_stats.t
+  -> music:Token.t list list * stats:sample_stats

@@ -6,10 +6,10 @@
 
     The state walks all 32-bit values except 0.
 
-    Every draw is pure: it takes a state and gives the next state beside the value. The
-    caller carries that new state forward, because a second call on the same state repeats
-    the same draw. Therefore one seed names one sequence, in the software, in the
-    simulation and on the board.
+    A draw carries the state from one draw to the next, and [run] gives it a state to
+    start from. [let*] sequences the draws, and the order of the bindings is the order of
+    the walk. Therefore one seed names one sequence, in the software, in the simulation
+    and on the board.
 
     A draw comes out as a plain float or float array. This module owns the randomness
     alone; a caller that wants a tensor gives the array a shape with [Nx.create]. *)
@@ -17,11 +17,14 @@
 open Hardcaml
 
 (** the state of the walk: 32 bits, and never 0 *)
-type t
+type state
+
+(** a draw, and the state it carries to the draw that follows *)
+type 'a t
 
 (** [create ~seed] is the walk that starts at [seed]. It raises [Invalid_argument] when
     [seed] is 0 or does not fit 32 bits — the rule of the SEED cell of the board. *)
-val create : seed:int -> t
+val create : seed:int -> state
 
 (** [create_folded ~seed] is the walk that [seed] names, for any integer. The fold
     squeezes the seed into 32 bits, and 0 — no state of the walk — takes the top state. A
@@ -31,34 +34,50 @@ val create : seed:int -> t
 
     Take [create] where the seed must obey the rule of the SEED cell, and this where the
     seed comes from a flag or from a stream that obeys no such rule. *)
-val create_folded : seed:int -> t
+val create_folded : seed:int -> state
 
-(** [next t] is the state after one step, and the draw of that step: the low 8 bits of the
-    new state, 0 to 255. This is the draw the circuit gives, thus a walk of [next] and a
-    walk of [Rtl] agree byte for byte. *)
-val next : t -> t * int
+val return : 'a -> 'a t
+val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
+val ( let+ ) : 'a t -> ('a -> 'b) -> 'b t
 
-(** [uniform t] is the state after three steps, and one draw of the uniform distribution
-    over \[0, 1). The three bytes make a grid of 2 ** -24, which is fine enough to hold
-    the tail of a Box-Muller draw that one byte would cut at 3.3 sigma.
+(** [all draws] runs the draws from left to right, thus the list holds them in the order
+    of the walk. *)
+val all : 'a t list -> 'a list t
+
+(** one step, and the draw of that step: the low 8 bits of the new state, 0 to 255. This
+    is the draw the circuit gives, thus a walk of [next] and a walk of [Rtl] agree byte
+    for byte. *)
+val next : int t
+
+(** Three steps, and one draw of the uniform distribution over \[0, 1). The three bytes
+    make a grid of 2 ** -24, which is fine enough to hold the tail of a Box-Muller draw
+    that one byte would cut at 3.3 sigma.
 
     The grid holds 0. Therefore a caller that takes the logarithm of a draw must hold that
     case. *)
-val uniform : t -> t * float
+val uniform : float t
 
-(** [uniforms t ~count] is the state after [count] draws of [uniform], and the draws in
-    the order of the walk. A count of 0 gives the state and an empty array. *)
-val uniforms : t -> count:int -> t * float array
+(** [uniforms ~count] is [count] draws of [uniform], in the order of the walk. A count of
+    0 draws nothing and gives an empty array. *)
+val uniforms : count:int -> float array t
 
-(** [normals t ~count ~scale] is the state after the draws, and [count] draws of the
-    normal distribution whose mean is 0 and whose standard deviation is [scale].
-    Box-Muller makes them, thus one draw takes two uniforms and six steps of the walk. *)
-val normals : t -> count:int -> scale:float -> t * float array
+(** [normals ~count ~scale] is [count] draws of the normal distribution whose mean is 0
+    and whose standard deviation is [scale]. Box-Muller makes them, thus one draw takes
+    two uniforms and six steps of the walk. *)
+val normals : count:int -> scale:float -> float array t
 
-(** [bernoullis t ~count ~probability] is the state after the draws, and [count] draws of
-    the Bernoulli distribution: 1.0 at [probability], and 0.0 else. One draw takes one
-    uniform. The hit weighs 1.0; a caller that wants another weight multiplies the array. *)
-val bernoullis : t -> count:int -> probability:float -> t * float array
+(** [bernoullis ~count ~probability] is [count] draws of the Bernoulli distribution: 1.0
+    at [probability], and 0.0 else. One draw takes one uniform. The hit weighs 1.0; a
+    caller that wants another weight multiplies the array. *)
+val bernoullis : count:int -> probability:float -> float array t
+
+(** An independent walk, drawn from this one — four steps make its 32 bits. Give one to a
+    part of a computation that must draw on its own: it then holds no place in the order
+    of the parent, thus the parent can gain or lose draws without moving it. *)
+val split : state t
+
+(** [run draw state] is the state after [draw], and the value of [draw]. *)
+val run : 'a t -> state -> state * 'a
 
 (** The circuit: the same recurrence, one step in one cycle. *)
 module Rtl : sig

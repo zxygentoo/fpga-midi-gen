@@ -2,7 +2,10 @@ open Base
 open Hardcaml
 open Signal
 
-type t = int
+(* A draw carries the state from one draw to the next, thus a draw is a function of the
+   state and every function below is one. *)
+type 'a t = state -> state * 'a
+and state = int
 
 (* an OCaml integer holds 63 bits; the mask drops what the circuit's 32-bit shifts drop *)
 let mask = 0xFFFF_FFFF
@@ -21,32 +24,32 @@ let create_folded ~seed =
   create ~seed:(if folded = 0 then mask else folded)
 ;;
 
-let next t =
-  let t = t lxor (t lsl 13) land mask in
-  let t = t lxor (t lsr 17) in
-  let t = t lxor (t lsl 5) land mask in
-  t, t land 0xff
+let next state =
+  let state = state lxor (state lsl 13) land mask in
+  let state = state lxor (state lsr 17) in
+  let state = state lxor (state lsl 5) land mask in
+  state, state land 0xff
 ;;
 
-let uniform t =
-  let t, high = next t in
-  let t, middle = next t in
-  let t, low = next t in
-  t, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
+let uniform state =
+  let state, high = next state in
+  let state, middle = next state in
+  let state, low = next state in
+  state, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
 ;;
 
 (* a walk, not an [init]: the order of the elements of [init] is free, thus it cannot
    carry a state *)
-let uniforms t ~count =
-  let rec walk t n draws =
+let uniforms ~count state =
+  let rec walk state n draws =
     if n = 0
-    then t, draws
+    then state, draws
     else (
-      let t, draw = uniform t in
-      walk t (n - 1) (draw :: draws))
+      let state, draw = uniform state in
+      walk state (n - 1) (draw :: draws))
   in
-  let t, draws = walk t count [] in
-  t, Array.of_list_rev draws
+  let state, draws = walk state count [] in
+  state, Array.of_list_rev draws
 ;;
 
 (* the clamp holds the logarithm finite, because the grid of [uniform] holds 0 *)
@@ -56,17 +59,46 @@ let box_muller u1 u2 =
 
 (* the uniforms come out first, thus each normal is a function of its index alone and the
    free order of [init] cannot reach the walk *)
-let normals t ~count ~scale =
-  let t, draws = uniforms t ~count:(2 * count) in
+let normals ~count ~scale state =
+  let state, draws = uniforms ~count:(2 * count) state in
   let normal i = scale *. box_muller draws.(2 * i) draws.((2 * i) + 1) in
-  t, Array.init count ~f:normal
+  state, Array.init count ~f:normal
 ;;
 
-let bernoullis t ~count ~probability =
-  let t, draws = uniforms t ~count in
+let bernoullis ~count ~probability state =
+  let state, draws = uniforms ~count state in
   let hit u = if Float.(u < probability) then 1.0 else 0.0 in
-  t, Array.map draws ~f:hit
+  state, Array.map draws ~f:hit
 ;;
+
+let return value state = state, value
+
+let bind draw ~f state =
+  let state, value = draw state in
+  (f value) state
+;;
+
+let map draw ~f state =
+  let state, value = draw state in
+  state, f value
+;;
+
+let ( let* ) draw f = bind draw ~f
+let ( let+ ) draw f = map draw ~f
+let all draws state = List.fold_map draws ~init:state ~f:(fun state draw -> draw state)
+
+(* an independent walk, drawn from this one: four steps make its 32 bits. A part of a
+   computation takes one of these and then draws on its own, thus it holds no place in the
+   order of the parent. *)
+let split =
+  let* high = next in
+  let* second = next in
+  let* third = next in
+  let+ low = next in
+  create_folded ~seed:((((((high * 256) + second) * 256) + third) * 256) + low)
+;;
+
+let run draw state = draw state
 
 let%expect_test "the seed folds, and the uniforms fill the range" =
   Stdio.printf
@@ -75,7 +107,7 @@ let%expect_test "the seed folds, and the uniforms fill the range" =
     (create_folded ~seed:0)
     (create_folded ~seed:0x3FFF_FFFF_FFFF_FFFF);
   let count = 100_000 in
-  let (_ : t), draws = uniforms (create_folded ~seed:1) ~count in
+  let (_ : state), draws = uniforms ~count (create_folded ~seed:1) in
   let outside = Array.count draws ~f:(fun u -> Float.(u < 0.0 || u >= 1.0)) in
   let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. Float.of_int count in
   Stdio.printf "outside [0, 1): %d   mean %.4f\n" outside mean;
@@ -88,7 +120,7 @@ let%expect_test "the seed folds, and the uniforms fill the range" =
 
 let%expect_test "the normals take their scale" =
   let count = 100_000 in
-  let (_ : t), draws = normals (create_folded ~seed:1) ~count ~scale:0.02 in
+  let (_ : state), draws = normals ~count ~scale:0.02 (create_folded ~seed:1) in
   let total = Array.fold draws ~init:0.0 ~f:( +. ) in
   let mean = total /. Float.of_int count in
   let square acc draw =
@@ -100,6 +132,42 @@ let%expect_test "the normals take their scale" =
   in
   Stdio.printf "mean %.4f  deviation %.4f\n" mean deviation;
   [%expect {| mean -0.0000  deviation 0.0201 |}]
+;;
+
+let%expect_test "the walk draws what the plain calls draw" =
+  (* the same three draws, threaded by hand and threaded by [let*] *)
+  let by_hand state =
+    let state, a = uniform state in
+    let state, b = normals ~count:2 ~scale:0.5 state in
+    let state, c = next state in
+    state, (a, b, c)
+  in
+  let by_walk =
+    let* a = uniform in
+    let* b = normals ~count:2 ~scale:0.5 in
+    let+ c = next in
+    a, b, c
+  in
+  let hand_state, (a, b, c) = by_hand (create_folded ~seed:9) in
+  let walk_state, (x, y, z) = run by_walk (create_folded ~seed:9) in
+  Stdio.printf
+    "same state %b   same draws %b\n"
+    (hand_state = walk_state)
+    (Float.equal a x && Array.equal Float.equal b y && c = z);
+  (* [all] must run left to right, or the order of the walk is not the order of the list *)
+  let (_ : state), ordered = run (all [ next; next; next ]) (create_folded ~seed:9) in
+  let plain =
+    let state = create_folded ~seed:9 in
+    let state, p = next state in
+    let state, q = next state in
+    let (_ : state), r = next state in
+    [ p; q; r ]
+  in
+  Stdio.printf "all in order %b\n" (List.equal Int.equal ordered plain);
+  [%expect {|
+    same state true   same draws true
+    all in order true
+    |}]
 ;;
 
 module Rtl = struct

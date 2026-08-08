@@ -229,7 +229,8 @@ let command =
            "F drop tokens under this share of the peak; 0 turns the filter off. The \
             default is 1/256: wider filters eat the melody, per the sweep of 2026-08-05"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
-     and stats = flag "-stats" no_arg ~doc:" print the audition metrics of the sample"
+     and show_stats =
+       flag "-stats" no_arg ~doc:" print the audition metrics of the sample"
      and device =
        flag
          "-device"
@@ -256,14 +257,14 @@ let command =
          Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
        in
        let params = Transformer.Params.load config ~path:checkpoint in
-       let music, sampled =
+       let ~music, ~stats =
          Transformer.sample config params ~seed ~steps ~temperature ~min_p
        in
        if send
        then play music ~device ~step_ms ~channel ~velocity
-       else if not stats
+       else if not show_stats
        then List.iteri music ~f:print_step;
-       if stats
+       if show_stats
        then (
          print_stats music;
          print_repetition music);
@@ -271,10 +272,10 @@ let command =
          "min-p refused %.4f of the legal mass; guard held %.4f of the raw mass, %.4f of \
           the raw top choices, over %d draws\n\
           %!"
-         sampled.Transformer.Sample_stats.refused
-         sampled.illegal_mass
-         sampled.illegal_top
-         sampled.draws)
+         stats.Transformer.refused
+         stats.illegal_mass
+         stats.illegal_top
+         stats.draws)
 ;;
 
 let () = Command_unix.run command

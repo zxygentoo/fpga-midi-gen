@@ -175,11 +175,8 @@ let train
     let codes, phases, masks, weights = train_batch rng pool ~batch ~context ~augment in
     (* the dropout takes its own lane, thus the draw and the batch streams stay put *)
     let dropout =
-      Transformer.Dropout.draw
-        config
+      Transformer.Dropout.create
         ~rate:dropout_rate
-        ~batch
-        ~length:context
         ~seed:(Random.State.int dropout_rng Int.max_value)
     in
     let value, grads =
