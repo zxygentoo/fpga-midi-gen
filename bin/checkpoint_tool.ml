@@ -1,9 +1,8 @@
 (* checkpoint_tool: operations on one checkpoint. The eval subcommand is the referee of
-   the election run standalone: the fixed valid windows of Evaluation, the unmasked and
-   the masked loss. With -out it writes the gate file of the JAX seam — the batch and the
-   two losses — thus the parity gates compare against the same rows the election reads.
-   The config flags must equal the flags of the training run; the checkpoint holds only
-   tensors. *)
+   the election run standalone: the fixed valid windows of Evaluation. With -out it writes
+   the gate file of the JAX seam — the batch and the loss — thus the parity gates compare
+   against the same rows the election reads. The config flags must equal the flags of the
+   training run; the checkpoint holds only tensors. *)
 
 open Core
 module Evaluation = Mgen.Evaluation
@@ -13,7 +12,7 @@ module Transformer = Mgen.Transformer
 
 let mask_words = Token.vocab / 32
 
-let gate_entries rows ~unmasked ~masked =
+let gate_entries rows ~loss =
   let codes, phases, masks = Evaluation.batch_of_rows rows in
   let batch = Array.length codes in
   let need = Array.length codes.(0) in
@@ -25,9 +24,7 @@ let gate_entries rows ~unmasked ~masked =
   ; ( "masks"
     , Nx_io.P
         (i32 [| batch; context; mask_words |] (fun i -> packed.(i.(0)).(i.(1)).(i.(2)))) )
-  ; ( "loss_unmasked"
-    , Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> unmasked)) )
-  ; "loss_masked", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> masked))
+  ; "loss", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> loss))
   ]
 ;;
 
@@ -38,16 +35,11 @@ let eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out =
   let params = Transformer.Params.of_ptree config tree in
   let data = Jsb.load ~path:corpus in
   let eval_rows = Evaluation.rows data.valid ~context ~limit:rows in
-  let unmasked = Evaluation.loss config params eval_rows ~batch ~masked:false in
-  let masked = Evaluation.loss config params eval_rows ~batch ~masked:true in
-  printf
-    "%d valid rows  unmasked %.4f  masked %.4f\n%!"
-    (List.length eval_rows)
-    unmasked
-    masked;
+  let loss = Evaluation.loss config params eval_rows ~batch in
+  printf "%d valid rows  loss %.4f\n%!" (List.length eval_rows) loss;
   Option.iter out ~f:(fun path ->
     Core_unix.mkdir_p (Filename.dirname path);
-    Nx_io.save_safetensors ~overwrite:true path (gate_entries eval_rows ~unmasked ~masked);
+    Nx_io.save_safetensors ~overwrite:true path (gate_entries eval_rows ~loss);
     printf "wrote %s\n%!" path)
 ;;
 

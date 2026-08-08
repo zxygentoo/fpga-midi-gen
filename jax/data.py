@@ -99,11 +99,11 @@ def train_row(rng, pool, context):
     return padded_codes, padded_phases.astype(phases.dtype), padded_masks, weights
 
 
-def train_batch(rng, pool, batch, context, with_masks):
+def train_batch(rng, pool, batch, context):
     rows = [train_row(rng, pool, context) for _ in range(batch)]
     codes = np.stack([r[0] for r in rows])
     phases = np.stack([r[1] for r in rows])
-    masks = unpack_masks(np.stack([r[2] for r in rows])) if with_masks else None
+    masks = unpack_masks(np.stack([r[2] for r in rows]))
     weights = np.stack([r[3] for r in rows])
     return codes, phases, masks, weights
 
@@ -132,13 +132,13 @@ def eval_rows(split, context, limit):
     return rows
 
 
-def eval_batches(split, context, limit, batch, with_masks):
+def eval_batches(split, context, limit, batch):
     rows = eval_rows(split, context, limit)
     batches = []
     for at in range(0, len(rows), batch):
         chunk = rows[at : at + batch]
         codes = np.stack([r[0] for r in chunk])
         phases = np.stack([r[1] for r in chunk])
-        masks = unpack_masks(np.stack([r[2] for r in chunk])) if with_masks else None
+        masks = unpack_masks(np.stack([r[2] for r in chunk]))
         batches.append((codes, phases, masks, len(chunk)))
     return batches

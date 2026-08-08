@@ -230,18 +230,6 @@ let command =
             default is 1/256: wider filters eat the melody, per the sweep of 2026-08-05"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
      and stats = flag "-stats" no_arg ~doc:" print the audition metrics of the sample"
-     and guard =
-       flag
-         "-guard"
-         (optional_with_default
-            Transformer.Guard.Grammar
-            (Command.Arg_type.of_alist_exn
-               [ "grammar", Transformer.Guard.Grammar
-               ; "hazards", Transformer.Guard.Hazards
-               ]))
-         ~doc:
-           "GUARD grammar for mask-era weights; hazards is the two-rule floor for the \
-            unmasked era"
      and device =
        flag
          "-device"
@@ -271,7 +259,7 @@ let command =
        let tree = Kaun.Checkpoint.load checkpoint ~like in
        let params = Transformer.Params.of_ptree config tree in
        let music, sampled =
-         Transformer.sample config params ~seed ~steps ~temperature ~min_p ~guard
+         Transformer.sample config params ~seed ~steps ~temperature ~min_p
        in
        if send
        then play music ~device ~step_ms ~channel ~velocity

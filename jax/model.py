@@ -111,16 +111,6 @@ def _cross_entropy(raw, labels, weights):
 
 
 def loss(
-    params, codes, phases, *, heads, dropout=0.0, key=None, weights=None, span=SLOPE_SPAN
-):
-    """Plain cross entropy over the whole vocabulary: codes [batch, length + 1]."""
-    raw = logits(
-        params, codes[:, :-1], phases, heads=heads, dropout=dropout, key=key, span=span
-    )
-    return _cross_entropy(raw, codes[:, 1:], weights)
-
-
-def masked_loss(
     params,
     codes,
     phases,
@@ -132,7 +122,10 @@ def masked_loss(
     weights=None,
     span=SLOPE_SPAN,
 ):
-    """The control loss of the mask era: the grammar inside the softmax.
+    """Cross entropy with the grammar inside the softmax: codes [batch, length + 1].
+
+    The model spends no mass on a code the sampler would refuse, thus its raw mass
+    outside the legal set stays untrained and the same mask must guard every draw.
 
     masks: [batch, length, vocab] bool -- the legal set of each label draw."""
     raw = logits(

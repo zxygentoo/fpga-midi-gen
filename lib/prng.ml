@@ -61,7 +61,7 @@ let%expect_test "the seed folds, and the uniforms fill the range" =
     (fold_seed 0x3FFF_FFFF_FFFF_FFFF);
   let count = 100_000 in
   let (_ : t), draws = uniforms (fold_seed 1) ~count in
-  let outside = Array.count draws ~f:(fun u -> Float.( < ) u 0.0 || Float.( >= ) u 1.0) in
+  let outside = Array.count draws ~f:(fun u -> Float.(u < 0.0 || u >= 1.0)) in
   let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. Float.of_int count in
   Stdio.printf "outside [0, 1): %d   mean %.4f\n" outside mean;
   [%expect

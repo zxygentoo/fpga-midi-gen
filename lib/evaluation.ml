@@ -50,7 +50,7 @@ let rows chorales ~context ~limit =
   List.take rows limit
 ;;
 
-let loss config params rows ~batch ~masked =
+let loss config params rows ~batch =
   let total, count =
     List.fold
       (List.chunks_of rows ~length:batch)
@@ -66,17 +66,7 @@ let loss config params rows ~batch ~masked =
         let value =
           Nx.item
             []
-            (if masked
-             then
-               Transformer.masked_loss
-                 config
-                 params
-                 ~codes
-                 ~phases
-                 ~masks
-                 ~weights
-                 ~dropout
-             else Transformer.loss config params ~codes ~phases ~weights ~dropout)
+            (Transformer.loss config params ~codes ~phases ~masks ~weights ~dropout)
         in
         total +. (value *. Float.of_int (List.length chunk)), count + List.length chunk)
   in

@@ -57,10 +57,10 @@ module Params : sig
   val of_ptree : Config.t -> Kaun.Ptree.t -> t
 end
 
-(** The instrumentation of one sampling run: how often the guards fire. [refused] is the
+(** The instrumentation of one sampling run: how often the mask fires. [refused] is the
     mean legal probability mass that the min-p filter removed each draw. [illegal_mass] is
-    the mean raw mass the model put on masked codes each draw — the rate at which an
-    unmasked sampler would emit an illegal token. [illegal_top] is the share of draws
+    the mean raw mass the model put outside the legal set each draw — the rate at which a
+    sampler with no mask would emit an illegal token. [illegal_top] is the share of draws
     whose raw argmax was itself illegal. *)
 module Sample_stats : sig
   type t =
@@ -86,28 +86,16 @@ module Dropout : sig
   val draw : Config.t -> rate:float -> batch:int -> length:int -> seed:int -> t
 end
 
-(** [loss config params ~codes ~phases ~weights ~dropout] is the cross entropy of the next
-    code, a scalar, over the whole vocabulary. A row of [codes] holds [length + 1] codes:
-    the inputs and the shifted labels. [weights] holds one weight for each label position;
-    zero drops the position from the mean, which is how the padding of a short piece stays
-    out of the loss — a padded label would teach the walk to hold the last chord and emit
-    END for ever. No mask sits in the loss: the model learns the instrument from the data,
-    and the guard of the sampler holds the line at the draw. *)
+(** [loss config params ~codes ~phases ~masks ~weights ~dropout] is the cross entropy of
+    the next code, a scalar. A row of [codes] holds [length + 1] codes: the inputs and the
+    shifted labels. [masks] holds the legal set of each label, from the walk of the whole
+    chorale, and it sits inside the softmax: the model spends no mass on a code that the
+    sampler would refuse. Therefore its raw mass outside the legal set stays untrained,
+    and [sample] must carry the same mask at every draw. [weights] holds one weight for
+    each label position; zero drops the position from the mean, which is how the padding
+    of a short piece stays out of the loss — a padded label would teach the walk to hold
+    the last chord and emit END for ever. *)
 val loss
-  :  Config.t
-  -> Params.t
-  -> codes:int array array
-  -> phases:int array array
-  -> weights:float array array
-  -> dropout:Dropout.t
-  -> tensor
-
-(** [masked_loss config params ~codes ~phases ~masks ~weights ~dropout] is the loss of the
-    mask era, kept for controls: the grammar mask sits inside the softmax, thus the model
-    never learns the instrument. [masks] holds the legal set of each label, from the walk
-    of the whole chorale. Its numbers live on the masked scale, not the raw scale of
-    [loss]. *)
-val masked_loss
   :  Config.t
   -> Params.t
   -> codes:int array array
@@ -116,16 +104,6 @@ val masked_loss
   -> weights:float array array
   -> dropout:Dropout.t
   -> tensor
-
-(** The guard of the sampler. [Grammar] is the full mask of the corpus encoding — a model
-    whose training loss carried the mask needs it, because its raw mass outside is
-    untrained. [Hazards] is the safety floor alone, for a model that learned the grammar
-    from data. *)
-module Guard : sig
-  type t =
-    | Grammar
-    | Hazards
-end
 
 (** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
     boot: an empty context, then [Start] at phase zero — power on, music on. One element
@@ -141,5 +119,4 @@ val sample
   -> steps:int
   -> temperature:float
   -> min_p:float
-  -> guard:Guard.t
   -> Token.t list list * Sample_stats.t

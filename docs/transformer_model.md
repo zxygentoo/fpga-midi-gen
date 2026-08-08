@@ -105,10 +105,10 @@ probability zero.
 
 Therefore every sentence is valid MIDI, at most four voices sound, and
 two seats never hold one pitch. The disjoint-register rule of the S-1
-holds by construction. The loss is plain cross entropy over the whole
-vocabulary: the composer learns the instrument from the data, and the
-guard of the sampler holds the line at the draw. The mask inside the
-softmax of the loss stays in the trainer as the control branch.
+holds by construction. The same mask sits inside the softmax of the
+training loss, thus the composer spends no mass on a code that the
+sampler would refuse. Therefore its raw mass outside the legal set stays
+untrained, and the mask must guard every draw.
 
 ## The network
 

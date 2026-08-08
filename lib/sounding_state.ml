@@ -21,14 +21,6 @@ let is_legal t (token : Token.t) =
   | End -> true
 ;;
 
-let is_safe t (token : Token.t) =
-  match token with
-  | Start -> false
-  | On pitch -> (not (Set.mem t.sounding pitch)) && Set.length t.sounding < Token.seats
-  | Off _ -> true
-  | End -> true
-;;
-
 let step t (token : Token.t) =
   match token with
   | Start -> t
@@ -38,7 +30,6 @@ let step t (token : Token.t) =
 ;;
 
 let legal_mask t = Array.init Token.vocab ~f:(fun code -> is_legal t (Token.of_byte code))
-let safe_mask t = Array.init Token.vocab ~f:(fun code -> is_safe t (Token.of_byte code))
 
 let%expect_test "the legal mask enforces the sentence rules" =
   let walk tokens = List.fold tokens ~init:silence ~f:step in
@@ -80,34 +71,21 @@ let%expect_test "the legal mask enforces the sentence rules" =
     |}]
 ;;
 
-let%expect_test "the safety floor against the grammar" =
+let%expect_test "START never, and an OFF needs a sounding pitch" =
   let state = List.fold [ Token.On 60; On 64 ] ~init:silence ~f:step in
-  let grammar = legal_mask state in
-  let floor = safe_mask state in
+  let mask = legal_mask state in
   let show token =
-    let code = Token.to_byte token in
     printf
-      "%-10s grammar %-6b safe %b\n"
+      "%-10s %b\n"
       (Sexp.to_string (Token.sexp_of_t token))
-      grammar.(code)
-      floor.(code)
+      mask.(Token.to_byte token)
   in
   (* START is input only: the model never draws it *)
   show Start;
-  (* the cross-kill: both refuse *)
-  show (On 60);
-  (* below the last ON: convention, not damage *)
-  show (On 62);
-  (* the order rule is grammar; the synthesizer does not care *)
-  show (Off 60);
-  (* an OFF of a silent pitch is a wire no-op: only the grammar refuses *)
+  (* an OFF of a silent pitch is a wire no-op, and the grammar still refuses it *)
   show (Off 50);
-  [%expect
-    {|
-    Start      grammar false  safe false
-    (On 60)    grammar false  safe false
-    (On 62)    grammar false  safe true
-    (Off 60)   grammar false  safe true
-    (Off 50)   grammar false  safe true
+  [%expect {|
+    Start      false
+    (Off 50)   false
     |}]
 ;;

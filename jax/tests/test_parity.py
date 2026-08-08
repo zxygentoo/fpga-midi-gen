@@ -49,20 +49,14 @@ def gate():
         "codes": jnp.asarray(tensors["codes"]),
         "phases": jnp.asarray(tensors["phases"]),
         "masks": jnp.asarray(unpack_masks(tensors["masks"])),
-        "loss_unmasked": float(tensors["loss_unmasked"][0]),
-        "loss_masked": float(tensors["loss_masked"][0]),
+        "loss": float(tensors["loss"][0]),
     }
 
 
-def test_gate_a_unmasked(gate):
-    ours = float(model.loss(gate["params"], gate["codes"], gate["phases"], heads=HEADS))
-    assert ours == pytest.approx(gate["loss_unmasked"], abs=TOLERANCE)
-
-
-def test_gate_a_masked(gate):
+def test_gate_a_loss(gate):
     ours = float(
-        model.masked_loss(
+        model.loss(
             gate["params"], gate["codes"], gate["phases"], gate["masks"], heads=HEADS
         )
     )
-    assert ours == pytest.approx(gate["loss_masked"], abs=TOLERANCE)
+    assert ours == pytest.approx(gate["loss"], abs=TOLERANCE)

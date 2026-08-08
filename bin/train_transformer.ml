@@ -120,7 +120,6 @@ let train
   ~warmup
   ~weight_decay
   ~clip
-  ~masked
   ~dropout_rate
   ~eval_context
   ~slope_span
@@ -157,10 +156,10 @@ let train
   let tracker = Kaun.Metric.tracker () in
   let best = ref Float.infinity in
   let evaluate step =
-    let train_loss = Evaluation.loss config !params train_eval ~batch ~masked in
-    let valid_loss = Evaluation.loss config !params valid_eval ~batch ~masked in
+    let train_loss = Evaluation.loss config !params train_eval ~batch in
+    let valid_loss = Evaluation.loss config !params valid_eval ~batch in
     let mark =
-      if Float.( < ) valid_loss !best
+      if Float.(valid_loss < !best)
       then (
         best := valid_loss;
         (match train_on with
@@ -188,17 +187,14 @@ let train
       Rune.value_and_grads
         (fun tensors ->
           let params = Transformer.Params.of_list config tensors in
-          if masked
-          then
-            Transformer.masked_loss config params ~codes ~phases ~masks ~weights ~dropout
-          else Transformer.loss config params ~codes ~phases ~weights ~dropout)
+          Transformer.loss config params ~codes ~phases ~masks ~weights ~dropout)
         (Transformer.Params.to_list !params)
     in
     let grads_tree =
       Transformer.Params.to_ptree (Transformer.Params.of_list config grads)
     in
     let grads_tree =
-      if Float.( > ) clip 0.0
+      if Float.(clip > 0.0)
       then Kaun.Optim.clip_by_global_norm clip grads_tree
       else grads_tree
     in
@@ -310,11 +306,6 @@ let command =
          "-eval-context"
          (optional int)
          ~doc:"N evaluate at this context; absent takes the training context"
-     and masked =
-       flag
-         "-masked-loss"
-         no_arg
-         ~doc:" the control loss of the mask era: the grammar inside the softmax"
      and warmup =
        flag
          "-warmup"
@@ -348,7 +339,6 @@ let command =
          ~warmup
          ~weight_decay
          ~clip
-         ~masked
          ~dropout_rate
          ~eval_context
          ~slope_span)

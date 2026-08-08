@@ -26,13 +26,6 @@ val batch_of_rows : row list -> int array array * int array array * bool array a
     chorale below one window is skipped. *)
 val rows : Jsb.chorale list -> context:int -> limit:int -> row list
 
-(** [loss config params rows ~batch ~masked] is the mean loss over the rows, weighted by
-    rows. [masked] selects the control loss of the mask era; its numbers live on the
-    masked scale. No gradient runs here. *)
-val loss
-  :  Transformer.Config.t
-  -> Transformer.Params.t
-  -> row list
-  -> batch:int
-  -> masked:bool
-  -> float
+(** [loss config params rows ~batch] is the mean loss over the rows, weighted by rows. No
+    gradient runs here. *)
+val loss : Transformer.Config.t -> Transformer.Params.t -> row list -> batch:int -> float

@@ -68,22 +68,18 @@ def schedule(step, peak, warmup, total):
     return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
 
 
-def make_step(heads, masked, dropout, clip, weight_decay):
+def make_step(heads, dropout, clip, weight_decay):
     def step_fn(params, m, v, t, codes, phases, masks, weights, lr, key):
         def loss_fn(p):
-            if masked:
-                return model.masked_loss(
-                    p,
-                    codes,
-                    phases,
-                    masks,
-                    heads=heads,
-                    dropout=dropout,
-                    key=key,
-                    weights=weights,
-                )
             return model.loss(
-                p, codes, phases, heads=heads, dropout=dropout, key=key, weights=weights
+                p,
+                codes,
+                phases,
+                masks,
+                heads=heads,
+                dropout=dropout,
+                key=key,
+                weights=weights,
             )
 
         value, grads = jax.value_and_grad(loss_fn)(params)
@@ -107,11 +103,9 @@ def make_step(heads, masked, dropout, clip, weight_decay):
     return jax.jit(step_fn)
 
 
-def make_eval(heads, masked):
+def make_eval(heads):
     def eval_fn(params, codes, phases, masks):
-        if masked:
-            return model.masked_loss(params, codes, phases, masks, heads=heads)
-        return model.loss(params, codes, phases, heads=heads)
+        return model.loss(params, codes, phases, masks, heads=heads)
 
     return jax.jit(eval_fn)
 
@@ -124,7 +118,7 @@ def eval_loss(eval_fn, params, batches):
                 params,
                 jnp.asarray(codes),
                 jnp.asarray(phases),
-                None if masks is None else jnp.asarray(masks),
+                jnp.asarray(masks),
             )
         )
         total += value * rows
@@ -148,7 +142,6 @@ def main():
     add("--wd", type=float, default=0.01)
     add("--clip", type=float, default=1.0)
     add("--dropout", type=float, default=0.0)
-    add("--masked-loss", action="store_true")
     add("--train-on", choices=("train", "train+test", "all"), default="train")
     add("--log-every", type=int, default=10)
     add("--eval-every", type=int, default=100)
@@ -174,21 +167,20 @@ def main():
 
     corpus = data.load_corpus(args.corpus)
     pool = data.train_pool(corpus, args.train_on)
-    masked = args.masked_loss
     eval_context = args.eval_context or args.context
     train_eval = data.eval_batches(
-        corpus["train"], eval_context, args.eval_limit, args.batch, masked
+        corpus["train"], eval_context, args.eval_limit, args.batch
     )
     valid_eval = data.eval_batches(
-        corpus["valid"], eval_context, args.eval_limit, args.batch, masked
+        corpus["valid"], eval_context, args.eval_limit, args.batch
     )
     rng = np.random.default_rng(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, draw_key = jax.random.split(key)
     params = draw_params(draw_key, args.d, args.layers)
     m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(args.heads, masked, args.dropout, args.clip, args.wd)
-    eval_fn = make_eval(args.heads, masked)
+    step_fn = make_step(args.heads, args.dropout, args.clip, args.wd)
+    eval_fn = make_eval(args.heads)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     print(
         f"corpus: {len(pool)} pool pieces; eval rows: "
@@ -223,7 +215,7 @@ def main():
 
     for step in range(1, args.steps + 1):
         codes, phases, masks, weights = data.train_batch(
-            rng, pool, args.batch, args.context, masked
+            rng, pool, args.batch, args.context
         )
         lr = schedule(step, args.lr, args.warmup, args.steps)
         key, step_key = jax.random.split(key)

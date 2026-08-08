@@ -137,18 +137,20 @@ module Params = struct
   ;;
 end
 
-let int32_tensor rows =
+(* [batch; length] rows of codes become the [batch; length; num_classes] one-hot block.
+   Float32, because the block goes into a matmul and carries a gradient. *)
+let one_hot_rows ~num_classes rows =
   let batch = Array.length rows in
   let length = Array.length rows.(0) in
-  Nx.init Nx.int32 [| batch; length |] (fun index ->
-    Int32.of_int_exn rows.(index.(0)).(index.(1)))
+  let codes =
+    Nx.init Nx.int32 [| batch; length |] (fun index ->
+      Int32.of_int_exn rows.(index.(0)).(index.(1)))
+  in
+  Nx.astype Nx.float32 (Nx.one_hot ~num_classes codes)
 ;;
 
 (* the table lookup as one-hot times table: small, and the gradient flows *)
-let embed_rows table ~num_classes rows =
-  let hot = Nx.astype Nx.float32 (Nx.one_hot ~num_classes (int32_tensor rows)) in
-  Nx.matmul hot table
-;;
+let embed_rows table ~num_classes rows = Nx.matmul (one_hot_rows ~num_classes rows) table
 
 (* RMSNorm with no scale: the trainer of the design document folds the scale away *)
 let rms_norm x =
@@ -193,7 +195,7 @@ module Dropout = struct
   let none = []
 
   let draw (config : Config.t) ~rate ~batch ~length ~seed =
-    if Float.( <= ) rate 0.0
+    if Float.(rate <= 0.0)
     then none
     else (
       let keep = 1.0 -. rate in
@@ -202,7 +204,7 @@ module Dropout = struct
       let (_ : Prng.t), draws =
         Prng.uniforms (Prng.fold_seed seed) ~count:(masks * numel)
       in
-      let bernoulli draw = if Float.( < ) draw keep then 1.0 /. keep else 0.0 in
+      let bernoulli draw = if Float.(draw < keep) then 1.0 /. keep else 0.0 in
       List.init masks ~f:(fun mask ->
         Nx.init Nx.float32 [| batch; length; config.d |] (fun index ->
           let flat = (((index.(0) * length) + index.(1)) * config.d) + index.(2) in
@@ -280,9 +282,7 @@ let weighted_cross_entropy raw labels ~weights =
   let shifted = Nx.sub raw peak in
   let total = Nx.log (Nx.sum (Nx.exp shifted) ~axes:[ axis ] ~keepdims:true) in
   let log_probability = Nx.sub shifted total in
-  let hot =
-    Nx.astype Nx.float32 (Nx.one_hot ~num_classes:Token.vocab (int32_tensor labels))
-  in
+  let hot = one_hot_rows ~num_classes:Token.vocab labels in
   let picked = Nx.sum (Nx.mul log_probability hot) ~axes:[ axis ] in
   let weights =
     Nx.init Nx.float32 (Nx.shape picked) (fun index -> weights.(index.(0)).(index.(1)))
@@ -290,18 +290,7 @@ let weighted_cross_entropy raw labels ~weights =
   Nx.neg (Nx.div (Nx.sum (Nx.mul picked weights)) (Nx.sum weights))
 ;;
 
-(* No mask sits in the loss: the model learns the instrument from the data, and the guard
-   of the sampler holds the line at the draw. *)
-let loss (config : Config.t) params ~codes ~phases ~weights ~dropout =
-  let length = Array.length codes.(0) - 1 in
-  let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
-  let labels = Array.map codes ~f:(fun row -> Array.sub row ~pos:1 ~len:length) in
-  let input_phases = Array.map phases ~f:(fun row -> Array.subo row ~len:length) in
-  let raw = logits config params ~codes:inputs ~phases:input_phases ~dropout in
-  weighted_cross_entropy raw labels ~weights
-;;
-
-(* the additive form of the mask, for the control loss: 0 for a legal code, -1e9 else *)
+(* the additive form of the mask: 0 for a legal code, -1e9 else *)
 let mask_bias ~masks =
   let batch = Array.length masks in
   let length = Array.length masks.(0) in
@@ -315,7 +304,10 @@ let mask_bias ~masks =
   Nx.of_bigarray bias
 ;;
 
-let masked_loss (config : Config.t) params ~codes ~phases ~masks ~weights ~dropout =
+(* The grammar sits inside the softmax, thus the model spends no mass on a code that the
+   sampler would refuse. Therefore its raw mass outside the legal set stays untrained, and
+   the same mask must guard every draw. *)
+let loss (config : Config.t) params ~codes ~phases ~masks ~weights ~dropout =
   let length = Array.length codes.(0) - 1 in
   let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
   let labels = Array.map codes ~f:(fun row -> Array.sub row ~pos:1 ~len:length) in
@@ -323,12 +315,6 @@ let masked_loss (config : Config.t) params ~codes ~phases ~masks ~weights ~dropo
   let raw = logits config params ~codes:inputs ~phases:input_phases ~dropout in
   weighted_cross_entropy (Nx.add raw (mask_bias ~masks)) labels ~weights
 ;;
-
-module Guard = struct
-  type t =
-    | Grammar
-    | Hazards
-end
 
 module Sample_stats = struct
   type t =
@@ -342,9 +328,9 @@ end
 (* The sampler is a loop with state at the edge of the module: the histories, the walk of
    the mask, and the PRNG. The forward pass recomputes the whole window for each token;
    the host affords that, per the design document. *)
-let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
-  if Float.( <= ) temperature 0.0 then invalid_arg "the temperature is positive";
-  if Float.( < ) min_p 0.0 || Float.( >= ) min_p 1.0 then invalid_arg "min_p is 0 up to 1";
+let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
+  if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
+  if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
   let stream = ref (Prng.fold_seed seed) in
   (* The boot of the design document: an empty context, then START — power on, music on.
      START takes phase zero; the host takes zero as the boot value of the bar counter, the
@@ -372,16 +358,12 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
         ~dropout:Dropout.none
     in
     let last = Nx.to_array (Nx.get [ 0; Array.length window_codes - 1 ] all) in
-    let mask =
-      match (guard : Guard.t) with
-      | Grammar -> Sounding_state.legal_mask !state
-      | Hazards -> Sounding_state.safe_mask !state
-    in
+    let mask = Sounding_state.legal_mask !state in
     (* the guard-fire instrumentation: the raw distribution against the mask *)
     (let raw_best = ref Float.neg_infinity in
      let raw_top = ref 0 in
      Array.iteri last ~f:(fun code value ->
-       if Float.( > ) value !raw_best
+       if Float.(value > !raw_best)
        then (
          raw_best := value;
          raw_top := code));
@@ -395,7 +377,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
      if not mask.(!raw_top) then incr illegal_top);
     let best = ref Float.neg_infinity in
     Array.iteri last ~f:(fun code value ->
-      if mask.(code) && Float.( > ) value !best then best := value);
+      if mask.(code) && Float.(value > !best) then best := value);
     let weights =
       Array.mapi last ~f:(fun code value ->
         if mask.(code) then Float.exp ((value -. !best) /. temperature) else 0.0)
@@ -405,10 +387,10 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
        refused share is the mass the model wanted and the filter did not give. *)
     let legal_total = Array.fold weights ~init:0.0 ~f:( +. ) in
     let weights =
-      if Float.( > ) min_p 0.0
+      if Float.(min_p > 0.0)
       then
         Array.map weights ~f:(fun weight ->
-          if Float.( >= ) weight min_p then weight else 0.0)
+          if Float.(weight >= min_p) then weight else 0.0)
       else weights
     in
     let total = Array.fold weights ~init:0.0 ~f:( +. ) in
@@ -425,10 +407,10 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
         then code
         else (
           let acc = acc +. weights.(code) in
-          if Float.( > ) acc draw then code else walk (code + 1) acc)
+          if Float.(acc > draw) then code else walk (code + 1) acc)
       in
       let chosen = walk 0 0.0 in
-      if Float.( > ) weights.(chosen) 0.0 then chosen else 0
+      if Float.(weights.(chosen) > 0.0) then chosen else 0
     in
     let token = Token.of_byte code in
     codes := code :: !codes;
@@ -436,7 +418,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~guard =
     state := Sounding_state.step !state token;
     match token with
     | Start ->
-      (* both guards refuse START at every draw *)
+      (* the mask refuses START at every draw *)
       assert false
     | On _ | Off _ -> current := token :: !current
     | End ->
