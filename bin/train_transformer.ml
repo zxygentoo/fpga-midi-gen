@@ -165,8 +165,7 @@ let train
         (match train_on with
          | Pool.All -> ()
          | Train | Train_test ->
-           Option.iter checkpoint ~f:(fun path ->
-             Kaun.Checkpoint.save path (Transformer.Params.to_ptree !params)));
+           Option.iter checkpoint ~f:(fun path -> Transformer.Params.save !params ~path));
         "  *")
       else ""
     in
@@ -225,7 +224,7 @@ let train
     | Pool.All ->
       (* the valid split is inside the pool: the budget ends the run, the last step is the
          model *)
-      Kaun.Checkpoint.save path (Transformer.Params.to_ptree !params);
+      Transformer.Params.save !params ~path;
       printf "checkpoint of the last step: %s\n%!" path
     | Train | Train_test -> printf "checkpoint of the best: %s\n%!" path)
 ;;

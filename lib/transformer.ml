@@ -88,26 +88,28 @@ module Params = struct
     | _ -> invalid_arg "the parameters start with the two tables"
   ;;
 
-  (* The draw is a walk, thus the order of the tensors is part of the result. A record
-     literal and [Array.init] leave that order to the compiler; the fold over the shapes
-     of the flat order states it, and [of_list] reads the same order back. *)
-  let draw (config : Config.t) ~seed =
+  (* the shapes in the flat order of [to_list], which [of_list] reads back *)
+  let shapes (config : Config.t) =
     let d = config.d in
     (* wq, wk, wv and wo, then w1 and w2 of the feed-forward *)
     let layer_shapes =
       [ [| d; d |]; [| d; d |]; [| d; d |]; [| d; d |]; [| d; 4 * d |]; [| 4 * d; d |] ]
     in
-    let shapes =
-      [ [| Token.vocab; d |]; [| phase_buckets; d |] ]
-      @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
-    in
+    [ [| Token.vocab; d |]; [| phase_buckets; d |] ]
+    @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
+  ;;
+
+  (* The draw is a walk, thus the order of the tensors is part of the result. A record
+     literal and [Array.init] leave that order to the compiler; the fold over [shapes]
+     states it. *)
+  let draw config ~seed =
     (* the seam: [Prng] draws the numbers, Nx gives them a shape *)
     let normal stream shape =
       let stream, draws = Prng.normals stream ~count:(numel shape) ~scale:0.02 in
       stream, Nx.create Nx.float32 shape draws
     in
     let (_ : Prng.t), tensors =
-      List.fold_map shapes ~init:(Prng.create_folded ~seed) ~f:normal
+      List.fold_map (shapes config) ~init:(Prng.create_folded ~seed) ~f:normal
     in
     of_list config tensors
   ;;
@@ -122,6 +124,16 @@ module Params = struct
          match Ptree.Tensor.to_typed Nx.float32 leaf with
          | Some tensor -> tensor
          | None -> invalid_arg "a checkpoint tensor is not float32"))
+  ;;
+
+  let save t ~path = Kaun.Checkpoint.save path (to_ptree t)
+
+  (* [Kaun.Checkpoint.load] reads the structure, the shapes and the dtype of the template
+     and never its values, thus zeros serve and the load needs no draw. *)
+  let load config ~path =
+    let zeros shape = Ptree.tensor (Nx.zeros Nx.float32 shape) in
+    let like = Ptree.list (List.map (shapes config) ~f:zeros) in
+    of_ptree config (Kaun.Checkpoint.load path ~like)
   ;;
 end
 
@@ -440,7 +452,7 @@ let%expect_test "the seed names the walk" =
     let square acc draw = acc +. ((draw -. mean) ** 2.0) in
     mean, Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. count)
   in
-  (* 0 is a legal seed here and no state of the walk: the players draw a template with it *)
+  (* 0 is legal here and no state of the walk: [Prng.create_folded] moves it to the top *)
   let zero = embed (Params.draw config ~seed:0) in
   let one = embed (Params.draw config ~seed:1) in
   let mean, deviation = moments one in

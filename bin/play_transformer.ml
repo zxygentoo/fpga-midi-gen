@@ -255,9 +255,7 @@ let command =
        let config =
          Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
        in
-       let like = Transformer.Params.to_ptree (Transformer.Params.draw config ~seed:0) in
-       let tree = Kaun.Checkpoint.load checkpoint ~like in
-       let params = Transformer.Params.of_ptree config tree in
+       let params = Transformer.Params.load config ~path:checkpoint in
        let music, sampled =
          Transformer.sample config params ~seed ~steps ~temperature ~min_p
        in

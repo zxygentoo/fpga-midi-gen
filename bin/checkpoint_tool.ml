@@ -30,9 +30,7 @@ let gate_entries rows ~loss =
 
 let eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out =
   let config = Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span in
-  let like = Transformer.Params.to_ptree (Transformer.Params.draw config ~seed:0) in
-  let tree = Kaun.Checkpoint.load checkpoint ~like in
-  let params = Transformer.Params.of_ptree config tree in
+  let params = Transformer.Params.load config ~path:checkpoint in
   let data = Jsb.load ~path:corpus in
   let eval_rows = Evaluation.rows data.valid ~context ~limit:rows in
   let loss = Evaluation.loss config params eval_rows ~batch in

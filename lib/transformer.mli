@@ -46,12 +46,25 @@ module Params : sig
       start. The tensors come in the order of [to_list]. *)
   val draw : Config.t -> seed:int -> t
 
+  (** [save t ~path] writes the checkpoint: the tensors in the flat order, and nothing
+      else. The width and the layer count come back from the shapes with
+      [Config.of_checkpoint], but the heads, the context and the ALiBi span do not — no
+      tensor shape holds them, thus [load] takes the config of the training run. *)
+  val save : t -> path:string -> unit
+
+  (** [load config ~path] is the parameters of the checkpoint at [path]. [config] states
+      the shapes, and a shape of the file that does not agree with them raises
+      [Invalid_argument]. *)
+  val load : Config.t -> path:string -> t
+
   (** the flat order of the tensors; [of_list] reads the same order *)
   val to_list : t -> tensor list
 
   val of_list : Config.t -> tensor list -> t
 
-  (** the tree for the optimizer and the checkpoint: the flat order as a [Ptree] list *)
+  (** The flat order as a [Ptree] list, for an optimizer that walks a tree. The checkpoint
+      goes through [save] and [load]; take these only to reach a library that wants the
+      tree itself. *)
   val to_ptree : t -> Kaun.Ptree.t
 
   val of_ptree : Config.t -> Kaun.Ptree.t -> t
