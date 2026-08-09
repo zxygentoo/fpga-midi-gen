@@ -5,9 +5,9 @@
    from the committed OCaml, and the JAX side only reads arrays. *)
 
 open Core
-module Evaluation = Mgen.Evaluation
-module Jsb = Mgen.Jsb
-module Token = Mgen.Token
+module Evaluation = Mgen_transformer.Evaluation
+module Jsb = Mgen_corpus.Jsb
+module Token = Mgen_core.Token
 
 (* one encoded (piece, shift) variant of a split *)
 type variant =

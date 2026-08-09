@@ -77,10 +77,10 @@ let create () =
   in
   assign read_data control_regs.read_data;
   let model =
-    Model.create
+    Source.create
       ~clocks_per_ms
       ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
-      { Model.I.clock = clk
+      { Source.I.clock = clk
       ; clear
       ; params = control_regs.params
       ; midi_ready = model_ready

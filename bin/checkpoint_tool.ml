@@ -5,10 +5,10 @@
    training run; the checkpoint holds only tensors. *)
 
 open Core
-module Evaluation = Mgen.Evaluation
-module Jsb = Mgen.Jsb
-module Token = Mgen.Token
-module Transformer = Mgen.Transformer
+module Evaluation = Mgen_transformer.Evaluation
+module Jsb = Mgen_corpus.Jsb
+module Token = Mgen_core.Token
+module Transformer = Mgen_transformer.Transformer
 
 let mask_words = Token.vocab / 32
 

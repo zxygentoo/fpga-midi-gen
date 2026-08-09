@@ -4,11 +4,11 @@
    the flags of the training run; the checkpoint holds only tensors. *)
 
 open Core
-module Control_intf = Mgen.Control_intf
-module Jsb = Mgen.Jsb
-module Midi = Mgen.Midi
-module Token = Mgen.Token
-module Transformer = Mgen.Transformer
+module Control_intf = Mgen_core.Control_intf
+module Jsb = Mgen_corpus.Jsb
+module Midi = Mgen_core.Midi
+module Token = Mgen_core.Token
+module Transformer = Mgen_transformer.Transformer
 
 (* the argument check of play_pink: the range of a register is the range of the flag *)
 let ranged name address =

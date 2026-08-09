@@ -5,9 +5,9 @@
    the valid split. The checkpoint keeps the parameters of the best valid loss. *)
 
 open Core
-module Evaluation = Mgen.Evaluation
-module Jsb = Mgen.Jsb
-module Transformer = Mgen.Transformer
+module Evaluation = Mgen_transformer.Evaluation
+module Jsb = Mgen_corpus.Jsb
+module Transformer = Mgen_transformer.Transformer
 
 (* The training pool. The test split has no job in this project — the valid split picks
    the checkpoints and the sweep winners, and the audition judges the music — thus

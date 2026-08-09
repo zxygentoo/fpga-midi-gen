@@ -1,46 +1,77 @@
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries core core_unix mgen hardcaml jane_rope))
+ (libraries core core_unix hardcaml jane_rope mgen_board))
 
 (executable
- (name mgt)
- (modules mgt)
+ (name board_tool)
+ (modules board_tool)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen))
+ (libraries core core_unix core_unix.command_unix mgen_core mgen_board))
 
 (executable
  (name play_pink)
  (modules play_pink)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen))
+ (libraries core core_unix core_unix.command_unix mgen_core mgen_pink))
 
 (executable
  (name train_transformer)
  (modules train_transformer)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen nx rune kaun))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  nx
+  rune
+  kaun
+  mgen_corpus
+  mgen_transformer))
 
 (executable
  (name play_transformer)
  (modules play_transformer)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen nx kaun))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  nx
+  kaun
+  mgen_core
+  mgen_corpus
+  mgen_transformer))
 
 (executable
  (name corpus_tool)
  (modules corpus_tool)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen nx nx.io))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  nx
+  nx.io
+  mgen_corpus
+  mgen_transformer))
 
 (executable
  (name checkpoint_tool)
  (modules checkpoint_tool)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen nx nx.io kaun))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  nx
+  nx.io
+  kaun
+  mgen_corpus
+  mgen_transformer))
