@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from safetensors.numpy import load_file
 
-import model
+from transformer import model
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINT = JAX_ROOT.parent / "_train" / "ref-d64.ckpt"

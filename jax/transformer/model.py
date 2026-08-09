@@ -1,8 +1,8 @@
-"""The JAX port of the forward pass of lib/transformer.ml.
+"""The JAX port of the forward pass of lib/transformer/transformer.ml.
 
 The OCaml network is the spec -- decoder-only, ALiBi, a bar-phase table, scale-free
 RMSNorm (eps 1e-6 on the mean square), no biases, tied embedding -- and this file must
-compute the same function: gate_a.py proves it against the OCaml referee's numbers.
+compute the same function: tests/test_parity.py proves it against the OCaml referee's numbers.
 Matmul precision is pinned to true float32, no TF32, so the two sides agree tightly.
 
 Checkpoints are Kaun safetensors: tensors named "0".."N" in construction order --

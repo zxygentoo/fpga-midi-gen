@@ -1,4 +1,8 @@
-"""train.py: the JAX twin of bin/train_transformer.ml -- the sweep vehicle.
+"""The JAX twin of bin/train_transformer.ml -- the sweep vehicle.
+
+Run it from the jax directory as a module, so that data.py stays on the path:
+
+    uv run python -m transformer.train --steps 200
 
 Same walk, same referee rows, same schedule shape; the recipe knobs -- dropout, weight
 decay -- are the reason this trainer exists. Checkpoints are Kaun safetensors, tensors
@@ -21,9 +25,9 @@ import numpy as np
 from safetensors.numpy import save_file
 
 import data
-import model
+from transformer import model
 
-JAX_ROOT = Path(__file__).resolve().parent
+JAX_ROOT = Path(__file__).resolve().parent.parent
 
 
 def draw_params(key, d, layers):
