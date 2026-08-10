@@ -515,3 +515,54 @@ let%expect_test "the shapes of the forward pass" =
   print_s ([%sexp_of: int array] (Nx.shape out));
   [%expect {| (1 4 256) |}]
 ;;
+
+(* The mask is the model now, not a filter over it: the loss trained inside it, thus the
+   raw mass outside the legal set is untrained and the draw must carry the same mask. This
+   walks the drawn music back through that mask. The weights are a draw of their own, so
+   the test says nothing of the music itself — only that the grammar held at every token,
+   which is the property the sampler owes whatever the weights say. *)
+let%expect_test "the sampler draws only what the mask allows" =
+  let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
+  let params = Params.draw config ~seed:5 in
+  let ~music, ~stats =
+    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+  in
+  (* [sample] drops the [End] that closed each sentence; the walk needs it back *)
+  let sentence step = step @ [ Token.End ] in
+  let walk (state, illegal) token =
+    let mask = Sounding_state.legal_mask state in
+    let illegal = if mask.(Token.to_code token) then illegal else illegal + 1 in
+    Sounding_state.step state token, illegal
+  in
+  let tokens = List.concat_map music ~f:sentence in
+  let (_ : Sounding_state.t), illegal =
+    List.fold tokens ~init:(Sounding_state.silence, 0) ~f:walk
+  in
+  printf
+    "%d steps  %d tokens  %d illegal   the mask held %.4f of the raw mass over %d draws\n"
+    (List.length music)
+    (List.length tokens)
+    illegal
+    stats.illegal_mass
+    stats.draws;
+  (* the first steps that carry an event, so the record shows what a sentence looks like *)
+  List.filter music ~f:(fun step -> not (List.is_empty step))
+  |> (fun steps -> List.take steps 3)
+  |> List.iter ~f:(fun step -> print_s ([%sexp_of: Token.t list] step));
+  (* the same seed draws the same music; Token.t carries no compare, thus the codes do *)
+  let ~music:again, ~stats:_ =
+    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+  in
+  let codes steps = List.map steps ~f:(List.map ~f:Token.to_code) in
+  printf
+    "the seed repeats: %b\n"
+    (List.equal (List.equal Int.equal) (codes music) (codes again));
+  [%expect
+    {|
+    24 steps  58 tokens  0 illegal   the mask held 0.8429 of the raw mass over 58 draws
+    ((On 114) (On 117) (On 124))
+    ((On 80))
+    ((Off 80) (On 73))
+    the seed repeats: true
+    |}]
+;;
