@@ -559,10 +559,10 @@ let%expect_test "the sampler draws only what the mask allows" =
     (List.equal (List.equal Int.equal) (codes music) (codes again));
   [%expect
     {|
-    24 steps  58 tokens  0 illegal   the mask held 0.8429 of the raw mass over 58 draws
-    ((On 114) (On 117) (On 124))
-    ((On 80))
-    ((Off 80) (On 73))
+    24 steps  58 tokens  0 illegal   the mask held 0.8445 of the raw mass over 58 draws
+    ((On 114) (On 30) (On 21) (On 0))
+    ((Off 21) (On 75))
+    ((Off 30) (On 99))
     the seed repeats: true
     |}]
 ;;

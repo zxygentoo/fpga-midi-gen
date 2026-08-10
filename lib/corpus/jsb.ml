@@ -108,18 +108,21 @@ let transpose ~by { steps; legal_shifts } =
 
 (* One step, one sentence: the OFFs of the pitches that stop, the ONs of the pitches that
    start, then [End]. A pitch in both neighbour steps is a held note and takes no token.
-   [Set.to_list] gives the ascending order of the canonical sentence, thus one chord has
-   one sentence and not a permutation family. *)
+
+   The OFFs climb and the ONs fall, thus one chord has one sentence and not a permutation
+   family. [Sounding_state] holds both directions, thus they are rules of the instrument
+   and this tokenizer only obeys them. The fall is the melody leading: the top voice is
+   chosen first and conditions on no voice below it. The climb then makes the two runs
+   meet in the middle, so the release of the top moving voice sits beside its attack. *)
 let tokenize steps =
   let sentence ~previous ~current =
     let on pitch = Token.On pitch in
     let off pitch = Token.Off pitch in
     let to_set data = Set.of_list (module Int) data in
-    let to_tokens ~from ~minus type_ =
-      Set.diff (to_set from) (to_set minus) |> Set.to_list |> List.map ~f:type_
-    in
-    to_tokens ~from:previous ~minus:current off
-    @ to_tokens ~from:current ~minus:previous on
+    let ascending from ~minus = Set.diff (to_set from) (to_set minus) |> Set.to_list in
+    let descending from ~minus = List.rev (ascending from ~minus) in
+    List.map (ascending previous ~minus:current) ~f:off
+    @ List.map (descending current ~minus:previous) ~f:on
     @ [ Token.End ]
   in
   let aux previous current = current, sentence ~previous ~current in
@@ -261,7 +264,7 @@ let%expect_test "the walk of a small chorale" =
   print_s ([%sexp_of: Token.t list] (tokenize steps));
   [%expect
     {|
-    ((On 60) (On 64) (On 67) End End (Off 60) (Off 64) (On 62) (On 65) End
+    ((On 67) (On 64) (On 60) End End (Off 60) (Off 64) (On 65) (On 62) End
      (Off 62) (Off 65) (Off 67) End (On 60) End)
     |}];
   let ~codes, ~phases = encode { steps; legal_shifts = [ 0 ] } in
@@ -269,7 +272,7 @@ let%expect_test "the walk of a small chorale" =
   print_s ([%sexp_of: int array] phases);
   [%expect
     {|
-    (255 188 192 195 0 0 60 64 190 193 0 62 65 67 0 188 0)
+    (255 195 192 188 0 0 60 64 193 190 0 62 65 67 0 188 0)
     (0 0 0 0 0 1 2 2 2 2 2 3 3 3 3 4 4)
     |}]
 ;;

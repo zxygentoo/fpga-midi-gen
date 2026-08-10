@@ -57,12 +57,22 @@ one sentence: zero or more event tokens, then END.
 - A repeated note is the OFF and then the ON of one pitch, in one
   sentence.
 
-The sentence has one canonical order. The OFF events come first. The ON
-events follow, and each ON pitch is greater than the ON pitch before it.
-Therefore one chord has exactly one sentence and not a permutation
+The sentence has one canonical order. The OFF events come first and
+climb: each OFF pitch is greater than the OFF pitch before it. The ON
+events follow and fall: each ON pitch is less than the ON pitch before
+it. Therefore one chord has exactly one sentence and not a permutation
 family, and the position of an ON in the sentence acts as a voice rank.
-The tokenizer writes this order, and the mask enforces it in the
-sampler.
+
+Each direction earns its place. The fall is the melody leading: the top
+voice is chosen before the voices under it, and conditions on none of
+them, as the music is written. The climb then makes the two runs meet in
+the middle, so the release of the top moving voice sits beside its
+attack and one melodic step is two adjacent tokens.
+
+The mask holds both directions, so they are rules of the instrument and
+not conventions of the tokenizer. A convention would leave the
+permutations of a chord inside the softmax, where the model must spend
+mass to learn an order that the mask can refuse for nothing.
 
 Tempo is not in the sentence. The host changes `step_ms` and the music
 changes speed, with no new training. A groove is a clock-side pattern:
@@ -98,8 +108,8 @@ probability zero.
 
 | Token | Legal when |
 |---|---|
-| OFF(p) | pitch p sounds now |
-| ON(p) | p does not sound, open seats < 4, p above the last ON of the sentence |
+| OFF(p) | p sounds now, the sentence holds no ON yet, p above the last OFF |
+| ON(p) | p does not sound, open seats < 4, p below the last ON of the sentence |
 | END | always |
 | START | never |
 
