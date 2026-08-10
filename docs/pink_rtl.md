@@ -37,8 +37,8 @@ and not a silent break of the harmony.
 | voices | 4 | `Pink.default` |
 | rows | 8 | the sum of the groups |
 | stretch | 2 | each voice |
-| clocks_per_ms | 100 000 | `lib/top.ml` |
-| button debounce | 10 ms | `lib/top.ml` |
+| clocks_per_ms | 100 000 | `lib/board/top.ml` |
+| button debounce | 10 ms | `lib/board/top.ml` |
 
 The RTL elaboration reads the constants from `Pink.default`, as it
 reads the control constants from `Control_intf`, and `Pink.degree_offsets` gives
@@ -87,7 +87,7 @@ The four constant multipliers are shifts and adds: `x * 4` is one shift,
 | `Prng.Rtl` | the xorshift32 state |
 | `Voss` | the rows, the step count, the walk, the note of each voice, and which voices speak |
 | `Sequencer` | the millisecond tick, the step and gate times, the open note of each voice, and the message construction |
-| `Model` | nothing: it connects a note source to the sequencer, and the top level names the source, thus the top level keeps the same shape for every model |
+| `Source` | nothing: it connects a note source to the sequencer, and the top level names the source, thus the top level keeps the same shape for every model |
 | `Button` | the synchronizer, the debounce, and the toggle strobe |
 
 `Source_intf` holds the socket between a model core and the sequencer. It
@@ -429,14 +429,14 @@ val create
   -> Signal.t O.t
 ```
 
-`Model` connects a note source to the sequencer. It holds no logic — it
+`Source` connects a note source to the sequencer. It holds no logic — it
 crosses the three commands of the sequencer to the source and the answer
 back — and it does not name a model: the top level seats a model core with the `source`
 argument, and the closure carries the configuration of the core. The block
 does not change with the four voices.
 
 ```ocaml
-Model.create
+Source.create
   ~clocks_per_ms
   ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
 ```
@@ -540,7 +540,7 @@ with no function. The model era adds no warning.
   gate closes the highest voice only, a Note Off keeps the stored channel of
   its voice while the next Note On takes a new one, the stop sends a Note
   Off for each open voice, and a STEP_MS write lands at the next boundary.
-- `Model`, four voices: the integration. Drive the parameter views, take
+- `Source`, four voices: the integration. Drive the parameter views, take
   every message, and compare the stream against the messages that `Player`
   composes, byte for byte, with the gate and without it. A second run
   repeats the sequence from the seed.

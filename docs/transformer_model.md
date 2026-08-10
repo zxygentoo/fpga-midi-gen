@@ -191,6 +191,30 @@ unisons, sort ascending.
 The gate restores a part of the articulation that the grid removes, so
 the round-up of short notes is safe.
 
+## The draw
+
+One generator makes every random number of the model: `Prng`, the
+xorshift32 of the circuit. The initial parameters, the dropout masks and
+the sampler all draw from it. Therefore one seed names one sequence in
+the software, in the simulation and on the board, and that seed is the
+value of the SEED cell of the host control.
+
+One step of the walk gives eight bits, and one uniform takes three
+steps. The grid of `2 ** -24` holds the tail of the Box-Muller draw,
+which one byte would cut at 3.3 sigma. A seed from a flag or from a
+stream folds into the 32 bits of the state; a seed already inside the
+range names itself, so seed 7 is the walk of the board's seed 7.
+
+A part of the model that must draw on its own takes an independent walk.
+Each dropout block takes one. Therefore the block holds no place in the
+order of the parent, and the parent can gain or lose draws while the
+masks stay.
+
+The initial parameters moved when the draw came to this generator. A
+checkpoint of an earlier sweep still loads, because the file holds only
+tensors, but a run from a given seed does not repeat the numbers of that
+sweep.
+
 ## The plan and the tests
 
 1. Tokenizer and trainer on the host, in OCaml. Raven carries the
