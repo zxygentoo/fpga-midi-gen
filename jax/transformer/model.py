@@ -2,8 +2,9 @@
 
 The OCaml network is the spec -- decoder-only, ALiBi, a bar-phase table, scale-free
 RMSNorm (eps 1e-6 on the mean square), no biases, tied embedding -- and this file must
-compute the same function: tests/test_parity.py proves it against the OCaml referee's numbers.
-Matmul precision is pinned to true float32, no TF32, so the two sides agree tightly.
+compute the same function: tests/test_parity.py proves it against the OCaml referee's
+numbers. Matmul precision is pinned to true float32, no TF32, so the two sides agree
+tightly.
 
 Checkpoints are Kaun safetensors: tensors named "0".."N" in construction order --
 embed [vocab, d], phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d],
@@ -22,8 +23,16 @@ PHASE_BUCKETS = 16
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
 
 
-def load_params(path, layers):
+def load_params(path):
+    """The layer count comes from the tensor count, as Config.of_checkpoint reads it: two
+    tables and six tensors for each layer. No caller then states a number the file
+    already answers."""
     tensors = load_file(path)
+    if len(tensors) < 8 or (len(tensors) - 2) % 6:
+        raise ValueError(
+            f"{path} holds {len(tensors)} tensors: not two tables and six for each layer"
+        )
+    layers = (len(tensors) - 2) // 6
     return {
         "embed": jnp.asarray(tensors["0"]),
         "phase": jnp.asarray(tensors["1"]),
