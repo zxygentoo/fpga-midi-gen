@@ -41,8 +41,6 @@
   core
   core_unix
   core_unix.command_unix
-  nx
-  kaun
   mgen_core
   mgen_corpus
   mgen_transformer))
@@ -72,6 +70,5 @@
   core_unix.command_unix
   nx
   nx.io
-  kaun
   mgen_corpus
   mgen_transformer))

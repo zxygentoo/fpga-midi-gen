@@ -1,6 +1,6 @@
 (library
  (name mgen_core)
- (libraries base core core_unix stdio hardcaml hardcaml_waveterm qcheck-core)
+ (libraries base core core_unix stdio hardcaml hardcaml_waveterm)
  (inline_tests
   (flags
    (:standard -source-tree-root .)))

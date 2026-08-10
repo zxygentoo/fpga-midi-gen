@@ -38,9 +38,11 @@ let uniform state =
   state, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
 ;;
 
-(* a walk, not an [init]: the order of the elements of [init] is free, thus it cannot
-   carry a state *)
+(* A walk, not an [init]: the order of the elements of [init] is free, thus it cannot
+   carry a state. The guard is the choke point of [normals] and [bernoullis]: a negative
+   count would walk past 0 and never stop. *)
 let uniforms ~count state =
+  if count < 0 then invalid_arg "Prng: the count of draws is 0 or more";
   let rec walk state n draws =
     if n = 0
     then state, draws
@@ -111,10 +113,15 @@ let%expect_test "the seed folds, and the uniforms fill the range" =
   let outside = Array.count draws ~f:(fun u -> Float.(u < 0.0 || u >= 1.0)) in
   let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. Float.of_int count in
   Stdio.printf "outside [0, 1): %d   mean %.4f\n" outside mean;
+  (* through [normals], because the guard sits below it and [uniforms] is not exported *)
+  (match normals ~count:(-1) ~scale:1.0 (create_folded ~seed:1) with
+   | (_ : state * float array) -> ()
+   | exception Invalid_argument message -> Stdio.print_endline message);
   [%expect
     {|
     7 -> 7   0 -> ffffffff   wide -> c0000000
     outside [0, 1): 0   mean 0.4997
+    Prng: the count of draws is 0 or more
     |}]
 ;;
 

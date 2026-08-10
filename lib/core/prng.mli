@@ -57,18 +57,16 @@ val next : int t
     case. *)
 val uniform : float t
 
-(** [uniforms ~count] is [count] draws of [uniform], in the order of the walk. A count of
-    0 draws nothing and gives an empty array. *)
-val uniforms : count:int -> float array t
-
 (** [normals ~count ~scale] is [count] draws of the normal distribution whose mean is 0
     and whose standard deviation is [scale]. Box-Muller makes them, thus one draw takes
-    two uniforms and six steps of the walk. *)
+    two uniforms and six steps of the walk. A count of 0 draws nothing and gives an empty
+    array; a count below 0 raises [Invalid_argument]. *)
 val normals : count:int -> scale:float -> float array t
 
 (** [bernoullis ~count ~probability] is [count] draws of the Bernoulli distribution: 1.0
     at [probability], and 0.0 else. One draw takes one uniform. The hit weighs 1.0; a
-    caller that wants another weight multiplies the array. *)
+    caller that wants another weight multiplies the array. The rule of [count] is the rule
+    of [normals]. *)
 val bernoullis : count:int -> probability:float -> float array t
 
 (** An independent walk, drawn from this one — four steps make its 32 bits. Give one to a

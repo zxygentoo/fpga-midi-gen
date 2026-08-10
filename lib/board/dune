@@ -7,6 +7,7 @@
   stdio
   hardcaml
   hardcaml_waveterm
+  qcheck-core
   mgen_core
   mgen_pink)
  (flags
