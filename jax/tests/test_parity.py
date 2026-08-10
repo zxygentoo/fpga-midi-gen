@@ -1,9 +1,9 @@
 """The parity gates of the JAX seam.
 
 Gate A: the JAX forward must reproduce the OCaml referee. checkpoint_tool eval writes
-gate.safetensors -- a fixed valid batch and the two losses the OCaml Evaluation protocol
+gate.safetensors -- a fixed valid batch and the loss the OCaml Evaluation protocol
 computed on it. The gate loads the same checkpoint and batch in JAX and demands the same
-numbers. A pass proves the two forward functions agree everywhere the loss can see; only
+number. A pass proves the two forward functions agree everywhere the loss can see; only
 then do GPU training runs mean anything.
 
 The gate artifacts are generated, never committed. From the repository root:

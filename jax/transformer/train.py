@@ -72,7 +72,7 @@ def schedule(step, peak, warmup, total):
     return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
 
 
-def make_step(heads, dropout, clip, weight_decay):
+def make_step(heads, dropout, clip, weight_decay, span):
     def step_fn(params, m, v, t, codes, phases, masks, weights, lr, key):
         def loss_fn(p):
             return model.loss(
@@ -84,6 +84,7 @@ def make_step(heads, dropout, clip, weight_decay):
                 dropout=dropout,
                 key=key,
                 weights=weights,
+                span=span,
             )
 
         value, grads = jax.value_and_grad(loss_fn)(params)
@@ -107,9 +108,9 @@ def make_step(heads, dropout, clip, weight_decay):
     return jax.jit(step_fn)
 
 
-def make_eval(heads):
+def make_eval(heads, span):
     def eval_fn(params, codes, phases, masks):
-        return model.loss(params, codes, phases, masks, heads=heads)
+        return model.loss(params, codes, phases, masks, heads=heads, span=span)
 
     return jax.jit(eval_fn)
 
@@ -146,6 +147,14 @@ def main():
     add("--wd", type=float, default=0.01)
     add("--clip", type=float, default=1.0)
     add("--dropout", type=float, default=0.0)
+    add(
+        "--alibi-span",
+        type=int,
+        default=model.SLOPE_SPAN,
+        help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). "
+        "The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider "
+        "span sees further and stays a power of two. The draw must state the same span.",
+    )
     add("--train-on", choices=("train", "train+test", "all"), default="train")
     add("--log-every", type=int, default=10)
     add("--eval-every", type=int, default=100)
@@ -183,8 +192,8 @@ def main():
     key, draw_key = jax.random.split(key)
     params = draw_params(draw_key, args.d, args.layers)
     m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(args.heads, args.dropout, args.clip, args.wd)
-    eval_fn = make_eval(args.heads)
+    step_fn = make_step(args.heads, args.dropout, args.clip, args.wd, args.alibi_span)
+    eval_fn = make_eval(args.heads, args.alibi_span)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     print(
         f"corpus: {len(pool)} pool pieces; eval rows: "
@@ -230,7 +239,7 @@ def main():
             jnp.float32(step),
             jnp.asarray(codes),
             jnp.asarray(phases),
-            None if masks is None else jnp.asarray(masks),
+            jnp.asarray(masks),
             jnp.asarray(weights),
             jnp.float32(lr),
             step_key,
