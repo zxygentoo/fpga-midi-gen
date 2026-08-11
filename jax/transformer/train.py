@@ -152,7 +152,9 @@ def eval_loss(eval_fn, params, batches):
 
 
 @click.command(help=__doc__)
-@click.option("--corpus", default=str(JAX_ROOT / "_data" / "corpus.safetensors"))
+@click.option(
+    "--corpus", "corpus_path", default=str(JAX_ROOT / "_data" / "corpus.safetensors")
+)
 @click.option("--d", default=64)
 @click.option("--layers", default=2)
 @click.option("--heads", default=4)
@@ -194,7 +196,7 @@ def eval_loss(eval_fn, params, batches):
     help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
 )
 def main(
-    corpus,
+    corpus_path,
     d,
     layers,
     heads,
@@ -218,7 +220,7 @@ def main(
     average_top,
 ):
 
-    corpus = data.load_corpus(corpus)
+    corpus = data.load_corpus(corpus_path)
     pool = data.train_pool(corpus, train_on)
     eval_context = eval_context_flag or context
     train_eval = data.eval_batches(corpus["train"], eval_context, eval_limit, batch)
@@ -266,7 +268,9 @@ def main(
         codes, phases, buckets, masks, weights = data.train_batch(
             rng, pool, batch, context
         )
-        lr = schedule(step, lr, warmup, steps)
+        # a name of its own: [lr] is the peak the schedule reads, and a loop that writes
+        # its own peak decays the rate geometrically to zero and trains nothing
+        rate = schedule(step, lr, warmup, steps)
         key, step_key = jax.random.split(key)
         value, params, m, v = step_fn(
             params,
@@ -278,7 +282,7 @@ def main(
             jnp.asarray(buckets),
             jnp.asarray(masks),
             jnp.asarray(weights),
-            jnp.float32(lr),
+            jnp.float32(rate),
             step_key,
         )
         losses.append(float(value))
