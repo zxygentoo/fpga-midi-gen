@@ -120,17 +120,14 @@ end
 (** [loss config params ~codes ~phases ~progress ~masks ~weights ~dropout] is the cross
     entropy of the next code, a scalar. [progress] holds the piece-position bucket of each
     input position, and it must be [Some] exactly when the model holds the table;
-    otherwise the call raises. The OCaml corpus does not carry the buckets yet, thus
-    [Evaluation] and the OCaml trainer pass [None] and cannot referee a model that reads
-    the piece position. Train that model with the JAX trainer and audition it with
-    [sample]. A row of [codes] holds [length + 1] codes: the inputs and the shifted
-    labels. [masks] holds the legal set of each label, from the walk of the whole chorale,
-    and it sits inside the softmax: the model spends no mass on a code that the sampler
-    would refuse. Therefore its raw mass outside the legal set stays untrained, and
-    [sample] must carry the same mask at every draw. [weights] holds one weight for each
-    label position; zero drops the position from the mean, which is how the padding of a
-    short piece stays out of the loss — a padded label would teach the walk to hold the
-    last chord and emit END for ever. *)
+    otherwise the call raises. A row of [codes] holds [length + 1] codes: the inputs and
+    the shifted labels. [masks] holds the legal set of each label, from the walk of the
+    whole chorale, and it sits inside the softmax: the model spends no mass on a code that
+    the sampler would refuse. Therefore its raw mass outside the legal set stays
+    untrained, and [sample] must carry the same mask at every draw. [weights] holds one
+    weight for each label position; zero drops the position from the mean, which is how
+    the padding of a short piece stays out of the loss — a padded label would teach the
+    walk to hold the last chord and emit END for ever. *)
 val loss
   :  Config.t
   -> Params.t

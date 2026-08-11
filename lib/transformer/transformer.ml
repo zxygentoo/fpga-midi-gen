@@ -456,11 +456,10 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   let progress = ref [ 0 ] in
   let state = ref Sounding_state.silence in
   let step_index = ref 0 in
-  let drawn = ref 0 in
   let current = ref [] in
   let out = ref [] in
   let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
-  while !drawn < steps do
+  while !step_index < steps do
     let raw =
       next_code_logits
         ~codes:(window !codes)
@@ -496,8 +495,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     | End ->
       out := List.rev !current :: !out;
       current := [];
-      incr step_index;
-      incr drawn
+      incr step_index
   done;
   let count = Float.of_int (max 1 tally.draws) in
   (* the annotation picks the means, not the sums of [tally] beside them *)

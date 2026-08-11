@@ -7,7 +7,6 @@
 open Core
 module Evaluation = Mgen_transformer.Evaluation
 module Jsb = Mgen_corpus.Jsb
-module Token = Mgen_core.Token
 
 (* one encoded (piece, shift) variant of a split *)
 type variant =
@@ -25,8 +24,6 @@ let variants_of_split chorales =
       { piece; shift; codes; phases; masks = Evaluation.masks_after codes }))
 ;;
 
-let mask_words = Token.vocab / 32
-
 let tensors_of_split variants =
   let total =
     List.sum (module Int) variants ~f:(fun { codes; _ } -> Array.length codes)
@@ -34,7 +31,7 @@ let tensors_of_split variants =
   let all = Array.of_list variants in
   let codes = Array.create ~len:total 0 in
   let phases = Array.create ~len:total 0 in
-  let packed = Array.create ~len:(total * mask_words) 0 in
+  let packed = Array.create ~len:(total * Evaluation.words_per_mask) 0 in
   let index = Array.create ~len:(Array.length all * 4) 0 in
   let offset = ref 0 in
   Array.iteri all ~f:(fun row { piece; shift; codes = c; phases = p; masks } ->
@@ -47,8 +44,8 @@ let tensors_of_split variants =
         ~src:words
         ~src_pos:0
         ~dst:packed
-        ~dst_pos:((!offset + i) * mask_words)
-        ~len:mask_words);
+        ~dst_pos:((!offset + i) * Evaluation.words_per_mask)
+        ~len:Evaluation.words_per_mask);
     index.(4 * row) <- piece;
     index.((4 * row) + 1) <- shift;
     index.((4 * row) + 2) <- !offset;
@@ -65,7 +62,7 @@ let tensors_of_split variants =
   in
   [ "codes", Nx_io.P (i32_vector codes)
   ; "phases", Nx_io.P (i32_vector phases)
-  ; "masks", Nx_io.P (i32_matrix ~cols:mask_words packed)
+  ; "masks", Nx_io.P (i32_matrix ~cols:Evaluation.words_per_mask packed)
   ; "index", Nx_io.P (i32_matrix ~cols:4 index)
   ]
 ;;

@@ -8,10 +8,7 @@
 open Core
 module Evaluation = Mgen_transformer.Evaluation
 module Jsb = Mgen_corpus.Jsb
-module Token = Mgen_core.Token
 module Transformer = Mgen_transformer.Transformer
-
-let mask_words = Token.vocab / 32
 
 (* The gate carries the heads and the ALiBi span, because no other file holds them: a
    tensor shape gives the width and the layer count, and the two tables give the rest, but
@@ -34,7 +31,8 @@ let gate_entries rows ~(config : Transformer.Config.t) ~loss =
     , Nx_io.P (i32 [| batch; context |] (fun i -> rows.progress.(i.(0)).(i.(1)))) )
   ; ( "masks"
     , Nx_io.P
-        (i32 [| batch; context; mask_words |] (fun i -> packed.(i.(0)).(i.(1)).(i.(2)))) )
+        (i32 [| batch; context; Evaluation.words_per_mask |] (fun i ->
+           packed.(i.(0)).(i.(1)).(i.(2)))) )
   ; "loss", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> loss))
   ; "heads", scalar config.heads
   ; "span", scalar config.slope_span

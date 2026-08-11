@@ -23,8 +23,10 @@ let masks_after codes =
   masks
 ;;
 
+let words_per_mask = Token.vocab / 32
+
 let mask_words mask =
-  Array.init (Token.vocab / 32) ~f:(fun word ->
+  Array.init words_per_mask ~f:(fun word ->
     let value =
       List.range 0 32
       |> List.fold ~init:0 ~f:(fun acc bit ->

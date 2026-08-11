@@ -17,15 +17,6 @@ open Hardcaml
     real-time message is 1 byte. A System Exclusive message does not fit. *)
 val max_message_bytes : int
 
-(** The Note On status. The high nibble is the status, and the low nibble carries the
-    channel. *)
-val note_on : int
-
-val note_off : int
-
-(** The velocity byte of each Note Off that this design sends. *)
-val release_velocity : int
-
 (** The bytes of one channel voice message, the first byte first. The reference model and
     the senders both compose a note with these, thus the byte layout has one definition. *)
 val note_on_bytes : channel:int -> note:int -> velocity:int -> int list

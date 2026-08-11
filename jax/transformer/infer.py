@@ -33,8 +33,6 @@ import data
 import prng
 from transformer import model
 
-PHASE_BUCKETS = 16
-PROGRESS_BUCKETS = 16
 NOTE_ON, NOTE_OFF = 0x90, 0x80
 RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
 DEVICE = "/dev/snd/midiC2D0"
@@ -125,20 +123,23 @@ def sample(params, *, seeds, steps, context, heads, span, temperature, min_p, pr
         # step takes that step's phase and the count rises after it
         codes = np.concatenate([codes, code[:, None].astype(np.int32)], axis=1)
         phases = np.concatenate(
-            [phases, (step_index % PHASE_BUCKETS)[:, None].astype(np.int32)], axis=1
+            [phases, (step_index % model.PHASE_BUCKETS)[:, None].astype(np.int32)], axis=1
         )
-        bucket = np.minimum(step_index * PROGRESS_BUCKETS // steps, PROGRESS_BUCKETS - 1)
+        bucket = np.minimum(
+            step_index * model.PROGRESS_BUCKETS // steps, model.PROGRESS_BUCKETS - 1
+        )
         buckets = np.concatenate([buckets, bucket[:, None].astype(np.int32)], axis=1)
         step_index = np.where(active & (code == data.END), step_index + 1, step_index)
     return music
 
 
-def lines(music):
+def step_line(step, events):
     """the line format of bin/play_transformer.ml, so that a diff is the gate"""
-    return [
-        f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
-        for step, events in enumerate(music)
-    ]
+    return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
+
+
+def lines(music):
+    return [step_line(step, events) for step, events in enumerate(music)]
 
 
 def play(music, *, device, step_ms, channel, velocity):
@@ -151,9 +152,7 @@ def play(music, *, device, step_ms, channel, velocity):
             for step, events in enumerate(music):
                 # the player prints as it sends, as bin/play_transformer.ml does, so that
                 # the ear and the eye follow the same step
-                click.echo(
-                    f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
-                )
+                click.echo(step_line(step, events))
                 for kind, pitch in events:
                     if kind == "on":
                         wire.write(bytes([NOTE_ON | channel, pitch, velocity]))

@@ -38,12 +38,14 @@ val load : path:string -> t
     of [legal_shifts] never raises. *)
 val transpose : by:int -> chorale -> chorale
 
-(** [encode chorale] is the walk of the design document: two parallel arrays with one
+(** [encode chorale] is the walk of the design document: three parallel arrays with one
     element per token.
 
     [codes] holds each token as its code, per [Token.to_code] — the stream the model
     trains on. The walk opens with [Start]; then each step gives the OFF events ascending,
-    the ON events ascending, then [End].
+    the ON events descending, then [End]. The two directions are rules of the instrument,
+    and [Sounding_state] holds them: one chord gives one sentence and not a permutation
+    family, and the falling ONs put the top voice first.
 
     [phases] holds the bar phase (0 to bar − 1) of the step of each token, and zero is the
     downbeat. [Start] takes phase zero: the entry draw does not see a bar position. The

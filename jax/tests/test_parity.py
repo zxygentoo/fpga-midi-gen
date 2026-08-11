@@ -22,10 +22,10 @@ entries they read: an absent artifact is a clean tree, a stale one is unproven p
 from pathlib import Path
 
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from safetensors.numpy import load_file
 
+import data
 from transformer import model
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
@@ -44,14 +44,6 @@ GATE_ENTRIES = (
 TOLERANCE = 2e-4
 
 
-def unpack_masks(words):
-    """[batch, length, 8] int32 words -> [batch, length, 256] bool, LSB first."""
-    view = words.astype("<i4").view(np.uint8)
-    return np.unpackbits(
-        view.reshape(words.shape[0], words.shape[1], -1), axis=-1, bitorder="little"
-    ).astype(bool)
-
-
 @pytest.fixture(scope="module")
 def gate():
     if not (CHECKPOINT.exists() and GATE.exists()):
@@ -67,7 +59,7 @@ def gate():
         "params": model.load_params(str(CHECKPOINT)),
         "codes": jnp.asarray(tensors["codes"]),
         "phases": jnp.asarray(tensors["phases"]),
-        "masks": jnp.asarray(unpack_masks(tensors["masks"])),
+        "masks": jnp.asarray(data.unpack_masks(tensors["masks"])),
         "loss": float(tensors["loss"][0]),
         "heads": int(tensors["heads"][0]),
         "span": int(tensors["span"][0]),

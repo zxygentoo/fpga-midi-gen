@@ -25,9 +25,15 @@ type batch =
     set after code [i], thus it guards the draw of code [i + 1]. *)
 val masks_after : int array -> bool array array
 
-(** [mask_words mask] is the wire form of one mask in the seam files: eight int32 words,
-    bit [k] of word [j] flags code [32 * j + k]. The bytes are little endian on the wire,
-    thus the Python side views the words as bytes and unpacks with bitorder little. *)
+(** the int32 words of one packed mask, and thus the row width of the [masks] tensor of a
+    seam file. A writer sizes and strides its tensor with this and states no count of its
+    own. *)
+val words_per_mask : int
+
+(** [mask_words mask] is the wire form of one mask in the seam files: [words_per_mask]
+    int32 words, bit [k] of word [j] flags code [32 * j + k]. The bytes are little endian
+    on the wire, thus the Python side views the words as bytes and unpacks with bitorder
+    little. *)
 val mask_words : bool array -> int array
 
 (** [batch_of_rows rows] stacks the rows into the parallel batch arrays. *)

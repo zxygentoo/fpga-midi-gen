@@ -67,33 +67,6 @@ let encode_response { op; status; data } =
   Cobs.encode b
 ;;
 
-let decode_request frame =
-  match Cobs.decode frame with
-  | Error e -> Error e
-  | Ok b ->
-    let n = Bytes.length b in
-    if n < Constants.request_header_bytes
-    then Error "the request is too short"
-    else (
-      let op = byte b 0 in
-      let addr = byte b 1 in
-      let len = byte b 2 in
-      if len < 1 || len > Constants.max_data_len
-      then Error "the length is out of range"
-      else if op = Op.read
-      then
-        if n = Constants.request_header_bytes
-        then Ok (Read { addr; len })
-        else Error "the read has extra bytes"
-      else if op = Op.write
-      then
-        if n = Constants.request_header_bytes + len
-        then
-          Ok (Write { addr; data = Bytes.sub b ~pos:Constants.request_header_bytes ~len })
-        else Error "the write length does not agree with the frame"
-      else Error "the operation is not known")
-;;
-
 let decode_response frame =
   match Cobs.decode frame with
   | Error e -> Error e
@@ -125,22 +98,6 @@ let decode_response frame =
 module For_test = struct
   let encode_response = encode_response
 end
-
-let%expect_test "request round trips" =
-  let check r =
-    Stdio.printf "%b\n" (Poly.equal (decode_request (encode_request r)) (Ok r))
-  in
-  check (Read { addr = Reg.run; len = 1 });
-  check (Read { addr = Reg.base; len = Reg.size });
-  check (Write { addr = Reg.step_ms; data = Bytes.of_string "\xFA\x00" });
-  check (Write { addr = Reg.seed; data = Bytes.of_string "\xEE\xFF\xC0\x00" });
-  [%expect {|
-    true
-    true
-    true
-    true
-    |}]
-;;
 
 let%expect_test "response round trips" =
   let check r =
