@@ -13,6 +13,11 @@ type t =
   }
 
 let bar_steps = 16
+
+(* the parts of one piece: the rows of the piece-position table of the model. It pairs
+   with [Transformer.progress_buckets] the way [bar_steps] pairs with the bar-phase table,
+   and the two counts must agree. *)
+let progress_buckets = 16
 let default_path = "corpus/JSB-Chorales-dataset/Jsb16thSeparated.json"
 
 (* The observed range of each voice over the corpus, from the corpus study of 2026-08-06
@@ -165,25 +170,41 @@ let metre steps =
     if lift16 >= lift12 then 16, rotation16 else 12, rotation12)
 ;;
 
-(* The walk opens with START, per the design document: the boot writes START and the music
-   follows at once. START takes phase zero; the entry draw does not see a bar position.
-   The phases of the piece align to the estimated downbeats. *)
-let encode { steps; legal_shifts = _ } =
-  let bar, rotation = metre steps in
-  let tokens = tokenize steps in
-  let codes =
-    Array.of_list (Token.to_code Token.Start :: List.map tokens ~f:Token.to_code)
-  in
-  let (_ : int), piece_phases =
+(* the step each token belongs to: the count of ENDs before it, thus the END of a step
+   carries that step and the count rises after it *)
+let step_of_each tokens =
+  let (_ : int), steps =
     List.fold_map tokens ~init:0 ~f:(fun step token ->
       let next =
         match token with
         | Token.Start | On _ | Off _ -> step
         | End -> step + 1
       in
-      next, (((step - rotation) mod bar) + bar) mod bar)
+      next, step)
   in
-  ~codes, ~phases:(Array.of_list (0 :: piece_phases))
+  steps
+;;
+
+(* The walk opens with START, per the design document: the boot writes START and the music
+   follows at once. START takes phase zero and bucket zero; the entry draw sees neither a
+   bar position nor a piece position. The phases align to the estimated downbeats. *)
+let encode { steps; legal_shifts = _ } =
+  let bar, rotation = metre steps in
+  let tokens = tokenize steps in
+  let codes =
+    Array.of_list (Token.to_code Token.Start :: List.map tokens ~f:Token.to_code)
+  in
+  let piece = step_of_each tokens in
+  let closes_a_step = function
+    | Token.End -> true
+    | Token.Start | On _ | Off _ -> false
+  in
+  let length = Int.max 1 (List.count tokens ~f:closes_a_step) in
+  let phase step = (((step - rotation) mod bar) + bar) mod bar in
+  let bucket step = Int.min (progress_buckets - 1) (step * progress_buckets / length) in
+  ( ~codes
+  , ~phases:(Array.of_list (0 :: List.map piece ~f:phase))
+  , ~progress:(Array.of_list (0 :: List.map piece ~f:bucket)) )
 ;;
 
 let%expect_test "the cells of one step" =
@@ -267,12 +288,14 @@ let%expect_test "the walk of a small chorale" =
     ((On 67) (On 64) (On 60) End End (Off 60) (Off 64) (On 65) (On 62) End
      (Off 62) (Off 65) (Off 67) End (On 60) End)
     |}];
-  let ~codes, ~phases = encode { steps; legal_shifts = [ 0 ] } in
+  let ~codes, ~phases, ~progress = encode { steps; legal_shifts = [ 0 ] } in
   print_s ([%sexp_of: int array] codes);
   print_s ([%sexp_of: int array] phases);
+  print_s ([%sexp_of: int array] progress);
   [%expect
     {|
     (255 195 192 188 0 0 60 64 193 190 0 62 65 67 0 188 0)
     (0 0 0 0 0 1 2 2 2 2 2 3 3 3 3 4 4)
+    (0 0 0 0 0 3 6 6 6 6 6 9 9 9 9 12 12)
     |}]
 ;;

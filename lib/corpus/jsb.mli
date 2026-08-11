@@ -27,6 +27,10 @@ val default_path : string
 (** the steps of one bar on the sixteenth grid *)
 val bar_steps : int
 
+(** the parts of one piece: the rows of the piece-position table of the model, which must
+    hold the same count *)
+val progress_buckets : int
+
 val load : path:string -> t
 
 (** [transpose ~by chorale] moves each pitch [by] semitones and the legal shifts with it.
@@ -45,5 +49,10 @@ val transpose : by:int -> chorale -> chorale
     downbeat. [Start] takes phase zero: the entry draw does not see a bar position. The
     bar length (16 or 12 steps) and the pickup come from the cadential holds; a piece with
     too few holds keeps the plain sixteen-step grid. The model reads the phase as the
-    index into its bar-phase table. *)
-val encode : chorale -> codes:int array * phases:int array
+    index into its bar-phase table.
+
+    [progress] holds the piece position of the step of each token: which sixteenth of the
+    whole piece it sits in, 0 to [progress_buckets] − 1. The bar phase says where a step
+    is in the bar and nothing else in the stream says where it is in the piece. [Start]
+    takes bucket zero. *)
+val encode : chorale -> codes:int array * phases:int array * progress:int array

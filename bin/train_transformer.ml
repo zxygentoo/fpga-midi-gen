@@ -43,16 +43,19 @@ let train_row rng pool ~context ~augment =
       let shifts = Array.of_list chorale.Jsb.legal_shifts in
       shifts.(Random.State.int rng (Array.length shifts))
   in
-  let ~codes, ~phases = Jsb.encode (Jsb.transpose ~by:shift chorale) in
+  let ~codes, ~phases, ~progress = Jsb.encode (Jsb.transpose ~by:shift chorale) in
   let masks = Evaluation.masks_after codes in
   let need = context + 1 in
   let length = Array.length codes in
   if length >= need
   then (
     let start = Random.State.int rng (length - need + 1) in
-    ( Array.sub codes ~pos:start ~len:need
-    , Array.sub phases ~pos:start ~len:context
-    , Array.sub masks ~pos:start ~len:context
+    ( ({ Evaluation.codes = Array.sub codes ~pos:start ~len:need
+       ; phases = Array.sub phases ~pos:start ~len:context
+       ; progress = Array.sub progress ~pos:start ~len:context
+       ; masks = Array.sub masks ~pos:start ~len:context
+       }
+       : Evaluation.row)
     , Array.create ~len:context 1.0 ))
   else (
     let steps = Array.count codes ~f:(fun code -> code = 0) in
@@ -66,18 +69,25 @@ let train_row rng pool ~context ~augment =
       Array.init context ~f:(fun i ->
         if i < length then masks.(i) else masks.(length - 1))
     in
+    (* the piece is over in the padding, thus the last bucket holds it *)
+    let padded_progress =
+      Array.init context ~f:(fun i ->
+        if i < length then progress.(i) else Jsb.progress_buckets - 1)
+    in
     (* position [i] draws label [i + 1]: it is real while the label is inside the piece *)
     let weights = Array.init context ~f:(fun i -> if i + 1 < length then 1.0 else 0.0) in
-    padded_codes, padded_phases, padded_masks, weights)
+    ( ({ Evaluation.codes = padded_codes
+       ; phases = padded_phases
+       ; progress = padded_progress
+       ; masks = padded_masks
+       }
+       : Evaluation.row)
+    , weights ))
 ;;
 
 let train_batch rng pool ~batch ~context ~augment =
   let rows = List.init batch ~f:(fun (_ : int) -> train_row rng pool ~context ~augment) in
-  let codes, phases, masks =
-    Evaluation.batch_of_rows
-      (List.map rows ~f:(fun (codes, phases, masks, _) -> codes, phases, masks))
-  in
-  codes, phases, masks, Array.of_list_map rows ~f:(fun (_, _, _, weights) -> weights)
+  Evaluation.batch_of_rows (List.map rows ~f:fst), Array.of_list_map rows ~f:snd
 ;;
 
 (* The schedule story: a linear warmup to the peak, then a cosine decay to zero over the
@@ -123,10 +133,9 @@ let train
   ~dropout_rate
   ~eval_context
   ~slope_span
+  ~progress
   =
-  let config =
-    { Transformer.Config.d; layers; heads; context; slope_span; progress = false }
-  in
+  let config = { Transformer.Config.d; layers; heads; context; slope_span; progress } in
   let data = Jsb.load ~path:corpus in
   let pool = Array.of_list (Pool.chorales train_on data) in
   (* The windows of the referee come from whole pieces, thus a long training context
@@ -174,7 +183,8 @@ let train
     printf "step %4d  eval  train %.4f  valid %.4f%s\n%!" step train_loss valid_loss mark
   in
   for step = 1 to steps do
-    let codes, phases, masks, weights = train_batch rng pool ~batch ~context ~augment in
+    let rows, weights = train_batch rng pool ~batch ~context ~augment in
+    let progress = if config.progress then Some rows.Evaluation.progress else None in
     (* the dropout takes its own lane, thus the draw and the batch streams stay put *)
     let dropout =
       Transformer.Dropout.create
@@ -188,10 +198,10 @@ let train
           Transformer.loss
             config
             params
-            ~codes
-            ~phases
-            ~progress:None
-            ~masks
+            ~codes:rows.Evaluation.codes
+            ~phases:rows.Evaluation.phases
+            ~progress
+            ~masks:rows.Evaluation.masks
             ~weights
             ~dropout)
         (Transformer.Params.to_list !params)
@@ -299,6 +309,14 @@ let command =
          ~doc:
            "F the dropout rate; the JAX sweep of 2026-08-07 wants 0.1 at d 64 and 0.2 at \
             d 128 or the long context"
+     and progress =
+       flag
+         "-progress"
+         no_arg
+         ~doc:
+           " add the piece-position table: 16 rows, indexed by which sixteenth of its \
+            piece the step of a token sits in. The bar phase says where a step is in the \
+            bar and nothing else says where it is in the piece."
      and slope_span =
        flag
          "-alibi-span"
@@ -347,7 +365,8 @@ let command =
          ~clip
          ~dropout_rate
          ~eval_context
-         ~slope_span)
+         ~slope_span
+         ~progress)
 ;;
 
 let () = Command_unix.run command

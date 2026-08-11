@@ -21,7 +21,7 @@ type variant =
 let variants_of_split chorales =
   List.concat_mapi chorales ~f:(fun piece chorale ->
     List.map chorale.Jsb.legal_shifts ~f:(fun shift ->
-      let ~codes, ~phases = Jsb.encode (Jsb.transpose ~by:shift chorale) in
+      let ~codes, ~phases, .. = Jsb.encode (Jsb.transpose ~by:shift chorale) in
       { piece; shift; codes; phases; masks = Evaluation.masks_after codes }))
 ;;
 

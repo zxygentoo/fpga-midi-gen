@@ -31,7 +31,16 @@ from transformer import model
 JAX_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINT = JAX_ROOT.parent / "_train" / "ref-d64.ckpt"
 GATE = JAX_ROOT / "_data" / "gate.safetensors"
-GATE_ENTRIES = ("codes", "phases", "masks", "loss", "heads", "span")
+GATE_ENTRIES = (
+    "codes",
+    "phases",
+    "progress",
+    "masks",
+    "loss",
+    "heads",
+    "span",
+    "has_progress",
+)
 TOLERANCE = 2e-4
 
 
@@ -62,6 +71,8 @@ def gate():
         "loss": float(tensors["loss"][0]),
         "heads": int(tensors["heads"][0]),
         "span": int(tensors["span"][0]),
+        "progress": jnp.asarray(tensors["progress"]),
+        "has_progress": bool(tensors["has_progress"][0]),
     }
 
 
@@ -74,6 +85,7 @@ def test_gate_a_loss(gate):
             gate["masks"],
             heads=gate["heads"],
             span=gate["span"],
+            progress=gate["progress"] if gate["has_progress"] else None,
         )
     )
     assert ours == pytest.approx(gate["loss"], abs=TOLERANCE)

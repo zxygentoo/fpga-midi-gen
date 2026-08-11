@@ -15,25 +15,30 @@ let mask_words = Token.vocab / 32
 
 (* The gate carries the heads and the ALiBi span, because no other file holds them: a
    tensor shape gives the width and the layer count, and the two tables give the rest, but
-   the heads only split the width at run time and ALiBi holds no position table. Without
-   them the JAX side must keep its own copy, and a run at another span then passes the
-   compare against a different model. *)
+   the heads only split the width at run time and ALiBi holds no position table. The piece
+   positions ride along as "progress", and "has_progress" says whether the model reads
+   them. Without them the JAX side must keep its own copy, and a run at another span then
+   passes the compare against a different model. *)
 let gate_entries rows ~(config : Transformer.Config.t) ~loss =
-  let codes, phases, masks = Evaluation.batch_of_rows rows in
+  let rows = Evaluation.batch_of_rows rows in
+  let codes = rows.codes in
   let batch = Array.length codes in
   let need = Array.length codes.(0) in
   let context = need - 1 in
-  let packed = Array.map masks ~f:(Array.map ~f:Evaluation.mask_words) in
+  let packed = Array.map rows.masks ~f:(Array.map ~f:Evaluation.mask_words) in
   let i32 shape read = Nx.init Nx.int32 shape (fun i -> Int32.of_int_exn (read i)) in
   let scalar value = Nx_io.P (i32 [| 1 |] (fun (_ : int array) -> value)) in
   [ "codes", Nx_io.P (i32 [| batch; need |] (fun i -> codes.(i.(0)).(i.(1))))
-  ; "phases", Nx_io.P (i32 [| batch; context |] (fun i -> phases.(i.(0)).(i.(1))))
+  ; "phases", Nx_io.P (i32 [| batch; context |] (fun i -> rows.phases.(i.(0)).(i.(1))))
+  ; ( "progress"
+    , Nx_io.P (i32 [| batch; context |] (fun i -> rows.progress.(i.(0)).(i.(1)))) )
   ; ( "masks"
     , Nx_io.P
         (i32 [| batch; context; mask_words |] (fun i -> packed.(i.(0)).(i.(1)).(i.(2)))) )
   ; "loss", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> loss))
   ; "heads", scalar config.heads
   ; "span", scalar config.slope_span
+  ; "has_progress", scalar (Bool.to_int config.progress)
   ]
 ;;
 

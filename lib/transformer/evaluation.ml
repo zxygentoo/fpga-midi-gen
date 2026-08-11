@@ -1,6 +1,18 @@
 open Core
 
-type row = int array * int array * bool array array
+type row =
+  { codes : int array
+  ; phases : int array
+  ; progress : int array
+  ; masks : bool array array
+  }
+
+type batch =
+  { codes : int array array
+  ; phases : int array array
+  ; progress : int array array
+  ; masks : bool array array array
+  }
 
 let masks_after codes =
   let (_ : Sounding_state.t), masks =
@@ -24,15 +36,17 @@ let mask_words mask =
 
 let batch_of_rows rows =
   let rows = Array.of_list rows in
-  ( Array.map rows ~f:(fun (codes, _, _) -> codes)
-  , Array.map rows ~f:(fun (_, phases, _) -> phases)
-  , Array.map rows ~f:(fun (_, _, masks) -> masks) )
+  { codes = Array.map rows ~f:(fun (row : row) -> row.codes)
+  ; phases = Array.map rows ~f:(fun (row : row) -> row.phases)
+  ; progress = Array.map rows ~f:(fun (row : row) -> row.progress)
+  ; masks = Array.map rows ~f:(fun (row : row) -> row.masks)
+  }
 ;;
 
 let rows chorales ~context ~limit =
   let rows =
     List.concat_map chorales ~f:(fun chorale ->
-      let ~codes, ~phases = Jsb.encode chorale in
+      let ~codes, ~phases, ~progress = Jsb.encode chorale in
       let need = context + 1 in
       let length = Array.length codes in
       if length < need
@@ -43,36 +57,42 @@ let rows chorales ~context ~limit =
           (((length - need) / context) + 1)
           ~f:(fun window ->
             let start = min (window * context) (length - need) in
-            ( Array.sub codes ~pos:start ~len:need
-            , Array.sub phases ~pos:start ~len:context
-            , Array.sub masks ~pos:start ~len:context ))))
+            ({ codes = Array.sub codes ~pos:start ~len:need
+             ; phases = Array.sub phases ~pos:start ~len:context
+             ; progress = Array.sub progress ~pos:start ~len:context
+             ; masks = Array.sub masks ~pos:start ~len:context
+             }
+             : row))))
   in
   List.take rows limit
 ;;
 
-let loss config params rows ~batch =
+let loss (config : Transformer.Config.t) params rows ~batch =
   let total, count =
     List.fold
       (List.chunks_of rows ~length:batch)
       ~init:(0.0, 0)
       ~f:(fun (total, count) chunk ->
-        let codes, phases, masks = batch_of_rows chunk in
+        let stacked = batch_of_rows chunk in
         (* the rows of the referee are whole windows of a piece: none is padded, thus
            every position weighs one *)
         let weights =
-          Array.map phases ~f:(fun row -> Array.map row ~f:(fun (_ : int) -> 1.0))
+          Array.map stacked.phases ~f:(fun row -> Array.map row ~f:(fun (_ : int) -> 1.0))
         in
         let dropout = Transformer.Dropout.none in
+        (* the model states whether it reads the piece position, and the rows carry it
+           either way *)
+        let progress = if config.progress then Some stacked.progress else None in
         let value =
           Nx.item
             []
             (Transformer.loss
                config
                params
-               ~codes
-               ~phases
-               ~progress:None
-               ~masks
+               ~codes:stacked.codes
+               ~phases:stacked.phases
+               ~progress
+               ~masks:stacked.masks
                ~weights
                ~dropout)
         in
