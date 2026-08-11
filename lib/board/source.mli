@@ -1,4 +1,4 @@
-(** The model: the one seat that the top level sees.
+(** The source seat: the one block between a model and the sequencer.
 
     The block connects a note source to the [Sequencer]; it holds no logic and it does not
     name a model. The top level seats a model core with the [source] argument — one line

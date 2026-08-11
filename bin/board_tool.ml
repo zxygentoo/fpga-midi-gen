@@ -1,13 +1,13 @@
-(* mgt, the MIDI gen tool: reads and writes the control cells over the console UART.
+(* board_tool: reads and writes the control cells of the board over the console UART.
 
    Each subcommand takes -help. ADDR and BYTE take the OCaml integer syntax: 0x09 or 9.
    The device default is /dev/ttyUSB1, the Nexys 4 console UART. *)
 
 open Core
-module Bytes_util = Mgen.Bytes_util
-module Control_intf = Mgen.Control_intf
-module Control_transport = Mgen.Control_transport
-module Midi = Mgen.Midi
+module Bytes_util = Mgen_core.Bytes_util
+module Control_intf = Mgen_core.Control_intf
+module Control_transport = Mgen_board.Control_transport
+module Midi = Mgen_core.Midi
 
 let default_device = "/dev/ttyUSB1"
 let baud = 115200

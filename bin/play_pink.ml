@@ -4,10 +4,10 @@
    the bare tool previews the model at the power-on values. *)
 
 open Core
-module Control_intf = Mgen.Control_intf
-module Midi = Mgen.Midi
-module Pink = Mgen.Pink
-module Player = Mgen.Player
+module Control_intf = Mgen_core.Control_intf
+module Midi = Mgen_core.Midi
+module Pink = Mgen_pink.Pink
+module Player = Mgen_pink.Player
 
 (* These flags set a control cell, thus [Control_intf.Reg] states their range and this
    tool does not repeat it. A value outside the range either raises out of the library —

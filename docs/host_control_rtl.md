@@ -87,7 +87,7 @@ an address outside the range.
 ## The message interface
 
 Three blocks send or take a MIDI message. They use one interface, in
-`lib/midi.ml`:
+`lib/core/midi.ml`:
 
 ```ocaml
 module Message = struct

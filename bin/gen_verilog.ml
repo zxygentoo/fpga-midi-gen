@@ -9,7 +9,7 @@ let () =
   let dir = if Array.length argv > 1 then argv.(1) else "board/_generated" in
   Core_unix.mkdir_p dir ~perm:0o755;
   let rtl =
-    Hardcaml.Rtl.create Verilog [ Mgen.Top.create () ]
+    Hardcaml.Rtl.create Verilog [ Mgen_board.Top.create () ]
     |> Hardcaml.Rtl.full_hierarchy
     |> Rope.to_string
   in

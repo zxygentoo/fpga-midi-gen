@@ -4,12 +4,41 @@
    automatically ONLY if the user gives permission.
 2. Write ALL technical documents in ASD-STE100 English.
 3. Design first, implement later.
-4. Checking instead of guessing.
+4. Check; do not guess.
 5. Measure before optimizing.
 
 # Style
 
 - Prefer the functional style: pure functions and clear data abstractions.
+- Names:
+  - Give each function a name that states its work. A vague name (`clean`,
+    `split`, `best`) makes the reader deduce the work from the context. A
+    clear name (`escape_zero_pitch`, `chorales`, `vote`) carries the work
+    alone.
+  - Name the helper of a `map`, a `filter` or a `fold` instead of a dense
+    inline literal. The name documents the step. When no good name exists, a
+    generic `aux` still reads better than a long closure. A short literal can
+    stay inline.
+  - Decompose a dense function into named stages; the top function then reads
+    as the algorithm (`cadential_holds`, `vote`, `metre`).
+- Comments:
+  - An interface file has a full API document comment: what the data and each
+    field are, what each function takes and gives, what the reader must know
+    to use the interface correctly, and the important design choices.
+  - Do not overdo the other comments: a comment states only what the code
+    cannot say.
+  - The *what* is easy to see in the code; the *why* is not. Comment the why:
+    the design and the reasoning behind the code.
+  - Some *what* comments are necessary — a tie rule, or a part that looks
+    unusual. For example, some software here is unconventional because it
+    must agree with the circuit.
+  - Keep inline comments sparse and terse.
+- Datatypes:
+  - Do not make a tuple of more than three items. Use a record, and give each
+    field a good name.
+- Prefer the pipeline (`|>`) where a value passes through steps in sequence:
+  the steps stand in the order they happen, and no name holds a value that
+  only waits for the next step.
 - Mutation is permitted only with a real justification:
   - global state at the outer edge of the program
   - local mutation with a large, measured performance win
@@ -37,6 +66,11 @@
   - Be vigilant for stale tests. An export can stay alive only because a test
     uses it, and that test can itself need a refactor or a removal.
 - Use Janestreet's Base/Core instead of Stdlib.
+- Base gives `<`, `>`, `=` and the other compares for integers only, thus a
+  comparison of floats must name the type. Write the local open,
+  `Float.(a > b)`, and not the applied operator, `Float.( > ) a b`. A local
+  open also makes `+` and `*` work on floats, thus integer arithmetic stays
+  outside the parentheses.
 - Format all code with ocamlformat, profile `janestreet`.
 - Write each Hardcaml block in the standard idiom: the interface modules `I`
   and `O` with `[@@deriving hardcaml]`. Give the fields clear names, and
@@ -145,7 +179,8 @@ clock error of this hardware is −279 ppm. The console UART to the host is
 ## USB audio
 
 The S-1 is a class-compliant USB audio device. Therefore you can record its
-output with no loss of quality. The format is S32_LE, 44100 Hz, 2 channels. It is not 48000 Hz.
+output with no loss of quality. The format is S32_LE, 44100 Hz, 2 channels.
+It is not 48000 Hz.
 
 - The firmware must be version 1.02 or later. Push STEP during power-on to see
   the version.
@@ -184,9 +219,9 @@ Rules:
   and `Control_frame` is the wire codec that carries them. If
   `docs/host_control.md` and `lib/control_intf.ml` do not agree, correct one
   of them before you continue.
-- The host control has no runtime version. The driver and the bitstream must come from
-  the same repository state. If the board behavior does not agree with the
-  specification, program the board again with the current bitstream.
+- The host control has no runtime version. The driver and the bitstream must
+  come from the same repository state. If the board behavior does not agree
+  with the specification, program the board again with the current bitstream.
 
 # Tests
 
@@ -207,8 +242,8 @@ Run all tests with `dune runtest`.
   against Cyclesim is a cheap extra test. The Markov chain is this case.
 - Randomness is pseudo-randomness, and the seed is an input. The same seed
   gives the same sequence in the simulation and on the board.
-- Diagnostics are on the board: the LEDs and the display. The host control has no
-  status or counter cells.
+- Diagnostics are on the board: the LEDs and the display. The host control
+  has no status or counter cells.
 
 # Traps
 

@@ -1,0 +1,19 @@
+(library
+ (name mgen_board)
+ (libraries
+  base
+  core
+  core_unix
+  stdio
+  hardcaml
+  hardcaml_waveterm
+  qcheck-core
+  mgen_core
+  mgen_pink)
+ (flags
+  (:standard -open Mgen_core -open Mgen_pink))
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (preprocess
+  (pps ppx_hardcaml ppx_expect ppx_compare ppx_enumerate ppx_sexp_conv)))

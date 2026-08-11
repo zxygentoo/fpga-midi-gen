@@ -6,8 +6,11 @@ board/_build/
 _build/
 *.install
 
-# opam
-_opam/
+# training runs: logs and checkpoints
+_train/
+
+# opam: "opam switch link" makes a symlink, not a directory, thus no trailing slash
+_opam
 
 # merlin
 .merlin
@@ -34,3 +37,11 @@ vivado*.log
 # Vivado batch-mode litter in the repository root
 clockInfo.txt
 tight_setup_hold_pins.txt
+
+# corpus: the pickles are binary duplicates of the JSON files
+corpus/**/*.pkl
+
+# the JAX seam: the environment rebuilds from uv.lock, the data from corpus_tool
+jax/.venv/
+jax/_data/
+__pycache__/

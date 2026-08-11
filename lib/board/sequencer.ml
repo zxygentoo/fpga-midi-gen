@@ -106,9 +106,10 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
     Midi.Rtl.note_off_data ~channel:open_channel.(top).value ~pitch:open_note.(top).value
   in
   let at_seat f = proc (List.init voices ~f:(fun k -> when_ (seat.value ==:. k) (f k))) in
-  let next_seat ~all_done ~more =
+  (* the scan ends at the last seat and otherwise goes on to the next one *)
+  let next_seat =
     [ seat <-- seat.value +:. 1
-    ; if_ last_seat [ sm.set_next all_done ] [ sm.set_next more ]
+    ; if_ last_seat [ sm.set_next Idle ] [ sm.set_next StopScan ]
     ]
   in
   compile
@@ -193,13 +194,13 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
           , [ if_
                 seat_open
                 [ msg_data <-- off_seat; msg_valid <-- vdd; sm.set_next StopOff ]
-                (next_seat ~all_done:Idle ~more:StopScan)
+                next_seat
             ] )
         ; ( StopOff
           , [ when_
                 transfer
                 ([ at_seat (fun k -> [ open_flag.(k) <-- gnd ]); msg_valid <-- gnd ]
-                 @ next_seat ~all_done:Idle ~more:StopScan)
+                 @ next_seat)
             ] )
         ]
     ];
@@ -245,7 +246,7 @@ let harness () =
       := Bits.of_unsigned_int ~width:(Bits.width !(inp.source.note.voice)) voice;
       inp.source.note.pitch := Bits.of_unsigned_int ~width:8 pitch
   in
-  let cycle log =
+  let cycle () =
     offer ();
     Cyclesim.cycle sim;
     if Bits.to_bool !(out.source_step)
@@ -257,7 +258,7 @@ let harness () =
       Int.incr step_index);
     if Bits.to_bool !(out.source_ready) then pending := List.tl_exn !pending;
     if Bits.to_bool !(out.source_rewind) then Stdio.printf "t=%03d rewind\n" !time;
-    if Bits.to_bool !(out.midi.valid) && not (Option.is_none log)
+    if Bits.to_bool !(out.midi.valid)
     then (
       let data = Bits.to_int_trunc !(out.midi.data) in
       Stdio.printf
@@ -282,11 +283,11 @@ let%expect_test "the voices speak in the order of the source, and the gate close
   set inp.params.channel 2;
   set inp.params.run 1;
   for _ = 1 to 70 do
-    cycle (Some ())
+    cycle ()
   done;
   set inp.params.run 0;
   for _ = 1 to 60 do
-    cycle (Some ())
+    cycle ()
   done;
   [%expect
     {|
@@ -328,11 +329,11 @@ let%expect_test "a voice that the source does not name stays silent and holds it
   program := [ 0, 0x24; 3, 0x48 ];
   set inp.params.run 1;
   for _ = 1 to 70 do
-    cycle (Some ())
+    cycle ()
   done;
   set inp.params.run 0;
   for _ = 1 to 60 do
-    cycle (Some ())
+    cycle ()
   done;
   [%expect
     {|
@@ -362,13 +363,13 @@ let%expect_test "the stop closes each open voice, from the lowest" =
   set inp.params.channel 2;
   set inp.params.run 1;
   for _ = 1 to 40 do
-    cycle (Some ())
+    cycle ()
   done;
   (* the channel changes inside the run: each Note Off keeps the channel of its Note On *)
   set inp.params.channel 5;
   set inp.params.run 0;
   for _ = 1 to 60 do
-    cycle (Some ())
+    cycle ()
   done;
   [%expect
     {|
@@ -402,15 +403,15 @@ let%expect_test "STEP_MS applies at the next step" =
   program := [ 3, 0x48 ];
   set inp.params.run 1;
   for _ = 1 to 6 do
-    cycle (Some ())
+    cycle ()
   done;
   set inp.params.step_ms 6;
   for _ = 1 to 46 do
-    cycle (Some ())
+    cycle ()
   done;
   set inp.params.run 0;
   for _ = 1 to 30 do
-    cycle (Some ())
+    cycle ()
   done;
   [%expect
     {|

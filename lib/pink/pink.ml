@@ -13,13 +13,14 @@ end
 let pentatonic = [ 0; 2; 4; 7; 9 ]
 
 (* re-rolls the first [count] rows, with one draw for each row, in ascending order *)
-let rec reroll prng rows ~count =
+let rec reroll rows ~count =
+  let open Prng in
   match rows with
   | _ :: rest when count > 0 ->
-    let prng, value = Prng.next prng in
-    let prng, rest = reroll prng rest ~count:(count - 1) in
-    prng, value :: rest
-  | rows -> prng, rows
+    let* value = next in
+    let+ rest = reroll rest ~count:(count - 1) in
+    value :: rest
+  | rows -> return rows
 ;;
 
 (* The scale of the model rotated to start on the root of the voice. Therefore a voice
@@ -102,7 +103,7 @@ type state =
 (* the state of one run: the model, the PRNG and the row values *)
 type walk =
   { model : t
-  ; prng : Prng.t
+  ; prng : Prng.state
   ; rows : int list (* the row values; the head is row 0 *)
   ; step : int (* the number of the steps taken *)
   }
@@ -125,14 +126,16 @@ let create ~model ~seed =
   List.iter model.voices ~f:(fun v -> validate ~scale:model.scale v.Voice.params);
   let total = total_rows model.voices in
   let prng = Prng.create ~seed in
-  let prng, rows = reroll prng (List.init total ~f:(fun _ -> 0)) ~count:total in
+  let prng, rows =
+    Prng.run (reroll (List.init total ~f:(fun _ -> 0)) ~count:total) prng
+  in
   { model; prng; rows; step = 0 }
 ;;
 
 let next_step w =
   let step = w.step + 1 in
   let count = Int.min (total_rows w.model.voices) (Int.ctz step + 1) in
-  let prng, rows = reroll w.prng w.rows ~count in
+  let prng, rows = Prng.run (reroll w.rows ~count) w.prng in
   (* walk the groups from row 0: a voice is due when the re-roll count reaches into its
      group *)
   let states =
