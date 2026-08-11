@@ -143,16 +143,15 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
       ; speaks = first_step.value |: speaks
       })
   in
-  (* the report goes from the lowest voice upward — the order of the wire, and the order
-     of the reference *)
-  let by_voice = List.rev by_row in
+  (* the report goes from the highest voice downward — the order of the wire, and the
+     order of the reference; the row order already puts the highest voice first *)
   let pending =
-    List.fold by_voice ~init:gnd ~f:(fun acc (a : voice_state) -> acc |: a.owed.value)
+    List.fold by_row ~init:gnd ~f:(fun acc (a : voice_state) -> acc |: a.owed.value)
   in
-  (* the lowest voice that still owes a report, and its note *)
+  (* the highest voice that still owes a report, and its note *)
   let selected_voice, selected_pitch =
     List.fold_right
-      by_voice
+      by_row
       ~init:(zero voice_bits, zero 8)
       ~f:(fun (a : voice_state) (rest_voice, rest_pitch) ->
         ( mux2 a.owed.value (of_unsigned_int ~width:voice_bits a.voice) rest_voice
@@ -160,7 +159,7 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
   in
   (* 1 when a voice other than the selected one still owes a report *)
   let others =
-    List.fold by_voice ~init:gnd ~f:(fun acc (a : voice_state) ->
+    List.fold by_row ~init:gnd ~f:(fun acc (a : voice_state) ->
       acc |: (a.owed.value &: ~:(selected_voice ==:. a.voice)))
   in
   let valid = sm.is Report &: pending in
@@ -205,7 +204,7 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
                 [ when_
                     i.ready
                     [ proc
-                        (List.map by_voice ~f:(fun (a : voice_state) ->
+                        (List.map by_row ~f:(fun (a : voice_state) ->
                            when_ (selected_voice ==:. a.voice) [ a.owed <-- gnd ]))
                     ; when_ ~:others [ sm.set_next Idle ]
                     ]
@@ -221,9 +220,10 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
 ;;
 
 (* Drive [rewind] and a run of [step] pulses, and give the report of each step back: the
-   voice and the pitch of every note that speaks, from the lowest voice upward. The sink
-   is always ready, thus each note transfers in the cycle that offers it. The seed is an
-   elaboration constant of the test circuit, as the closure carries it in the top level. *)
+   voice and the pitch of every note that speaks, from the highest voice downward. The
+   sink is always ready, thus each note transfers in the cycle that offers it. The seed is
+   an elaboration constant of the test circuit, as the closure carries it in the top
+   level. *)
 let harness ~model ~seed =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
@@ -275,12 +275,13 @@ let collect n step =
 ;;
 
 (* the pitch of a voice changes only at a step where it speaks, thus the reports rebuild
-   the note of every voice and the rebuild must equal the reference *)
+   the note of every voice and the rebuild must equal the reference — the highest voice
+   first, the order of the states *)
 let rebuild reports =
   let held = Array.create ~len:Source_intf.voices 0 in
   List.map reports ~f:(fun report ->
     List.iter report ~f:(fun (voice, pitch) -> held.(voice) <- pitch);
-    Array.to_list held)
+    List.rev (Array.to_list held))
 ;;
 
 let%expect_test "the four voices agree with the reference, note for note" =
@@ -298,7 +299,7 @@ let%expect_test "the four voices agree with the reference, note for note" =
   Stdio.print_s ([%sexp_of: int list] (List.hd_exn circuit));
   Stdio.printf "200 steps agree: %b\n" ([%compare.equal: int list list] circuit reference);
   [%expect {|
-    (45 57 62 88)
+    (88 62 57 45)
     200 steps agree: true
     |}]
 ;;
@@ -307,7 +308,7 @@ let%expect_test "the report is the decomposition" =
   let rewind, step = harness ~model:Pink.default ~seed:Control_intf.Default.seed in
   rewind ();
   let steps = collect 128 step in
-  Stdio.printf "step  the notes that speak, from the lowest voice\n";
+  Stdio.printf "step  the notes that speak, from the highest voice\n";
   List.iteri (List.take steps 16) ~f:(fun k report ->
     Stdio.printf
       "%4d %s\n"
@@ -325,23 +326,23 @@ let%expect_test "the report is the decomposition" =
     (spoke 3);
   [%expect
     {|
-    step  the notes that speak, from the lowest voice
-       1   0: 45  1: 57  2: 62  3: 88
+    step  the notes that speak, from the highest voice
+       1   3: 88  2: 62  1: 57  0: 45
        2   3: 84
        3   3: 84
-       4   2: 67  3: 88
+       4   3: 88  2: 67
        5   3: 93
        6   3: 91
        7   3: 93
-       8   2: 62  3: 74
+       8   3: 74  2: 62
        9   3: 76
       10   3: 86
       11   3: 93
-      12   2: 64  3: 88
+      12   3: 88  2: 64
       13   3: 93
       14   3: 93
       15   3: 93
-      16   2: 60  3: 74
+      16   3: 74  2: 60
     in 128 steps: bass 3, tenor 8, alto 33, soprano 128
     |}]
 ;;
@@ -370,7 +371,7 @@ let%expect_test "the waveform of one step, and the source holds a note while the
   =
   (* The rewind walk fills the eight rows, two cycles for each draw. The first [step] is
      step 1: one due Draw-Grab pair, then [Note], and then the report of the four voices
-     from the lowest. The sink holds [ready] at 0 for some cycles, and the source holds
+     from the highest. The sink holds [ready] at 0 for some cycles, and the source holds
      the note and [valid] until the transfer. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim =
@@ -420,11 +421,11 @@ let%expect_test "the waveform of one step, and the source holds a note while the
     │               ││──┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬───┬─┬─┬─┬──────│
     │state          ││ .│.│.│.│.│.│.│.│.│.│.│.│.│.│.│.│.│Idl│.│.│.│Rep   │
     │               ││──┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴───┴─┴─┴─┴──────│
-    │               ││──────────────────────────────────────────────────┬│
-    │note$voice     ││ 0                                                ││
-    │               ││──────────────────────────────────────────────────┴│
     │               ││────────────────────────────────────────────┬─────┬│
-    │note$pitch     ││ 00                                         │2D   ││
+    │note$voice     ││ 0                                          │3    ││
+    │               ││────────────────────────────────────────────┴─────┴│
+    │               ││────────────────────────────────────────────┬─────┬│
+    │note$pitch     ││ 00                                         │58   ││
     │               ││────────────────────────────────────────────┴─────┴│
     │valid          ││                                            ┌──────│
     │               ││────────────────────────────────────────────┘      │

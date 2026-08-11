@@ -27,8 +27,8 @@ end
    [Take] waits for a note of the source, or for its [idle] that ends the step. [SendOff]
    and [SendOn] hold one message each for the merge, and the [SendOff] path is the voice
    that already holds a note. [Wait] counts the milliseconds of the step. [GateOff] closes
-   the highest voice at the gate. [StopScan] and [StopOff] walk the seats and close each
-   open one when the run stops. *)
+   the highest voice at the gate. [StopScan] and [StopOff] walk the seats from the top
+   downward and close each open one when the run stops. *)
 module State = struct
   type t =
     | Idle
@@ -86,7 +86,7 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
   let incoming = i.source.note.voice in
   let incoming_open = mux incoming (values open_flag) in
   let seat_open = mux seat.value (values open_flag) in
-  let last_seat = seat.value ==:. voices - 1 in
+  let last_seat = seat.value ==:. 0 in
   (* the messages; [Midi] holds the byte layout *)
   let on_data =
     Midi.Rtl.note_on_data
@@ -106,9 +106,9 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
     Midi.Rtl.note_off_data ~channel:open_channel.(top).value ~pitch:open_note.(top).value
   in
   let at_seat f = proc (List.init voices ~f:(fun k -> when_ (seat.value ==:. k) (f k))) in
-  (* the scan ends at the last seat and otherwise goes on to the next one *)
+  (* the scan ends at the last seat and otherwise goes on to the next one below *)
   let next_seat =
-    [ seat <-- seat.value +:. 1
+    [ seat <-- seat.value -:. 1
     ; if_ last_seat [ sm.set_next Idle ] [ sm.set_next StopScan ]
     ]
   in
@@ -178,7 +178,7 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
                 ; if_
                     run_bit
                     [ source_step <-- vdd; sm.set_next Take ]
-                    [ seat <--. 0; sm.set_next StopScan ]
+                    [ seat <--. top; sm.set_next StopScan ]
                 ]
                 [ when_
                     at_gate
@@ -232,7 +232,7 @@ let harness () =
   inp.source.idle := Bits.vdd;
   let time = ref 0 in
   let step_index = ref 0 in
-  let program = ref [ 0, 0x24; 1, 0x30; 2, 0x3c; 3, 0x48 ] in
+  let program = ref [ 3, 0x48; 2, 0x3c; 1, 0x30; 0, 0x24 ] in
   let pending = ref [] in
   let offer () =
     match !pending with
@@ -292,30 +292,30 @@ let%expect_test "the voices speak in the order of the source, and the gate close
   [%expect
     {|
     t=000 rewind
-    t=003 92 24 64
-    t=005 92 30 64
-    t=007 92 3c 64
-    t=009 92 48 64
+    t=003 92 48 64
+    t=005 92 3c 64
+    t=007 92 30 64
+    t=009 92 24 64
     t=018 82 48 40
-    t=035 82 24 40
-    t=036 92 24 64
-    t=038 82 30 40
-    t=039 92 30 64
-    t=041 82 3c 40
-    t=042 92 3c 64
-    t=044 92 49 64
+    t=035 92 49 64
+    t=037 82 3c 40
+    t=038 92 3c 64
+    t=040 82 30 40
+    t=041 92 30 64
+    t=043 82 24 40
+    t=044 92 24 64
     t=050 82 49 40
-    t=067 82 24 40
-    t=068 92 24 64
-    t=070 82 30 40
-    t=071 92 30 64
-    t=073 82 3c 40
-    t=074 92 3c 64
-    t=076 92 4a 64
+    t=067 92 4a 64
+    t=069 82 3c 40
+    t=070 92 3c 64
+    t=072 82 30 40
+    t=073 92 30 64
+    t=075 82 24 40
+    t=076 92 24 64
     t=082 82 4a 40
-    t=099 82 24 40
-    t=101 82 30 40
-    t=103 82 3c 40
+    t=100 82 3c 40
+    t=102 82 30 40
+    t=104 82 24 40
     |}]
 ;;
 
@@ -325,8 +325,8 @@ let%expect_test "a voice that the source does not name stays silent and holds it
   set inp.params.gate_ms 4;
   set inp.params.velocity 100;
   set inp.params.channel 2;
-  (* the lowest voice and the highest voice speak; the two middle ones never do *)
-  program := [ 0, 0x24; 3, 0x48 ];
+  (* the highest voice and the lowest voice speak; the two middle ones never do *)
+  program := [ 3, 0x48; 0, 0x24 ];
   set inp.params.run 1;
   for _ = 1 to 70 do
     cycle ()
@@ -338,22 +338,22 @@ let%expect_test "a voice that the source does not name stays silent and holds it
   [%expect
     {|
     t=000 rewind
-    t=003 92 24 64
-    t=005 92 48 64
+    t=003 92 48 64
+    t=005 92 24 64
     t=018 82 48 40
-    t=035 82 24 40
-    t=036 92 24 64
-    t=038 92 49 64
+    t=035 92 49 64
+    t=037 82 24 40
+    t=038 92 24 64
     t=050 82 49 40
-    t=067 82 24 40
-    t=068 92 24 64
-    t=070 92 4a 64
+    t=067 92 4a 64
+    t=069 82 24 40
+    t=070 92 24 64
     t=082 82 4a 40
-    t=099 82 24 40
+    t=102 82 24 40
     |}]
 ;;
 
-let%expect_test "the stop closes each open voice, from the lowest" =
+let%expect_test "the stop closes each open voice, from the highest" =
   let _sim, inp, cycle, set, _program = harness () in
   set inp.params.step_ms 8;
   (* the gate is not less than the step, thus it never comes and the highest voice also
@@ -374,22 +374,22 @@ let%expect_test "the stop closes each open voice, from the lowest" =
   [%expect
     {|
     t=000 rewind
-    t=003 92 24 64
-    t=005 92 30 64
-    t=007 92 3c 64
-    t=009 92 48 64
-    t=035 82 24 40
-    t=036 92 24 64
-    t=038 82 30 40
-    t=039 92 30 64
-    t=041 82 3c 40
-    t=042 95 3c 64
-    t=044 82 48 40
-    t=045 95 49 64
-    t=067 82 24 40
-    t=069 82 30 40
-    t=071 85 3c 40
-    t=073 85 49 40
+    t=003 92 48 64
+    t=005 92 3c 64
+    t=007 92 30 64
+    t=009 92 24 64
+    t=035 82 48 40
+    t=036 92 49 64
+    t=038 82 3c 40
+    t=039 92 3c 64
+    t=041 82 30 40
+    t=042 95 30 64
+    t=044 82 24 40
+    t=045 95 24 64
+    t=067 82 49 40
+    t=069 82 3c 40
+    t=071 85 30 40
+    t=073 85 24 40
     |}]
 ;;
 

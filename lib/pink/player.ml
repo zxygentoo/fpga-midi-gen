@@ -17,13 +17,13 @@ end
 
 type t =
   { walk : Pink.walk
-  ; voices : Voice.t list (* the lowest voice first, as the states come *)
+  ; voices : Voice.t list (* the highest voice first, as the states come *)
   }
 
 let create ~(model : Pink.t) ~seed =
   { walk = Pink.create ~model ~seed
   ; voices =
-      List.rev_map model.voices ~f:(fun v ->
+      List.map model.voices ~f:(fun v ->
         { Voice.restrike = v.Pink.Voice.restrike; opened = None })
   }
 ;;
@@ -45,7 +45,7 @@ let close (voice : Voice.t) =
 ;;
 
 (* each rule gives a new voice and the events of that voice; the events come out from the
-   lowest voice upward, the order of the wire *)
+   highest voice downward, the order of the wire *)
 let collect pairs = List.map pairs ~f:fst, List.concat_map pairs ~f:snd
 
 let step t =
@@ -64,13 +64,12 @@ let step t =
 ;;
 
 let gate t =
-  (* the highest voice is the last of the list, and the gate closes no other *)
-  let top = List.length t.voices - 1 in
-  let voices, events =
-    collect
-      (List.mapi t.voices ~f:(fun k voice -> if k = top then close voice else voice, []))
-  in
-  { t with voices }, events
+  (* the highest voice is the head of the list, and the gate closes no other *)
+  match t.voices with
+  | [] -> t, []
+  | top :: rest ->
+    let top, events = close top in
+    { t with voices = top :: rest }, events
 ;;
 
 let stop t =
@@ -78,8 +77,8 @@ let stop t =
   { t with voices }, events
 ;;
 
-(* the events of the player are the piece: at step 1 the four voices enter from the bass,
-   and after that the low voices are silent until they move *)
+(* the events of the player are the piece: at step 1 the four voices enter from the
+   soprano, and after that the low voices are silent until they move *)
 let%expect_test "the events of the first steps, with the gate" =
   let player = ref (create ~model:Pink.default ~seed:Control_intf.Default.seed) in
   let show label events =
@@ -105,24 +104,24 @@ let%expect_test "the events of the first steps, with the gate" =
   show "    stop" stopped;
   [%expect
     {|
-     1   on 45 on 57 on 62 on 88
-        gate off 88
-     2   on 84
-        gate off 84
-     3   on 84
-        gate off 84
-     4   off 62 on 67 on 88
-        gate off 88
-     5   on 93
-        gate off 93
-     6   on 91
-        gate off 91
-     7   on 93
-        gate off 93
-     8   off 67 on 62 on 74
-        gate off 74
-     9   on 76
-        gate off 76
-        stop off 45 off 57 off 62
+    1   on 88 on 62 on 57 on 45
+       gate off 88
+    2   on 84
+       gate off 84
+    3   on 84
+       gate off 84
+    4   on 88 off 62 on 67
+       gate off 88
+    5   on 93
+       gate off 93
+    6   on 91
+       gate off 91
+    7   on 93
+       gate off 93
+    8   on 74 off 67 on 62
+       gate off 74
+    9   on 76
+       gate off 76
+       stop off 62 off 57 off 45
     |}]
 ;;

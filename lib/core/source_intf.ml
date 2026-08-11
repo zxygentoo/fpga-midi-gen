@@ -1,9 +1,11 @@
 (** The note-source socket: the interface between a model core and the [Sequencer].
 
     A source answers [step] with the notes that speak at that step, one at a time and from
-    the lowest voice upward. A note that does not speak never crosses, thus the sequencer
-    makes no selection and plays what it receives. [rewind] puts the source at the origin
-    of its sequence — the run start — thus the same run plays the same sequence.
+    the highest voice downward: the melody leads, and a model that chooses the top voice
+    first reports in the order of its choices. A note that does not speak never crosses,
+    thus the sequencer makes no selection and plays what it receives. [rewind] puts the
+    source at the origin of its sequence — the run start — thus the same run plays the
+    same sequence.
 
     The synthesizer has four voices, thus [voices] is 4: a fact of the hardware and not a
     parameter of the model. Voice 0 is the lowest, and a source with fewer voices takes

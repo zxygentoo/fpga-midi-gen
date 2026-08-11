@@ -28,7 +28,7 @@ type t
 val create : model:Pink.t -> seed:int -> t
 
 (** [step t] takes one step of the model and gives the events of the voices that speak,
-    from the lowest voice upward — the order of the wire. *)
+    from the highest voice downward — the order of the wire. *)
 val step : t -> t * Event.t list
 
 (** [gate t] closes the note of the highest voice. The lower voices sustain to their next
@@ -36,5 +36,5 @@ val step : t -> t * Event.t list
     comes: it is the gate time, and only when that time is less than the step. *)
 val gate : t -> t * Event.t list
 
-(** [stop t] closes the note of each voice, from the lowest upward. *)
+(** [stop t] closes the note of each voice, from the highest downward. *)
 val stop : t -> t * Event.t list
