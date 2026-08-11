@@ -82,9 +82,6 @@ let loss (config : Transformer.Config.t) params rows ~batch =
           Array.map stacked.phases ~f:(fun row -> Array.map row ~f:(fun (_ : int) -> 1.0))
         in
         let dropout = Transformer.Dropout.none in
-        (* the model states whether it reads the piece position, and the rows carry it
-           either way *)
-        let progress = if config.progress then Some stacked.progress else None in
         let value =
           Nx.item
             []
@@ -93,7 +90,7 @@ let loss (config : Transformer.Config.t) params rows ~batch =
                params
                ~codes:stacked.codes
                ~phases:stacked.phases
-               ~progress
+               ~progress:stacked.progress
                ~masks:stacked.masks
                ~weights
                ~dropout)

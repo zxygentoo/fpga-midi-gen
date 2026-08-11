@@ -24,12 +24,9 @@ module Config = struct
     ; heads : int
     ; context : int
     ; slope_span : int
-    ; progress : bool
     }
 
-  let baseline =
-    { d = 64; layers = 2; heads = 4; context = 256; slope_span = 8; progress = false }
-  ;;
+  let baseline = { d = 64; layers = 2; heads = 4; context = 256; slope_span = 8 }
 
   let of_checkpoint path ~heads ~context ~slope_span =
     let archive = Nx_io.load_safetensors path in
@@ -39,28 +36,14 @@ module Config = struct
       | None -> invalid_argf "%s holds no tensor named 0: not a checkpoint" path ()
     in
     let tensors = Stdlib.Hashtbl.length archive in
-    (* The count states the tables, thus the file answers whether the model reads the
-       piece position. The two layouts never collide: 2 + 6L and 3 + 6L differ for every
-       layer count. *)
-    let tables =
-      if tensors >= 8 && (tensors - 2) % 6 = 0
-      then 2
-      else if tensors >= 9 && (tensors - 3) % 6 = 0
-      then 3
-      else
-        invalid_argf
-          "%s holds %d tensors: not two or three tables and six for each layer"
-          path
-          tensors
-          ()
-    in
-    { d = (Nx.shape embed).(1)
-    ; layers = (tensors - tables) / 6
-    ; heads
-    ; context
-    ; slope_span
-    ; progress = tables = 3
-    }
+    if tensors < 9 || (tensors - 3) % 6 <> 0
+    then
+      invalid_argf
+        "%s holds %d tensors: not three tables and six for each layer"
+        path
+        tensors
+        ();
+    { d = (Nx.shape embed).(1); layers = (tensors - 3) / 6; heads; context; slope_span }
   ;;
 end
 
@@ -68,7 +51,7 @@ module Params = struct
   type t =
     { embed : tensor
     ; phase : tensor
-    ; progress : tensor option
+    ; progress : tensor
     ; layers : layer array
     }
 
@@ -82,22 +65,16 @@ module Params = struct
     }
 
   let to_list { embed; phase; progress; layers } =
-    (embed :: phase :: Option.to_list progress)
-    @ List.concat_map (Array.to_list layers) ~f:(fun { wq; wk; wv; wo; w1; w2 } ->
+    embed
+    :: phase
+    :: progress
+    :: List.concat_map (Array.to_list layers) ~f:(fun { wq; wk; wv; wo; w1; w2 } ->
       [ wq; wk; wv; wo; w1; w2 ])
   ;;
 
   let of_list (config : Config.t) tensors =
     match tensors with
-    | embed :: phase :: rest ->
-      let progress, rest =
-        if not config.progress
-        then None, rest
-        else (
-          match rest with
-          | table :: rest -> Some table, rest
-          | [] -> invalid_arg "the config asks for a progress table and none follows")
-      in
+    | embed :: phase :: progress :: rest ->
       let layers =
         List.chunks_of rest ~length:6
         |> List.map ~f:(function
@@ -113,7 +90,7 @@ module Params = struct
           config.layers
           ();
       { embed; phase; progress; layers }
-    | _ -> invalid_arg "the parameters start with the embedding and the bar phase"
+    | _ -> invalid_arg "the parameters start with the three tables"
   ;;
 
   (* the shapes in the flat order of [to_list], which [of_list] reads back *)
@@ -123,8 +100,9 @@ module Params = struct
     let layer_shapes =
       [ [| d; d |]; [| d; d |]; [| d; d |]; [| d; d |]; [| d; 4 * d |]; [| 4 * d; d |] ]
     in
-    let piece_position = if config.progress then [ [| progress_buckets; d |] ] else [] in
-    let tables = [ [| Token.vocab; d |]; [| phase_buckets; d |] ] @ piece_position in
+    let tables =
+      [ [| Token.vocab; d |]; [| phase_buckets; d |]; [| progress_buckets; d |] ]
+    in
     tables @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
   ;;
 
@@ -297,18 +275,8 @@ let feed_forward (layer : Params.layer) ~dropout h =
 let embedding (params : Params.t) ~codes ~phases ~progress ~dropout =
   let tokens = embed_rows params.embed ~num_classes:Token.vocab codes in
   let bar = embed_rows params.phase ~num_classes:phase_buckets phases in
-  let sum = Nx.add tokens bar in
-  let sum =
-    match params.progress, progress with
-    | None, None -> sum
-    | Some table, Some rows ->
-      Nx.add sum (embed_rows table ~num_classes:progress_buckets rows)
-    | Some _, None ->
-      invalid_arg "the model holds a progress table and the call states no buckets"
-    | None, Some _ ->
-      invalid_arg "the call states progress buckets and the model holds no table"
-  in
-  Dropout.run dropout sum
+  let piece = embed_rows params.progress ~num_classes:progress_buckets progress in
+  Nx.add (Nx.add tokens bar) piece |> Dropout.run dropout
 ;;
 
 let logits (config : Config.t) (params : Params.t) ~codes ~phases ~progress ~dropout =
@@ -398,7 +366,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
       params
       ~codes:[| codes |]
       ~phases:[| phases |]
-      ~progress:(Option.map progress ~f:(fun row -> [| row |]))
+      ~progress:[| progress |]
       ~dropout:Dropout.none
     |> Nx.get [ 0; Array.length codes - 1 ]
     |> Nx.to_array
@@ -475,7 +443,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
       next_code_logits
         ~codes:(window !codes)
         ~phases:(window !phases)
-        ~progress:(if config.progress then Some (window !progress) else None)
+        ~progress:(window !progress)
     in
     let mask = Sounding_state.legal_mask !state in
     tally.illegal_mass <- tally.illegal_mass +. illegal_share raw ~mask;
@@ -570,9 +538,7 @@ let%expect_test "each block draws from a walk of its own" =
 ;;
 
 let%expect_test "the shapes of the forward pass" =
-  let config =
-    { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8; progress = false }
-  in
+  let config = { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8 } in
   let params = Params.draw config ~seed:1 in
   let out =
     logits
@@ -580,7 +546,7 @@ let%expect_test "the shapes of the forward pass" =
       params
       ~codes:[| [| 0; 188; 60; 0 |] |]
       ~phases:[| [| 0; 1; 1; 1 |] |]
-      ~progress:None
+      ~progress:[| [| 0; 0; 0; 0 |] |]
       ~dropout:Dropout.none
   in
   print_s ([%sexp_of: int array] (Nx.shape out));
@@ -593,15 +559,7 @@ let%expect_test "the shapes of the forward pass" =
    the test says nothing of the music itself — only that the grammar held at every token,
    which is the property the sampler owes whatever the weights say. *)
 let%expect_test "the sampler draws only what the mask allows" =
-  let config =
-    { Config.d = 16
-    ; layers = 1
-    ; heads = 2
-    ; context = 64
-    ; slope_span = 8
-    ; progress = false
-    }
-  in
+  let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
   let params = Params.draw config ~seed:5 in
   let ~music, ~stats =
     sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
@@ -638,7 +596,7 @@ let%expect_test "the sampler draws only what the mask allows" =
     (List.equal (List.equal Int.equal) (codes music) (codes again));
   [%expect
     {|
-    24 steps  58 tokens  0 illegal   the mask held 0.8445 of the raw mass over 58 draws
+    24 steps  58 tokens  0 illegal   the mask held 0.8441 of the raw mass over 58 draws
     ((On 114) (On 30) (On 21) (On 0))
     ((Off 21) (On 75))
     ((Off 30) (On 99))

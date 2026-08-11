@@ -58,7 +58,7 @@ def temper(raw, legal, temperature, min_p):
     return weights
 
 
-def sample(params, *, seeds, steps, context, heads, span, temperature, min_p, progress):
+def sample(params, *, seeds, steps, context, heads, span, temperature, min_p):
     """One batched run: [len(seeds)] independent walks, each drawing [steps] steps.
 
     Every element draws one token an iteration, so the histories stay the same length and
@@ -67,12 +67,7 @@ def sample(params, *, seeds, steps, context, heads, span, temperature, min_p, pr
     batch = len(seeds)
     forward = jax.jit(
         lambda codes, phases, buckets: model.logits(
-            params,
-            codes,
-            phases,
-            heads=heads,
-            span=span,
-            progress=buckets if progress else None,
+            params, codes, phases, buckets, heads=heads, span=span
         )
     )
     state = prng.states(seeds)
@@ -280,7 +275,6 @@ def main(
         span=alibi_span,
         temperature=temperature,
         min_p=min_p,
-        progress="progress" in params,
     )
     if run_gate:
         options = {

@@ -13,9 +13,8 @@ module Transformer = Mgen_transformer.Transformer
 (* The gate carries the heads and the ALiBi span, because no other file holds them: a
    tensor shape gives the width and the layer count, and the two tables give the rest, but
    the heads only split the width at run time and ALiBi holds no position table. The piece
-   positions ride along as "progress", and "has_progress" says whether the model reads
-   them. Without them the JAX side must keep its own copy, and a run at another span then
-   passes the compare against a different model. *)
+   positions ride along as "progress". Without them the JAX side must keep its own copy,
+   and a run at another span then passes the compare against a different model. *)
 let gate_entries rows ~(config : Transformer.Config.t) ~loss =
   let rows = Evaluation.batch_of_rows rows in
   let codes = rows.codes in
@@ -36,7 +35,6 @@ let gate_entries rows ~(config : Transformer.Config.t) ~loss =
   ; "loss", Nx_io.P (Nx.init Nx.float32 [| 1 |] (fun (_ : int array) -> loss))
   ; "heads", scalar config.heads
   ; "span", scalar config.slope_span
-  ; "has_progress", scalar (Bool.to_int config.progress)
   ]
 ;;
 

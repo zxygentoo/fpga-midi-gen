@@ -30,12 +30,12 @@ from transformer import model
 JAX_ROOT = Path(__file__).resolve().parent.parent
 
 
-def draw_params(key, d, layers, progress=False):
+def draw_params(key, d, layers):
     def normal(k, shape):
         return jax.random.normal(k, shape, dtype=jnp.float32) * 0.02
 
     keys = iter(jax.random.split(key, 2 + 6 * layers))
-    drawn = {
+    return {
         "embed": normal(next(keys), (model.VOCAB, d)),
         "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
         "layers": [
@@ -49,22 +49,14 @@ def draw_params(key, d, layers, progress=False):
             }
             for _ in range(layers)
         ],
+        # a folded key, so that the split above keeps the draw it had before this table
+        "progress": normal(jax.random.fold_in(key, 1), (model.PROGRESS_BUCKETS, d)),
     }
-    if progress:
-        # a folded key, so that the split above keeps the draw of a run without progress
-        drawn["progress"] = normal(
-            jax.random.fold_in(key, 1), (model.PROGRESS_BUCKETS, d)
-        )
-    return drawn
 
 
 def save_checkpoint(path, params):
-    """Kaun order: embed, phase, the progress table when the run has one, then
-    wq wk wv wo w1 w2 for each layer."""
-    tables = [params["embed"], params["phase"]]
-    if "progress" in params:
-        tables.append(params["progress"])
-    tensors = tables + [
+    """Kaun order: embed, phase, progress, then wq wk wv wo w1 w2 for each layer."""
+    tensors = [params["embed"], params["phase"], params["progress"]] + [
         layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS
     ]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -82,20 +74,20 @@ def schedule(step, peak, warmup, total):
     return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
 
 
-def make_step(heads, dropout, clip, weight_decay, span, progress=False):
+def make_step(heads, dropout, clip, weight_decay, span):
     def step_fn(params, m, v, t, codes, phases, buckets, masks, weights, lr, key):
         def loss_fn(p):
             return model.loss(
                 p,
                 codes,
                 phases,
+                buckets,
                 masks,
                 heads=heads,
                 dropout=dropout,
                 key=key,
                 weights=weights,
                 span=span,
-                progress=buckets if progress else None,
             )
 
         value, grads = jax.value_and_grad(loss_fn)(params)
@@ -119,17 +111,9 @@ def make_step(heads, dropout, clip, weight_decay, span, progress=False):
     return jax.jit(step_fn)
 
 
-def make_eval(heads, span, progress=False):
+def make_eval(heads, span):
     def eval_fn(params, codes, phases, buckets, masks):
-        return model.loss(
-            params,
-            codes,
-            phases,
-            masks,
-            heads=heads,
-            span=span,
-            progress=buckets if progress else None,
-        )
+        return model.loss(params, codes, phases, buckets, masks, heads=heads, span=span)
 
     return jax.jit(eval_fn)
 
@@ -173,11 +157,6 @@ def eval_loss(eval_fn, params, batches):
     help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider span sees further and stays a power of two. The draw must state the same span.",
 )
 @click.option(
-    "--progress",
-    is_flag=True,
-    help="add the piece-position table of docs/transformer_model.md: 16 rows, indexed by which sixteenth of its piece the step of a token sits in. It earns its place at context 256, where a window holds START in 0.7% of rows and the model is otherwise blind to its position; at 512 it holds START in 28% of rows, the table is redundant and the loss is 0.004 worse.",
-)
-@click.option(
     "--train-on", type=click.Choice(("train", "train+test", "all")), default="train"
 )
 @click.option("--log-every", default=10)
@@ -210,7 +189,6 @@ def main(
     clip,
     dropout,
     alibi_span,
-    progress,
     train_on,
     log_every,
     eval_every,
@@ -228,10 +206,10 @@ def main(
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     key, draw_key = jax.random.split(key)
-    params = draw_params(draw_key, d, layers, progress)
+    params = draw_params(draw_key, d, layers)
     m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(heads, dropout, clip, wd, alibi_span, progress)
-    eval_fn = make_eval(heads, alibi_span, progress)
+    step_fn = make_step(heads, dropout, clip, wd, alibi_span)
+    eval_fn = make_eval(heads, alibi_span)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     print(
         f"corpus: {len(pool)} pool pieces; eval rows: "

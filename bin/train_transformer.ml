@@ -133,9 +133,8 @@ let train
   ~dropout_rate
   ~eval_context
   ~slope_span
-  ~progress
   =
-  let config = { Transformer.Config.d; layers; heads; context; slope_span; progress } in
+  let config = { Transformer.Config.d; layers; heads; context; slope_span } in
   let data = Jsb.load ~path:corpus in
   let pool = Array.of_list (Pool.chorales train_on data) in
   (* The windows of the referee come from whole pieces, thus a long training context
@@ -184,7 +183,6 @@ let train
   in
   for step = 1 to steps do
     let rows, weights = train_batch rng pool ~batch ~context ~augment in
-    let progress = if config.progress then Some rows.Evaluation.progress else None in
     (* the dropout takes its own lane, thus the draw and the batch streams stay put *)
     let dropout =
       Transformer.Dropout.create
@@ -200,7 +198,7 @@ let train
             params
             ~codes:rows.Evaluation.codes
             ~phases:rows.Evaluation.phases
-            ~progress
+            ~progress:rows.Evaluation.progress
             ~masks:rows.Evaluation.masks
             ~weights
             ~dropout)
@@ -309,14 +307,6 @@ let command =
          ~doc:
            "F the dropout rate; the JAX sweep of 2026-08-07 wants 0.1 at d 64 and 0.2 at \
             d 128 or the long context"
-     and progress =
-       flag
-         "-progress"
-         no_arg
-         ~doc:
-           " add the piece-position table: 16 rows, indexed by which sixteenth of its \
-            piece the step of a token sits in. The bar phase says where a step is in the \
-            bar and nothing else says where it is in the piece."
      and slope_span =
        flag
          "-alibi-span"
@@ -365,8 +355,7 @@ let command =
          ~clip
          ~dropout_rate
          ~eval_context
-         ~slope_span
-         ~progress)
+         ~slope_span)
 ;;
 
 let () = Command_unix.run command

@@ -19,7 +19,7 @@ import data
 from transformer import infer
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
-CHECKPOINT = JAX_ROOT.parent / "_train" / "d64-mk-do01-48k-s4-desc.ckpt"
+CHECKPOINT = JAX_ROOT.parent / "_train" / "d64-mk-do01-48k-s4-prog.ckpt"
 PLAYER = JAX_ROOT.parent / "_build" / "default" / "bin" / "play_transformer.exe"
 
 
@@ -79,7 +79,7 @@ def test_pick_runs_each_row_of_the_batch_on_its_own():
 
 @pytest.mark.skipif(
     not CHECKPOINT.exists() or not PLAYER.exists(),
-    reason="Gate C needs _train/d64-mk-do01-48k-s4-desc.ckpt and dune build",
+    reason="Gate C needs _train/d64-mk-do01-48k-s4-prog.ckpt and dune build",
 )
 def test_gate_c_the_batched_draw_equals_the_ocaml_sampler():
     """batched on purpose: a solo run passes even when a finished element wrongly
