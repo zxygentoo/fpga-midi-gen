@@ -145,6 +145,80 @@ weights need quantization-aware training. Ternary weights remove the
 multipliers: the MAC becomes add, subtract or skip, and the DSP blocks
 leave the design.
 
+## The piece position
+
+The bar phase gives the position in the bar. It does not give the
+position in the piece. The tokens hold no other measure of time.
+Therefore the model cannot know that it is near the end, and it cannot
+name the part of the piece that it must state again.
+
+A second table gives that position. The table has 16 rows. The index is
+the piece phase:
+
+    piece_phase = 16 * step / steps_in_piece
+
+The row adds to the token embedding, beside the bar phase. The two
+tables have the same shape and the same use: one says where the step is
+in the bar, the other says where the step is in the piece.
+
+The ratio is the correct measure, and the corpus shows it. A repeated
+bar of the top line comes again after a distance. That distance is more
+constant as a part of the piece than as a count of steps: the
+coefficient of variation is 0.48 against 0.58 for the exact repeat, and
+0.49 against 0.59 for the contour. Therefore a ratio names a repeat
+better than a step count.
+
+The count of rows is a balance. With 16 rows, one offset holds 44
+percent of the repeats. With 32 rows it holds 31 percent, and the other
+repeats divide between 25 offsets that each get less data. With 8 rows
+it holds 52 percent, but the last row is then 1.8 bars, and the model
+cannot tell "prepare the cadence" from "make the cadence". 16 rows keep
+both properties.
+
+The length of the piece is an input. A control register holds it, thus
+the host asks for a piece of a given length. The host also sends the
+size of one bucket, `steps_in_piece / 16`. Therefore the circuit needs
+a counter and a compare, and no divider.
+
+This table is how the model learns to end. At the last bucket the model
+knows that the piece stops. The training corpus must show an end for
+this to work, thus the packed corpus with a drawable START comes with
+it.
+
+The table costs 16 rows of `d`: 1 KB at `d` 64 with int8 weights, which
+is 0.9 percent of the parameters.
+
+## What the piece position gave
+
+The table was tested at the recipe of the best model: `d` 64, 2 layers,
+`T` 256, dropout 0.1, seed 4, 48000 steps. One variable changed.
+
+The loss did not move. The valid loss is 0.6298, and the model without
+the table gives 0.6299. A test at `T` 512 gave the same answer: the
+table moved the loss by 0.0001 or less at every evaluation, and the
+sign changed from one evaluation to the next.
+
+The ear moved. The music keeps the same craft, and it becomes more
+dynamic and more intentional. Therefore the table stays. This is the
+second change of the era that the ear accepted, and both were invisible
+to the loss: the other is the order of the sentence. Both change what
+the model is conditioned on. No change of capacity, depth, context,
+dropout, weight decay or ALiBi has ever passed the ear.
+
+The one measurable effect of the table is a smaller distance between
+the train loss and the valid loss: 0.0698 against 0.0750. The train
+loss is worse, not the valid loss better. Thus the table acts as a weak
+regularizer, and that is not the reason to keep it.
+
+**The crop dilution is not a reason for a longer window.** A repeat
+pair 80 steps apart is in about one training window in five at `T` 256.
+The model without the table has the same dilution, and the ear prefers
+it to every model with a longer context. Therefore the dilution is a
+condition of this corpus and not a fault. A `T` 512 test moved the loss
+by 0.005, moved the effect of the table by nothing, and the ear found
+the music worse. Test a change against the best model, and change one
+thing.
+
 ## The sizes
 
 The budget is the block RAM: 607.5 KB, with about ten percent reserved

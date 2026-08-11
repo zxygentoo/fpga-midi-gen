@@ -30,12 +30,12 @@ from transformer import model
 JAX_ROOT = Path(__file__).resolve().parent.parent
 
 
-def draw_params(key, d, layers):
+def draw_params(key, d, layers, progress=False):
     def normal(k, shape):
         return jax.random.normal(k, shape, dtype=jnp.float32) * 0.02
 
     keys = iter(jax.random.split(key, 2 + 6 * layers))
-    return {
+    drawn = {
         "embed": normal(next(keys), (model.VOCAB, d)),
         "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
         "layers": [
@@ -50,11 +50,21 @@ def draw_params(key, d, layers):
             for _ in range(layers)
         ],
     }
+    if progress:
+        # a folded key, so that the split above keeps the draw of a run without progress
+        drawn["progress"] = normal(
+            jax.random.fold_in(key, 1), (model.PROGRESS_BUCKETS, d)
+        )
+    return drawn
 
 
 def save_checkpoint(path, params):
-    """Kaun order: embed, phase, then wq wk wv wo w1 w2 for each layer."""
-    tensors = [params["embed"], params["phase"]] + [
+    """Kaun order: embed, phase, the progress table when the run has one, then
+    wq wk wv wo w1 w2 for each layer."""
+    tables = [params["embed"], params["phase"]]
+    if "progress" in params:
+        tables.append(params["progress"])
+    tensors = tables + [
         layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS
     ]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -72,8 +82,8 @@ def schedule(step, peak, warmup, total):
     return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
 
 
-def make_step(heads, dropout, clip, weight_decay, span):
-    def step_fn(params, m, v, t, codes, phases, masks, weights, lr, key):
+def make_step(heads, dropout, clip, weight_decay, span, progress=False):
+    def step_fn(params, m, v, t, codes, phases, buckets, masks, weights, lr, key):
         def loss_fn(p):
             return model.loss(
                 p,
@@ -85,6 +95,7 @@ def make_step(heads, dropout, clip, weight_decay, span):
                 key=key,
                 weights=weights,
                 span=span,
+                progress=buckets if progress else None,
             )
 
         value, grads = jax.value_and_grad(loss_fn)(params)
@@ -108,21 +119,30 @@ def make_step(heads, dropout, clip, weight_decay, span):
     return jax.jit(step_fn)
 
 
-def make_eval(heads, span):
-    def eval_fn(params, codes, phases, masks):
-        return model.loss(params, codes, phases, masks, heads=heads, span=span)
+def make_eval(heads, span, progress=False):
+    def eval_fn(params, codes, phases, buckets, masks):
+        return model.loss(
+            params,
+            codes,
+            phases,
+            masks,
+            heads=heads,
+            span=span,
+            progress=buckets if progress else None,
+        )
 
     return jax.jit(eval_fn)
 
 
 def eval_loss(eval_fn, params, batches):
     total, count = 0.0, 0
-    for codes, phases, masks, rows in batches:
+    for codes, phases, buckets, masks, rows in batches:
         value = float(
             eval_fn(
                 params,
                 jnp.asarray(codes),
                 jnp.asarray(phases),
+                jnp.asarray(buckets),
                 jnp.asarray(masks),
             )
         )
@@ -154,6 +174,15 @@ def main():
         help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). "
         "The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider "
         "span sees further and stays a power of two. The draw must state the same span.",
+    )
+    add(
+        "--progress",
+        action="store_true",
+        help="add the piece-position table of docs/transformer_model.md: 16 rows, "
+        "indexed by which sixteenth of its piece the step of a token sits in. It earns "
+        "its place at context 256, where a window holds START in 0.7%% of rows and the "
+        "model is otherwise blind to its position; at 512 it holds START in 28%% of "
+        "rows, the table is redundant and the loss is 0.004 worse.",
     )
     add("--train-on", choices=("train", "train+test", "all"), default="train")
     add("--log-every", type=int, default=10)
@@ -190,14 +219,16 @@ def main():
     rng = np.random.default_rng(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, draw_key = jax.random.split(key)
-    params = draw_params(draw_key, args.d, args.layers)
+    params = draw_params(draw_key, args.d, args.layers, args.progress)
     m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(args.heads, args.dropout, args.clip, args.wd, args.alibi_span)
-    eval_fn = make_eval(args.heads, args.alibi_span)
+    step_fn = make_step(
+        args.heads, args.dropout, args.clip, args.wd, args.alibi_span, args.progress
+    )
+    eval_fn = make_eval(args.heads, args.alibi_span, args.progress)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     print(
         f"corpus: {len(pool)} pool pieces; eval rows: "
-        f"{sum(b[3] for b in train_eval)} train, {sum(b[3] for b in valid_eval)} valid; "
+        f"{sum(b[4] for b in train_eval)} train, {sum(b[4] for b in valid_eval)} valid; "
         f"parameters: {count}",
         flush=True,
     )
@@ -227,7 +258,7 @@ def main():
         )
 
     for step in range(1, args.steps + 1):
-        codes, phases, masks, weights = data.train_batch(
+        codes, phases, buckets, masks, weights = data.train_batch(
             rng, pool, args.batch, args.context
         )
         lr = schedule(step, args.lr, args.warmup, args.steps)
@@ -239,6 +270,7 @@ def main():
             jnp.float32(step),
             jnp.asarray(codes),
             jnp.asarray(phases),
+            jnp.asarray(buckets),
             jnp.asarray(masks),
             jnp.asarray(weights),
             jnp.float32(lr),

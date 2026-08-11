@@ -66,7 +66,15 @@ let loss config params rows ~batch =
         let value =
           Nx.item
             []
-            (Transformer.loss config params ~codes ~phases ~masks ~weights ~dropout)
+            (Transformer.loss
+               config
+               params
+               ~codes
+               ~phases
+               ~progress:None
+               ~masks
+               ~weights
+               ~dropout)
         in
         total +. (value *. Float.of_int (List.length chunk)), count + List.length chunk)
   in

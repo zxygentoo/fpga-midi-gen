@@ -124,7 +124,9 @@ let train
   ~eval_context
   ~slope_span
   =
-  let config = { Transformer.Config.d; layers; heads; context; slope_span } in
+  let config =
+    { Transformer.Config.d; layers; heads; context; slope_span; progress = false }
+  in
   let data = Jsb.load ~path:corpus in
   let pool = Array.of_list (Pool.chorales train_on data) in
   (* The windows of the referee come from whole pieces, thus a long training context
@@ -183,7 +185,15 @@ let train
       Rune.value_and_grads
         (fun tensors ->
           let params = Transformer.Params.of_list config tensors in
-          Transformer.loss config params ~codes ~phases ~masks ~weights ~dropout)
+          Transformer.loss
+            config
+            params
+            ~codes
+            ~phases
+            ~progress:None
+            ~masks
+            ~weights
+            ~dropout)
         (Transformer.Params.to_list !params)
     in
     let grads_tree =

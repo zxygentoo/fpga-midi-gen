@@ -26,21 +26,32 @@ module Config : sig
         the gentlest head sees: the paper's 8 leaves it at -4 logits by 1024 tokens and -8
         by 2048, blind to a phrase. A wider span reaches further and stays a power of two,
         thus a shift in the circuit. *)
+    ; progress : bool
+    (** The piece-position table of [docs/transformer_model.md]: 16 rows, indexed by which
+        sixteenth of its piece the step of a token sits in. The bar phase says where a
+        step is in the bar, and nothing else in the stream says where it is in the piece.
+        A model with this table needs the piece length as an input, thus [sample] reads
+        its [steps] as that length. *)
     }
 
-  (** the baseline of the design document: d 64, layers 2, heads 4, context 256 *)
+  (** the baseline of the design document: d 64, layers 2, heads 4, context 256, and no
+      piece-position table *)
   val baseline : t
 
-  (** [of_checkpoint path ~heads ~context ~slope_span] reads the width and the layer count
-      from the tensor shapes of the checkpoint, thus a player states neither. The heads
-      and the context are not in the file: no tensor shape holds them, because the heads
-      only split the width at run time and ALiBi holds no position table. The context is a
-      choice of the draw in any case — a model trained long can sample short. *)
+  (** [of_checkpoint path ~heads ~context ~slope_span] reads the width, the layer count
+      and the piece-position table from the tensor shapes of the checkpoint, thus a player
+      states none of them. Two tables and six tensors for each layer is a model without
+      the piece position; three tables is a model with it, and the two counts never
+      collide. The heads and the context are not in the file: no tensor shape holds them,
+      because the heads only split the width at run time and ALiBi holds no position
+      table. The context is a choice of the draw in any case — a model trained long can
+      sample short. *)
   val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
 module Params : sig
-  (** the weights of one model: the two tables, and six tensors for each layer *)
+  (** the weights of one model: the two tables, the piece-position table when
+      [Config.progress] asks for it, and six tensors for each layer *)
   type t
 
   (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
@@ -106,32 +117,41 @@ module Dropout : sig
   val create : rate:float -> seed:int -> t
 end
 
-(** [loss config params ~codes ~phases ~masks ~weights ~dropout] is the cross entropy of
-    the next code, a scalar. A row of [codes] holds [length + 1] codes: the inputs and the
-    shifted labels. [masks] holds the legal set of each label, from the walk of the whole
-    chorale, and it sits inside the softmax: the model spends no mass on a code that the
-    sampler would refuse. Therefore its raw mass outside the legal set stays untrained,
-    and [sample] must carry the same mask at every draw. [weights] holds one weight for
-    each label position; zero drops the position from the mean, which is how the padding
-    of a short piece stays out of the loss — a padded label would teach the walk to hold
-    the last chord and emit END for ever. *)
+(** [loss config params ~codes ~phases ~progress ~masks ~weights ~dropout] is the cross
+    entropy of the next code, a scalar. [progress] holds the piece-position bucket of each
+    input position, and it must be [Some] exactly when the model holds the table;
+    otherwise the call raises. The OCaml corpus does not carry the buckets yet, thus
+    [Evaluation] and the OCaml trainer pass [None] and cannot referee a model that reads
+    the piece position. Train that model with the JAX trainer and audition it with
+    [sample]. A row of [codes] holds [length + 1] codes: the inputs and the shifted
+    labels. [masks] holds the legal set of each label, from the walk of the whole chorale,
+    and it sits inside the softmax: the model spends no mass on a code that the sampler
+    would refuse. Therefore its raw mass outside the legal set stays untrained, and
+    [sample] must carry the same mask at every draw. [weights] holds one weight for each
+    label position; zero drops the position from the mean, which is how the padding of a
+    short piece stays out of the loss — a padded label would teach the walk to hold the
+    last chord and emit END for ever. *)
 val loss
   :  Config.t
   -> Params.t
   -> codes:int array array
   -> phases:int array array
+  -> progress:int array array option
   -> masks:bool array array array
   -> weights:float array array
   -> dropout:Dropout.t
   -> tensor
 
 (** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
-    boot: an empty context, then [Start] at phase zero — power on, music on. One element
-    of [music] is one drawn step: the events of its sentence, without the [End]. The mask
-    of the design document guards every draw, thus each sentence is valid. [min_p] removes
-    each legal token whose tempered probability is below [min_p] of the peak's; the peak
-    always stays, thus a draw always exists, and zero turns the filter off. The same seed
-    gives the same music.
+    boot: an empty context, then [Start] at phase zero — power on, music on. When the
+    model holds the piece-position table, [steps] is also the length of the piece that the
+    host asks for: the bucket of step [i] is [i * 16 / steps]. Therefore the same weights
+    write a short piece or a long one, and a draw of a different length is a different
+    piece, not a cut of the same one. One element of [music] is one drawn step: the events
+    of its sentence, without the [End]. The mask of the design document guards every draw,
+    thus each sentence is valid. [min_p] removes each legal token whose tempered
+    probability is below [min_p] of the peak's; the peak always stays, thus a draw always
+    exists, and zero turns the filter off. The same seed gives the same music.
 
     It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
     outside 0 up to 1. *)
