@@ -15,6 +15,63 @@ BAR_STEPS = 16
 PROGRESS_BUCKETS = 16
 SPLITS = ("train", "valid", "test")
 
+VOCAB = 256
+SEATS = 4
+END, START = 0x00, 0xFF
+NO_LAST_ON = 128  # a pitch above every ON, thus "the sentence holds no ON yet"
+NO_LAST_OFF = -1  # a pitch below every OFF
+
+
+class Sounding:
+    """The batched twin of lib/core/sounding_state.ml: which pitches ring, and what the
+    sentence has done so far.
+
+    The grammar is the one the training mask carries, so the sampler must draw inside it
+    or the model's untrained mass leaks out: START never -- it is input only; an ON when
+    its pitch is silent, a seat of the four is open, and it falls below the last ON; an
+    OFF when its pitch rings, the sentence holds no ON yet, and it climbs above the last
+    OFF; END always.
+
+    A code carries its kind in bit 7 and its pitch in bits 6:0, thus ON is 128..254 over
+    pitch 0..126, OFF is 1..127 over pitch 1..127, code 0 is END and code 255 is START."""
+
+    def __init__(self, batch):
+        self.ringing = np.zeros((batch, 128), dtype=bool)
+        self.last_on = np.full(batch, NO_LAST_ON, dtype=np.int64)
+        self.last_off = np.full(batch, NO_LAST_OFF, dtype=np.int64)
+
+    def legal(self):
+        """the grammar flag of every code, [batch, 256] bool"""
+        mask = np.zeros((len(self.last_on), VOCAB), dtype=bool)
+        seats_free = (self.ringing.sum(axis=1) < SEATS)[:, None]
+        no_on_yet = (self.last_on == NO_LAST_ON)[:, None]
+        mask[:, 128:255] = (
+            ~self.ringing[:, :127]
+            & seats_free
+            & (np.arange(127)[None, :] < self.last_on[:, None])
+        )
+        mask[:, 1:128] = (
+            self.ringing[:, 1:128]
+            & no_on_yet
+            & (np.arange(1, 128)[None, :] > self.last_off[:, None])
+        )
+        mask[:, END] = True
+        return mask
+
+    def step(self, code, active):
+        """walk one drawn code for each active element; it does not test legality"""
+        is_on = (code >= 128) & (code != START)
+        is_off = (code >= 1) & (code < 128)
+        is_end = code == END
+        pitch = np.where(is_on, code - 128, code)
+        rows = np.arange(len(code))
+        for flag, ringing in ((is_on & active, True), (is_off & active, False)):
+            self.ringing[rows[flag], pitch[flag]] = ringing
+        self.last_on = np.where(is_on & active, pitch, self.last_on)
+        self.last_off = np.where(is_off & active, pitch, self.last_off)
+        self.last_on = np.where(is_end & active, NO_LAST_ON, self.last_on)
+        self.last_off = np.where(is_end & active, NO_LAST_OFF, self.last_off)
+
 
 def piece_progress(codes):
     """The progress bucket of each token: which sixteenth of its piece the step sits in.

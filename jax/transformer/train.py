@@ -15,10 +15,10 @@ gradient clip is the same global-norm rule. Optimizer parity with OCaml is not r
 -- Gate B pins the eval, not the trajectory.
 """
 
-import argparse
 import time
 from pathlib import Path
 
+import click
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -151,80 +151,85 @@ def eval_loss(eval_fn, params, batches):
     return total / count
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    add = parser.add_argument
-    add("--corpus", default=str(JAX_ROOT / "_data" / "corpus.safetensors"))
-    add("--d", type=int, default=64)
-    add("--layers", type=int, default=2)
-    add("--heads", type=int, default=4)
-    add("--context", type=int, default=256)
-    add("--batch", type=int, default=16)
-    add("--steps", type=int, default=200)
-    add("--lr", type=float, default=3e-4)
-    add("--seed", type=int, default=1)
-    add("--warmup", type=int, default=0)
-    add("--wd", type=float, default=0.01)
-    add("--clip", type=float, default=1.0)
-    add("--dropout", type=float, default=0.0)
-    add(
-        "--alibi-span",
-        type=int,
-        default=model.SLOPE_SPAN,
-        help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). "
-        "The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider "
-        "span sees further and stays a power of two. The draw must state the same span.",
-    )
-    add(
-        "--progress",
-        action="store_true",
-        help="add the piece-position table of docs/transformer_model.md: 16 rows, "
-        "indexed by which sixteenth of its piece the step of a token sits in. It earns "
-        "its place at context 256, where a window holds START in 0.7%% of rows and the "
-        "model is otherwise blind to its position; at 512 it holds START in 28%% of "
-        "rows, the table is redundant and the loss is 0.004 worse.",
-    )
-    add("--train-on", choices=("train", "train+test", "all"), default="train")
-    add("--log-every", type=int, default=10)
-    add("--eval-every", type=int, default=100)
-    add("--eval-limit", type=int, default=128)
-    add(
-        "--eval-context",
-        type=int,
-        default=None,
-        help="evaluate at this context instead of the training one. The windows come "
-        "from whole pieces, so a long training context leaves almost none: 149 valid "
-        "rows at 256, 56 at 512, 6 at 1024, and none at 2048. ALiBi has no position "
-        "table, so a model trained long evaluates short; 256 also makes every run "
-        "comparable, as checkpoint_tool does.",
-    )
-    add("--ckpt", default=None)
-    add(
-        "--average-top",
-        type=int,
-        default=0,
-        help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
-    )
-    args = parser.parse_args()
+@click.command(help=__doc__)
+@click.option("--corpus", default=str(JAX_ROOT / "_data" / "corpus.safetensors"))
+@click.option("--d", default=64)
+@click.option("--layers", default=2)
+@click.option("--heads", default=4)
+@click.option("--context", default=256)
+@click.option("--batch", default=16)
+@click.option("--steps", default=200)
+@click.option("--lr", default=3e-4)
+@click.option("--seed", default=1)
+@click.option("--warmup", default=0)
+@click.option("--wd", default=0.01)
+@click.option("--clip", default=1.0)
+@click.option("--dropout", default=0.0)
+@click.option(
+    "--alibi-span",
+    default=model.SLOPE_SPAN,
+    help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider span sees further and stays a power of two. The draw must state the same span.",
+)
+@click.option(
+    "--progress",
+    is_flag=True,
+    help="add the piece-position table of docs/transformer_model.md: 16 rows, indexed by which sixteenth of its piece the step of a token sits in. It earns its place at context 256, where a window holds START in 0.7% of rows and the model is otherwise blind to its position; at 512 it holds START in 28% of rows, the table is redundant and the loss is 0.004 worse.",
+)
+@click.option(
+    "--train-on", type=click.Choice(("train", "train+test", "all")), default="train"
+)
+@click.option("--log-every", default=10)
+@click.option("--eval-every", default=100)
+@click.option("--eval-limit", default=128)
+@click.option(
+    "--eval-context",
+    "eval_context_flag",
+    type=int,
+    help="evaluate at this context instead of the training one. The windows come from whole pieces, so a long training context leaves almost none: 149 valid rows at 256, 56 at 512, 6 at 1024, and none at 2048. ALiBi has no position table, so a model trained long evaluates short; 256 also makes every run comparable, as checkpoint_tool does.",
+)
+@click.option("--ckpt", default=None)
+@click.option(
+    "--average-top",
+    default=0,
+    help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
+)
+def main(
+    corpus,
+    d,
+    layers,
+    heads,
+    context,
+    batch,
+    steps,
+    lr,
+    seed,
+    warmup,
+    wd,
+    clip,
+    dropout,
+    alibi_span,
+    progress,
+    train_on,
+    log_every,
+    eval_every,
+    eval_limit,
+    eval_context_flag,
+    ckpt,
+    average_top,
+):
 
-    corpus = data.load_corpus(args.corpus)
-    pool = data.train_pool(corpus, args.train_on)
-    eval_context = args.eval_context or args.context
-    train_eval = data.eval_batches(
-        corpus["train"], eval_context, args.eval_limit, args.batch
-    )
-    valid_eval = data.eval_batches(
-        corpus["valid"], eval_context, args.eval_limit, args.batch
-    )
-    rng = np.random.default_rng(args.seed)
-    key = jax.random.PRNGKey(args.seed)
+    corpus = data.load_corpus(corpus)
+    pool = data.train_pool(corpus, train_on)
+    eval_context = eval_context_flag or context
+    train_eval = data.eval_batches(corpus["train"], eval_context, eval_limit, batch)
+    valid_eval = data.eval_batches(corpus["valid"], eval_context, eval_limit, batch)
+    rng = np.random.default_rng(seed)
+    key = jax.random.PRNGKey(seed)
     key, draw_key = jax.random.split(key)
-    params = draw_params(draw_key, args.d, args.layers, args.progress)
+    params = draw_params(draw_key, d, layers, progress)
     m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(
-        args.heads, args.dropout, args.clip, args.wd, args.alibi_span, args.progress
-    )
-    eval_fn = make_eval(args.heads, args.alibi_span, args.progress)
+    step_fn = make_step(heads, dropout, clip, wd, alibi_span, progress)
+    eval_fn = make_eval(heads, alibi_span, progress)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     print(
         f"corpus: {len(pool)} pool pieces; eval rows: "
@@ -246,22 +251,22 @@ def main():
         if valid_loss < best:
             best = valid_loss
             mark = "  *"
-            if args.ckpt and args.train_on != "all":
-                save_checkpoint(args.ckpt, params)
-        if args.average_top > 0:
+            if ckpt and train_on != "all":
+                save_checkpoint(ckpt, params)
+        if average_top > 0:
             top.append((valid_loss, step, jax.tree.map(np.asarray, params)))
             top.sort(key=lambda entry: entry[0])
-            del top[args.average_top :]
+            del top[average_top:]
         print(
             f"step {step:4d}  eval  train {train_loss:.4f}  valid {valid_loss:.4f}{mark}",
             flush=True,
         )
 
-    for step in range(1, args.steps + 1):
+    for step in range(1, steps + 1):
         codes, phases, buckets, masks, weights = data.train_batch(
-            rng, pool, args.batch, args.context
+            rng, pool, batch, context
         )
-        lr = schedule(step, args.lr, args.warmup, args.steps)
+        lr = schedule(step, lr, warmup, steps)
         key, step_key = jax.random.split(key)
         value, params, m, v = step_fn(
             params,
@@ -277,31 +282,31 @@ def main():
             step_key,
         )
         losses.append(float(value))
-        if step % args.log_every == 0 or step == 1:
+        if step % log_every == 0 or step == 1:
             print(f"step {step:4d}  loss {np.mean(losses):.4f}", flush=True)
             losses = []
-        if step % args.eval_every == 0 or step == args.steps:
+        if step % eval_every == 0 or step == steps:
             evaluate(step, params)
 
     seconds = time.perf_counter() - started
     print(
-        f"time: {seconds:.0f} s, {seconds / args.steps * 1000:.0f} ms each step, "
+        f"time: {seconds:.0f} s, {seconds / steps * 1000:.0f} ms each step, "
         f"the evaluations inside",
         flush=True,
     )
     print(f"best valid {best:.4f}", flush=True)
-    if args.ckpt:
-        if args.train_on == "all":
-            save_checkpoint(args.ckpt, params)
-            print(f"checkpoint of the last step: {args.ckpt}", flush=True)
+    if ckpt:
+        if train_on == "all":
+            save_checkpoint(ckpt, params)
+            print(f"checkpoint of the last step: {ckpt}", flush=True)
         else:
-            print(f"checkpoint of the best: {args.ckpt}", flush=True)
-        if args.average_top > 0 and top:
+            print(f"checkpoint of the best: {ckpt}", flush=True)
+        if average_top > 0 and top:
             averaged = jax.tree.map(
                 lambda *tensors: np.mean(np.stack(tensors), axis=0),
                 *[entry[2] for entry in top],
             )
-            path = args.ckpt.replace(".ckpt", "-avg.ckpt")
+            path = ckpt.replace(".ckpt", "-avg.ckpt")
             save_checkpoint(path, averaged)
             steps = [entry[1] for entry in top]
             print(
