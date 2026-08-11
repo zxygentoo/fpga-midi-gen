@@ -7,8 +7,8 @@
 
 open Base
 
-let cpb = Mgen_board.Top.host_clocks_per_bit
-let midi_cpb = Mgen_board.Top.midi_clocks_per_bit
+let cpb = Mgen_nexys4.Top.host_clocks_per_bit
+let midi_cpb = Mgen_nexys4.Top.midi_clocks_per_bit
 
 (* the two lines run at different baud rates, thus each call names its own divisor *)
 let decode_uart wave cpb =
@@ -19,7 +19,7 @@ let hex s = Mgen_core.Bytes_util.hex (Bytes.of_string s)
 
 let () =
   let open Hardcaml in
-  let sim = Cyclesim.create (Mgen_board.Top.create ()) in
+  let sim = Cyclesim.create (Mgen_nexys4.Top.create ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
   let txd = Cyclesim.out_port sim "RsTx" in

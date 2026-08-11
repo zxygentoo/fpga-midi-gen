@@ -1,9 +1,4 @@
 (executable
- (name gen_verilog)
- (modules gen_verilog)
- (libraries core core_unix hardcaml jane_rope mgen_board))
-
-(executable
  (name board_tool)
  (modules board_tool)
  (preprocess

@@ -148,7 +148,7 @@ let next_step w =
       , { note = mapper ~scale:w.model.scale params sum; due = step = 1 || count > start }
       ))
   in
-  { w with prng; rows; step }, List.rev states
+  { w with prng; rows; step }, states
 ;;
 
 (* the note stream of a one-voice model: the tests below use it to show the shape of the
@@ -216,17 +216,17 @@ let%expect_test "the articulation grid is the ctz schedule" =
   done;
   let count k = List.length due_steps.(k) in
   Stdio.printf
-    "bass %d (every 64), tenor %d (every 16), alto %d (every 4), soprano %d (every step)\n"
+    "soprano %d (every step), alto %d (every 4), tenor %d (every 16), bass %d (every 64)\n"
     (count 0)
     (count 1)
     (count 2)
     (count 3);
   Stdio.printf
     "bass at steps %s\n"
-    (String.concat ~sep:" " (List.rev_map due_steps.(0) ~f:Int.to_string));
+    (String.concat ~sep:" " (List.rev_map due_steps.(3) ~f:Int.to_string));
   [%expect
     {|
-    bass 3 (every 64), tenor 9 (every 16), alto 33 (every 4), soprano 128 (every step)
+    soprano 128 (every step), alto 33 (every 4), tenor 9 (every 16), bass 3 (every 64)
     bass at steps 1 64 128
     |}]
 ;;

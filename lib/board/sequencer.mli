@@ -16,7 +16,7 @@
       thus the source holds a stable pitch for both messages.
     - Each voice has an open-note register. It keeps the note and the channel of the Note
       On, and the Note Off takes the stored pair. When the run stops, each open voice gets
-      its Note Off, from the lowest voice upward.
+      its Note Off, from the highest voice downward.
     - The gate closes the highest voice, and no other, when the sampled GATE_MS is less
       than the sampled STEP_MS. If it is not less, the gate never comes, and that voice
       sends its Note Off immediately before its next Note On.

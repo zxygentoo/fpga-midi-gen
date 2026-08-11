@@ -4,7 +4,7 @@
     row bytes and the step count, and it owns the PRNG: the draw stream has exactly one
     consumer, thus no other block can move the sequence. The reference is [Pink] with the
     same model: [rewind] starts the model at the seed, and each [step] gives the notes
-    that speak at that step, one at a time and from the lowest voice upward.
+    that speak at that step, one at a time and from the highest voice downward.
 
     The voices share one row set, thus the decomposition does not change the walk. The
     voices take the rows in order: the head of the voice list takes the first rows, thus

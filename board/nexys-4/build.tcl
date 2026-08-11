@@ -1,6 +1,6 @@
 # Builds the bitstream from the generated Verilog.
 #
-# First: dune exec bin/gen_verilog.exe
+# First: dune exec board/nexys-4/gen_verilog.exe
 # Then, from the repository root:
 #   vivado -mode batch -journal board/_build/vivado.jou \
 #          -log board/_build/vivado.log -source board/nexys-4/build.tcl

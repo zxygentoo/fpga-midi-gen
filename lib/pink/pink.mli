@@ -92,6 +92,6 @@ type state =
     must fit 32 bits and must not be 0, the rule of the SEED cell. *)
 val create : model:t -> seed:int -> walk
 
-(** [next_step w] is the model after one step and the voice states, from the slowest voice
-    upward — the strike order of the wire. *)
+(** [next_step w] is the model after one step and the voice states, in the order of the
+    voices of the model — the highest voice first, the strike order of the wire. *)
 val next_step : walk -> walk * state list

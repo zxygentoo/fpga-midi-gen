@@ -37,8 +37,8 @@ and not a silent break of the harmony.
 | voices | 4 | `Pink.default` |
 | rows | 8 | the sum of the groups |
 | stretch | 2 | each voice |
-| clocks_per_ms | 100 000 | `lib/board/top.ml` |
-| button debounce | 10 ms | `lib/board/top.ml` |
+| clocks_per_ms | 100 000 | `board/nexys-4/top.ml` |
+| button debounce | 10 ms | `board/nexys-4/top.ml` |
 
 The RTL elaboration reads the constants from `Pink.default`, as it
 reads the control constants from `Control_intf`, and `Pink.degree_offsets` gives
@@ -132,10 +132,12 @@ end
 ```
 
 A source answers `step` with the notes that speak at that step — zero, one,
-or up to one for each voice. A note that does not speak never crosses the
-socket: a voice that holds its pitch gives nothing, and a source with one
-voice never names a voice it does not have. Therefore the sequencer makes no
-selection, and it plays what it receives.
+or up to one for each voice — one at a time and from the highest voice
+downward: the melody leads, and a model that chooses the top voice first
+reports in the order of its choices. A note that does not speak never
+crosses the socket: a voice that holds its pitch gives nothing, and a
+source with one voice never names a voice it does not have. Therefore the
+sequencer makes no selection, and it plays what it receives.
 
 The synthesizer has four voices and no more: a fifth note stops the oldest
 note. Therefore `voices` is 4, and this is a fact of the hardware and not a
@@ -292,10 +294,10 @@ because the note of the last step is already there.
 
 At the end of the walk the block latches the note of each voice and a mask
 of the voices that speak. Then it gives them to the sequencer one at a time,
-from the lowest voice upward — the order of the wire, and the order of the
-reference. A note holds while `valid` is 1, and the mask loses that voice at
-the transfer. When the mask is empty the block goes back to rest and `idle`
-rises.
+from the highest voice downward — the order of the wire, and the order of
+the reference. A note holds while `valid` is 1, and the mask loses that
+voice at the transfer. When the mask is empty the block goes back to rest
+and `idle` rises.
 
 Therefore the block, and not the sequencer, decides which notes exist. A
 voice that does not speak takes no cycle on the socket.
@@ -363,7 +365,7 @@ sequencer only reads it.
   of 0 counts as 1. Between boundaries a change has no effect, thus a blip
   of RUN inside one step moves nothing.
 - When the boundary sample reads RUN as 0, the sequencer sends a Note Off
-  for each open note, from the lowest voice upward, and goes to Idle.
+  for each open note, from the highest voice downward, and goes to Idle.
 
 The sequencer strobes `source_rewind` at the run start and at no other
 time. For `Voss` the rewind captures the SEED view, thus a run is a pure
