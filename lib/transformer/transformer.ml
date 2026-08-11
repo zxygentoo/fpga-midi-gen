@@ -8,6 +8,13 @@ let phase_buckets = 16
 
 (* the rows of the piece-position table: the parts of one piece *)
 let progress_buckets = 16
+
+(* The steps of one bucket at the draw. The corpus divides each piece into
+   [progress_buckets], and a chorale runs 228 steps at the median, thus a bucket is 14.2
+   steps there and 16 is the nearest power of two. A power of two is a bit-slice in the
+   circuit, and the product with [progress_buckets] is the period: 256 steps, sixteen
+   bars, about one chorale. *)
+let progress_stride = 16
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
 module Config = struct
@@ -396,9 +403,13 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     |> Nx.get [ 0; Array.length codes - 1 ]
     |> Nx.to_array
   in
-  (* The piece position of a step, per the design document: the host states the length,
-     and here [steps] is that statement. The last bucket holds the last part. *)
-  let bucket step = Int.min (progress_buckets - 1) (step * progress_buckets / steps) in
+  (* The piece position of a step. The corpus divides a piece by its length, but a draw
+     has no length to divide by: the board plays for ever, and a long draw would stretch
+     one arc of sixteen buckets over a span no training piece ever had. Therefore the draw
+     counts instead, and the arc repeats every [progress_stride * progress_buckets] steps
+     — a walk of chorale-shaped arcs, one after another. A draw of exactly that many steps
+     gives the same buckets the old ratio gave. *)
+  let bucket step = step / progress_stride % progress_buckets in
   (* the code of the largest logit; the first wins when two are equal *)
   let peak_code raw =
     let best = ref Float.neg_infinity in

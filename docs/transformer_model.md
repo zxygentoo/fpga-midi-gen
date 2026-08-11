@@ -152,14 +152,15 @@ position in the piece. The tokens hold no other measure of time.
 Therefore the model cannot know that it is near the end, and it cannot
 name the part of the piece that it must state again.
 
-A second table gives that position. The table has 16 rows. The index is
-the piece phase:
+A second table gives that position. The table has 16 rows, and the row
+adds to the token embedding beside the bar phase. The two tables have
+the same shape and the same use: one says where the step is in the bar,
+the other says where the step is in the piece.
+
+Training and the draw index it differently, because training knows the
+length of a piece and a draw does not. The corpus divides:
 
     piece_phase = 16 * step / steps_in_piece
-
-The row adds to the token embedding, beside the bar phase. The two
-tables have the same shape and the same use: one says where the step is
-in the bar, the other says where the step is in the piece.
 
 The ratio is the correct measure, and the corpus shows it. A repeated
 bar of the top line comes again after a distance. That distance is more
@@ -175,15 +176,22 @@ it holds 52 percent, but the last row is then 1.8 bars, and the model
 cannot tell "prepare the cadence" from "make the cadence". 16 rows keep
 both properties.
 
-The length of the piece is an input. A control register holds it, thus
-the host asks for a piece of a given length. The host also sends the
-size of one bucket, `steps_in_piece / 16`. Therefore the circuit needs
-a counter and a compare, and no divider.
+The draw counts; it does not divide. The corpus divides each piece by
+its length, but a draw has no length: the board plays for ever, and a
+long draw would stretch one arc of sixteen buckets over a span that no
+training piece ever had. Therefore the bucket of step `i` is
 
-This table is how the model learns to end. At the last bucket the model
-knows that the piece stops. The training corpus must show an end for
-this to work, thus the packed corpus with a drawable START comes with
-it.
+    piece_phase = i / 16 mod 16
+
+One bucket is 16 steps, one arc is 256 steps, and the arc repeats. A
+chorale runs 228 steps at the median, thus one arc is about one piece
+and the walk gives chorale-shaped arcs, one after another.
+
+Both numbers are powers of two, thus the circuit takes a bit-slice of
+the step counter. **The piece length is not an input**: no control
+register holds it, the host states nothing, and the counter never
+stops. A draw of exactly 256 steps gives the buckets that a division by
+the length would give, so that case fixes the two rules together.
 
 The table costs 16 rows of `d`: 1 KB at `d` 64 with int8 weights, which
 is 0.9 percent of the parameters.

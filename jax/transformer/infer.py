@@ -125,9 +125,7 @@ def sample(params, *, seeds, steps, context, heads, span, temperature, min_p, pr
         phases = np.concatenate(
             [phases, (step_index % model.PHASE_BUCKETS)[:, None].astype(np.int32)], axis=1
         )
-        bucket = np.minimum(
-            step_index * model.PROGRESS_BUCKETS // steps, model.PROGRESS_BUCKETS - 1
-        )
+        bucket = step_index // model.PROGRESS_STRIDE % model.PROGRESS_BUCKETS
         buckets = np.concatenate([buckets, bucket[:, None].astype(np.int32)], axis=1)
         step_index = np.where(active & (code == data.END), step_index + 1, step_index)
     return music

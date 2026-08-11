@@ -30,8 +30,8 @@ module Config : sig
     (** The piece-position table of [docs/transformer_model.md]: 16 rows, indexed by which
         sixteenth of its piece the step of a token sits in. The bar phase says where a
         step is in the bar, and nothing else in the stream says where it is in the piece.
-        A model with this table needs the piece length as an input, thus [sample] reads
-        its [steps] as that length. *)
+        The draw does not divide by a length: it counts, and the sixteen buckets repeat
+        every 256 steps. *)
     }
 
   (** the baseline of the design document: d 64, layers 2, heads 4, context 256, and no
@@ -141,14 +141,17 @@ val loss
 
 (** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
     boot: an empty context, then [Start] at phase zero — power on, music on. When the
-    model holds the piece-position table, [steps] is also the length of the piece that the
-    host asks for: the bucket of step [i] is [i * 16 / steps]. Therefore the same weights
-    write a short piece or a long one, and a draw of a different length is a different
-    piece, not a cut of the same one. One element of [music] is one drawn step: the events
-    of its sentence, without the [End]. The mask of the design document guards every draw,
-    thus each sentence is valid. [min_p] removes each legal token whose tempered
-    probability is below [min_p] of the peak's; the peak always stays, thus a draw always
-    exists, and zero turns the filter off. The same seed gives the same music.
+    model holds the piece-position table, the bucket of step [i] is [i / 16 mod 16]:
+    sixteen bars to the arc, about the length of a chorale, and the arc repeats for as
+    long as the draw runs. Therefore a short draw is a prefix of a long one, and a draw of
+    any length stays inside the walk the corpus taught — where dividing by the length of
+    the draw would stretch one arc over a span no piece ever had, and would ask the board,
+    which plays for ever, for a length it does not know. One element of [music] is one
+    drawn step: the events of its sentence, without the [End]. The mask of the design
+    document guards every draw, thus each sentence is valid. [min_p] removes each legal
+    token whose tempered probability is below [min_p] of the peak's; the peak always
+    stays, thus a draw always exists, and zero turns the filter off. The same seed gives
+    the same music.
 
     It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
     outside 0 up to 1. *)

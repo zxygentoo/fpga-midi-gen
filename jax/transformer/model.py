@@ -21,6 +21,10 @@ VOCAB = 256
 SLOPE_SPAN = 8  # the ALiBi paper's exponent span; wider slopes see further
 PHASE_BUCKETS = 16
 PROGRESS_BUCKETS = 16
+# the steps of one bucket at the draw: a chorale runs 228 steps at the median, so a
+# bucket of the corpus is 14.2 steps and 16 is the nearest power of two -- a bit-slice in
+# the circuit, and a period of 16 x 16 = 256 steps, about one chorale
+PROGRESS_STRIDE = 16
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
 
 
