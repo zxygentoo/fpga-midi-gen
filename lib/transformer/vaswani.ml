@@ -10,7 +10,7 @@ module O = Source_intf.O
    [Exp], [ExpMac] and [CtxDiv] are the attention of one head at a time; the Wo and Ffn
    states join the residual stream. [Logits], [Weights], [Draw], [Thresh] and [Pick] are
    the sampler; [Decide] decodes the drawn code, [Emit] holds one event for the sequencer,
-   and [FeedDone] lands the model state of the fed token. *)
+   and [ForwardDone] lands the model state of the forwarded token. *)
 module State = struct
   type t =
     | Idle
@@ -35,7 +35,7 @@ module State = struct
     | Pick
     | Decide
     | Emit
-    | FeedDone
+    | ForwardDone
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
@@ -95,7 +95,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   let age = Variable.reg spec ~width:9 in
   let lyr = Variable.reg spec ~width:1 in
   let rms_ret = Variable.reg spec ~width:2 in
-  let after_feed = Variable.reg spec ~width:1 in
+  let after_forward = Variable.reg spec ~width:1 in
   let acc = Variable.reg spec ~width:48 in
   let preg = Variable.reg spec ~width:43 in
   let thi = Variable.reg spec ~width:43 in
@@ -183,7 +183,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* the memories; every read lands in a register, thus block RAM is inferred *)
   let romd = reg spec (rom ~read_addresses:[| rom_addr.value |] rom_bits).(0) in
   let exp2d =
-    reg spec (rom ~read_addresses:[| exp2_addr.value |] Fixed.Model.exp2_bits).(0)
+    reg spec (rom ~read_addresses:[| exp2_addr.value |] Fixed.Constants.exp2_bits).(0)
   in
   let write_port waddr wen wdata =
     { Write_port.write_clock = i.clock
@@ -365,7 +365,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   let enter_sample =
     [ rms_ret <--. 2; ii <--. 0; acc <--. 0; tick <--. 0; sm.set_next RmsSum ]
   in
-  let enter_feed =
+  let enter_forward =
     [ lyr <--. 0; ii <--. 0; sub <--. 0; acc <--. 0; tick <--. 0; sm.set_next Embed ]
   in
   let qkv_shift value =
@@ -423,12 +423,12 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                  ; lov <--. 0
                  ; lofv <--. 0
                  ; out_code <--. 255
-                 ; after_feed <--. 0
+                 ; after_forward <--. 0
                  ]
                  @ List.concat
                      (List.init Token.seats ~f:(fun k ->
                         [ seat_full.(k) <--. 0; seat_pitch.(k) <--. 0 ]))
-                 @ enter_feed)
+                 @ enter_forward)
             ; when_ (i.step &: ~:(i.rewind)) enter_sample
             ] )
         ; ( Embed
@@ -852,7 +852,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                     ; if_
                         (lyr.value ==:. 0)
                         [ lyr <--. 1; rms_ret <--. 0; sm.set_next RmsSum ]
-                        [ lyr <--. 0; sm.set_next FeedDone ]
+                        [ lyr <--. 0; sm.set_next ForwardDone ]
                     ]
                     [ oo <-- oo.value +:. 1; sm.set_next Ffn2Mac ]
                 ]
@@ -1030,7 +1030,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                  [ out_code <-- final
                  ; if_
                      (final ==:. 0)
-                     ([ after_feed <--. 0 ] @ enter_feed)
+                     ([ after_forward <--. 0 ] @ enter_forward)
                      [ out_seat <-- mux2 (msb final) free_seat (match_seat p)
                      ; sm.set_next Emit
                      ]
@@ -1047,11 +1047,11 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                            [ seat_full.(k) <-- msb out_code.value
                            ; when_ (msb out_code.value) [ seat_pitch.(k) <-- p ]
                            ])))
-                 ; after_feed <--. 1
+                 ; after_forward <--. 1
                  ]
-                 @ enter_feed)
+                 @ enter_forward)
             ] )
-        ; ( FeedDone
+        ; ( ForwardDone
           , [ (let p = sel_bottom out_code.value ~width:7 in
                let hot = binary_to_onehot p in
                proc
@@ -1077,7 +1077,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                  ])
             ; cur <-- cur.value +:. 1
             ; filled <-- (filled.value |: (cur.value ==:. 255))
-            ; if_ after_feed.value enter_sample [ sm.set_next Idle ]
+            ; if_ after_forward.value enter_sample [ sm.set_next Idle ]
             ] )
         ]
     ];
@@ -1141,12 +1141,12 @@ let%expect_test "the source agrees with the twin, event for event" =
     List.rev
       (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
   in
-  let twin = Fixed.Engine.create model ~seed in
+  let twin = Fixed.Engine.init model ~seed in
   let reference =
     List.rev
       (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) ->
          List.map
-           (Fixed.Engine.step_events twin)
+           (Fixed.Engine.next_step twin)
            ~f:(fun { Fixed.Engine.voice; pitch; on } -> voice, pitch, on)
          :: acc))
   in

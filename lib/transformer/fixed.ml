@@ -19,15 +19,6 @@ module Constants = struct
 
   (* log2(e) in Q15: the exp2 form of the softmax exponent *)
   let log2e_q15 = Float.iround_nearest_exn (32768.0 /. Float.log 2.0)
-end
-
-(* the quantization arithmetic of one tensor: pure functions from the float values to the
-   int8 form *)
-module Tensor = struct
-  type t =
-    { q : int array
-    ; e : int
-    }
 
   (* the quantized exponential: exp2 of -j/256 in Q15 — the table of the softmax and the
      sampler, and the same species as the weights *)
@@ -37,29 +28,40 @@ module Tensor = struct
   ;;
 
   let exp2_bits = Array.map exp2_table ~f:(Hardcaml.Bits.of_unsigned_int ~width:16)
+end
 
-  let maxabs values =
-    Array.fold values ~init:0.0 ~f:(fun acc v -> Float.max acc (Float.abs v))
+type float_tensor = float array
+
+(* the quantization arithmetic of one tensor: pure functions from the float values to the
+   int8 form *)
+module Tensor = struct
+  (* one weight tensor: w ~ q * 2^-e *)
+  type t =
+    { q : int array
+    ; e : int
+    }
+
+  let max_abs (tensor : float_tensor) =
+    Array.fold tensor ~init:0.0 ~f:(fun acc v -> Float.max acc (Float.abs v))
   ;;
 
   (* the largest exponent that keeps round(max|w| * 2^e) at 127 or less; 14 caps the
      all-zero tensor *)
-  let exponent_for maxabs =
-    let fits e = Float.iround_nearest_exn (Float.ldexp maxabs e) <= 127 in
+  let max_exponent v =
+    let fits e = Float.iround_nearest_exn (Float.ldexp v e) <= 127 in
     let rec grow e = if e < 14 && fits (e + 1) then grow (e + 1) else e in
     let rec shrink e = if fits e then e else shrink (e - 1) in
-    if Float.(maxabs <= 0.0) then 14 else shrink (grow 0)
+    if Float.(v <= 0.0) then 14 else shrink (grow 0)
   ;;
 
   (* [e] overrides the exponent of the tensor's own peak — the tables share one, because
      their rows add *)
-  let quantize ?e values =
-    let e = Option.value e ~default:(exponent_for (maxabs values)) in
-    { q =
-        Array.map values ~f:(fun v ->
-          Int.clamp_exn (Float.iround_nearest_exn (Float.ldexp v e)) ~min:(-127) ~max:127)
-    ; e
-    }
+  let quantize ?e (tensor : float_tensor) =
+    let e = Option.value e ~default:(max_exponent (max_abs tensor)) in
+    let clamp ft =
+      Int.clamp_exn (Float.iround_nearest_exn (Float.ldexp ft e)) ~min:(-127) ~max:127
+    in
+    { q = Array.map tensor ~f:clamp; e }
   ;;
 end
 
@@ -67,15 +69,10 @@ end
    the unit the engine and the circuit consume. The pairing invariant lives here: after
    the constructor, no caller can mispair a configuration with another model's tensors. *)
 module Model = struct
-  type tensor = Tensor.t =
-    { q : int array
-    ; e : int
-    }
-
   (* the structure of [Params_data], over the quantized tensor: one definition holds the
      shape and the flat order of the checkpoint *)
-  type params = tensor Params_data.t
-  type layer = tensor Params_data.layer
+  type params = Tensor.t Params_data.t
+  type layer = Tensor.t Params_data.layer
 
   type t =
     { config : Transformer.Config.t
@@ -84,8 +81,6 @@ module Model = struct
     (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
-
-  let exp2_bits = Tensor.exp2_bits
 
   (* the element counts of the tensors in the flat order, from the one definition of the
      shapes *)
@@ -107,7 +102,7 @@ module Model = struct
     let image =
       Array.concat_map
         (Array.of_list (Params_data.to_list t.params))
-        ~f:(fun { Tensor.q; e = (_ : int) } -> Array.map q ~f:(fun v -> v land 255))
+        ~f:(fun { q; e = (_ : int) } -> Array.map q ~f:(fun v -> v land 255))
     in
     let depth = Int.ceil_pow2 (Array.length image) in
     Array.init depth ~f:(fun at ->
@@ -127,24 +122,24 @@ module Model = struct
   (* the three tables add row for row, thus they share one exponent *)
   let of_floats (config : Transformer.Config.t) ~temperature ~min_p tensors =
     let temper_q14, min_weight = policy ~temperature ~min_p in
-    let floats : float array Params_data.t =
+    let { embed; phase; progress; layers } : float_tensor Params_data.t =
       Params_data.of_list ~layers:config.layers tensors
     in
     let e =
-      Tensor.exponent_for
+      Tensor.max_exponent
         (Float.max
-           (Tensor.maxabs floats.embed)
-           (Float.max (Tensor.maxabs floats.phase) (Tensor.maxabs floats.progress)))
+           (Tensor.max_abs embed)
+           (Float.max (Tensor.max_abs phase) (Tensor.max_abs progress)))
     in
     { config
     ; temper_q14
     ; min_weight
     ; params =
-        { Params_data.embed = Tensor.quantize ~e floats.embed
-        ; phase = Tensor.quantize ~e floats.phase
-        ; progress = Tensor.quantize ~e floats.progress
+        { Params_data.embed = Tensor.quantize ~e embed
+        ; phase = Tensor.quantize ~e phase
+        ; progress = Tensor.quantize ~e progress
         ; layers =
-            Array.map floats.layers ~f:(fun (l : float array Params_data.layer) ->
+            Array.map layers ~f:(fun (l : float_tensor Params_data.layer) ->
               { Params_data.wq = Tensor.quantize l.wq
               ; wk = Tensor.quantize l.wk
               ; wv = Tensor.quantize l.wv
@@ -211,6 +206,39 @@ module Model = struct
 end
 
 module Engine = struct
+  (* the peak magnitudes before any clamp: the calibration of the circuit widths *)
+  type peaks =
+    { mutable h : int
+    ; mutable rms_sum : int
+    ; mutable y : int
+    ; mutable qkv : int
+    ; mutable score : int
+    ; mutable ctx : int
+    ; mutable hid : int
+    ; mutable logit : int
+    }
+
+  type t =
+    { config : Transformer.Config.t
+    ; p : Model.params
+    ; temper_q14 : int
+    ; min_weight : int
+    ; kc : int array (* [layer; slot; dim], Q12 int16 *)
+    ; vc : int array
+    ; h : int array (* the residual stream, Q16 *)
+    ; y : int array (* the normed vector; the merged context reuses it *)
+    ; q : int array
+    ; scores : int array (* one head at a time; the FFN hidden reuses it *)
+    ; logits : int array
+    ; weights : int array
+    ; mutable position : int
+    ; mutable prng : Prng.state
+    ; mutable sounding : Sounding_state.t
+    ; seats : int option array
+    ; mutable step_index : int
+    ; pk : peaks
+    }
+
   (* one socket event of a drawn sentence: the voice, the pitch, and On or Off *)
   type event =
     { voice : int
@@ -256,41 +284,8 @@ module Engine = struct
   let exp2_q u =
     let n = -u in
     let i = n asr 12 in
-    if i >= 16 then 0 else Tensor.exp2_table.((n asr 4) land 255) asr i
+    if i >= 16 then 0 else Constants.exp2_table.((n asr 4) land 255) asr i
   ;;
-
-  (* the peak magnitudes before any clamp: the calibration of the circuit widths *)
-  type peaks =
-    { mutable h : int
-    ; mutable rms_sum : int
-    ; mutable y : int
-    ; mutable qkv : int
-    ; mutable score : int
-    ; mutable ctx : int
-    ; mutable hid : int
-    ; mutable logit : int
-    }
-
-  type t =
-    { config : Transformer.Config.t
-    ; p : Model.params
-    ; temper_q14 : int
-    ; min_weight : int
-    ; kc : int array (* [layer; slot; dim], Q12 int16 *)
-    ; vc : int array
-    ; h : int array (* the residual stream, Q16 *)
-    ; y : int array (* the normed vector; the merged context reuses it *)
-    ; q : int array
-    ; scores : int array (* one head at a time; the FFN hidden reuses it *)
-    ; logits : int array
-    ; weights : int array
-    ; mutable fed : int
-    ; mutable prng : Prng.state
-    ; mutable sounding : Sounding_state.t
-    ; seats : int option array
-    ; mutable step_index : int
-    ; pk : peaks
-    }
 
   let note_peak t field v =
     let v = abs v in
@@ -320,8 +315,43 @@ module Engine = struct
       t.y.(i) <- clamp16 y)
   ;;
 
-  let feed t ~code ~phase ~bucket =
-    let p = t.p in
+  (* the embedding: the three rows add in the shared exponent, then shift to Q16 *)
+  let embed t ~code ~phase ~bucket =
+    let d = t.config.Transformer.Config.d in
+    for i = 0 to d - 1 do
+      let v =
+        t.p.embed.q.((code * d) + i)
+        + t.p.phase.q.((phase * d) + i)
+        + t.p.progress.q.((bucket * d) + i)
+      in
+      t.h.(i) <- rescale ~from:t.p.embed.e ~target:Constants.h_q v
+    done
+  ;;
+
+  (* the projections of layer [l]; k and v enter the ring at the slot of this token *)
+  let projections t (lay : Model.layer) ~l ~cur =
+    let d = t.config.Transformer.Config.d in
+    let slots = t.config.Transformer.Config.context in
+    let ring_base = ((l * slots) + cur) * d in
+    for o = 0 to d - 1 do
+      (* one matvec column; the circuit runs the three separately, on one MAC path *)
+      let project (w : Tensor.t) =
+        let acc = sum d (fun i -> t.y.(i) * w.q.((i * d) + o)) in
+        let v = rescale ~from:(Constants.y_q + w.e) ~target:Constants.kv_q acc in
+        note_peak t `Qkv v;
+        clamp16 v
+      in
+      t.q.(o) <- project lay.wq;
+      t.kc.(ring_base + o) <- project lay.wk;
+      t.vc.(ring_base + o) <- project lay.wv
+    done
+  ;;
+
+  (* Attention of layer [l] over the newest [n] tokens, one head at a time. Age [a] reads
+     slot [(cur - a) & 255], thus the ALiBi distance is the age itself and the causal wall
+     is the walk. The merged context overwrites [y]: the projections took what they
+     needed. *)
+  let attend t ~l ~cur ~n =
     let { Transformer.Config.d
         ; heads
         ; context = slots
@@ -332,101 +362,122 @@ module Engine = struct
       t.config
     in
     let head_d = d / heads in
-    (* the embedding: the three rows add in the shared exponent, then shift to Q16 *)
-    for i = 0 to d - 1 do
-      let v =
-        p.embed.q.((code * d) + i)
-        + p.phase.q.((phase * d) + i)
-        + p.progress.q.((bucket * d) + i)
+    for head = 0 to heads - 1 do
+      let hb = head * head_d in
+      let slope_exponent = span * (head + 1) / heads in
+      (* the base of the ring slot that age [a] reads, at this head *)
+      let slot_base a = (((l * slots) + ((cur - a) land (slots - 1))) * d) + hb in
+      (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus head_d
+         is a power of four *)
+      let score_shift =
+        (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
       in
-      t.h.(i) <- rescale ~from:p.embed.e ~target:Constants.h_q v
-    done;
-    let cur = t.fed land (slots - 1) in
-    let n = min (t.fed + 1) slots in
-    Array.iteri p.layers ~f:(fun l (lay : Model.layer) ->
+      let score a =
+        let sb = slot_base a in
+        (sum head_d (fun j -> t.q.(hb + j) * t.kc.(sb + j)) asr score_shift)
+        - (a lsl (Constants.y_q - slope_exponent))
+      in
+      for a = 0 to n - 1 do
+        let s = score a in
+        note_peak t `Score s;
+        t.scores.(a) <- s
+      done;
+      let peak = max_over n (fun a -> t.scores.(a)) in
+      (* the exp2 weight of each age, Q15: the peak weighs 2^15 *)
+      let age_weight =
+        Array.init n ~f:(fun a ->
+          exp2_q (((t.scores.(a) - peak) * Constants.log2e_q15) asr 15))
+      in
+      let den = sum n (fun a -> age_weight.(a)) in
+      for j = 0 to head_d - 1 do
+        let c = sum n (fun a -> age_weight.(a) * t.vc.(slot_base a + j)) / den in
+        note_peak t `Ctx c;
+        t.y.(hb + j) <- clamp16 c
+      done
+    done
+  ;;
+
+  (* the feed-forward hidden vector: one matvec and a ReLU, Q10; it reuses the score RAM *)
+  let hidden t (lay : Model.layer) =
+    let d = t.config.Transformer.Config.d in
+    let dff = 4 * d in
+    for o = 0 to dff - 1 do
+      let acc = sum d (fun i -> t.y.(i) * lay.w1.q.((i * dff) + o)) in
+      let v =
+        max 0 (rescale ~from:(Constants.y_q + lay.w1.e) ~target:Constants.hid_q acc)
+      in
+      note_peak t `Hid v;
+      t.scores.(o) <- clamp16 v
+    done
+  ;;
+
+  (* a residual join: [values] times [w] adds into the stream; [from] is the format of
+     [values], and the exponent of [w] folds into the shift *)
+  let join t (w : Tensor.t) ~values ~len ~from =
+    let d = t.config.Transformer.Config.d in
+    for o = 0 to d - 1 do
+      let acc = sum len (fun i -> values.(i) * w.q.((i * d) + o)) in
+      let v = t.h.(o) + rescale ~from:(from + w.e) ~target:Constants.h_q acc in
+      note_peak t `H v;
+      t.h.(o) <- v
+    done
+  ;;
+
+  let forward t ~code ~phase ~bucket =
+    let d = t.config.Transformer.Config.d in
+    let slots = t.config.Transformer.Config.context in
+    let cur = t.position land (slots - 1) in
+    let n = min (t.position + 1) slots in
+    embed t ~code ~phase ~bucket;
+    Array.iteri t.p.layers ~f:(fun l lay ->
       rms_into t;
-      (* the projections; k and v enter the ring at the slot of this token *)
-      let ring_base = ((l * slots) + cur) * d in
-      for o = 0 to d - 1 do
-        (* one matvec column; the circuit runs the three separately, on one MAC path *)
-        let project (w : Tensor.t) =
-          let acc = sum d (fun i -> t.y.(i) * w.q.((i * d) + o)) in
-          let v = rescale ~from:(Constants.y_q + w.e) ~target:Constants.kv_q acc in
-          note_peak t `Qkv v;
-          clamp16 v
-        in
-        t.q.(o) <- project lay.wq;
-        t.kc.(ring_base + o) <- project lay.wk;
-        t.vc.(ring_base + o) <- project lay.wv
-      done;
-      (* attention, one head at a time; age [a] reads slot [(cur - a) & 255], thus the
-         ALiBi distance is the age itself and the causal wall is the walk *)
-      for head = 0 to heads - 1 do
-        let hb = head * head_d in
-        let slope_exponent = span * (head + 1) / heads in
-        (* the base of the ring slot that age [a] reads, at this head *)
-        let slot_base a = (((l * slots) + ((cur - a) land (slots - 1))) * d) + hb in
-        (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus
-           head_d is a power of four *)
-        let score_shift =
-          (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
-        in
-        let score a =
-          let sb = slot_base a in
-          (sum head_d (fun j -> t.q.(hb + j) * t.kc.(sb + j)) asr score_shift)
-          - (a lsl (Constants.y_q - slope_exponent))
-        in
-        for a = 0 to n - 1 do
-          let s = score a in
-          note_peak t `Score s;
-          t.scores.(a) <- s
-        done;
-        let peak = max_over n (fun a -> t.scores.(a)) in
-        (* the exp2 weight of each age, Q15: the peak weighs 2^15 *)
-        let age_weight =
-          Array.init n ~f:(fun a ->
-            exp2_q (((t.scores.(a) - peak) * Constants.log2e_q15) asr 15))
-        in
-        let den = sum n (fun a -> age_weight.(a)) in
-        (* the merged context overwrites [y]: the projections took what they needed *)
-        for j = 0 to head_d - 1 do
-          let c = sum n (fun a -> age_weight.(a) * t.vc.(slot_base a + j)) / den in
-          note_peak t `Ctx c;
-          t.y.(hb + j) <- clamp16 c
-        done
-      done;
-      (* the attention branch joins the stream *)
-      for o = 0 to d - 1 do
-        let acc = sum d (fun i -> t.y.(i) * lay.wo.q.((i * d) + o)) in
-        let v =
-          t.h.(o) + rescale ~from:(Constants.kv_q + lay.wo.e) ~target:Constants.h_q acc
-        in
-        note_peak t `H v;
-        t.h.(o) <- v
-      done;
-      (* the feed-forward; the hidden vector reuses the score RAM *)
+      projections t lay ~l ~cur;
+      attend t ~l ~cur ~n;
+      join t lay.wo ~values:t.y ~len:d ~from:Constants.kv_q;
       rms_into t;
-      let dff = 4 * d in
-      for o = 0 to dff - 1 do
-        let acc = sum d (fun i -> t.y.(i) * lay.w1.q.((i * dff) + o)) in
-        let v =
-          max 0 (rescale ~from:(Constants.y_q + lay.w1.e) ~target:Constants.hid_q acc)
-        in
-        note_peak t `Hid v;
-        t.scores.(o) <- clamp16 v
-      done;
-      for o = 0 to d - 1 do
-        let acc = sum dff (fun i -> t.scores.(i) * lay.w2.q.((i * d) + o)) in
-        let v =
-          t.h.(o) + rescale ~from:(Constants.hid_q + lay.w2.e) ~target:Constants.h_q acc
-        in
-        note_peak t `H v;
-        t.h.(o) <- v
-      done);
-    t.fed <- t.fed + 1;
+      hidden t lay;
+      join t lay.w2 ~values:t.scores ~len:(4 * d) ~from:Constants.hid_q);
+    t.position <- t.position + 1;
     (* the model state of the token lands with the token: the mask of the next draw can
        never run ahead of or behind the engine *)
     t.sounding <- Sounding_state.step t.sounding (Token.of_code code)
+  ;;
+
+  let init (model : Model.t) ~seed =
+    let { Model.config; params = p; temper_q14; min_weight } = model in
+    let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
+      config
+    in
+    (* the arithmetic of the circuit is shifts, thus the shape obeys the shift rules *)
+    assert (Int.is_pow2 d);
+    assert (Int.is_pow2 slots);
+    assert (Int.floor_log2 (d / heads) % 2 = 0);
+    assert (layers = Array.length p.Params_data.layers);
+    let t =
+      { config
+      ; p
+      ; temper_q14
+      ; min_weight
+      ; kc = Array.create ~len:(layers * slots * d) 0
+      ; vc = Array.create ~len:(layers * slots * d) 0
+      ; h = Array.create ~len:d 0
+      ; y = Array.create ~len:d 0
+      ; q = Array.create ~len:d 0
+      ; (* one array serves the scores and the feed-forward hidden vector *)
+        scores = Array.create ~len:(max slots (4 * d)) 0
+      ; logits = Array.create ~len:vocab 0
+      ; weights = Array.create ~len:vocab 0
+      ; position = 0
+      ; prng = Prng.create ~seed
+      ; sounding = Sounding_state.silence
+      ; seats = Array.create ~len:Token.seats None
+      ; step_index = 0
+      ; pk =
+          { h = 0; rms_sum = 0; y = 0; qkv = 0; score = 0; ctx = 0; hid = 0; logit = 0 }
+      }
+    in
+    forward t ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0;
+    t
   ;;
 
   (* the tied head: rms_norm, then the token table read backward; Q12 logits *)
@@ -457,7 +508,7 @@ module Engine = struct
     draw
   ;;
 
-  let draw_code t =
+  let next_code t =
     let (_ : int array) = next_logits t in
     let mask = Sounding_state.legal_mask t.sounding in
     let peak =
@@ -490,43 +541,6 @@ module Engine = struct
     if t.weights.(chosen) > 0 then chosen else 0
   ;;
 
-  let create (model : Model.t) ~seed =
-    let { Model.config; params = p; temper_q14; min_weight } = model in
-    let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
-      config
-    in
-    (* the arithmetic of the circuit is shifts, thus the shape obeys the shift rules *)
-    assert (Int.is_pow2 d);
-    assert (Int.is_pow2 slots);
-    assert (Int.floor_log2 (d / heads) % 2 = 0);
-    assert (layers = Array.length p.Params_data.layers);
-    let t =
-      { config
-      ; p
-      ; temper_q14
-      ; min_weight
-      ; kc = Array.create ~len:(layers * slots * d) 0
-      ; vc = Array.create ~len:(layers * slots * d) 0
-      ; h = Array.create ~len:d 0
-      ; y = Array.create ~len:d 0
-      ; q = Array.create ~len:d 0
-      ; (* one array serves the scores and the feed-forward hidden vector *)
-        scores = Array.create ~len:(max slots (4 * d)) 0
-      ; logits = Array.create ~len:vocab 0
-      ; weights = Array.create ~len:vocab 0
-      ; fed = 0
-      ; prng = Prng.create ~seed
-      ; sounding = Sounding_state.silence
-      ; seats = Array.create ~len:Token.seats None
-      ; step_index = 0
-      ; pk =
-          { h = 0; rms_sum = 0; y = 0; qkv = 0; score = 0; ctx = 0; hid = 0; logit = 0 }
-      }
-    in
-    feed t ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0;
-    t
-  ;;
-
   (* an On takes the highest free seat — the melody sits high; an Off names the seat that
      holds its pitch. The mask guarantees both exist. *)
   let highest_free seats =
@@ -547,7 +561,7 @@ module Engine = struct
     go (Token.seats - 1)
   ;;
 
-  let step_events t =
+  let next_step t =
     let phase = t.step_index % Transformer.phase_buckets in
     let bucket =
       t.step_index / Transformer.progress_stride % Transformer.progress_buckets
@@ -555,9 +569,9 @@ module Engine = struct
     let rec go events count =
       (* the mask bounds a sentence at four Offs, four Ons and the End *)
       assert (count < 16);
-      let code = draw_code t in
+      let code = next_code t in
       let token = Token.of_code code in
-      feed t ~code ~phase ~bucket;
+      forward t ~code ~phase ~bucket;
       match token with
       | Start -> assert false
       | End ->
@@ -593,9 +607,9 @@ let%expect_test "the exp2 table: the peak, the floor and the halving" =
      table step above one half *)
   Stdio.printf
     "%d %d %d  half at one: %d\n"
-    Tensor.exp2_table.(0)
-    Tensor.exp2_table.(128)
-    Tensor.exp2_table.(255)
+    Constants.exp2_table.(0)
+    Constants.exp2_table.(128)
+    Constants.exp2_table.(255)
     (Engine.exp2_q (-4096));
   [%expect {| 32768 23170 16428  half at one: 16384 |}]
 ;;
@@ -619,12 +633,12 @@ let%expect_test "isqrt floors" =
 let collect_steps n engine =
   List.rev
     (List.fold (List.range 0 n) ~init:[] ~f:(fun acc (_ : int) ->
-       Engine.step_events engine :: acc))
+       Engine.next_step engine :: acc))
 ;;
 
 let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
   let model = Model.For_test.init Transformer.Config.baseline ~seed:11 in
-  let engine = Engine.create model ~seed:42 in
+  let engine = Engine.init model ~seed:42 in
   let steps = collect_steps 12 engine in
   let replay (state, violations) { Engine.voice = (_ : int); pitch; on } =
     let token = if on then Token.On pitch else Token.Off pitch in
@@ -643,7 +657,7 @@ let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
     (List.take (List.filter steps ~f:(Fn.non List.is_empty)) 4)
     ~f:(fun step -> Stdio.print_s ([%sexp_of: Engine.event list] step));
   let again =
-    let engine = Engine.create model ~seed:42 in
+    let engine = Engine.init model ~seed:42 in
     collect_steps 12 engine
   in
   Stdio.printf

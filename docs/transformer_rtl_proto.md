@@ -169,7 +169,7 @@ The token walk of the source FSM:
 1. rewind: load the PRNG from SEED, clear the ring, the counters and
    the sounding state, feed START at phase 0, bucket 0, and rest.
 2. a step strobe: draw tokens. Each draw runs the engine over the last
-   fed token, samples a code, and then: an event token goes to the
+   forwarded token, samples a code, and then: an event token goes to the
    sequencer — wait for `ready` — and feeds back into the engine; END
    feeds back and ends the step.
 3. the phase of a drawn token is `step mod 16`; the bucket is
@@ -196,7 +196,7 @@ The top level seats the transformer:
 - `Fixed` against the float model: the plain-float twin structure
   agrees with the Nx reference on logits, then the quantized model's
   drift is a report, not a gate — the audition judges it.
-- `Vaswani` against `Fixed`: one fed token gives the same logits, and
+- `Vaswani` against `Fixed`: one forwarded token gives the same logits, and
   a short stream gives the same events, integer for integer.
 - The sequencer: the release path, `on` at 0. The tests that watched the gate
   change with it: the melody Note Off moves from the gate time to the

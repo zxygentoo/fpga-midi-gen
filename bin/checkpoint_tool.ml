@@ -99,7 +99,7 @@ let ranges ~checkpoint ~steps ~seed =
   in
   let quantized = Fixed.Model.of_checkpoint config checkpoint in
   let params = Transformer.Params.load config ~path:checkpoint in
-  let engine = Fixed.Engine.create quantized ~seed in
+  let engine = Fixed.Engine.init quantized ~seed in
   (* the histories of the float pass, newest first, as the float sampler keeps them *)
   let codes = ref [ Token.to_code Token.Start ] in
   let phases = ref [ 0 ] in
@@ -145,12 +145,12 @@ let ranges ~checkpoint ~steps ~seed =
     if argmax quantized ~value:Float.of_int = argmax floated ~value:Fn.id then incr agree;
     cosine_sum := !cosine_sum +. cosine quantized floated;
     incr draws;
-    let code = Fixed.Engine.draw_code engine in
+    let code = Fixed.Engine.next_code engine in
     let phase = !step_index mod Transformer.phase_buckets in
     let bucket =
       !step_index / Transformer.progress_stride mod Transformer.progress_buckets
     in
-    Fixed.Engine.feed engine ~code ~phase ~bucket;
+    Fixed.Engine.forward engine ~code ~phase ~bucket;
     codes := code :: !codes;
     phases := phase :: !phases;
     progress := bucket :: !progress;
@@ -190,9 +190,9 @@ let twin ~checkpoint ~steps ~seed =
       ~slope_span:Transformer.Config.baseline.slope_span
   in
   let model = Fixed.Model.of_checkpoint config checkpoint in
-  let engine = Fixed.Engine.create model ~seed in
+  let engine = Fixed.Engine.init model ~seed in
   for step = 1 to steps do
-    let events = Fixed.Engine.step_events engine in
+    let events = Fixed.Engine.next_step engine in
     printf
       "step %d:%s\n"
       step

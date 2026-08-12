@@ -37,6 +37,22 @@ module Constants : sig
 
   (** log2(e) in Q15: the exp2 form of the softmax exponent *)
   val log2e_q15 : int
+
+  (** the exp2 table of the softmax and the sampler as the circuit's ROM: 256 entries of
+      [round(2^15 * 2^-(j/256))], 16 bits each — the quantized exponential, the same
+      species as the weights *)
+  val exp2_bits : Hardcaml.Bits.t array
+end
+
+(** The quantized weight tensor. The arithmetic that makes one is private: [Model]'s
+    constructors apply it. *)
+module Tensor : sig
+  (** one weight tensor: the int8 values, flat in the row-major order of the checkpoint,
+      and the exponent of the power-of-two scale — [w ~ q * 2^-e] *)
+  type t =
+    { q : int array
+    ; e : int
+    }
 end
 
 (** The quantized model: the configuration and the tensors quantized under it, one value —
@@ -44,18 +60,11 @@ end
     constructors: after them, no caller can mispair a configuration with another model's
     tensors. The three tables share one exponent, because their rows add. *)
 module Model : sig
-  (** one weight tensor: the int8 values, flat in the row-major order of the checkpoint,
-      and the exponent of the power-of-two scale — [w ~ q * 2^-e] *)
-  type tensor =
-    { q : int array
-    ; e : int
-    }
-
   (** the structure of [Transformer.Params_data], over the quantized tensor: one
       definition holds the shape and the flat order of the checkpoint *)
-  type params = tensor Transformer.Params_data.t
+  type params = Tensor.t Transformer.Params_data.t
 
-  type layer = tensor Transformer.Params_data.layer
+  type layer = Tensor.t Transformer.Params_data.layer
 
   type t =
     { config : Transformer.Config.t
@@ -64,11 +73,6 @@ module Model : sig
     (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
-
-  (** the exp2 table of the softmax and the sampler as the circuit's ROM: 256 entries of
-      [round(2^15 * 2^-(j/256))], 16 bits each — the quantized exponential, the same
-      species as the weights *)
-  val exp2_bits : Hardcaml.Bits.t array
 
   (** the ROM image of the circuit: every tensor in the checkpoint order, one byte for
       each weight, two's complement, padded to the next power of two — the depth of the
@@ -116,32 +120,32 @@ module Engine : sig
     }
   [@@deriving sexp_of]
 
-  (** [create model ~seed] is the engine at its origin: the PRNG at [seed] — the rule of
-      the SEED cell, thus 0 raises — the ring empty, the sounding state silent, and START
-      fed at phase 0, bucket 0. The shape obeys the shift rules of the module header, and
-      [create] checks them. *)
-  val create : Model.t -> seed:int -> t
+  (** [init model ~seed] is the engine at its origin: the PRNG at [seed] — the rule of the
+      SEED cell, thus 0 raises — the ring empty, the sounding state silent, and START
+      forwarded at phase 0, bucket 0. The shape obeys the shift rules of the module
+      header, and [init] checks them. *)
+  val init : Model.t -> seed:int -> t
 
-  (** [step_events t] draws one sentence and gives its socket events, in the drawn order.
-      An On takes the highest free seat; an Off names the seat that holds its pitch. The
-      END that closes the sentence is fed and not reported. *)
-  val step_events : t -> event list
+  (** [next_step t] draws one sentence and gives its socket events, in the drawn order. An
+      On takes the highest free seat; an Off names the seat that holds its pitch. The END
+      that closes the sentence is forwarded and not reported. *)
+  val next_step : t -> event list
 
   (** The block-level interface below: the tests and the calibration drive the engine one
-      operation at a time; [step_events] is the interface of the players. *)
+      operation at a time; [next_step] is the interface of the players. *)
 
-  (** [next_logits t] is the Q12 logits of the position after the last fed token. *)
+  (** [next_logits t] is the Q12 logits of the position after the last forwarded token. *)
   val next_logits : t -> int array
 
-  (** [draw_code t] draws the next token code: the mask of the sounding state, the temper
+  (** [next_code t] draws the next token code: the mask of the sounding state, the temper
       and min-p of the model, then three PRNG bytes pick from the weights. *)
-  val draw_code : t -> int
+  val next_code : t -> int
 
-  (** [feed t ~code ~phase ~bucket] runs the engine over one token and steps the sounding
-      state with it, thus the mask of the next draw can never run ahead of or behind the
-      engine. [code] is the token; [phase] and [bucket] are the rows of the bar-phase and
-      the piece-position tables. *)
-  val feed : t -> code:int -> phase:int -> bucket:int -> unit
+  (** [forward t ~code ~phase ~bucket] runs the engine over one token — the forward pass —
+      and steps the sounding state with it, thus the mask of the next draw can never run
+      ahead of or behind the engine. [code] is the token; [phase] and [bucket] are the
+      rows of the bar-phase and the piece-position tables. *)
+  val forward : t -> code:int -> phase:int -> bucket:int -> unit
 
   (** the peak magnitudes the engine has seen, by signal class, before any clamp — the
       calibration of the circuit widths *)

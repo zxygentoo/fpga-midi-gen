@@ -276,7 +276,7 @@ let command =
                "-quantized takes the seed of the SEED cell: 1 to 0xFFFFFFFF\n";
              exit 2);
            let model = Fixed.Model.of_checkpoint ~temperature ~min_p config checkpoint in
-           let engine = Fixed.Engine.create model ~seed in
+           let engine = Fixed.Engine.init model ~seed in
            let sentence events =
              List.map events ~f:(fun { Fixed.Engine.voice = (_ : int); pitch; on } ->
                if on then Token.On pitch else Token.Off pitch)
@@ -286,7 +286,7 @@ let command =
            let music =
              List.rev
                (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) ->
-                  sentence (Fixed.Engine.step_events engine) :: acc))
+                  sentence (Fixed.Engine.next_step engine) :: acc))
            in
            music, None)
          else (
