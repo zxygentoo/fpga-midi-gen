@@ -25,7 +25,6 @@ module Params : sig
     { run : 'a (** the run state, 1 bit *)
     ; channel : 'a (** the MIDI channel of the model, 4 bits *)
     ; step_ms : 'a (** the step period in ms *)
-    ; gate_ms : 'a (** the gate time in ms *)
     ; velocity : 'a (** the note velocity *)
     ; seed : 'a (** the PRNG seed *)
     }

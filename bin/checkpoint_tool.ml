@@ -197,8 +197,8 @@ let twin ~checkpoint ~steps ~seed =
       "step %d:%s\n"
       step
       (String.concat
-         (List.map events ~f:(fun { Fixed.Engine.seat; pitch; on } ->
-            sprintf " %s:%d@%d" (if on then "on" else "off") pitch seat)))
+         (List.map events ~f:(fun { Fixed.Engine.voice; pitch; on } ->
+            sprintf " %s:%d@%d" (if on then "on" else "off") pitch voice)))
   done
 ;;
 

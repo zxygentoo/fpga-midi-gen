@@ -70,7 +70,6 @@ module Default = struct
   (* One step is a sixteenth, thus 200 ms puts the quarter at exactly 75 — the common
      chorale tempo. The pink era booted at 250; the transformer era's ear asked for this. *)
   let step_ms = 200
-  let gate_ms = 125
   let velocity = 100
   let seed = 42 (* must not be 0 *)
 end
@@ -83,7 +82,10 @@ module Reg = struct
   let run = 0x0F (* bit 0; the board button also toggles it *)
   let channel = 0x0E
   let step_ms = 0x0C
-  let gate_ms = 0x0A
+
+  (* Reserved: era one used these bytes for GATE_MS, and era three removed the gate. A
+     write stores bytes that nothing reads. *)
+  let reserved = 0x0A
   let velocity = 0x09
   let seed = 0x05 (* the PRNG loads it at the run start *)
   let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
@@ -101,10 +103,9 @@ module Reg = struct
       little-endian.
 
       [bounds] is [None] for a cell that holds no scalar: RUN and MIDI_GO are bit fields
-      and the circuit reads bit 0 alone; MIDI_MSG takes any bytes; GATE_MS takes any
-      value, and one that is not less than STEP_MS only means that the gate never comes;
-      STEP_MS takes any value, and 0 counts as 1; MIDI_LEN rings for 1 to 3 but rests at
-      0, thus a range would not agree with its own power-on value. *)
+      and the circuit reads bit 0 alone; MIDI_MSG takes any bytes; STEP_MS takes any
+      value, and 0 counts as 1; MIDI_LEN rings for 1 to 3 but rests at 0, thus a range
+      would not agree with its own power-on value. *)
   type field =
     { name : string
     ; address : int
@@ -136,12 +137,7 @@ module Reg = struct
       ; default = Default.velocity
       ; bounds = Some { lower = 1; upper = 127 }
       }
-    ; { name = "gate_ms"
-      ; address = gate_ms
-      ; width = 2
-      ; default = Default.gate_ms
-      ; bounds = None
-      }
+    ; { name = "reserved"; address = reserved; width = 2; default = 0; bounds = None }
     ; { name = "step_ms"
       ; address = step_ms
       ; width = 2

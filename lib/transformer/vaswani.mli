@@ -8,7 +8,7 @@
 
     The block sits behind [Source_intf] with the type bit: it states its own releases. An
     On takes the highest free seat, an Off names the seat that holds its pitch, and the
-    legality mask guarantees both. The sequencer of this era elaborates [~gated:false].
+    legality mask guarantees both.
 
     The weights arrive at elaboration — the bitstream carries them — and the SEED cell
     arrives as the live view; a rewind captures it, as the pink era does. *)

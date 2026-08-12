@@ -24,11 +24,8 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-(** [gated] passes to [Sequencer.create]: a source that states its own releases takes
-    [~gated:false]. *)
 val create
   :  clocks_per_ms:int
-  -> gated:bool
   -> source:(Signal.t Source_intf.I.t -> Signal.t Source_intf.O.t)
   -> Signal.t I.t
   -> Signal.t O.t

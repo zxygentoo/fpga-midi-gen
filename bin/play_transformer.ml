@@ -278,7 +278,7 @@ let command =
            let model = Fixed.Model.of_checkpoint ~temperature ~min_p config checkpoint in
            let engine = Fixed.Engine.create model ~seed in
            let sentence events =
-             List.map events ~f:(fun { Fixed.Engine.seat = (_ : int); pitch; on } ->
+             List.map events ~f:(fun { Fixed.Engine.voice = (_ : int); pitch; on } ->
                if on then Token.On pitch else Token.Off pitch)
            in
            (* [List.init] applies [f] in the reverse index order, thus it cannot collect

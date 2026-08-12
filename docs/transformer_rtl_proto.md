@@ -26,16 +26,16 @@ Two new modules carry the era, in the pattern of `Pink` and `Voss`:
 
 `Source_intf.Note` gains one field:
 
-- `kind` — 1 bit: 1 is Note On, 0 is Note Off.
+- `on` — 1 bit: 1 is Note On, 0 is Note Off.
 
 The rules of the sequencer:
 
-- `kind` On: the seat of `voice` takes the note. If the seat holds a
+- `on` at 1: the seat of `voice` takes the note. If the seat holds a
   note, its Note Off goes first — the pink rule, unchanged.
-- `kind` Off: the seat of `voice` releases its note, one Note Off from
+- `on` at 0: the seat of `voice` releases its note, one Note Off from
   the stored pair. `pitch` repeats the stored pitch; the seat is the key.
 
-`Voss` sends every note with `kind` On and does not change behavior.
+`Voss` sends every note with `on` at 1 and does not change behavior.
 The transformer source states its own releases, as the model does.
 
 The seat rule of the transformer source: an On takes the highest free
@@ -198,7 +198,7 @@ The top level seats the transformer:
   drift is a report, not a gate — the audition judges it.
 - `Vaswani` against `Fixed`: one fed token gives the same logits, and
   a short stream gives the same events, integer for integer.
-- The sequencer: the `kind` Off path. The tests that watched the gate
+- The sequencer: the release path, `on` at 0. The tests that watched the gate
   change with it: the melody Note Off moves from the gate time to the
   next articulation of its voice.
 - The board: the amidi thru capture against the twin's events, as the

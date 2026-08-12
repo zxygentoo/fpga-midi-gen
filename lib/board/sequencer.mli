@@ -7,12 +7,12 @@
     - A prescaler divides the clock by [clocks_per_ms]. The run start resets it, thus a
       run is the same cycle for cycle in each simulation and on the board.
     - The source goes to its origin at the run start and at no other time.
-    - At each step boundary the block samples RUN, STEP_MS and GATE_MS: a change applies
-      at the next step. A sampled STEP_MS of 0 counts as 1.
+    - At each step boundary the block samples RUN and STEP_MS: a change applies at the
+      next step. A sampled STEP_MS of 0 counts as 1.
     - At each step the source gives the notes that speak, one at a time. For a note with
-      [kind] On the block closes the note of that voice, if it holds one, and then opens
+      [on] at 1 the block closes the note of that voice, if it holds one, and then opens
       the new note. Therefore the number of open notes is never more than the number of
-      voices. For a note with [kind] Off the block sends one Note Off from the stored pair
+      voices. For a note with [on] at 0 the block sends one Note Off from the stored pair
       of that voice and frees the seat — the path of a source that states its own
       releases.
     - The block takes a note with [source_ready] in the cycle that completes its Note On,
@@ -20,11 +20,8 @@
     - Each voice has an open-note register. It keeps the note and the channel of the Note
       On, and the Note Off takes the stored pair. When the run stops, each open voice gets
       its Note Off, from the highest voice downward.
-    - The gate closes the highest voice, and no other, when the sampled GATE_MS is less
-      than the sampled STEP_MS. If it is not less, the gate never comes, and that voice
-      sends its Note Off immediately before its next Note On. [gated] elaborates the gate:
-      a source that states its own releases takes [~gated:false], because a gate would
-      close a note that the source still counts as sounding.
+    - The block sends a Note Off only to keep its state true — the steal and the stop. It
+      does not shape the music: a musical release is the source's, stated with [on] at 0.
     - The millisecond count does not pause while the merge stalls a message, thus the beat
       does not drift. One step sends at most two messages for each voice, which is about
       7.7 ms of line time for four voices. A step that is shorter than its messages
@@ -53,4 +50,4 @@ module O : sig
   [@@deriving hardcaml]
 end
 
-val create : clocks_per_ms:int -> gated:bool -> Signal.t I.t -> Signal.t O.t
+val create : clocks_per_ms:int -> Signal.t I.t -> Signal.t O.t

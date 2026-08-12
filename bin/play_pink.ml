@@ -106,10 +106,9 @@ let command =
          (optional_with_default Control_intf.Default.step_ms int)
          ~doc:"MS the step period"
      and gate_ms =
-       flag
-         "-gate-ms"
-         (optional_with_default Control_intf.Default.gate_ms int)
-         ~doc:"MS the soprano gate time"
+       (* the era-one value. The gate is the player's own articulation: the board
+          sequencer has none. *)
+       flag "-gate-ms" (optional_with_default 125 int) ~doc:"MS the soprano gate time"
      and channel =
        flag
          "-channel"

@@ -1084,7 +1084,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   { O.note =
       { Source_intf.Note.voice = out_seat.value
       ; pitch = uresize (sel_bottom out_code.value ~width:7) ~width:8
-      ; kind = msb out_code.value
+      ; on = msb out_code.value
       }
   ; valid = sm.is Emit
   ; idle = sm.is Idle
@@ -1131,7 +1131,7 @@ let%expect_test "the source agrees with the twin, event for event" =
         events
         := ( Bits.to_int_trunc !(out.note.voice)
            , Bits.to_int_trunc !(out.note.pitch)
-           , Bits.to_bool !(out.note.kind) )
+           , Bits.to_bool !(out.note.on) )
            :: !events;
       cycle ()
     done;
@@ -1147,7 +1147,7 @@ let%expect_test "the source agrees with the twin, event for event" =
       (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) ->
          List.map
            (Fixed.Engine.step_events twin)
-           ~f:(fun { Fixed.Engine.seat; pitch; on } -> seat, pitch, on)
+           ~f:(fun { Fixed.Engine.voice; pitch; on } -> voice, pitch, on)
          :: acc))
   in
   Stdio.printf

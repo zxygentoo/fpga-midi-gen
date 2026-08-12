@@ -9,9 +9,9 @@
 
     The synthesizer has four voices, thus [voices] is 4: a fact of the hardware and not a
     parameter of the model. Voice 0 is the lowest, and a source with fewer voices takes
-    the high numbers, because the sequencer gates the highest voice only. Each note
-    carries its voice, because the sequencer keeps one open note for each of them and the
-    voice number is the key of that state.
+    the high numbers: the melody sits high. Each note carries its voice, because the
+    sequencer keeps one open note for each of them and the voice number is the key of that
+    state.
 
     The handshake:
 
@@ -39,7 +39,7 @@ module Note = struct
     { voice : 'a [@bits Signal.address_bits_for voices]
     (** the voice that sounds it; 0 is the lowest *)
     ; pitch : 'a [@bits 8] (** the MIDI note number *)
-    ; kind : 'a
+    ; on : 'a
     (** 1 is Note On, 0 is Note Off. On an On, the seat of [voice] takes the note, and
         closes its old note first if it holds one — the pink rule. On an Off, the seat of
         [voice] releases its note from the stored pair; [pitch] repeats the stored pitch.

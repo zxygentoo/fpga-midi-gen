@@ -110,7 +110,7 @@ module Engine : sig
 
   (** one socket event of a drawn sentence *)
   type event =
-    { seat : int (** the seat of the sequencer, 0 to [Token.seats - 1] *)
+    { voice : int (** the voice that sounds it, 0 to [Token.seats - 1] *)
     ; pitch : int (** the MIDI pitch *)
     ; on : bool (** [true] is Note On, [false] is Note Off *)
     }

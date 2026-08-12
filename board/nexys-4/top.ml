@@ -79,11 +79,9 @@ let create ~model () =
   in
   assign read_data control_regs.read_data;
   let model =
-    (* the one line that names the model of the era; the transformer states its own
-       releases, thus the sequencer elaborates with no gate *)
+    (* the one line that names the model of the era *)
     Source.create
       ~clocks_per_ms
-      ~gated:false
       ~source:(Vaswani.create ~model ~seed:control_regs.params.seed)
       { Source.I.clock = clk
       ; clear

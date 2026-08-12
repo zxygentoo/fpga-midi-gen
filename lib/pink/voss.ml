@@ -213,8 +213,7 @@ let create ~(model : Pink.t) ~seed (i : _ I.t) : _ O.t =
             ] )
         ]
     ];
-  { O.note =
-      { Source_intf.Note.voice = selected_voice; pitch = selected_pitch; kind = vdd }
+  { O.note = { Source_intf.Note.voice = selected_voice; pitch = selected_pitch; on = vdd }
   ; valid
   ; idle
   }

@@ -211,9 +211,9 @@ module Model = struct
 end
 
 module Engine = struct
-  (* one socket event of a drawn sentence: the seat, the pitch, and On or Off *)
+  (* one socket event of a drawn sentence: the voice, the pitch, and On or Off *)
   type event =
-    { seat : int
+    { voice : int
     ; pitch : int
     ; on : bool
     }
@@ -586,11 +586,11 @@ module Engine = struct
       | On pitch ->
         let seat = highest_free t.seats in
         t.seats.(seat) <- Some pitch;
-        go ({ seat; pitch; on = true } :: events) (count + 1)
+        go ({ voice = seat; pitch; on = true } :: events) (count + 1)
       | Off pitch ->
         let seat = seat_of t.seats pitch in
         t.seats.(seat) <- None;
-        go ({ seat; pitch; on = false } :: events) (count + 1)
+        go ({ voice = seat; pitch; on = false } :: events) (count + 1)
     in
     go [] 0
   ;;
@@ -646,7 +646,7 @@ let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
   let model = Model.For_test.init Transformer.Config.baseline ~seed:11 in
   let engine = Engine.create model ~seed:42 in
   let steps = collect_steps 12 engine in
-  let replay (state, violations) { Engine.seat = (_ : int); pitch; on } =
+  let replay (state, violations) { Engine.voice = (_ : int); pitch; on } =
     let token = if on then Token.On pitch else Token.Off pitch in
     let legal = Sounding_state.legal_mask state in
     let violations = violations + Bool.to_int (not legal.(Token.to_code token)) in
@@ -673,17 +673,17 @@ let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
     ([%compare.equal: (int * int * bool) list list]
        (List.map
           steps
-          ~f:(List.map ~f:(fun { Engine.seat; pitch; on } -> seat, pitch, on)))
+          ~f:(List.map ~f:(fun { Engine.voice; pitch; on } -> voice, pitch, on)))
        (List.map
           again
-          ~f:(List.map ~f:(fun { Engine.seat; pitch; on } -> seat, pitch, on))));
+          ~f:(List.map ~f:(fun { Engine.voice; pitch; on } -> voice, pitch, on))));
   [%expect
     {|
-    (((seat 3) (pitch 17) (on true)) ((seat 2) (pitch 12) (on true))
-     ((seat 1) (pitch 9) (on true)) ((seat 0) (pitch 1) (on true)))
-    (((seat 3) (pitch 17) (on false)) ((seat 3) (pitch 113) (on true)))
-    (((seat 0) (pitch 1) (on false)) ((seat 0) (pitch 101) (on true)))
-    (((seat 3) (pitch 113) (on false)) ((seat 3) (pitch 10) (on true)))
+    (((voice 3) (pitch 17) (on true)) ((voice 2) (pitch 12) (on true))
+     ((voice 1) (pitch 9) (on true)) ((voice 0) (pitch 1) (on true)))
+    (((voice 3) (pitch 17) (on false)) ((voice 3) (pitch 113) (on true)))
+    (((voice 0) (pitch 1) (on false)) ((voice 0) (pitch 101) (on true)))
+    (((voice 3) (pitch 113) (on false)) ((voice 3) (pitch 10) (on true)))
     12 steps  22 events  0 illegal  the seed repeats: true
     |}]
 ;;
