@@ -208,3 +208,18 @@ val sample
   -> temperature:float
   -> min_p:float
   -> music:Token.t list list * stats:sample_stats
+
+(** [draw_code raw ~mask ~temperature ~min_p ~uniform] is the draw stage of [sample] as
+    one function: the tempered weights over the legal set, the min-p refusal, and the pick
+    whose running total passes [uniform] times the total weight — the same arithmetic, one
+    definition. The drift walk of [Quantized] draws through it with the same uniform as
+    the quantized engine, thus the two pipelines are comparable pick for pick. The rules
+    of [sample] on [temperature] and [min_p] hold here too; this function does not check
+    them. *)
+val draw_code
+  :  float array
+  -> mask:bool array
+  -> temperature:float
+  -> min_p:float
+  -> uniform:float
+  -> int

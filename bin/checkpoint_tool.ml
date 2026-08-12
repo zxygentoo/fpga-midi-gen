@@ -9,7 +9,6 @@ open Core
 module Evaluation = Mgen_transformer.Evaluation
 module Quantized = Mgen_transformer.Quantized
 module Jsb = Mgen_corpus.Jsb
-module Token = Mgen_core.Token
 module Transformer = Mgen_transformer.Transformer
 
 (* The gate carries the heads and the ALiBi span, because no other file holds them: a
@@ -85,8 +84,8 @@ let eval_command =
      fun () -> eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out)
 ;;
 
-(* The drift of the reference against the float model: the top-1 agreement and the cosine
-   of the logits at every draw, on the quantized walk. *)
+(* The drift of the reference against the float model: the top-1 agreement, the cosine of
+   the logits and the same-draw share at every draw, on the quantized walk. *)
 let drift ~checkpoint ~steps ~seed =
   let config =
     Transformer.Config.of_checkpoint
@@ -95,62 +94,24 @@ let drift ~checkpoint ~steps ~seed =
       ~context:Transformer.Config.baseline.context
       ~slope_span:Transformer.Config.baseline.slope_span
   in
-  let quantized = Quantized.Model.of_checkpoint config checkpoint in
   let params = Transformer.Params.load config ~path:checkpoint in
-  let engine = ref (Quantized.Engine.init quantized ~seed) in
-  (* the histories of the float pass, newest first, as the float sampler keeps them *)
-  let codes = ref [ Token.to_code Token.Start ] in
-  let phases = ref [ 0 ] in
-  let progress = ref [ 0 ] in
-  let window history = List.take history 256 |> List.rev |> Array.of_list in
-  let float_logits () =
-    let codes = window !codes in
-    Transformer.logits
-      config
-      params
-      ~codes:[| codes |]
-      ~phases:[| window !phases |]
-      ~progress:[| window !progress |]
-      ~dropout:Transformer.Dropout.none
-    |> Nx.get [ 0; Array.length codes - 1 ]
-    |> Nx.to_array
+  let { Quantized.Drift.draws; events; same_peak; same_draw; mean_cosine } =
+    Quantized.Drift.walk config params ~steps ~seed
   in
-  let agree = ref 0 in
-  let cosine_sum = ref 0.0 in
-  let draws = ref 0 in
-  let events = ref 0 in
-  let step_index = ref 0 in
-  while !step_index < steps do
-    let quantized = Quantized.Engine.logits !engine in
-    let floated = float_logits () in
-    if Quantized.Tensor.same_peak quantized floated then incr agree;
-    cosine_sum := !cosine_sum +. Quantized.Tensor.cosine quantized floated;
-    incr draws;
-    let engine', code = Quantized.Engine.next_code !engine in
-    engine := engine';
-    let phase = !step_index mod Transformer.phase_buckets in
-    let bucket =
-      !step_index / Transformer.progress_stride mod Transformer.progress_buckets
-    in
-    engine := Quantized.Engine.forward !engine ~code ~phase ~bucket;
-    codes := code :: !codes;
-    phases := phase :: !phases;
-    progress := bucket :: !progress;
-    match Token.of_code code with
-    | Start -> assert false
-    | On (_ : int) | Off (_ : int) -> incr events
-    | End -> incr step_index
-  done;
-  printf "%d steps  %d events  %d draws\n" steps !events !draws;
+  let share count = 100.0 *. Float.of_int count /. Float.of_int draws in
+  printf "%d steps  %d events  %d draws\n" steps events draws;
   printf
-    "against the float model: top-1 %.1f%%  cosine %.4f\n"
-    (100.0 *. Float.of_int !agree /. Float.of_int !draws)
-    (!cosine_sum /. Float.of_int !draws)
+    "against the float model: top-1 %.1f%%  cosine %.4f  same draw %.1f%%\n"
+    (share same_peak)
+    mean_cosine
+    (share same_draw)
 ;;
 
 let drift_command =
   Command.basic
-    ~summary:"the drift of the reference against the float model: top-1 and cosine"
+    ~summary:
+      "the drift of the reference against the float model: top-1, cosine and the \
+       same-draw share"
     (let%map_open.Command checkpoint =
        flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
      and steps = flag "-steps" (optional_with_default 96 int) ~doc:"N the steps to draw"

@@ -33,7 +33,7 @@ end
 (* The vectors of the file, flat. [t] is the machine's integer vector — the value side of
    a weight and every signal of the engine, each in its own Q format. [floats] is the
    checkpoint side. The drift measures compare the two over one pair of logit vectors;
-   [checkpoint_tool drift] reports both over a walk. *)
+   [Drift.walk] measures them over a walk. *)
 module Tensor = struct
   type t = int array
   type floats = float array
@@ -565,6 +565,105 @@ module Engine = struct
         go (sit t seat None) ({ voice = seat; pitch; on = false } :: events) (count + 1)
     in
     go t [] 0
+  ;;
+end
+
+(* The drift of the reference against the float model, on one teacher-forced walk: the
+   quantized engine draws every code, and the float model — the same tensors before
+   quantization — is evaluated on the same window, thus the walks cannot split and every
+   draw gives one comparable pair. [checkpoint_tool drift] reports the walk of a
+   checkpoint; the integration test pins the walk of drawn weights. *)
+module Drift = struct
+  type stats =
+    { draws : int
+    ; events : int
+    ; same_peak : int
+    ; same_draw : int
+    ; mean_cosine : float
+    }
+
+  (* the flat float array of one checkpoint tensor: what the quantization reads *)
+  let flatten tensor =
+    let count = Array.fold (Nx.shape tensor) ~init:1 ~f:( * ) in
+    Nx.to_array (Nx.reshape [| count |] tensor)
+  ;;
+
+  (* One weights source and one policy: the walk quantizes the float tensors itself, under
+     the defaults of the era, thus the pairing cannot slip. The loop is state at the edge
+     of the module, as the float sampler's loop is. *)
+  let walk (config : Transformer.Config.t) params ~steps ~seed =
+    let model =
+      Model.of_floats
+        config
+        ~temperature:Model.default_temperature
+        ~min_p:Model.default_min_p
+        (List.map (Transformer.Params.to_list params) ~f:flatten)
+    in
+    let engine = ref (Engine.init model ~seed) in
+    (* the histories of the float pass, newest first, as the float sampler keeps them *)
+    let codes = ref [ Token.to_code Token.Start ] in
+    let phases = ref [ 0 ] in
+    let progress = ref [ 0 ] in
+    let window history =
+      List.take history config.Transformer.Config.context |> List.rev |> Array.of_list
+    in
+    let float_logits () =
+      let codes = window !codes in
+      Transformer.logits
+        config
+        params
+        ~codes:[| codes |]
+        ~phases:[| window !phases |]
+        ~progress:[| window !progress |]
+        ~dropout:Transformer.Dropout.none
+      |> Nx.get [ 0; Array.length codes - 1 ]
+      |> Nx.to_array
+    in
+    let draws = ref 0 in
+    let events = ref 0 in
+    let same_peak = ref 0 in
+    let same_draw = ref 0 in
+    let cosine_sum = ref 0.0 in
+    let step_index = ref 0 in
+    while !step_index < steps do
+      let t = !engine in
+      let quantized = Engine.logits t in
+      let floated = float_logits () in
+      if Tensor.same_peak quantized floated then Int.incr same_peak;
+      cosine_sum := !cosine_sum +. Tensor.cosine quantized floated;
+      (* the float pick, on the uniform the engine is about to take: [Prng.uniform] is the
+         same three bytes as the engine's u24, high first *)
+      let (_ : Prng.state), uniform = Prng.run Prng.uniform t.Engine.prng in
+      let float_code =
+        Transformer.draw_code
+          floated
+          ~mask:(Sounding_state.legal_mask t.Engine.sounding)
+          ~temperature:Model.default_temperature
+          ~min_p:Model.default_min_p
+          ~uniform
+      in
+      let t, code = Engine.next_code t in
+      if code = float_code then Int.incr same_draw;
+      Int.incr draws;
+      let phase = !step_index % Transformer.phase_buckets in
+      let bucket =
+        !step_index / Transformer.progress_stride % Transformer.progress_buckets
+      in
+      engine := Engine.forward t ~code ~phase ~bucket;
+      codes := code :: !codes;
+      phases := phase :: !phases;
+      progress := bucket :: !progress;
+      match Token.of_code code with
+      | Start -> assert false
+      | On (_ : int) | Off (_ : int) -> Int.incr events
+      | End -> Int.incr step_index
+    done;
+    { draws = !draws
+    ; events = !events
+    ; same_peak = !same_peak
+    ; same_draw = !same_draw
+    ; mean_cosine = !cosine_sum /. Float.of_int !draws
+    }
   ;;
 end
 

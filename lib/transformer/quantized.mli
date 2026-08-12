@@ -47,7 +47,7 @@ end
 (** The vectors of the file, flat. [t] is the machine's integer vector — the value side of
     a weight and every signal of the engine, each in its own Q format. [floats] is the
     checkpoint side. The drift measures compare the two over one pair of logit vectors;
-    [checkpoint_tool drift] reports both over a walk. *)
+    [Drift.walk] measures them over a walk. *)
 module Tensor : sig
   type t = int array
   type floats = float array
@@ -161,4 +161,34 @@ module Engine : sig
       token; [phase] and [bucket] are the rows of the bar-phase and the piece-position
       tables. *)
   val forward : t -> code:int -> phase:int -> bucket:int -> t
+end
+
+(** The drift of the reference against the float model, on one teacher-forced walk: the
+    quantized engine draws every code, and the float model — the same tensors before
+    quantization — is evaluated on the same window. The walks cannot split, thus every
+    draw gives one comparable pair of logits and one comparable pick.
+    [checkpoint_tool drift] reports the walk of a checkpoint; the integration test pins
+    the walk of drawn weights, where any move of the numbers is a move of the integer
+    scheme. *)
+module Drift : sig
+  type stats =
+    { draws : int (** the tokens drawn; each is one comparison *)
+    ; events : int (** the On and Off tokens among them *)
+    ; same_peak : int (** the draws where the two logit vectors elect one peak *)
+    ; same_draw : int
+    (** the draws where the two samplers pick one code, on the same uniform — the whole
+        pipeline agrees, the sampler stage included *)
+    ; mean_cosine : float (** the mean cosine over the logit pairs *)
+    }
+
+  (** [walk config params ~steps ~seed] quantizes [params] under the sampling defaults of
+      the era, walks the engine for [steps] steps from [seed], and compares against the
+      float model of the same tensors at every draw. One weights source and one policy:
+      the pairing cannot slip. *)
+  val walk
+    :  Transformer.Config.t
+    -> Transformer.Params.t
+    -> steps:int
+    -> seed:int
+    -> stats
 end

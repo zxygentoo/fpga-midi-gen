@@ -1,9 +1,10 @@
-(test
- (name test_txn)
+(tests
+ (names test_txn test_quantized_drift)
  (libraries
   base
   stdio
   hardcaml
+  qcheck-core
   mgen_core
   mgen_board
   mgen_transformer

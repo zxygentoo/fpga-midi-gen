@@ -82,7 +82,8 @@ every draw.
 
 The measurement — the king checkpoint, 96 steps, seed 42 — confirmed
 every format, and the drift against the float model is small: top-1
-agreement 91.7 percent, cosine 0.9998 over 276 draws.
+agreement 91.3 percent, cosine 0.9998 over 276 draws, and the pick
+agrees on 95.7 percent of the draws.
 
 | Signal | Format | Measured peak (value) |
 |---|---|---|
@@ -196,9 +197,15 @@ The top level seats the transformer:
 
 ## The tests
 
-- `Quantized` against the float model: the plain-float structure
-  agrees with the Nx reference on logits, then the quantized model's
-  drift is a report, not a gate — the audition judges it.
+- `Quantized` against the float model: `Drift.walk` runs the float
+  model on the walk of the quantized engine and compares each draw —
+  the logits, and the pick on the same uniform. The integration test
+  pins the measured numbers of a fixed sweep of drawn weights, and a
+  QCheck property holds calibrated floors over drawn seed pairs; every
+  walk is longer than the window, thus the KV ring wraps against the
+  float window. A diff there says the integer scheme moved. On a
+  checkpoint, the same walk is `checkpoint_tool drift`: a report, not
+  a gate — the audition judges it.
 - `Source` against `Quantized`: one forwarded token gives the same logits, and
   a short stream gives the same events, integer for integer.
 - The sequencer: the release path, `on` at 0. The tests that watched the gate

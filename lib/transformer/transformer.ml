@@ -361,6 +361,49 @@ type tally =
   ; mutable draws : int
   }
 
+(* The draw stage of the sampler, at module level: one definition serves [sample], which
+   takes its telemetry from the pieces, and [draw_code], which the drift walk of
+   [Quantized] runs against the quantized draw. *)
+
+(* The tempered weight of each code, against the peak of the set that [keep] admits: the
+   peak weighs one, and a code outside the set weighs zero. Therefore the min-p filter is
+   one compare for each code. *)
+let tempered raw ~keep ~temperature =
+  let peak = ref Float.neg_infinity in
+  Array.iteri raw ~f:(fun code value ->
+    if keep code && Float.(value > !peak) then peak := value);
+  Array.mapi raw ~f:(fun code value ->
+    if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
+;;
+
+let above_min_p weights ~min_p =
+  if Float.(min_p <= 0.0)
+  then weights
+  else
+    Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
+;;
+
+(* the code whose running total passes [draw]; a total that never passes it falls to 0 *)
+let pick weights ~draw =
+  let rec walk code total =
+    if code = Token.vocab - 1
+    then code
+    else (
+      let total = total +. weights.(code) in
+      if Float.(total > draw) then code else walk (code + 1) total)
+  in
+  let chosen = walk 0 0.0 in
+  if Float.(weights.(chosen) > 0.0) then chosen else 0
+;;
+
+let draw_code raw ~mask ~temperature ~min_p ~uniform =
+  let weights =
+    above_min_p (tempered raw ~keep:(fun code -> mask.(code)) ~temperature) ~min_p
+  in
+  let total = Array.fold weights ~init:0.0 ~f:( +. ) in
+  pick weights ~draw:(uniform *. total)
+;;
+
 (* The sampler is a loop with state at the edge of the module: the histories, the walk of
    the mask, and the PRNG. The forward pass recomputes the whole window for each token;
    the host affords that, per the design document. *)
@@ -400,42 +443,14 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
         top := code));
     !top
   in
-  (* The tempered weight of each code, against the peak of the set that [keep] admits: the
-     peak weighs one, and a code outside the set weighs zero. Therefore the min-p filter
-     is one compare for each code. *)
-  let tempered raw ~keep =
-    let peak = ref Float.neg_infinity in
-    Array.iteri raw ~f:(fun code value ->
-      if keep code && Float.(value > !peak) then peak := value);
-    Array.mapi raw ~f:(fun code value ->
-      if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
-  in
   let illegal_share raw ~mask =
-    let weights = tempered raw ~keep:(fun (_ : int) -> true) in
+    let weights = tempered raw ~keep:(fun (_ : int) -> true) ~temperature in
     let all = Array.fold weights ~init:0.0 ~f:( +. ) in
     let legal =
       Array.foldi weights ~init:0.0 ~f:(fun code total weight ->
         if mask.(code) then total +. weight else total)
     in
     1.0 -. (legal /. all)
-  in
-  let above_min_p weights =
-    if Float.(min_p <= 0.0)
-    then weights
-    else
-      Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
-  in
-  (* the code whose running total passes [draw]; a total that never passes it falls to 0 *)
-  let pick weights ~draw =
-    let rec walk code total =
-      if code = Token.vocab - 1
-      then code
-      else (
-        let total = total +. weights.(code) in
-        if Float.(total > draw) then code else walk (code + 1) total)
-    in
-    let chosen = walk 0 0.0 in
-    if Float.(weights.(chosen) > 0.0) then chosen else 0
   in
   let stream = ref (Prng.create_folded ~seed) in
   (* The boot of the design document: an empty context, then START — power on, music on.
@@ -459,8 +474,8 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     let mask = Sounding_state.legal_mask !state in
     tally.illegal_mass <- tally.illegal_mass +. illegal_share raw ~mask;
     if not mask.(peak_code raw) then tally.illegal_top <- tally.illegal_top + 1;
-    let legal = tempered raw ~keep:(fun code -> mask.(code)) in
-    let weights = above_min_p legal in
+    let legal = tempered raw ~keep:(fun code -> mask.(code)) ~temperature in
+    let weights = above_min_p legal ~min_p in
     (* the refused share is the mass the model wanted and the filter did not give *)
     let legal_total = Array.fold legal ~init:0.0 ~f:( +. ) in
     let total = Array.fold weights ~init:0.0 ~f:( +. ) in
