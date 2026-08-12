@@ -148,7 +148,7 @@ let train
      [| seed; 1 |] and the dropout [| seed; 2 |], thus the three stay distinct *)
   let rng = Random.State.make [| seed; 1 |] in
   let dropout_rng = Random.State.make [| seed; 2 |] in
-  let params = ref (Transformer.Params.draw config ~seed) in
+  let params = ref (Transformer.Params.init config ~seed) in
   printf
     "corpus: %d train chorales; eval rows: %d train, %d valid; parameters: %d\n%!"
     (Array.length pool)

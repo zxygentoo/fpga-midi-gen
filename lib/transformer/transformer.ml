@@ -47,21 +47,21 @@ module Config = struct
   ;;
 end
 
-module Params = struct
-  type t =
-    { embed : tensor
-    ; phase : tensor
-    ; progress : tensor
-    ; layers : layer array
+module Params_data = struct
+  type 'a t =
+    { embed : 'a
+    ; phase : 'a
+    ; progress : 'a
+    ; layers : 'a layer array
     }
 
-  and layer =
-    { wq : tensor
-    ; wk : tensor
-    ; wv : tensor
-    ; wo : tensor
-    ; w1 : tensor
-    ; w2 : tensor
+  and 'a layer =
+    { wq : 'a
+    ; wk : 'a
+    ; wv : 'a
+    ; wo : 'a
+    ; w1 : 'a
+    ; w2 : 'a
     }
 
   let to_list { embed; phase; progress; layers } =
@@ -72,25 +72,36 @@ module Params = struct
       [ wq; wk; wv; wo; w1; w2 ])
   ;;
 
-  let of_list (config : Config.t) tensors =
-    match tensors with
+  let of_list ~layers items =
+    match items with
     | embed :: phase :: progress :: rest ->
-      let layers =
+      let groups =
         List.chunks_of rest ~length:6
         |> List.map ~f:(function
           | [ wq; wk; wv; wo; w1; w2 ] -> { wq; wk; wv; wo; w1; w2 }
           | _ -> invalid_arg "a layer takes six tensors")
         |> Array.of_list
       in
-      if Array.length layers <> config.layers
+      if Array.length groups <> layers
       then
         invalid_argf
           "%d layer groups do not fit %d layers"
-          (Array.length layers)
-          config.layers
+          (Array.length groups)
+          layers
           ();
-      { embed; phase; progress; layers }
+      { embed; phase; progress; layers = groups }
     | _ -> invalid_arg "the parameters start with the three tables"
+  ;;
+end
+
+module Params = struct
+  type t = tensor Params_data.t
+  type layer = tensor Params_data.layer
+
+  let to_list = Params_data.to_list
+
+  let of_list (config : Config.t) tensors =
+    Params_data.of_list ~layers:config.layers tensors
   ;;
 
   (* the shapes in the flat order of [to_list], which [of_list] reads back *)
@@ -109,7 +120,7 @@ module Params = struct
   (* The draw is a walk, thus the order of the tensors is part of the result. A record
      literal and [Array.init] leave that order to the compiler; the fold over [shapes]
      states it. *)
-  let draw config ~seed =
+  let init config ~seed =
     let open Prng in
     let normal shape =
       let+ draws = normals ~count:(numel shape) ~scale:0.02 in
@@ -498,14 +509,14 @@ let%expect_test "the seed names the walk" =
     mean, Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. count)
   in
   (* 0 is legal here and no state of the walk: [Prng.create_folded] moves it to the top *)
-  let zero = embed (Params.draw config ~seed:0) in
-  let one = embed (Params.draw config ~seed:1) in
+  let zero = embed (Params.init config ~seed:0) in
+  let one = embed (Params.init config ~seed:1) in
   let mean, deviation = moments one in
   printf
     "mean %.4f  deviation %.4f  repeats %b  differs %b\n"
     mean
     deviation
-    (Array.equal Float.equal one (embed (Params.draw config ~seed:1)))
+    (Array.equal Float.equal one (embed (Params.init config ~seed:1)))
     (not (Array.equal Float.equal zero one));
   [%expect {| mean 0.0000  deviation 0.0199  repeats true  differs true |}]
 ;;
@@ -539,7 +550,7 @@ let%expect_test "each block draws from a walk of its own" =
 
 let%expect_test "the shapes of the forward pass" =
   let config = { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8 } in
-  let params = Params.draw config ~seed:1 in
+  let params = Params.init config ~seed:1 in
   let out =
     logits
       config
@@ -560,7 +571,7 @@ let%expect_test "the shapes of the forward pass" =
    which is the property the sampler owes whatever the weights say. *)
 let%expect_test "the sampler draws only what the mask allows" =
   let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
-  let params = Params.draw config ~seed:5 in
+  let params = Params.init config ~seed:5 in
   let ~music, ~stats =
     sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
   in

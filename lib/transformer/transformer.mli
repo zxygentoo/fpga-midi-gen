@@ -14,6 +14,13 @@
 (** every tensor of the host model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
 
+(** the rows of the bar-phase table, the rows of the piece-position table, and the steps
+    of one draw bucket; [docs/transformer_model.md] holds the reasoning *)
+val phase_buckets : int
+
+val progress_buckets : int
+val progress_stride : int
+
 module Config : sig
   type t =
     { d : int (** the width of the residual stream *)
@@ -42,15 +49,50 @@ module Config : sig
   val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
+(** The parameter structure of the model, over any tensor type: the three tables — the
+    tied embedding, the bar phase and the piece position — and six tensors for each layer.
+    One definition holds the structure and the flat order of the checkpoint: [Params]
+    instantiates it with the float tensor and keeps its own type opaque, and [Fixed.Model]
+    instantiates it with the quantized tensor. The module holds the shape alone — the
+    tensor shapes, the draw and the checkpoint live with the models. *)
+module Params_data : sig
+  type 'a t =
+    { embed : 'a (** the tied token table; the head reads it backward *)
+    ; phase : 'a (** the bar-phase table *)
+    ; progress : 'a (** the piece-position table *)
+    ; layers : 'a layer array
+    }
+
+  and 'a layer =
+    { wq : 'a
+    ; wk : 'a
+    ; wv : 'a
+    ; wo : 'a
+    ; w1 : 'a
+    ; w2 : 'a
+    }
+
+  (** the flat order of the tensors — the order of the checkpoint; [of_list] reads the
+      same order *)
+  val to_list : 'a t -> 'a list
+
+  (** [of_list ~layers items] reads the order of [to_list]. It raises [Invalid_argument]
+      when the count of items is not three tables and six for each of [layers]. *)
+  val of_list : layers:int -> 'a list -> 'a t
+end
+
 module Params : sig
-  (** the weights of one model: the three tables — the tied embedding, the bar phase and
-      the piece position — and six tensors for each layer *)
+  (** the weights of the float model: [Params_data] over [tensor] *)
   type t
 
-  (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
+  (** the shapes of the tensors in the flat order, from the configuration; the
+      quantization of [Fixed] reads the same table *)
+  val shapes : Config.t -> int array list
+
+  (** [init config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
       Box-Muller make the draw, thus the seed is an input and the same seed gives the same
       start. The tensors come in the order of [to_list]. *)
-  val draw : Config.t -> seed:int -> t
+  val init : Config.t -> seed:int -> t
 
   (** [save t ~path] writes the checkpoint: the tensors in the flat order, and nothing
       else. The width and the layer count come back from the shapes with
@@ -109,6 +151,18 @@ module Dropout : sig
       survivors divides by zero. *)
   val create : rate:float -> seed:int -> t
 end
+
+(** [logits config params ~codes ~phases ~progress ~dropout] is the raw next-code logits
+    of each input position, shape \[batch; length; vocab\] — the forward pass that the
+    loss and the sampler share. The calibration of the integer twin compares against it. *)
+val logits
+  :  Config.t
+  -> Params.t
+  -> codes:int array array
+  -> phases:int array array
+  -> progress:int array array
+  -> dropout:Dropout.t
+  -> tensor
 
 (** [loss config params ~codes ~phases ~progress ~masks ~weights ~dropout] is the cross
     entropy of the next code, a scalar. [progress] holds the piece-position bucket of each
