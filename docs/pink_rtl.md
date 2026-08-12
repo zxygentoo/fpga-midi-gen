@@ -96,10 +96,12 @@ signature. `Midi` holds the status constants that the message construction
 needs: Note On, Note Off, and the release velocity.
 
 Era three extends the socket with a type bit on each note — a source that
-states its own releases — and makes the gate an elaboration choice.
+states its own releases — and removes the gate: the sequencer sends a Note
+Off only to keep its state true, and it does not shape the music.
 `docs/transformer_rtl_proto.md` holds those rules; the pink source sends
-every note with the type On and elaborates `~gated:true`, and nothing of
-this document changes.
+every note with the type On. The highest voice of this model now sustains
+to its next articulation, as the lower voices do, and the gate section
+below describes the removed behavior.
 
 ## The socket
 
@@ -411,6 +413,14 @@ STEP_MS — the sequencer sends the Note Off of the highest voice and clears
 its register. When GATE_MS is not less than STEP_MS, the gate boundary never
 comes, and that voice sends its Note Off at the next step boundary,
 immediately before its next Note On.
+
+Era three removed the gate and the GATE_MS cell. The gate was a design
+error of this era: it closed a note at a musical time, in the model's
+place, and the corrected rule keeps every musical Note Off with the model.
+The sequencer sends a Note Off only to keep its state true — the steal and
+the stop. The highest voice now sustains to its next articulation, as the
+lower voices do: the honest sound of a model that does not state its
+releases.
 
 ### The messages
 

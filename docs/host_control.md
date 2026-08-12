@@ -28,7 +28,7 @@ The registers:
 | `0F` | RUN | the run state, bit 0 | 0 |
 | `0E` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
 | `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 200 |
-| `0A`–`0B` | GATE_MS | gate time of the highest voice, in ms | 125 |
+| `0A`–`0B` | — | reserved (era one: GATE_MS) | 0 |
 | `09` | VELOCITY | note velocity, 1 to 127 | 100 |
 | `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | 42 |
 | `04` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
@@ -54,10 +54,11 @@ Semantics:
 - A Note Off uses the channel of its Note On, and not the current CHANNEL.
   Therefore a CHANNEL write during an open note cannot leave the note hang
   on the old channel.
-- GATE_MS is the gate of the highest voice only. The three lower voices
-  sustain to their next articulation, and GATE_MS does not touch them.
-- If GATE_MS is not less than STEP_MS, the gate never comes. The highest
-  voice then sends its Note Off immediately before its subsequent Note On.
+- Addresses `0A`–`0B` are reserved. Era one used them for GATE_MS, the
+  gate time of the highest voice; era three removed the gate, because
+  the sequencer sends a Note Off only to keep its state true and does
+  not shape the music. A write stores bytes that nothing reads, and the
+  power-on value is 0.
 - One step sends at most two messages for each voice, which is about 7.7 ms
   of line time. A step that is shorter than its messages stretches to fit
   them. Therefore STEP_MS below about 8 does not make the step faster.

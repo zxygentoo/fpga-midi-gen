@@ -44,11 +44,21 @@ names the seat that holds its pitch. The mask guarantees at most four
 sounding pitches and no shared pitch, thus a free seat always exists
 and the pitch names one seat.
 
-The gate becomes an elaboration choice: `Sequencer.create` takes
-`~gated`, and the transformer top level elaborates it false. The model
-owns its articulation, and a gate would close a note that the source
-still holds in its sounding set: the mask and the seats would split.
-The pink harnesses elaborate `~gated:true` and keep their behavior.
+The gate is removed from the sequencer. The rule that replaces it: the
+sequencer sends a Note Off only to keep its state true — the steal,
+when an On arrives at an open seat, and the stop sweep, when the run
+ends. The sequencer does not shape the music. The gate shaped the
+music: it closed a note at a musical time, in the model's place. For a
+model that states its releases, the gate is a second writer of the same
+state — it would close a note that the source still holds in its
+sounding set, and the mask and the seats would split. For a model that
+does not state releases — the pink model — the highest voice now
+sustains to its next articulation, as the lower voices do. This is the
+honest sound of that model.
+
+With the gate go all of its parts: the `GateOff` state, the sampled
+gate time, and the GATE_MS cell of the host control. Addresses
+`0A`–`0B` become reserved.
 
 ## The integer model
 
@@ -177,7 +187,8 @@ The top level seats the transformer:
   control path does not read the weights, and the test must not read a
   file that git ignores.
 - No new control cells. SEED, STEP_MS, CHANNEL and VELOCITY serve as
-  before. GATE_MS has no effect in this era's top level.
+  before. GATE_MS is removed with the gate, and addresses `0A`–`0B`
+  are reserved.
 - The flash keeps the pink era; the prototype programs over JTAG.
 
 ## The tests
@@ -187,7 +198,9 @@ The top level seats the transformer:
   drift is a report, not a gate — the audition judges it.
 - `Vaswani` against `Fixed`: one fed token gives the same logits, and
   a short stream gives the same events, integer for integer.
-- The sequencer: the `kind` Off path, and the pink tests unchanged.
+- The sequencer: the `kind` Off path. The tests that watched the gate
+  change with it: the melody Note Off moves from the gate time to the
+  next articulation of its voice.
 - The board: the amidi thru capture against the twin's events, as the
   pink era proved its stream.
 
