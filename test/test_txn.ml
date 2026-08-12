@@ -22,7 +22,7 @@ let () =
   (* drawn weights: the control path does not read them, and the test must not read a file
      that git ignores *)
   let model =
-    Mgen_transformer.Fixed.Model.For_test.init
+    Mgen_transformer.Quantized.Model.For_test.init
       Mgen_transformer.Transformer.Config.baseline
       ~seed:1
   in

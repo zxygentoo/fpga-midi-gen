@@ -3,8 +3,8 @@
     The control port serves the wire protocol on the host UART, [Control_regs] holds the
     cells, and the MIDI path is [Midi_merge] and [Midi_out]. The structure is the one of
     [docs/host_control_rtl.md]. The model seat holds the transformer prototype of
-    [docs/transformer_rtl_proto.md]; the quantized model arrives as [model] at elaboration
-    — the bitstream carries the weights — thus [create] takes it whole.
+    [docs/transformer_rtl.md]; the quantized model arrives as [model] at elaboration — the
+    bitstream carries the weights — thus [create] takes it whole.
 
     The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
     [led 2], MIDI activity on [led 3], the busy state of the port on [led 4], and the run
@@ -80,10 +80,10 @@ let create ~model () =
   assign read_data control_regs.read_data;
   let model =
     (* the one line that names the model of the era *)
-    Source.create
+    Socket.create
       ~clocks_per_ms
-      ~source:(Vaswani.create ~model ~seed:control_regs.params.seed)
-      { Source.I.clock = clk
+      ~source:(Mgen_transformer.Source.create ~model ~seed:control_regs.params.seed)
+      { Socket.I.clock = clk
       ; clear
       ; params = control_regs.params
       ; midi_ready = model_ready

@@ -58,7 +58,7 @@ let harness ~model () =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim =
     Sim.create (fun (i : _ I.t) ->
-      create ~clocks_per_ms ~source:(Voss.create ~model ~seed:i.params.seed) i)
+      create ~clocks_per_ms ~source:(Source.create ~model ~seed:i.params.seed) i)
   in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in

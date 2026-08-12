@@ -1,9 +1,9 @@
 open Base
 module Params_data = Transformer.Params_data
 
-(* The design constants of the fixed-point scheme: the formats of
-   docs/transformer_rtl_proto.md, and the values derived from them and from the
-   mathematics. The sampling policy is not here — the model carries it. *)
+(* The design constants of the fixed-point scheme: the formats of docs/transformer_rtl.md,
+   and the values derived from them and from the mathematics. The sampling policy is not
+   here — the model carries it. *)
 module Constants = struct
   (* the formats: the residual stream is Q16 in int32; the normed vector, the query, the
      keys, the values and the context are Q12 in int16; the FFN hidden is Q10 in int16;
@@ -119,8 +119,10 @@ module Model = struct
 
   (* the policy in the integer forms of the machine; the rules of the float sampler *)
   let policy ~temperature ~min_p =
-    if Float.(temperature <= 0.0) then invalid_arg "Fixed: the temperature is positive";
-    if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "Fixed: min_p is 0 up to 1";
+    if Float.(temperature <= 0.0)
+    then invalid_arg "Quantized: the temperature is positive";
+    if Float.(min_p < 0.0 || min_p >= 1.0)
+    then invalid_arg "Quantized: min_p is 0 up to 1";
     ( Float.iround_nearest_exn (32768.0 /. Float.log 2.0 /. temperature /. 2.0)
     , Float.iround_nearest_exn (min_p *. 32768.0) )
   ;;

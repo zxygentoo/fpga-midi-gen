@@ -1,23 +1,23 @@
-(** The integer twin: the transformer of the prototype circuit, in exact integer
+(** The quantized transformer: the reference of the prototype circuit, in exact integer
     arithmetic.
 
-    The circuit of [Vaswani] must match this module bit for bit — the twin is the
-    reference of the circuit, as [Pink] is the reference of [Voss]. The float model of
-    [Transformer] is not: post-training quantization separates them, and the audition
-    judges that distance. [docs/transformer_rtl_proto.md] holds the design: the formats,
-    the operations and their order.
+    The circuit of [Source] must match this module bit for bit, as the pink source matches
+    [Pink]. The float model of [Transformer] is not: post-training quantization separates
+    them, and the audition judges that distance. [docs/transformer_rtl.md] holds the
+    design: the formats, the operations and their order.
 
-    The twin is generic over [Transformer.Config], within the shift rules of the circuit's
-    arithmetic: the width and the context are powers of two, and the head width is a power
-    of four. The circuit alone fixes one shape — its address packing — and [Vaswani]
-    states that check; the king of the era elaborates at [Transformer.Config.baseline].
+    The reference is generic over [Transformer.Config], within the shift rules of the
+    circuit's arithmetic: the width and the context are powers of two, and the head width
+    is a power of four. The circuit alone fixes one shape — its address packing — and
+    [Source] states that check; the king of the era elaborates at
+    [Transformer.Config.baseline].
 
     The engine is a value: each operation gives the engine after it, thus a state can be
     kept, compared and replayed. *)
 
 (** The design constants of the fixed-point scheme: the formats, and the values derived
-    from them and from the mathematics. The circuit elaboration reads these, thus the twin
-    and the circuit share one definition. The model dimensions are not here —
+    from them and from the mathematics. The circuit elaboration reads these, thus the
+    reference and the circuit share one definition. The model dimensions are not here —
     [Transformer.Config] carries them — and neither is the sampling policy, which the
     model carries. *)
 module Constants : sig

@@ -4,9 +4,9 @@ open Signal
 module I = Source_intf.I
 module O = Source_intf.O
 
-(* The walk of the engine, in the order of the twin. [Embed] sums the three table rows.
-   The rms states serve three sites — the attention, the feed-forward and the head — and
-   [rms_ret] names the state that follows. [Qkv] projects and fills the ring; [Score],
+(* The walk of the engine, in the order of the reference. [Embed] sums the three table
+   rows. The rms states serve three sites — the attention, the feed-forward and the head —
+   and [rms_ret] names the state that follows. [Qkv] projects and fills the ring; [Score],
    [Exp], [ExpMac] and [CtxDiv] are the attention of one head at a time; the Wo and Ffn
    states join the residual stream. [Logits], [Weights], [Draw], [Thresh] and [Pick] are
    the sampler; [Decide] decodes the drawn code, [Emit] holds one event for the sequencer,
@@ -57,8 +57,8 @@ let rescale ~from ~target v =
   if target >= from then sll v ~by:(target - from) else sra v ~by:(from - target)
 ;;
 
-let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
-  let { Fixed.Model.config; params; temper_q14; min_weight } = model in
+let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
+  let { Quantized.Model.config; params; temper_q14; min_weight } = model in
   (* The dimensions come from the configuration; the derived pair follows the network
      rules. The address packing of the prototype fixes the shape — one layer bit, an 8-bit
      slot, a 2-bit head, a 4-bit lane, a 6-bit dimension — and the checks state it loudly. *)
@@ -74,17 +74,17 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   let sm = State_machine.create (module State) spec in
   let e_tbl = params.embed.e in
   (* the ROM of the model, and the address width of its padded depth *)
-  let rom_bits = Fixed.Model.rom_bits model in
+  let rom_bits = Quantized.Model.rom_bits model in
   let rom_addr_bits = address_bits_for (Array.length rom_bits) in
   (* the address book: the base of each tensor, in the shape of the parameters *)
-  let bases = Fixed.Model.rom_bases model in
+  let bases = Quantized.Model.rom_bases model in
   let layer_e f = [| f params.layers.(0); f params.layers.(1) |] in
-  let eq = layer_e (fun (l : Fixed.Model.layer) -> l.wq.e) in
-  let ek = layer_e (fun (l : Fixed.Model.layer) -> l.wk.e) in
-  let ev = layer_e (fun (l : Fixed.Model.layer) -> l.wv.e) in
-  let eo = layer_e (fun (l : Fixed.Model.layer) -> l.wo.e) in
-  let e1 = layer_e (fun (l : Fixed.Model.layer) -> l.w1.e) in
-  let e2 = layer_e (fun (l : Fixed.Model.layer) -> l.w2.e) in
+  let eq = layer_e (fun (l : Quantized.Model.layer) -> l.wq.e) in
+  let ek = layer_e (fun (l : Quantized.Model.layer) -> l.wk.e) in
+  let ev = layer_e (fun (l : Quantized.Model.layer) -> l.wv.e) in
+  let eo = layer_e (fun (l : Quantized.Model.layer) -> l.wo.e) in
+  let e1 = layer_e (fun (l : Quantized.Model.layer) -> l.w1.e) in
+  let e2 = layer_e (fun (l : Quantized.Model.layer) -> l.w2.e) in
   let min32 = of_signed_int ~width:32 (-(1 lsl 31)) in
   (* the counters and the walk registers *)
   let tick = Variable.reg spec ~width:3 in
@@ -110,7 +110,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   let sq_root = Variable.reg spec ~width:21 in
   let sq_rem = Variable.reg spec ~width:25 in
   let sq_i = Variable.reg spec ~width:5 in
-  (* the divider: restoring on the magnitude with a sign — toward zero, as the twin *)
+  (* the divider: restoring on the magnitude with a sign — toward zero, as the reference *)
   let div_m = Variable.reg spec ~width:40 in
   let div_d = Variable.reg spec ~width:24 in
   let div_q = Variable.reg spec ~width:40 in
@@ -183,7 +183,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* the memories; every read lands in a register, thus block RAM is inferred *)
   let romd = reg spec (rom ~read_addresses:[| rom_addr.value |] rom_bits).(0) in
   let exp2d =
-    reg spec (rom ~read_addresses:[| exp2_addr.value |] Fixed.Constants.exp2_bits).(0)
+    reg spec (rom ~read_addresses:[| exp2_addr.value |] Quantized.Constants.exp2_bits).(0)
   in
   let write_port waddr wen wdata =
     { Write_port.write_clock = i.clock
@@ -376,13 +376,16 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
     mux sub.value [ variant eq; variant ek; variant ev ]
   in
   let ffn1_hidden value =
-    (* from Q(12 + e1) to the hidden Q, then the ReLU and the clamp of the twin *)
+    (* from Q(12 + e1) to the hidden Q, then the ReLU and the clamp of the reference *)
     let shifted =
       mux
         lyr.value
         (Array.to_list
            (Array.map e1 ~f:(fun e ->
-              rescale ~from:(Fixed.Constants.y_q + e) ~target:Fixed.Constants.hid_q value)))
+              rescale
+                ~from:(Quantized.Constants.y_q + e)
+                ~target:Quantized.Constants.hid_q
+                value)))
     in
     let relu = mux2 (shifted <+ zero 48) (zero 48) shifted in
     sresize (clamp16 relu) ~width:32
@@ -390,7 +393,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   let resid_shift ~e_layer ~from value =
     let variant =
       Array.map e_layer ~f:(fun e ->
-        rescale ~from:(from + e) ~target:Fixed.Constants.h_q value)
+        rescale ~from:(from + e) ~target:Quantized.Constants.h_q value)
     in
     mux lyr.value (Array.to_list variant)
   in
@@ -401,7 +404,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
       hd.value
       (List.init heads ~f:(fun k ->
          let exponent = span * (k + 1) / heads in
-         sll (uresize age.value ~width:32) ~by:(Fixed.Constants.y_q - exponent)))
+         sll (uresize age.value ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
   in
   let exp_of_nn =
     (* exp2 through the table: the integer part shifts the table entry; 16 or more is 0 *)
@@ -451,7 +454,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                   ; hram_waddr <-- ii6
                   ; hram_wdata
                     <-- sel_bottom
-                          (rescale ~from:e_tbl ~target:Fixed.Constants.h_q acc_full)
+                          (rescale ~from:e_tbl ~target:Quantized.Constants.h_q acc_full)
                           ~width:32
                   ; sub <--. 0
                   ; if_
@@ -471,7 +474,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                   [ m
                     <-- sel_bottom
                           (srl acc_full ~by:6
-                           +: of_unsigned_int ~width:48 Fixed.Constants.eps_q)
+                           +: of_unsigned_int ~width:48 Quantized.Constants.eps_q)
                           ~width:42
                   ; sq_root <--. 0
                   ; sq_rem <--. 0
@@ -506,7 +509,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                  ])
             ] )
         ; ( RmsScale
-          , [ (* y = (x << 8) / g for each element, toward zero: the twin's division *)
+          , [ (* y = (x << 8) / g for each element, toward zero: the reference's division *)
               hram_raddr <-- ii6
             ; if_
                 (tick.value ==:. 0)
@@ -647,7 +650,7 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
         ; ( Exp
           , [ vram_raddr <-- age8
             ; mul_a <-- sel_bottom diff.value ~width:25
-            ; mul_b <-- of_signed_int ~width:18 Fixed.Constants.log2e_q15
+            ; mul_b <-- of_signed_int ~width:18 Quantized.Constants.log2e_q15
             ; exp2_addr <-- uresize (select nn.value ~high:11 ~low:4) ~width:8
             ; if_
                 (tick.value ==:. 0)
@@ -791,7 +794,10 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                 ; hram_wdata
                   <-- sel_bottom
                         (sresize hramd ~width:48
-                         +: resid_shift ~e_layer:eo ~from:Fixed.Constants.kv_q acc.value)
+                         +: resid_shift
+                              ~e_layer:eo
+                              ~from:Quantized.Constants.kv_q
+                              acc.value)
                         ~width:32
                 ; acc <--. 0
                 ; if_
@@ -841,8 +847,10 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
                 ; hram_wdata
                   <-- sel_bottom
                         (sresize hramd ~width:48
-                         +: resid_shift ~e_layer:e2 ~from:Fixed.Constants.hid_q acc.value
-                        )
+                         +: resid_shift
+                              ~e_layer:e2
+                              ~from:Quantized.Constants.hid_q
+                              acc.value)
                         ~width:32
                 ; acc <--. 0
                 ; if_
@@ -1091,12 +1099,12 @@ let create ~(model : Fixed.Model.t) ~seed (i : _ I.t) : _ O.t =
   }
 ;;
 
-(* The stream comparison: the circuit against the twin, event for event, on drawn weights.
-   Every integer of the engine crosses this test — the embedding, the ring, the softmax,
-   the sampler and the seats — because one wrong bit moves a draw and the streams part.
-   The budget catches a stall. *)
-let%expect_test "the source agrees with the twin, event for event" =
-  let model = Fixed.Model.For_test.init Transformer.Config.baseline ~seed:11 in
+(* The stream comparison: the circuit against the reference, event for event, on drawn
+   weights. Every integer of the engine crosses this test — the embedding, the ring, the
+   softmax, the sampler and the seats — because one wrong bit moves a draw and the streams
+   part. The budget catches a stall. *)
+let%expect_test "the source agrees with the reference, event for event" =
+  let model = Quantized.Model.For_test.init Transformer.Config.baseline ~seed:11 in
   let seed = 42 in
   let steps = 3 in
   let module Sim = Cyclesim.With_interface (I) (O) in
@@ -1111,7 +1119,7 @@ let%expect_test "the source agrees with the twin, event for event" =
     assert (!budget > 0)
   in
   (* the source is still in Idle in the cycle that takes a strobe, thus each wait must
-     cycle once before it reads [idle] — the rule of the Voss harness *)
+     cycle once before it reads [idle] — the rule of the pink harness *)
   inp.rewind := Bits.vdd;
   cycle ();
   inp.rewind := Bits.gnd;
@@ -1141,12 +1149,12 @@ let%expect_test "the source agrees with the twin, event for event" =
     List.rev
       (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
   in
-  let twin = Fixed.Engine.init model ~seed in
-  let (_ : Fixed.Engine.t), reference_reversed =
-    List.fold (List.range 0 steps) ~init:(twin, []) ~f:(fun (twin, acc) (_ : int) ->
-      let twin, events = Fixed.Engine.next_step twin in
-      ( twin
-      , List.map events ~f:(fun { Fixed.Engine.voice; pitch; on } -> voice, pitch, on)
+  let engine = Quantized.Engine.init model ~seed in
+  let (_ : Quantized.Engine.t), reference_reversed =
+    List.fold (List.range 0 steps) ~init:(engine, []) ~f:(fun (engine, acc) (_ : int) ->
+      let engine, events = Quantized.Engine.next_step engine in
+      ( engine
+      , List.map events ~f:(fun { Quantized.Engine.voice; pitch; on } -> voice, pitch, on)
         :: acc ))
   in
   let reference = List.rev reference_reversed in

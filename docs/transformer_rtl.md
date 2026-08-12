@@ -10,17 +10,17 @@ of the model on the hardware and a proven block structure. The
 production RTL document comes after, with the lessons of this build.
 
 The design keeps the project rules. The reference of the circuit is
-exact integer arithmetic in OCaml — the twin — and the circuit must
-match it bit for bit. The float model is not the reference of the
+exact integer arithmetic in OCaml — `Quantized`, the reference — and
+the circuit must match it bit for bit. The float model is not the reference of the
 circuit: post-training quantization separates them, and the audition
 judges that distance, not a test.
 
-Two new modules carry the era, in the pattern of `Pink` and `Voss`:
+Two new modules carry the era, in the pattern of `Pink` and its `Source`:
 
 | Module | It owns |
 |---|---|
-| `Fixed` | the quantization of the checkpoint, and the integer model: the exact arithmetic, the mask, the sampler, the seat rule |
-| `Vaswani` | the same integers as a circuit: the ROMs, the engine, the KV ring, the draw and the socket FSM |
+| `Quantized` | the quantization of the checkpoint, and the integer model: the exact arithmetic, the mask, the sampler, the seat rule |
+| `Source` | the same integers as a circuit: the ROMs, the engine, the KV ring, the draw and the socket FSM |
 
 ## The socket
 
@@ -35,7 +35,7 @@ The rules of the sequencer:
 - `on` at 0: the seat of `voice` releases its note, one Note Off from
   the stored pair. `pitch` repeats the stored pitch; the seat is the key.
 
-`Voss` sends every note with `on` at 1 and does not change behavior.
+The pink source sends every note with `on` at 1 and does not change behavior.
 The transformer source states its own releases, as the model does.
 
 The seat rule of the transformer source: an On takes the highest free
@@ -74,7 +74,7 @@ position — share one exponent, because their rows add.
 
 The activation formats come from a measurement, not from a guess: the
 design round metered the peak of each signal class over a sampled walk,
-and the formats hold the measured peak with margin. The twin clamps
+and the formats hold the measured peak with margin. The reference clamps
 where the bound is structural. The meter retired with the round — git
 history keeps it — and `checkpoint_tool drift` remains the gate for a
 new checkpoint: the top-1 agreement and the cosine of the logits at
@@ -98,7 +98,7 @@ agreement 91.7 percent, cosine 0.9998 over 276 draws.
 
 ### The operations
 
-Each operation is one definition in `Fixed`, and the circuit computes
+Each operation is one definition in `Quantized`, and the circuit computes
 the same integers.
 
 Every product of the circuit fits one DSP48 — 25 by 18, signed — and
@@ -196,15 +196,15 @@ The top level seats the transformer:
 
 ## The tests
 
-- `Fixed` against the float model: the plain-float twin structure
+- `Quantized` against the float model: the plain-float structure
   agrees with the Nx reference on logits, then the quantized model's
   drift is a report, not a gate — the audition judges it.
-- `Vaswani` against `Fixed`: one forwarded token gives the same logits, and
+- `Source` against `Quantized`: one forwarded token gives the same logits, and
   a short stream gives the same events, integer for integer.
 - The sequencer: the release path, `on` at 0. The tests that watched the gate
   change with it: the melody Note Off moves from the gate time to the
   next articulation of its voice.
-- The board: the amidi thru capture against the twin's events, as the
+- The board: the amidi thru capture against the reference's events, as the
   pink era proved its stream.
 
 ## What the prototype does not do

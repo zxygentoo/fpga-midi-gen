@@ -9,7 +9,7 @@ circuit, the run engine that plays it, and the board button.
 
 The reference is in two parts, and they answer the two blocks of the model.
 `Pink` holds the model — the register decomposition, four voices from the
-row groups — and `Voss` computes the same integer arithmetic. `Player` holds
+row groups — and `Source` computes the same integer arithmetic. `Player` holds
 the rule that makes note events from the steps of the model, and `Sequencer`
 does the same on the wire. Therefore the same seed gives the same notes and
 the same messages in the reference, in the simulation and on the board.
@@ -72,7 +72,7 @@ The four constant multipliers are shifts and adds: `x * 4` is one shift,
                  ┌──────────────────────────────────────┐
    params        │                Model                 │
   ───────────────▶  ┌────────────┐     ┌────────────┐   │  midi
-  (Control_regs) │  │    Voss    │◀───▶│ Sequencer  │───┼─────────▶ Midi_merge
+  (Control_regs) │  │   Source   │◀───▶│ Sequencer  │───┼─────────▶ Midi_merge
                  │  │  ┌──────┐  │ the │            │   │◀── midi_ready
                  │  │  │ Prng │  │socket            │   │
                  │  │  └──────┘  │     └────────────┘   │
@@ -85,9 +85,9 @@ The four constant multipliers are shifts and adds: `x * 4` is one shift,
 | Block | It owns |
 |---|---|
 | `Prng.Rtl` | the xorshift32 state |
-| `Voss` | the rows, the step count, the walk, the note of each voice, and which voices speak |
+| `Source` | the rows, the step count, the walk, the note of each voice, and which voices speak |
 | `Sequencer` | the millisecond tick, the step and gate times, the open note of each voice, and the message construction |
-| `Source` | nothing: it connects a note source to the sequencer, and the top level names the source, thus the top level keeps the same shape for every model |
+| `Socket` | nothing: it connects a note source to the sequencer, and the top level names the source, thus the top level keeps the same shape for every model |
 | `Button` | the synchronizer, the debounce, and the toggle strobe |
 
 `Source_intf` holds the socket between a model core and the sequencer. It
@@ -98,7 +98,7 @@ needs: Note On, Note Off, and the release velocity.
 Era three extends the socket with a type bit on each note — a source that
 states its own releases — and removes the gate: the sequencer sends a Note
 Off only to keep its state true, and it does not shape the music.
-`docs/transformer_rtl_proto.md` holds those rules; the pink source sends
+`docs/transformer_rtl.md` holds those rules; the pink source sends
 every note with the type On. The highest voice of this model now sustains
 to its next articulation, as the lower voices do, and the gate section
 below describes the removed behavior.
@@ -184,7 +184,7 @@ walk, a current note, a hidden state, or at least an address. The rewind at
 each run start is what makes the same run play the same sequence.
 
 No configuration crosses the socket. A source takes what it needs by
-closure at elaboration: `Voss` takes the model and the live view of the
+closure at elaboration: `Source` takes the model and the live view of the
 SEED cell, and a later core takes its weights port the same way.
 
 ## Prng
@@ -228,10 +228,10 @@ state after a step, as `Prng.next` gives it.
 The clear puts 1 into the state. The state has no use before the first
 load, and 1 keeps the rule that the state is never 0.
 
-`Voss` instantiates `Prng.Rtl` and nothing else sees it. The draw stream has
+`Source` instantiates `Prng.Rtl` and nothing else sees it. The draw stream has
 exactly one consumer, therefore no other block can move the sequence.
 
-## Voss
+## Source
 
 ```ocaml
 module I = Source_intf.I
@@ -240,7 +240,7 @@ module O = Source_intf.O
 val create : model:Pink.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
 ```
 
-`Voss` is the note source of this era. The `voices` argument is the model:
+`Source` is the note source of this era. The `voices` argument is the model:
 `Pink.default`, whose voices run from the fastest group to the slowest. `seed` is the
 live view of the SEED cell; a `rewind` captures its value, puts the step
 count at 0, and draws every row in ascending order — the origin of the
@@ -376,7 +376,7 @@ sequencer only reads it.
   for each open note, from the highest voice downward, and goes to Idle.
 
 The sequencer strobes `source_rewind` at the run start and at no other
-time. For `Voss` the rewind captures the SEED view, thus a run is a pure
+time. For `Source` the rewind captures the SEED view, thus a run is a pure
 function of the seed and of the sampled parameters, and the same seed
 replays the same sequence. A write to SEED during a run applies at the next
 run start; a capture at each write would tie the sequence to the write
@@ -455,20 +455,20 @@ val create
   -> Signal.t O.t
 ```
 
-`Source` connects a note source to the sequencer. It holds no logic — it
+`Socket` connects a note source to the sequencer. It holds no logic — it
 crosses the three commands of the sequencer to the source and the answer
 back — and it does not name a model: the top level seats a model core with the `source`
 argument, and the closure carries the configuration of the core. The block
 does not change with the four voices.
 
 ```ocaml
-Source.create
+Socket.create
   ~clocks_per_ms
-  ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
+  ~source:(Source.create ~model:Pink.default ~seed:control_regs.params.seed)
 ```
 
 This is the one line that names the model of the era. A later era changes
-`Voss.create ~model ~seed` to its own core and its own closure, and
+`Source.create ~model ~seed` to its own core and its own closure, and
 nothing outside the line.
 
 ## Button
@@ -485,7 +485,7 @@ The top level does not change, except for the `model` argument of the seat
 line. LED 5 stays the run state.
 
 The handshake paths are chains, not loops, as in the control design. The
-`valid` and the `idle` of the source are functions of registers in `Voss`
+`valid` and the `idle` of the source are functions of registers in `Source`
 and they do not read `ready`; the `source_ready` of the sequencer is a
 function of its own registers and of `midi_ready`, and it does not read
 `valid`. Therefore neither side of the transfer waits on the other in the
@@ -546,17 +546,17 @@ with no function. The model era adds no warning.
 - `Prng`: 1000 steps of the circuit side by side with the software of the
   same module — the state and the draw, both exact — and a waveform of one
   step that also shows the rule that `load` wins over `step`.
-- `Voss`, four voices: the reports rebuild the note of every voice, and the
+- `Source`, four voices: the reports rebuild the note of every voice, and the
   rebuild equals `Pink.next_step` for 200 steps. A pitch changes only at a
   step where its voice speaks, thus this one comparison proves the
   arithmetic and the strike rule together, and it runs with no millisecond
   waits.
-- `Voss`: the report of the first 16 steps — which voices speak, and with
+- `Source`: the report of the first 16 steps — which voices speak, and with
   what note — and the count for each voice in 128 steps. The counts show the
   two rules together: the alto speaks 33 times, which is its due count, and
   the tenor speaks 8 times against 9 due steps — the one step where it was
   due and did not move.
-- `Voss`: the rewind repeats the sequence and a new seed changes it, and a
+- `Source`: the rewind repeats the sequence and a new seed changes it, and a
   waveform shows the rewind walk, one step, and the source holding a note
   while the sink is not ready.
 - `Sequencer`: message logs with a small `clocks_per_ms` and a stub source
@@ -566,7 +566,7 @@ with no function. The model era adds no warning.
   gate closes the highest voice only, a Note Off keeps the stored channel of
   its voice while the next Note On takes a new one, the stop sends a Note
   Off for each open voice, and a STEP_MS write lands at the next boundary.
-- `Source`, four voices: the integration. Drive the parameter views, take
+- `Socket`, four voices: the integration. Drive the parameter views, take
   every message, and compare the stream against the messages that `Player`
   composes, byte for byte, with the gate and without it. A second run
   repeats the sequence from the seed.

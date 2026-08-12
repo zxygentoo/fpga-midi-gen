@@ -4,7 +4,7 @@
     piece. [bin/play_pink.ml] sends the events to the synthesizer, and the RTL tests
     compare the message stream of the circuit against them. The block that the circuit
     compares against is [Sequencer]: this module is its reference, as [Pink] is the
-    reference of [Voss].
+    reference of [Source].
 
     A voice speaks when it is due and it holds no note, or its pitch moved, or its policy
     re-strikes a held pitch. A voice that speaks closes its note before it opens the new

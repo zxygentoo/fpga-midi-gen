@@ -52,9 +52,9 @@ end
 (** The parameter structure of the model, over any tensor type: the three tables — the
     tied embedding, the bar phase and the piece position — and six tensors for each layer.
     One definition holds the structure and the flat order of the checkpoint: [Params]
-    instantiates it with the float tensor and keeps its own type opaque, and [Fixed.Model]
-    instantiates it with the quantized tensor. The module holds the shape alone — the
-    tensor shapes, the draw and the checkpoint live with the models. *)
+    instantiates it with the float tensor and keeps its own type opaque, and
+    [Quantized.Model] instantiates it with the quantized tensor. The module holds the
+    shape alone — the tensor shapes, the draw and the checkpoint live with the models. *)
 module Params_data : sig
   type 'a t =
     { embed : 'a (** the tied token table; the head reads it backward *)
@@ -86,7 +86,7 @@ module Params : sig
   type t
 
   (** the shapes of the tensors in the flat order, from the configuration; the
-      quantization of [Fixed] reads the same table *)
+      quantization of [Quantized] reads the same table *)
   val shapes : Config.t -> int array list
 
   (** [init config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
@@ -154,7 +154,7 @@ end
 
 (** [logits config params ~codes ~phases ~progress ~dropout] is the raw next-code logits
     of each input position, shape \[batch; length; vocab\] — the forward pass that the
-    loss and the sampler share. The calibration of the integer twin compares against it. *)
+    loss and the sampler share. The drift report of the reference compares against it. *)
 val logits
   :  Config.t
   -> Params.t

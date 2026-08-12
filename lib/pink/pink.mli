@@ -74,7 +74,7 @@ val window : Params.t -> int * int
 val total_rows : Voice.t list -> int
 
 (** The state of one run: the row values, the PRNG and the step count. [Player] drives it,
-    and the RTL tests compare [Voss] against it. *)
+    and the RTL tests compare [Source] against it. *)
 type walk
 
 (** The pitch and the due flag of one voice at one step. [due] is true at the steps where

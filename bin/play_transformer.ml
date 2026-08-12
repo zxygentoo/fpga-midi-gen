@@ -3,12 +3,12 @@
    only a clock and a wire encoder: no gate and no seat logic. The config flags must equal
    the flags of the training run; the checkpoint holds only tensors.
 
-   -quantized samples the integer twin of the circuit instead: the same seed then gives
-   the piece the board plays, note for note — the audition of the quantized model. *)
+   -quantized samples the reference of the circuit instead: the same seed then gives the
+   piece the board plays, note for note — the audition of the quantized model. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
-module Fixed = Mgen_transformer.Fixed
+module Quantized = Mgen_transformer.Quantized
 module Jsb = Mgen_corpus.Jsb
 module Midi = Mgen_core.Midi
 module Token = Mgen_core.Token
@@ -235,7 +235,7 @@ let command =
          "-quantized"
          no_arg
          ~doc:
-           " sample the integer twin of the circuit: the piece the board plays at this \
+           " sample the reference of the circuit: the piece the board plays at this \
             seed. Every configuration and sampling flag applies as in the float path; \
             the board commits to the values its bitstream was elaborated with"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
@@ -269,26 +269,28 @@ let command =
        let music, stats =
          if quantized
          then (
-           (* the twin takes the rule of the SEED cell, as the board does *)
+           (* the reference takes the rule of the SEED cell, as the board does *)
            if seed < 1 || seed > 0xFFFF_FFFF
            then (
              Printf.eprintf
                "-quantized takes the seed of the SEED cell: 1 to 0xFFFFFFFF\n";
              exit 2);
-           let model = Fixed.Model.of_checkpoint ~temperature ~min_p config checkpoint in
-           let engine = Fixed.Engine.init model ~seed in
+           let model =
+             Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint
+           in
+           let engine = Quantized.Engine.init model ~seed in
            let sentence events =
-             List.map events ~f:(fun { Fixed.Engine.voice = (_ : int); pitch; on } ->
+             List.map events ~f:(fun { Quantized.Engine.voice = (_ : int); pitch; on } ->
                if on then Token.On pitch else Token.Off pitch)
            in
            (* the fold threads the engine through the steps in the drawn order *)
            let music =
-             let (_ : Fixed.Engine.t), reversed =
+             let (_ : Quantized.Engine.t), reversed =
                List.fold
                  (List.range 0 steps)
                  ~init:(engine, [])
                  ~f:(fun (engine, acc) (_ : int) ->
-                   let engine, events = Fixed.Engine.next_step engine in
+                   let engine, events = Quantized.Engine.next_step engine in
                    engine, sentence events :: acc)
              in
              List.rev reversed

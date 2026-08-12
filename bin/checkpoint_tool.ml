@@ -7,7 +7,7 @@
 
 open Core
 module Evaluation = Mgen_transformer.Evaluation
-module Fixed = Mgen_transformer.Fixed
+module Quantized = Mgen_transformer.Quantized
 module Jsb = Mgen_corpus.Jsb
 module Token = Mgen_core.Token
 module Transformer = Mgen_transformer.Transformer
@@ -85,8 +85,8 @@ let eval_command =
      fun () -> eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out)
 ;;
 
-(* The drift of the integer twin against the float model: the top-1 agreement and the
-   cosine of the logits at every draw, on the twin's own walk. *)
+(* The drift of the reference against the float model: the top-1 agreement and the cosine
+   of the logits at every draw, on the quantized walk. *)
 let drift ~checkpoint ~steps ~seed =
   let config =
     Transformer.Config.of_checkpoint
@@ -95,9 +95,9 @@ let drift ~checkpoint ~steps ~seed =
       ~context:Transformer.Config.baseline.context
       ~slope_span:Transformer.Config.baseline.slope_span
   in
-  let quantized = Fixed.Model.of_checkpoint config checkpoint in
+  let quantized = Quantized.Model.of_checkpoint config checkpoint in
   let params = Transformer.Params.load config ~path:checkpoint in
-  let engine = ref (Fixed.Engine.init quantized ~seed) in
+  let engine = ref (Quantized.Engine.init quantized ~seed) in
   (* the histories of the float pass, newest first, as the float sampler keeps them *)
   let codes = ref [ Token.to_code Token.Start ] in
   let phases = ref [ 0 ] in
@@ -121,18 +121,18 @@ let drift ~checkpoint ~steps ~seed =
   let events = ref 0 in
   let step_index = ref 0 in
   while !step_index < steps do
-    let quantized = Fixed.Engine.logits !engine in
+    let quantized = Quantized.Engine.logits !engine in
     let floated = float_logits () in
-    if Fixed.Tensor.same_peak quantized floated then incr agree;
-    cosine_sum := !cosine_sum +. Fixed.Tensor.cosine quantized floated;
+    if Quantized.Tensor.same_peak quantized floated then incr agree;
+    cosine_sum := !cosine_sum +. Quantized.Tensor.cosine quantized floated;
     incr draws;
-    let engine', code = Fixed.Engine.next_code !engine in
+    let engine', code = Quantized.Engine.next_code !engine in
     engine := engine';
     let phase = !step_index mod Transformer.phase_buckets in
     let bucket =
       !step_index / Transformer.progress_stride mod Transformer.progress_buckets
     in
-    engine := Fixed.Engine.forward !engine ~code ~phase ~bucket;
+    engine := Quantized.Engine.forward !engine ~code ~phase ~bucket;
     codes := code :: !codes;
     phases := phase :: !phases;
     progress := bucket :: !progress;
@@ -150,7 +150,7 @@ let drift ~checkpoint ~steps ~seed =
 
 let drift_command =
   Command.basic
-    ~summary:"the twin's drift against the float model: top-1 and cosine at every draw"
+    ~summary:"the drift of the reference against the float model: top-1 and cosine"
     (let%map_open.Command checkpoint =
        flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
      and steps = flag "-steps" (optional_with_default 96 int) ~doc:"N the steps to draw"
@@ -158,9 +158,9 @@ let drift_command =
      fun () -> drift ~checkpoint ~steps ~seed)
 ;;
 
-(* The twin's socket stream: what the board must send, event for event. The comparison
+(* The reference socket stream: what the board must send, event for event. The comparison
    script reads these lines against the amidi capture of the S-1 thru. *)
-let twin ~checkpoint ~steps ~seed =
+let stream ~checkpoint ~steps ~seed =
   let config =
     Transformer.Config.of_checkpoint
       checkpoint
@@ -168,34 +168,34 @@ let twin ~checkpoint ~steps ~seed =
       ~context:Transformer.Config.baseline.context
       ~slope_span:Transformer.Config.baseline.slope_span
   in
-  let model = Fixed.Model.of_checkpoint config checkpoint in
-  let engine = ref (Fixed.Engine.init model ~seed) in
+  let model = Quantized.Model.of_checkpoint config checkpoint in
+  let engine = ref (Quantized.Engine.init model ~seed) in
   for step = 1 to steps do
-    let engine', events = Fixed.Engine.next_step !engine in
+    let engine', events = Quantized.Engine.next_step !engine in
     engine := engine';
     printf
       "step %d:%s\n"
       step
       (String.concat
-         (List.map events ~f:(fun { Fixed.Engine.voice; pitch; on } ->
+         (List.map events ~f:(fun { Quantized.Engine.voice; pitch; on } ->
             sprintf " %s:%d@%d" (if on then "on" else "off") pitch voice)))
   done
 ;;
 
-let twin_command =
+let stream_command =
   Command.basic
-    ~summary:"the integer twin's event stream: the reference of the board capture"
+    ~summary:"the reference event stream: what the board must send, event for event"
     (let%map_open.Command checkpoint =
        flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
      and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
      and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
-     fun () -> twin ~checkpoint ~steps ~seed)
+     fun () -> stream ~checkpoint ~steps ~seed)
 ;;
 
 let command =
   Command.group
     ~summary:"operations on one checkpoint"
-    [ "drift", drift_command; "eval", eval_command; "twin", twin_command ]
+    [ "drift", drift_command; "eval", eval_command; "stream", stream_command ]
 ;;
 
 let () = Command_unix.run command
