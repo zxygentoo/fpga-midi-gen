@@ -4,38 +4,70 @@ open Signal
 module I = Source_intf.I
 module O = Source_intf.O
 
-(* The walk of the engine, in the order of the reference. [Embed] sums the three table
-   rows. The rms states serve three sites — the attention, the feed-forward and the head —
-   and [rms_ret] names the state that follows. [Qkv] projects and fills the ring; [Score],
-   [Exp], [ExpMac] and [CtxDiv] are the attention of one head at a time; the Wo and Ffn
-   states join the residual stream. [Logits], [Weights], [Draw], [Thresh] and [Pick] are
-   the sampler; [Decide] decodes the drawn code, [Emit] holds one event for the sequencer,
-   and [ForwardDone] lands the model state of the forwarded token. *)
+(* The walk of the engine, in the order of the reference. Three loops thread the states:
+   the layer loop ([lyr]) runs Qkv..Ffn2Add twice; the token loop runs the sampler, then
+   Decide..Emit, then the forward pass Embed..ForwardDone, until the drawn token is END;
+   the rms pass RmsSum..RmsScale serves three callers, and [rms_ret] names the state that
+   follows it — 0 Qkv, 1 Ffn1, 2 Logits. [out_code] holds the token under forward: 255 is
+   the boot START, else the drawn code. *)
 module State = struct
   type t =
     | Idle
+    (* rest: [rewind] clears the walk and forwards START at phase 0, bucket 0; a step
+       strobe enters a draw *)
     | Embed
-    | RmsSum
+    (* h[ii] = the three table rows summed on the MAC ([sub] walks token, phase,
+       progress), landed Q16 in hram *)
+    | RmsSum (* acc = sum of (h[ii] >> 4)^2 — the Q12 copy; at last, m = acc >> 6 + eps *)
     | RmsSqrt
+    (* g = isqrt m, one radicand bit pair a cycle; the root becomes the divisor of every
+       element *)
     | RmsScale
+    (* y[ii] = clamp16 ((h[ii] << 8) / g), the restoring divider, toward zero; exits by
+       [rms_ret] *)
     | Qkv
+    (* three matvecs of y ([sub]: wq, wk, wv): the query into qram, the k and v rows into
+       the rings at slot [cur] *)
     | Score
+    (* head [hd], age [age]: score = dot(q, k) >> 14 - the ALiBi shift of the age, into
+       vram; the peak tracked *)
     | Exp
-    | ExpMac
+    (* one age: nn = (peak - score) * log2e >> 15, e = the exp2 table >> integer part; den
+       += e *)
+    | ExpMac (* nums[ii] += e * v[ii] over the head's lanes; next age to Exp *)
     | CtxDiv
-    | WoMac
-    | WoAdd
-    | Ffn1
-    | Ffn2Mac
+    (* ctx[ii] = nums[ii] / den, toward zero, into yram; next head restarts Score, the
+       last head leaves for Wo *)
+    | WoMac (* the whole sum of ctx * wo column [oo], kept across the join *)
+    | WoAdd (* the residual join: h[oo] += rescale acc; the last element enters the FFN *)
+    | Ffn1 (* hidden[oo] = relu (clamp (rescale (y * w1))), Q10, into vram *)
+    | Ffn2Mac (* the whole sum of hidden * w2 column [oo], kept across the join *)
     | Ffn2Add
+    (* h[oo] += rescale acc; at the last element layer 0 reruns from RmsSum, layer 1 lands
+       the token *)
     | Logits
+    (* logit[oo] = y against embed row [oo] — the tied head — >> e, into vram; the peak
+       tracked over the LEGAL codes only, for the temper *)
     | Weights
-    | Draw
+    (* weight[oo] = exp2 ((logit - peak) * temper >> 14), masked and min-p refused, into
+       vram; total += *)
+    | Draw (* u24 = three PRNG bytes, high first — the [Prng.uniform] walk *)
     | Thresh
+    (* thr = u24 * total >> 24 in two DSP passes: the high twelve bits of total, then the
+       low twelve *)
     | Pick
+    (* the first code whose running total passes thr; the last code catches a walk no
+       weight stopped *)
     | Decide
+    (* a zero-weight pick falls to END, which forwards with no event; an On takes the
+       highest free seat, an Off the seat that holds its pitch *)
     | Emit
+    (* the event held for the sequencer until [ready]; the seat registers commit, then the
+       token forwards *)
     | ForwardDone
+      (* the forwarded token lands in the model state: the sounding mask and last_on/off
+         (END clears the valids and steps [s]); [cur] advances, [filled] latches the wrap;
+         an event token re-enters the draw, END rests *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 

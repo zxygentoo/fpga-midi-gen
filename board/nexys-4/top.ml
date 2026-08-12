@@ -82,7 +82,7 @@ let create ~model () =
     (* the one line that names the model of the era *)
     Socket.create
       ~clocks_per_ms
-      ~source:(Mgen_transformer.Source.create ~model ~seed:control_regs.params.seed)
+      ~source:(Mgen_transformer.Source2.create ~model ~seed:control_regs.params.seed)
       { Socket.I.clock = clk
       ; clear
       ; params = control_regs.params
