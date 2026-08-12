@@ -1142,14 +1142,14 @@ let%expect_test "the source agrees with the twin, event for event" =
       (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
   in
   let twin = Fixed.Engine.init model ~seed in
-  let reference =
-    List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) ->
-         List.map
-           (Fixed.Engine.next_step twin)
-           ~f:(fun { Fixed.Engine.voice; pitch; on } -> voice, pitch, on)
-         :: acc))
+  let (_ : Fixed.Engine.t), reference_reversed =
+    List.fold (List.range 0 steps) ~init:(twin, []) ~f:(fun (twin, acc) (_ : int) ->
+      let twin, events = Fixed.Engine.next_step twin in
+      ( twin
+      , List.map events ~f:(fun { Fixed.Engine.voice; pitch; on } -> voice, pitch, on)
+        :: acc ))
   in
+  let reference = List.rev reference_reversed in
   Stdio.printf
     "%d steps, %d events, the streams agree: %b\n"
     steps

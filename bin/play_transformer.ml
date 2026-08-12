@@ -281,12 +281,17 @@ let command =
              List.map events ~f:(fun { Fixed.Engine.voice = (_ : int); pitch; on } ->
                if on then Token.On pitch else Token.Off pitch)
            in
-           (* [List.init] applies [f] in the reverse index order, thus it cannot collect
-              from the mutable engine; the fold steps in the true order *)
+           (* the fold threads the engine through the steps in the drawn order *)
            let music =
-             List.rev
-               (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) ->
-                  sentence (Fixed.Engine.next_step engine) :: acc))
+             let (_ : Fixed.Engine.t), reversed =
+               List.fold
+                 (List.range 0 steps)
+                 ~init:(engine, [])
+                 ~f:(fun (engine, acc) (_ : int) ->
+                   let engine, events = Fixed.Engine.next_step engine in
+                   engine, sentence events :: acc)
+             in
+             List.rev reversed
            in
            music, None)
          else (

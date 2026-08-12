@@ -218,24 +218,22 @@ module Engine = struct
     ; mutable logit : int
     }
 
+  (* The engine as a value: an operation gives the next engine, and the arrays of [t] are
+     frozen — an update copies its spine or row. The one exception is [pk], the meter of
+     the walk: engines of one walk share it. *)
   type t =
     { config : Transformer.Config.t
     ; p : Model.params
     ; temper_q14 : int
     ; min_weight : int
-    ; kc : int array (* [layer; slot; dim], Q12 int16 *)
-    ; vc : int array
-    ; h : int array (* the residual stream, Q16 *)
-    ; y : int array (* the normed vector; the merged context reuses it *)
-    ; q : int array
-    ; scores : int array (* one head at a time; the FFN hidden reuses it *)
-    ; logits : int array
-    ; weights : int array
-    ; mutable position : int
-    ; mutable prng : Prng.state
-    ; mutable sounding : Sounding_state.t
+    ; kc : int array array (* the K ring: [layer * slots + slot] rows of [d], Q12 int16 *)
+    ; vc : int array array
+    ; h : int array (* the residual stream after the last forwarded token, Q16 *)
+    ; position : int
+    ; prng : Prng.state
+    ; sounding : Sounding_state.t
     ; seats : int option array
-    ; mutable step_index : int
+    ; step_index : int
     ; pk : peaks
     }
 
@@ -287,71 +285,65 @@ module Engine = struct
     if i >= 16 then 0 else Constants.exp2_table.((n asr 4) land 255) asr i
   ;;
 
-  let note_peak t field v =
+  let note_peak { pk } field v =
     let v = abs v in
     match field with
-    | `H -> if v > t.pk.h then t.pk.h <- v
-    | `Rms -> if v > t.pk.rms_sum then t.pk.rms_sum <- v
-    | `Y -> if v > t.pk.y then t.pk.y <- v
-    | `Qkv -> if v > t.pk.qkv then t.pk.qkv <- v
-    | `Score -> if v > t.pk.score then t.pk.score <- v
-    | `Ctx -> if v > t.pk.ctx then t.pk.ctx <- v
-    | `Hid -> if v > t.pk.hid then t.pk.hid <- v
-    | `Logit -> if v > t.pk.logit then t.pk.logit <- v
+    | `H -> if v > pk.h then pk.h <- v
+    | `Rms -> if v > pk.rms_sum then pk.rms_sum <- v
+    | `Y -> if v > pk.y then pk.y <- v
+    | `Qkv -> if v > pk.qkv then pk.qkv <- v
+    | `Score -> if v > pk.score then pk.score <- v
+    | `Ctx -> if v > pk.ctx then pk.ctx <- v
+    | `Hid -> if v > pk.hid then pk.hid <- v
+    | `Logit -> if v > pk.logit then pk.logit <- v
   ;;
 
-  (* rms_norm of the residual stream into [y]: the sum squares a Q12 copy of the stream —
-     one DSP-sized product — then one isqrt, and one division for each element. The
-     division is toward zero, as every division of the circuit. *)
-  let rms_into t =
-    let s = Array.fold t.h ~init:0 ~f:(fun acc x -> acc + ((x asr 4) * (x asr 4))) in
+  (* rms_norm of the residual stream: the sum squares a Q12 copy of the stream — one
+     DSP-sized product — then one isqrt, and one division for each element. The division
+     is toward zero, as every division of the circuit. *)
+  let rms_norm t h =
+    let s = Array.fold h ~init:0 ~f:(fun acc x -> acc + ((x asr 4) * (x asr 4))) in
     note_peak t `Rms s;
     (* the mean over [d] elements: the shift is log2 of the width *)
     let m = (s asr Int.floor_log2 t.config.Transformer.Config.d) + Constants.eps_q in
     let g = isqrt m in
-    Array.iteri t.h ~f:(fun i x ->
+    Array.map h ~f:(fun x ->
       let y = x * 256 / g in
       note_peak t `Y y;
-      t.y.(i) <- clamp16 y)
+      clamp16 y)
   ;;
 
   (* the embedding: the three rows add in the shared exponent, then shift to Q16 *)
   let embed t ~code ~phase ~bucket =
     let d = t.config.Transformer.Config.d in
-    for i = 0 to d - 1 do
+    Array.init d ~f:(fun i ->
       let v =
         t.p.embed.q.((code * d) + i)
         + t.p.phase.q.((phase * d) + i)
         + t.p.progress.q.((bucket * d) + i)
       in
-      t.h.(i) <- rescale ~from:t.p.embed.e ~target:Constants.h_q v
-    done
+      rescale ~from:t.p.embed.e ~target:Constants.h_q v)
   ;;
 
-  (* the projections of layer [l]; k and v enter the ring at the slot of this token *)
-  let projections t (lay : Model.layer) ~l ~cur =
+  (* The projections of one token: the query, the key row and the value row. One matvec
+     column each; the circuit runs the three separately, on one MAC path. *)
+  let projections t (lay : Model.layer) y =
     let d = t.config.Transformer.Config.d in
-    let slots = t.config.Transformer.Config.context in
-    let ring_base = ((l * slots) + cur) * d in
-    for o = 0 to d - 1 do
-      (* one matvec column; the circuit runs the three separately, on one MAC path *)
-      let project (w : Tensor.t) =
-        let acc = sum d (fun i -> t.y.(i) * w.q.((i * d) + o)) in
-        let v = rescale ~from:(Constants.y_q + w.e) ~target:Constants.kv_q acc in
-        note_peak t `Qkv v;
-        clamp16 v
-      in
-      t.q.(o) <- project lay.wq;
-      t.kc.(ring_base + o) <- project lay.wk;
-      t.vc.(ring_base + o) <- project lay.wv
-    done
+    let project (w : Tensor.t) o =
+      let acc = sum d (fun i -> y.(i) * w.q.((i * d) + o)) in
+      let v = rescale ~from:(Constants.y_q + w.e) ~target:Constants.kv_q acc in
+      note_peak t `Qkv v;
+      clamp16 v
+    in
+    ( Array.init d ~f:(project lay.wq)
+    , Array.init d ~f:(project lay.wk)
+    , Array.init d ~f:(project lay.wv) )
   ;;
 
-  (* Attention of layer [l] over the newest [n] tokens, one head at a time. Age [a] reads
-     slot [(cur - a) & 255], thus the ALiBi distance is the age itself and the causal wall
-     is the walk. The merged context overwrites [y]: the projections took what they
-     needed. *)
-  let attend t ~l ~cur ~n =
+  (* Attention of layer [l] over the newest [n] tokens, one head at a time: the merged
+     context of the query [q]. Age [a] reads slot [(cur - a) & 255], thus the ALiBi
+     distance is the age itself and the causal wall is the walk. *)
+  let attend t kc vc ~l ~cur ~n q =
     let { Transformer.Config.d
         ; heads
         ; context = slots
@@ -362,85 +354,97 @@ module Engine = struct
       t.config
     in
     let head_d = d / heads in
+    let scores = Array.create ~len:n 0 in
+    let ctx = Array.create ~len:d 0 in
+    (* the ring row that age [a] reads *)
+    let row ring a = ring.((l * slots) + ((cur - a) land (slots - 1))) in
     for head = 0 to heads - 1 do
       let hb = head * head_d in
       let slope_exponent = span * (head + 1) / heads in
-      (* the base of the ring slot that age [a] reads, at this head *)
-      let slot_base a = (((l * slots) + ((cur - a) land (slots - 1))) * d) + hb in
       (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus head_d
          is a power of four *)
       let score_shift =
         (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
       in
       let score a =
-        let sb = slot_base a in
-        (sum head_d (fun j -> t.q.(hb + j) * t.kc.(sb + j)) asr score_shift)
+        let k = row kc a in
+        (sum head_d (fun j -> q.(hb + j) * k.(hb + j)) asr score_shift)
         - (a lsl (Constants.y_q - slope_exponent))
       in
       for a = 0 to n - 1 do
         let s = score a in
         note_peak t `Score s;
-        t.scores.(a) <- s
+        scores.(a) <- s
       done;
-      let peak = max_over n (fun a -> t.scores.(a)) in
+      let peak = max_over n (fun a -> scores.(a)) in
       (* the exp2 weight of each age, Q15: the peak weighs 2^15 *)
       let age_weight =
         Array.init n ~f:(fun a ->
-          exp2_q (((t.scores.(a) - peak) * Constants.log2e_q15) asr 15))
+          exp2_q (((scores.(a) - peak) * Constants.log2e_q15) asr 15))
       in
       let den = sum n (fun a -> age_weight.(a)) in
       for j = 0 to head_d - 1 do
-        let c = sum n (fun a -> age_weight.(a) * t.vc.(slot_base a + j)) / den in
+        let c = sum n (fun a -> age_weight.(a) * (row vc a).(hb + j)) / den in
         note_peak t `Ctx c;
-        t.y.(hb + j) <- clamp16 c
+        ctx.(hb + j) <- clamp16 c
       done
-    done
+    done;
+    ctx
   ;;
 
-  (* the feed-forward hidden vector: one matvec and a ReLU, Q10; it reuses the score RAM *)
-  let hidden t (lay : Model.layer) =
+  (* the feed-forward hidden vector of the normed stream [y]: one matvec and a ReLU, Q10 *)
+  let hidden t (lay : Model.layer) y =
     let d = t.config.Transformer.Config.d in
     let dff = 4 * d in
-    for o = 0 to dff - 1 do
-      let acc = sum d (fun i -> t.y.(i) * lay.w1.q.((i * dff) + o)) in
+    Array.init dff ~f:(fun o ->
+      let acc = sum d (fun i -> y.(i) * lay.w1.q.((i * dff) + o)) in
       let v =
         max 0 (rescale ~from:(Constants.y_q + lay.w1.e) ~target:Constants.hid_q acc)
       in
       note_peak t `Hid v;
-      t.scores.(o) <- clamp16 v
-    done
+      clamp16 v)
   ;;
 
-  (* a residual join: [values] times [w] adds into the stream; [from] is the format of
+  (* a residual join: [values] times [w] adds into the stream [h]; [from] is the format of
      [values], and the exponent of [w] folds into the shift *)
-  let join t (w : Tensor.t) ~values ~len ~from =
+  let join t h (w : Tensor.t) ~values ~len ~from =
     let d = t.config.Transformer.Config.d in
     for o = 0 to d - 1 do
       let acc = sum len (fun i -> values.(i) * w.q.((i * d) + o)) in
-      let v = t.h.(o) + rescale ~from:(from + w.e) ~target:Constants.h_q acc in
+      let v = h.(o) + rescale ~from:(from + w.e) ~target:Constants.h_q acc in
       note_peak t `H v;
-      t.h.(o) <- v
+      h.(o) <- v
     done
   ;;
 
+  (* one token through the engine: the next engine *)
   let forward t ~code ~phase ~bucket =
     let d = t.config.Transformer.Config.d in
     let slots = t.config.Transformer.Config.context in
     let cur = t.position land (slots - 1) in
     let n = min (t.position + 1) slots in
-    embed t ~code ~phase ~bucket;
+    let h = embed t ~code ~phase ~bucket in
+    let kc = Array.copy t.kc in
+    let vc = Array.copy t.vc in
     Array.iteri t.p.layers ~f:(fun l lay ->
-      rms_into t;
-      projections t lay ~l ~cur;
-      attend t ~l ~cur ~n;
-      join t lay.wo ~values:t.y ~len:d ~from:Constants.kv_q;
-      rms_into t;
-      hidden t lay;
-      join t lay.w2 ~values:t.scores ~len:(4 * d) ~from:Constants.hid_q);
-    t.position <- t.position + 1;
-    (* the model state of the token lands with the token: the mask of the next draw can
-       never run ahead of or behind the engine *)
-    t.sounding <- Sounding_state.step t.sounding (Token.of_code code)
+      let y = rms_norm t h in
+      let q, k_row, v_row = projections t lay y in
+      kc.((l * slots) + cur) <- k_row;
+      vc.((l * slots) + cur) <- v_row;
+      let ctx = attend t kc vc ~l ~cur ~n q in
+      join t h lay.wo ~values:ctx ~len:d ~from:Constants.kv_q;
+      let y = rms_norm t h in
+      let hid = hidden t lay y in
+      join t h lay.w2 ~values:hid ~len:(4 * d) ~from:Constants.hid_q);
+    { t with
+      h
+    ; kc
+    ; vc
+    ; position = t.position + 1
+    ; (* the model state of the token lands with the token: the mask of the next draw can
+         never run ahead of or behind the engine *)
+      sounding = Sounding_state.step t.sounding (Token.of_code code)
+    }
   ;;
 
   let init (model : Model.t) ~seed =
@@ -453,20 +457,15 @@ module Engine = struct
     assert (Int.is_pow2 slots);
     assert (Int.floor_log2 (d / heads) % 2 = 0);
     assert (layers = Array.length p.Params_data.layers);
-    let t =
+    let engine =
       { config
       ; p
       ; temper_q14
       ; min_weight
-      ; kc = Array.create ~len:(layers * slots * d) 0
-      ; vc = Array.create ~len:(layers * slots * d) 0
+      ; (* a walk never reads an unwritten slot, thus one zero row serves them all *)
+        kc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
+      ; vc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
       ; h = Array.create ~len:d 0
-      ; y = Array.create ~len:d 0
-      ; q = Array.create ~len:d 0
-      ; (* one array serves the scores and the feed-forward hidden vector *)
-        scores = Array.create ~len:(max slots (4 * d)) 0
-      ; logits = Array.create ~len:vocab 0
-      ; weights = Array.create ~len:vocab 0
       ; position = 0
       ; prng = Prng.create ~seed
       ; sounding = Sounding_state.silence
@@ -476,69 +475,59 @@ module Engine = struct
           { h = 0; rms_sum = 0; y = 0; qkv = 0; score = 0; ctx = 0; hid = 0; logit = 0 }
       }
     in
-    forward t ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0;
-    t
+    forward engine ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0
   ;;
 
   (* the tied head: rms_norm, then the token table read backward; Q12 logits *)
-  let next_logits t =
-    rms_into t;
+  let logits t =
+    let y = rms_norm t t.h in
     let d = t.config.Transformer.Config.d in
     let e = t.p.embed.e in
-    for c = 0 to vocab - 1 do
-      let l = sum d (fun i -> t.y.(i) * t.p.embed.q.((c * d) + i)) asr e in
+    Array.init vocab ~f:(fun c ->
+      let l = sum d (fun i -> y.(i) * t.p.embed.q.((c * d) + i)) asr e in
       note_peak t `Logit l;
-      t.logits.(c) <- l
-    done;
-    Array.copy t.logits
+      l)
   ;;
 
   (* three PRNG bytes, high first: the walk of [Prng.uniform] *)
-  let u24 t =
+  let u24 prng =
     let open Prng in
-    let prng, draw =
-      run
-        (let* high = next in
-         let* middle = next in
-         let+ low = next in
-         (((high * 256) + middle) * 256) + low)
-        t.prng
-    in
-    t.prng <- prng;
-    draw
+    run
+      (let* high = next in
+       let* middle = next in
+       let+ low = next in
+       (((high * 256) + middle) * 256) + low)
+      prng
   ;;
 
   let next_code t =
-    let (_ : int array) = next_logits t in
+    let logits = logits t in
     let mask = Sounding_state.legal_mask t.sounding in
-    let peak =
-      max_over vocab (fun c -> if mask.(c) then t.logits.(c) else Int.min_value)
-    in
+    let peak = max_over vocab (fun c -> if mask.(c) then logits.(c) else Int.min_value) in
     (* the tempered weight of one code: masked, exp2, and refused under min-p *)
     let weight c =
       if mask.(c)
       then (
-        let u = ((t.logits.(c) - peak) * t.temper_q14) asr 14 in
+        let u = ((logits.(c) - peak) * t.temper_q14) asr 14 in
         let e = exp2_q u in
         if e >= t.min_weight then e else 0)
       else 0
     in
-    for c = 0 to vocab - 1 do
-      t.weights.(c) <- weight c
-    done;
-    let total = sum vocab (fun c -> t.weights.(c)) in
-    let threshold = (u24 t * total) asr 24 in
+    let weights = Array.init vocab ~f:weight in
+    let total = sum vocab (fun c -> weights.(c)) in
+    let prng, u = u24 t.prng in
+    let threshold = (u * total) asr 24 in
     (* the code whose running total passes the threshold; the fallback of the float
        sampler when no weight remains on the walk *)
     let rec walk c total =
       if c = vocab - 1
       then c
       else (
-        let total = total + t.weights.(c) in
+        let total = total + weights.(c) in
         if total > threshold then c else walk (c + 1) total)
     in
     let chosen = walk 0 0 in
-    if t.weights.(chosen) > 0 then chosen else 0
+    { t with prng }, if weights.(chosen) > 0 then chosen else 0
   ;;
 
   (* an On takes the highest free seat — the melody sits high; an Off names the seat that
@@ -566,38 +555,42 @@ module Engine = struct
     let bucket =
       t.step_index / Transformer.progress_stride % Transformer.progress_buckets
     in
-    let rec go events count =
+    let sit t seat holds =
+      let seats = Array.copy t.seats in
+      seats.(seat) <- holds;
+      { t with seats }
+    in
+    let rec go t events count =
       (* the mask bounds a sentence at four Offs, four Ons and the End *)
       assert (count < 16);
-      let code = next_code t in
+      let t, code = next_code t in
       let token = Token.of_code code in
-      forward t ~code ~phase ~bucket;
+      let t = forward t ~code ~phase ~bucket in
       match token with
       | Start -> assert false
-      | End ->
-        t.step_index <- t.step_index + 1;
-        List.rev events
+      | End -> { t with step_index = t.step_index + 1 }, List.rev events
       | On pitch ->
         let seat = highest_free t.seats in
-        t.seats.(seat) <- Some pitch;
-        go ({ voice = seat; pitch; on = true } :: events) (count + 1)
+        go
+          (sit t seat (Some pitch))
+          ({ voice = seat; pitch; on = true } :: events)
+          (count + 1)
       | Off pitch ->
         let seat = seat_of t.seats pitch in
-        t.seats.(seat) <- None;
-        go ({ voice = seat; pitch; on = false } :: events) (count + 1)
+        go (sit t seat None) ({ voice = seat; pitch; on = false } :: events) (count + 1)
     in
-    go [] 0
+    go t [] 0
   ;;
 
-  let peaks t =
-    [ "h", t.pk.h
-    ; "rms_sum", t.pk.rms_sum
-    ; "y", t.pk.y
-    ; "qkv", t.pk.qkv
-    ; "score", t.pk.score
-    ; "ctx", t.pk.ctx
-    ; "hid", t.pk.hid
-    ; "logit", t.pk.logit
+  let peaks { pk } =
+    [ "h", pk.h
+    ; "rms_sum", pk.rms_sum
+    ; "y", pk.y
+    ; "qkv", pk.qkv
+    ; "score", pk.score
+    ; "ctx", pk.ctx
+    ; "hid", pk.hid
+    ; "logit", pk.logit
     ]
   ;;
 end
@@ -628,12 +621,14 @@ let%expect_test "isqrt floors" =
 (* The walk with drawn weights: the music is noise, but the grammar and the seats must
    hold, and the same seed must repeat. The replay walks the events back through
    [Sounding_state], as the sampler test of [Transformer] does. *)
-(* [List.init] applies [f] in the reverse index order, thus it cannot collect from the
-   mutable engine; the fold steps in the true order *)
+(* the fold threads the engine through the steps in the drawn order *)
 let collect_steps n engine =
-  List.rev
-    (List.fold (List.range 0 n) ~init:[] ~f:(fun acc (_ : int) ->
-       Engine.next_step engine :: acc))
+  let (_ : Engine.t), steps =
+    List.fold (List.range 0 n) ~init:(engine, []) ~f:(fun (engine, acc) (_ : int) ->
+      let engine, events = Engine.next_step engine in
+      engine, events :: acc)
+  in
+  List.rev steps
 ;;
 
 let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =

@@ -99,7 +99,7 @@ let ranges ~checkpoint ~steps ~seed =
   in
   let quantized = Fixed.Model.of_checkpoint config checkpoint in
   let params = Transformer.Params.load config ~path:checkpoint in
-  let engine = Fixed.Engine.init quantized ~seed in
+  let engine = ref (Fixed.Engine.init quantized ~seed) in
   (* the histories of the float pass, newest first, as the float sampler keeps them *)
   let codes = ref [ Token.to_code Token.Start ] in
   let phases = ref [ 0 ] in
@@ -140,17 +140,18 @@ let ranges ~checkpoint ~steps ~seed =
   let events = ref 0 in
   let step_index = ref 0 in
   while !step_index < steps do
-    let quantized = Fixed.Engine.next_logits engine in
+    let quantized = Fixed.Engine.logits !engine in
     let floated = float_logits () in
     if argmax quantized ~value:Float.of_int = argmax floated ~value:Fn.id then incr agree;
     cosine_sum := !cosine_sum +. cosine quantized floated;
     incr draws;
-    let code = Fixed.Engine.next_code engine in
+    let engine', code = Fixed.Engine.next_code !engine in
+    engine := engine';
     let phase = !step_index mod Transformer.phase_buckets in
     let bucket =
       !step_index / Transformer.progress_stride mod Transformer.progress_buckets
     in
-    Fixed.Engine.forward engine ~code ~phase ~bucket;
+    engine := Fixed.Engine.forward !engine ~code ~phase ~bucket;
     codes := code :: !codes;
     phases := phase :: !phases;
     progress := bucket :: !progress;
@@ -165,7 +166,7 @@ let ranges ~checkpoint ~steps ~seed =
     (100.0 *. Float.of_int !agree /. Float.of_int !draws)
     (!cosine_sum /. Float.of_int !draws);
   printf "the peaks, before any clamp:\n";
-  List.iter (Fixed.Engine.peaks engine) ~f:(fun (name, peak) ->
+  List.iter (Fixed.Engine.peaks !engine) ~f:(fun (name, peak) ->
     printf "  %-8s %d\n" name peak)
 ;;
 
@@ -190,9 +191,10 @@ let twin ~checkpoint ~steps ~seed =
       ~slope_span:Transformer.Config.baseline.slope_span
   in
   let model = Fixed.Model.of_checkpoint config checkpoint in
-  let engine = Fixed.Engine.init model ~seed in
+  let engine = ref (Fixed.Engine.init model ~seed) in
   for step = 1 to steps do
-    let events = Fixed.Engine.next_step engine in
+    let engine', events = Fixed.Engine.next_step !engine in
+    engine := engine';
     printf
       "step %d:%s\n"
       step
