@@ -16,7 +16,7 @@ module O = struct
   type 'a t = { midi : 'a Midi.Rtl.Message.t } [@@deriving hardcaml]
 end
 
-let create ~clocks_per_ms ~source (i : _ I.t) : _ O.t =
+let create ~clocks_per_ms ~gated ~source (i : _ I.t) : _ O.t =
   (* the strobes of the sequencer arrive after the source exists; the wires break the
      order *)
   let source_rewind = wire 1 in
@@ -34,6 +34,7 @@ let create ~clocks_per_ms ~source (i : _ I.t) : _ O.t =
   let sequencer =
     Sequencer.create
       ~clocks_per_ms
+      ~gated
       { Sequencer.I.clock = i.clock
       ; clear = i.clear
       ; params = i.params
@@ -58,7 +59,7 @@ let harness ~model () =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim =
     Sim.create (fun (i : _ I.t) ->
-      create ~clocks_per_ms ~source:(Voss.create ~model ~seed:i.params.seed) i)
+      create ~clocks_per_ms ~gated:true ~source:(Voss.create ~model ~seed:i.params.seed) i)
   in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in

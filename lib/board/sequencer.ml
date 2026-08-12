@@ -26,9 +26,10 @@ end
 (* [Idle] waits for the run bit. [Loading] waits while the source goes to its origin.
    [Take] waits for a note of the source, or for its [idle] that ends the step. [SendOff]
    and [SendOn] hold one message each for the merge, and the [SendOff] path is the voice
-   that already holds a note. [Wait] counts the milliseconds of the step. [GateOff] closes
-   the highest voice at the gate. [StopScan] and [StopOff] walk the seats from the top
-   downward and close each open one when the run stops. *)
+   that already holds a note. [SendFree] holds the one Note Off of a source-stated
+   release. [Wait] counts the milliseconds of the step. [GateOff] closes the highest voice
+   at the gate. [StopScan] and [StopOff] walk the seats from the top downward and close
+   each open one when the run stops. *)
 module State = struct
   type t =
     | Idle
@@ -36,6 +37,7 @@ module State = struct
     | Take
     | SendOff
     | SendOn
+    | SendFree
     | Wait
     | GateOff
     | StopScan
@@ -43,7 +45,7 @@ module State = struct
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
-let create ~clocks_per_ms (i : _ I.t) : _ O.t =
+let create ~clocks_per_ms ~gated (i : _ I.t) : _ O.t =
   assert (clocks_per_ms >= 2);
   let voices = Source_intf.voices in
   let top = voices - 1 in
@@ -74,11 +76,15 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
   (* a sampled STEP_MS of 0 counts as 1: the boundary must always come *)
   let step_sample = mux2 (i.params.step_ms ==:. 0) (one 16) i.params.step_ms in
   let at_step = ms.value >=: step_len.value in
-  (* the gate closes the highest voice, and no other *)
+  (* the gate closes the highest voice, and no other; a source that states its own
+     releases elaborates it away *)
   let at_gate =
-    open_flag.(top).value
-    &: (gate_len.value <: step_len.value)
-    &: (ms.value >=: gate_len.value)
+    if gated
+    then
+      open_flag.(top).value
+      &: (gate_len.value <: step_len.value)
+      &: (ms.value >=: gate_len.value)
+    else gnd
   in
   let values regs = List.map (Array.to_list regs) ~f:(fun (v : Variable.t) -> v.value) in
   (* the voice of the note that the source offers, and the seat that the walk of the stop
@@ -139,9 +145,20 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
                 i.source.valid
                 [ seat <-- incoming
                 ; if_
-                    incoming_open
-                    [ msg_data <-- off_incoming; msg_valid <-- vdd; sm.set_next SendOff ]
-                    [ msg_data <-- on_data; msg_valid <-- vdd; sm.set_next SendOn ]
+                    i.source.note.kind
+                    [ if_
+                        incoming_open
+                        [ msg_data <-- off_incoming
+                        ; msg_valid <-- vdd
+                        ; sm.set_next SendOff
+                        ]
+                        [ msg_data <-- on_data; msg_valid <-- vdd; sm.set_next SendOn ]
+                    ]
+                    [ (* a source-stated release: one Note Off from the stored pair *)
+                      msg_data <-- off_incoming
+                    ; msg_valid <-- vdd
+                    ; sm.set_next SendFree
+                    ]
                 ]
                 [ when_ i.source.idle [ sm.set_next Wait ] ]
             ] )
@@ -166,6 +183,15 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
                 ; (* the source holds the note until here, thus both messages read a
                      stable pitch *)
                   source_ready <-- vdd
+                ; sm.set_next Take
+                ]
+            ] )
+        ; ( SendFree
+          , [ when_
+                transfer
+                [ at_seat (fun k -> [ open_flag.(k) <-- gnd ])
+                ; msg_valid <-- gnd
+                ; source_ready <-- vdd
                 ; sm.set_next Take
                 ]
             ] )
@@ -218,33 +244,37 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
 let clocks_per_ms = 4
 
 (* The harness stubs the note source. It answers each [source_step] with [program] — the
-   voice and the pitch of every note that speaks at a step — and it gives them one at a
-   time, each held until [source_ready]. Voice 0 sounds 24, voice 1 sounds 30 and voice 2
-   sounds 3c, thus the log names the voice of each message; the highest voice counts up
-   from 48. The strobes are read before the edge. The log shows the transfers as
+   voice, the pitch and the kind of every note that speaks at a step — and it gives them
+   one at a time, each held until [source_ready]. Voice 0 sounds 24, voice 1 sounds 30 and
+   voice 2 sounds 3c, thus the log names the voice of each message; the highest voice
+   counts up from 48. The strobes are read before the edge. The log shows the transfers as
    [t=cycle bytes], with t counted from the start of the run. *)
-let harness () =
+let harness ?(gated = true) () =
   let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim = Sim.create (create ~clocks_per_ms) in
+  let sim = Sim.create (create ~clocks_per_ms ~gated) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
   inp.midi_ready := Bits.vdd;
   inp.source.idle := Bits.vdd;
   let time = ref 0 in
   let step_index = ref 0 in
-  let program = ref [ 3, 0x48; 2, 0x3c; 1, 0x30; 0, 0x24 ] in
+  let program = ref [ 3, 0x48, `On; 2, 0x3c, `On; 1, 0x30, `On; 0, 0x24, `On ] in
   let pending = ref [] in
   let offer () =
     match !pending with
     | [] ->
       inp.source.valid := Bits.gnd;
       inp.source.idle := Bits.vdd
-    | (voice, pitch) :: _ ->
+    | (voice, pitch, kind) :: _ ->
       inp.source.valid := Bits.vdd;
       inp.source.idle := Bits.gnd;
       inp.source.note.voice
       := Bits.of_unsigned_int ~width:(Bits.width !(inp.source.note.voice)) voice;
-      inp.source.note.pitch := Bits.of_unsigned_int ~width:8 pitch
+      inp.source.note.pitch := Bits.of_unsigned_int ~width:8 pitch;
+      inp.source.note.kind
+      := (match kind with
+           | `On -> Bits.vdd
+           | `Off -> Bits.gnd)
   in
   let cycle () =
     offer ();
@@ -253,8 +283,10 @@ let harness () =
     then (
       (* the highest voice moves at each step, thus the log is easy to read *)
       pending
-      := List.map !program ~f:(fun (voice, pitch) ->
-           voice, if voice = Source_intf.voices - 1 then pitch + !step_index else pitch);
+      := List.map !program ~f:(fun (voice, pitch, kind) ->
+           ( voice
+           , (if voice = Source_intf.voices - 1 then pitch + !step_index else pitch)
+           , kind ));
       Int.incr step_index);
     if Bits.to_bool !(out.source_ready) then pending := List.tl_exn !pending;
     if Bits.to_bool !(out.source_rewind) then Stdio.printf "t=%03d rewind\n" !time;
@@ -326,7 +358,7 @@ let%expect_test "a voice that the source does not name stays silent and holds it
   set inp.params.velocity 100;
   set inp.params.channel 2;
   (* the highest voice and the lowest voice speak; the two middle ones never do *)
-  program := [ 3, 0x48; 0, 0x24 ];
+  program := [ 3, 0x48, `On; 0, 0x24, `On ];
   set inp.params.run 1;
   for _ = 1 to 70 do
     cycle ()
@@ -393,6 +425,42 @@ let%expect_test "the stop closes each open voice, from the highest" =
     |}]
 ;;
 
+let%expect_test "a source-stated release sends one Note Off and frees the seat" =
+  (* the ungated engine: the source owns the releases, thus the gate is elaborated away
+     and GATE_MS moves nothing. Step 1 opens two voices, step 2 releases one of them with
+     [kind] Off, step 3 is silent, and the stop closes the one that still holds. *)
+  let _sim, inp, cycle, set, program = harness ~gated:false () in
+  set inp.params.step_ms 8;
+  set inp.params.gate_ms 4;
+  set inp.params.velocity 100;
+  set inp.params.channel 2;
+  program := [ 2, 0x3c, `On; 1, 0x30, `On ];
+  set inp.params.run 1;
+  for _ = 1 to 20 do
+    cycle ()
+  done;
+  program := [ 2, 0x3c, `Off ];
+  for _ = 1 to 20 do
+    cycle ()
+  done;
+  program := [];
+  for _ = 1 to 30 do
+    cycle ()
+  done;
+  set inp.params.run 0;
+  for _ = 1 to 40 do
+    cycle ()
+  done;
+  [%expect
+    {|
+    t=000 rewind
+    t=003 92 3c 64
+    t=005 92 30 64
+    t=035 82 3c 40
+    t=101 82 30 40
+    |}]
+;;
+
 let%expect_test "STEP_MS applies at the next step" =
   let _sim, inp, cycle, set, program = harness () in
   set inp.params.step_ms 3;
@@ -400,7 +468,7 @@ let%expect_test "STEP_MS applies at the next step" =
   set inp.params.velocity 100;
   set inp.params.channel 2;
   (* one voice only, thus the timing is easy to read *)
-  program := [ 3, 0x48 ];
+  program := [ 3, 0x48, `On ];
   set inp.params.run 1;
   for _ = 1 to 6 do
     cycle ()

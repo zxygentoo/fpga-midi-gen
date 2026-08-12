@@ -95,6 +95,12 @@ is a definitions-only module and has no `.mli`: the records are their own
 signature. `Midi` holds the status constants that the message construction
 needs: Note On, Note Off, and the release velocity.
 
+Era three extends the socket with a type bit on each note — a source that
+states its own releases — and makes the gate an elaboration choice.
+`docs/transformer_rtl_proto.md` holds those rules; the pink source sends
+every note with the type On and elaborates `~gated:true`, and nothing of
+this document changes.
+
 ## The socket
 
 ```ocaml
@@ -418,8 +424,16 @@ the four voices. A message is three bytes, and a byte takes 320 µs on the
 MIDI line. Therefore a full step needs about 7.7 ms of line time. The
 millisecond count does not pause during a stall, therefore the beat does
 not drift. If STEP_MS is less than the line time of the step, the step
-stretches to fit the messages. The default STEP_MS is 250, and the piece
+stretches to fit the messages. The default STEP_MS is 200, and the piece
 has a large margin.
+
+Note: this era chose 250 for the power-on value. The transformer era
+moved it to 200 — one step is a sixteenth, thus 200 ms puts the quarter
+at exactly 75, the chorale tempo — and `Control_intf.Default` holds the
+one definition. The cell already takes a host write at run time; a later
+era may make the tempo adjustable at the board — a control on the
+hardware, or a value that survives the power cycle — instead of a
+constant of the bitstream.
 
 ## Model
 

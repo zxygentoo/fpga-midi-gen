@@ -39,6 +39,11 @@ module Note = struct
     { voice : 'a [@bits Signal.address_bits_for voices]
     (** the voice that sounds it; 0 is the lowest *)
     ; pitch : 'a [@bits 8] (** the MIDI note number *)
+    ; kind : 'a
+    (** 1 is Note On, 0 is Note Off. On an On, the seat of [voice] takes the note, and
+        closes its old note first if it holds one — the pink rule. On an Off, the seat of
+        [voice] releases its note from the stored pair; [pitch] repeats the stored pitch.
+        A source that never releases — the pink model — holds it at 1. *)
     }
   [@@deriving hardcaml]
 end
