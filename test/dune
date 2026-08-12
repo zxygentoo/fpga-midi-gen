@@ -1,3 +1,10 @@
 (test
  (name test_txn)
- (libraries base stdio hardcaml mgen_core mgen_board mgen_nexys4))
+ (libraries
+  base
+  stdio
+  hardcaml
+  mgen_core
+  mgen_board
+  mgen_transformer
+  mgen_nexys4))
