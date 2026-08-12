@@ -13,8 +13,7 @@
     states that check; the king of the era elaborates at [Transformer.Config.baseline].
 
     The engine is a value: each operation gives the engine after it, thus a state can be
-    kept, compared and replayed. One mutable remains — the peaks meter, which engines of
-    one walk share, because it measures the run and not a state. *)
+    kept, compared and replayed. *)
 
 (** The design constants of the fixed-point scheme: the formats, and the values derived
     from them and from the mathematics. The circuit elaboration reads these, thus the twin
@@ -45,15 +44,20 @@ module Constants : sig
   val exp2_bits : Hardcaml.Bits.t array
 end
 
-(** The quantized weight tensor. The arithmetic that makes one is private: [Model]'s
-    constructors apply it. *)
+(** The vectors of the file, flat. [t] is the machine's integer vector — the value side of
+    a weight and every signal of the engine, each in its own Q format. [floats] is the
+    checkpoint side. The drift measures compare the two over one pair of logit vectors;
+    [checkpoint_tool drift] reports both over a walk. *)
 module Tensor : sig
-  (** one weight tensor: the int8 values, flat in the row-major order of the checkpoint,
-      and the exponent of the power-of-two scale — [w ~ q * 2^-e] *)
-  type t =
-    { q : int array
-    ; e : int
-    }
+  type t = int array
+  type floats = float array
+
+  (** [same_peak q f] is true when the two vectors elect the same index — the top-1
+      agreement; a tie keeps the first. *)
+  val same_peak : t -> floats -> bool
+
+  (** [cosine q f] is the cosine between the two vectors. *)
+  val cosine : t -> floats -> float
 end
 
 (** The quantized model: the configuration and the tensors quantized under it, one value —
@@ -61,11 +65,19 @@ end
     constructors: after them, no caller can mispair a configuration with another model's
     tensors. The three tables share one exponent, because their rows add. *)
 module Model : sig
+  (** one quantized weight tensor: the int8 values, flat in the row-major order of the
+      checkpoint, and the exponent of the power-of-two scale — [w ~ q * 2^-e]. The
+      arithmetic that makes one is private: the constructors apply it. *)
+  type quantized =
+    { q : Tensor.t
+    ; e : int
+    }
+
   (** the structure of [Transformer.Params_data], over the quantized tensor: one
       definition holds the shape and the flat order of the checkpoint *)
-  type params = Tensor.t Transformer.Params_data.t
+  type params = quantized Transformer.Params_data.t
 
-  type layer = Tensor.t Transformer.Params_data.layer
+  type layer = quantized Transformer.Params_data.layer
 
   type t =
     { config : Transformer.Config.t
@@ -132,11 +144,11 @@ module Engine : sig
       pitch. The END that closes the sentence is forwarded and not reported. *)
   val next_step : t -> t * event list
 
-  (** The block-level interface below: the tests and the calibration drive the engine one
+  (** The block-level interface below: the tests and the drift report drive the engine one
       operation at a time; [next_step] is the interface of the players. *)
 
   (** [logits t] is the Q12 logits of the position after the last forwarded token. *)
-  val logits : t -> int array
+  val logits : t -> Tensor.t
 
   (** [next_code t] draws the next token code — the mask of the sounding state, the temper
       and min-p of the model, then three PRNG bytes pick from the weights — and gives the
@@ -149,8 +161,4 @@ module Engine : sig
       token; [phase] and [bucket] are the rows of the bar-phase and the piece-position
       tables. *)
   val forward : t -> code:int -> phase:int -> bucket:int -> t
-
-  (** the peak magnitudes the walk has seen, by signal class, before any clamp — the
-      calibration of the circuit widths; engines of one walk share the meter *)
-  val peaks : t -> (string * int) list
 end

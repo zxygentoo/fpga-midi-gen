@@ -72,14 +72,17 @@ position — share one exponent, because their rows add.
 
 ### The formats
 
-The activation formats come from a measurement, not from a guess:
-`checkpoint_tool ranges` runs the float model over a sampled walk and
-prints the peak of each signal class. The formats hold the measured
-peak with margin, and the twin clamps where the bound is structural.
+The activation formats come from a measurement, not from a guess: the
+design round metered the peak of each signal class over a sampled walk,
+and the formats hold the measured peak with margin. The twin clamps
+where the bound is structural. The meter retired with the round — git
+history keeps it — and `checkpoint_tool drift` remains the gate for a
+new checkpoint: the top-1 agreement and the cosine of the logits at
+every draw.
 
-The measurement — `ranges` on the king checkpoint, 96 steps, seed 42 —
-confirmed every format, and the drift against the float model is small:
-top-1 agreement 91.7 percent, cosine 0.9998 over 276 draws.
+The measurement — the king checkpoint, 96 steps, seed 42 — confirmed
+every format, and the drift against the float model is small: top-1
+agreement 91.7 percent, cosine 0.9998 over 276 draws.
 
 | Signal | Format | Measured peak (value) |
 |---|---|---|

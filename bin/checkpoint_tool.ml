@@ -85,11 +85,9 @@ let eval_command =
      fun () -> eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out)
 ;;
 
-(* The calibration of the integer twin: run the quantized walk, print the peak of each
-   signal class — the circuit widths read them — and measure the drift against the float
-   model: the top-1 agreement and the cosine of the logits at every draw, on the twin's
-   own walk. *)
-let ranges ~checkpoint ~steps ~seed =
+(* The drift of the integer twin against the float model: the top-1 agreement and the
+   cosine of the logits at every draw, on the twin's own walk. *)
+let drift ~checkpoint ~steps ~seed =
   let config =
     Transformer.Config.of_checkpoint
       checkpoint
@@ -117,23 +115,6 @@ let ranges ~checkpoint ~steps ~seed =
     |> Nx.get [ 0; Array.length codes - 1 ]
     |> Nx.to_array
   in
-  let argmax values ~value =
-    let best = ref 0 in
-    Array.iteri values ~f:(fun index v ->
-      if Float.(value v > value values.(!best)) then best := index);
-    !best
-  in
-  let cosine q f =
-    let dot = ref 0.0
-    and qq = ref 0.0
-    and ff = ref 0.0 in
-    Array.iteri q ~f:(fun i qi ->
-      let qi = Float.of_int qi in
-      dot := !dot +. (qi *. f.(i));
-      qq := !qq +. (qi *. qi);
-      ff := !ff +. (f.(i) *. f.(i)));
-    !dot /. Float.sqrt (!qq *. !ff)
-  in
   let agree = ref 0 in
   let cosine_sum = ref 0.0 in
   let draws = ref 0 in
@@ -142,8 +123,8 @@ let ranges ~checkpoint ~steps ~seed =
   while !step_index < steps do
     let quantized = Fixed.Engine.logits !engine in
     let floated = float_logits () in
-    if argmax quantized ~value:Float.of_int = argmax floated ~value:Fn.id then incr agree;
-    cosine_sum := !cosine_sum +. cosine quantized floated;
+    if Fixed.Tensor.same_peak quantized floated then incr agree;
+    cosine_sum := !cosine_sum +. Fixed.Tensor.cosine quantized floated;
     incr draws;
     let engine', code = Fixed.Engine.next_code !engine in
     engine := engine';
@@ -164,20 +145,17 @@ let ranges ~checkpoint ~steps ~seed =
   printf
     "against the float model: top-1 %.1f%%  cosine %.4f\n"
     (100.0 *. Float.of_int !agree /. Float.of_int !draws)
-    (!cosine_sum /. Float.of_int !draws);
-  printf "the peaks, before any clamp:\n";
-  List.iter (Fixed.Engine.peaks !engine) ~f:(fun (name, peak) ->
-    printf "  %-8s %d\n" name peak)
+    (!cosine_sum /. Float.of_int !draws)
 ;;
 
-let ranges_command =
+let drift_command =
   Command.basic
-    ~summary:"calibrate the integer twin: the signal peaks and the float drift"
+    ~summary:"the twin's drift against the float model: top-1 and cosine at every draw"
     (let%map_open.Command checkpoint =
        flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
      and steps = flag "-steps" (optional_with_default 96 int) ~doc:"N the steps to draw"
      and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
-     fun () -> ranges ~checkpoint ~steps ~seed)
+     fun () -> drift ~checkpoint ~steps ~seed)
 ;;
 
 (* The twin's socket stream: what the board must send, event for event. The comparison
@@ -217,7 +195,7 @@ let twin_command =
 let command =
   Command.group
     ~summary:"operations on one checkpoint"
-    [ "eval", eval_command; "ranges", ranges_command; "twin", twin_command ]
+    [ "drift", drift_command; "eval", eval_command; "twin", twin_command ]
 ;;
 
 let () = Command_unix.run command
