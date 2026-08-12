@@ -66,7 +66,10 @@ end
 module Default = struct
   (* MIDI channel 3, the S-1 factory default. *)
   let channel = 2
-  let step_ms = 250
+
+  (* One step is a sixteenth, thus 200 ms puts the quarter at exactly 75 — the common
+     chorale tempo. The pink era booted at 250; the transformer era's ear asked for this. *)
+  let step_ms = 200
   let gate_ms = 125
   let velocity = 100
   let seed = 42 (* must not be 0 *)

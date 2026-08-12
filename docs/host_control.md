@@ -27,7 +27,7 @@ The registers:
 |---|---|---|---|
 | `0F` | RUN | the run state, bit 0 | 0 |
 | `0E` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
-| `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 250 |
+| `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 200 |
 | `0A`–`0B` | GATE_MS | gate time of the highest voice, in ms | 125 |
 | `09` | VELOCITY | note velocity, 1 to 127 | 100 |
 | `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | 42 |

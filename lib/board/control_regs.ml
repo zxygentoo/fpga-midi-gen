@@ -201,9 +201,9 @@ let%expect_test "the defaults need no init walk" =
   Stdio.printf "after clear %s\n" (Bytes_util.hex (dump ()));
   [%expect
     {|
-    power-on   00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00
-    after write 00 00 00 00 00 2a 00 00 00 30 7d 00 fa 00 02 00
-    after clear 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00
+    power-on   00 00 00 00 00 2a 00 00 00 64 7d 00 c8 00 02 00
+    after write 00 00 00 00 00 2a 00 00 00 30 7d 00 c8 00 02 00
+    after clear 00 00 00 00 00 2a 00 00 00 64 7d 00 c8 00 02 00
     |}]
 ;;
 
@@ -236,9 +236,9 @@ let%expect_test "the write is atomic" =
   show "committed";
   [%expect
     {|
-    power-on       step_ms 250
-    byte 0 written step_ms 250
-    byte 1 written step_ms 250
+    power-on       step_ms 200
+    byte 0 written step_ms 200
+    byte 1 written step_ms 200
     committed      step_ms 8721
     |}]
 ;;
@@ -376,7 +376,7 @@ let%expect_test "the waveform of the atomic commit" =
     │commit         ││                  ┌─────┐                          │
     │               ││──────────────────┘     └─────────────────         │
     │               ││────────────────────────┬─────────────────         │
-    │params$step_ms ││ 00FA                   │2211                      │
+    │params$step_ms ││ 00C8                   │2211                      │
     │               ││────────────────────────┴─────────────────         │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]
