@@ -228,20 +228,27 @@ module Engine = struct
 
   let clamp16 v = Int.clamp_exn v ~min:(-32768) ~max:32767
 
+  (* the reductions of the engine: [sum n f] is the MAC — the sum of [f i] over
+     [0 .. n - 1] — and [max_over n f] is the peak scan *)
+  let sum n f =
+    let rec go acc i = if i = n then acc else go (acc + f i) (i + 1) in
+    go 0 0
+  ;;
+
+  let max_over n f =
+    let rec go acc i = if i = n then acc else go (Int.max acc (f i)) (i + 1) in
+    go Int.min_value 0
+  ;;
+
   (* floor of the square root; any correct algorithm gives the one answer the circuit must
      also give *)
   let isqrt n =
     if n <= 0
     then 0
     else (
-      let g = ref (Float.to_int (Float.sqrt (Float.of_int n))) in
-      while !g * !g > n do
-        Int.decr g
-      done;
-      while (!g + 1) * (!g + 1) <= n do
-        Int.incr g
-      done;
-      !g)
+      let rec shrink g = if g * g > n then shrink (g - 1) else g in
+      let rec grow g = if (g + 1) * (g + 1) <= n then grow (g + 1) else g in
+      grow (shrink (Float.to_int (Float.sqrt (Float.of_int n)))))
   ;;
 
   (* exp2 of a Q12 value that is 0 or less: the integer part shifts, the top eight bits of
@@ -341,74 +348,58 @@ module Engine = struct
       (* the projections; k and v enter the ring at the slot of this token *)
       let ring_base = ((l * slots) + cur) * d in
       for o = 0 to d - 1 do
-        let qa = ref 0
-        and ka = ref 0
-        and va = ref 0 in
-        for i = 0 to d - 1 do
-          let y = t.y.(i) in
-          qa := !qa + (y * lay.wq.q.((i * d) + o));
-          ka := !ka + (y * lay.wk.q.((i * d) + o));
-          va := !va + (y * lay.wv.q.((i * d) + o))
-        done;
-        let out acc e =
-          let v = rescale ~from:(Constants.y_q + e) ~target:Constants.kv_q acc in
+        (* one matvec column; the circuit runs the three separately, on one MAC path *)
+        let project (w : Tensor.t) =
+          let acc = sum d (fun i -> t.y.(i) * w.q.((i * d) + o)) in
+          let v = rescale ~from:(Constants.y_q + w.e) ~target:Constants.kv_q acc in
           note_peak t `Qkv v;
           clamp16 v
         in
-        t.q.(o) <- out !qa lay.wq.e;
-        t.kc.(ring_base + o) <- out !ka lay.wk.e;
-        t.vc.(ring_base + o) <- out !va lay.wv.e
+        t.q.(o) <- project lay.wq;
+        t.kc.(ring_base + o) <- project lay.wk;
+        t.vc.(ring_base + o) <- project lay.wv
       done;
       (* attention, one head at a time; age [a] reads slot [(cur - a) & 255], thus the
          ALiBi distance is the age itself and the causal wall is the walk *)
       for head = 0 to heads - 1 do
         let hb = head * head_d in
         let slope_exponent = span * (head + 1) / heads in
-        let peak = ref Int.min_value in
+        (* the base of the ring slot that age [a] reads, at this head *)
+        let slot_base a = (((l * slots) + ((cur - a) land (slots - 1))) * d) + hb in
+        (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus
+           head_d is a power of four *)
+        let score_shift =
+          (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
+        in
+        let score a =
+          let sb = slot_base a in
+          (sum head_d (fun j -> t.q.(hb + j) * t.kc.(sb + j)) asr score_shift)
+          - (a lsl (Constants.y_q - slope_exponent))
+        in
         for a = 0 to n - 1 do
-          let slot = (cur - a) land (slots - 1) in
-          let sb = (((l * slots) + slot) * d) + hb in
-          let dot = ref 0 in
-          for j = 0 to head_d - 1 do
-            dot := !dot + (t.q.(hb + j) * t.kc.(sb + j))
-          done;
-          (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus
-             head_d is a power of four *)
-          let score_shift =
-            (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
-          in
-          let s = (!dot asr score_shift) - (a lsl (Constants.y_q - slope_exponent)) in
+          let s = score a in
           note_peak t `Score s;
-          t.scores.(a) <- s;
-          if s > !peak then peak := s
+          t.scores.(a) <- s
         done;
-        let den = ref 0 in
-        let num = Array.create ~len:head_d 0 in
-        for a = 0 to n - 1 do
-          let u = ((t.scores.(a) - !peak) * Constants.log2e_q15) asr 15 in
-          let e = exp2_q u in
-          den := !den + e;
-          let slot = (cur - a) land (slots - 1) in
-          let sb = (((l * slots) + slot) * d) + hb in
-          for j = 0 to head_d - 1 do
-            num.(j) <- num.(j) + (e * t.vc.(sb + j))
-          done
-        done;
+        let peak = max_over n (fun a -> t.scores.(a)) in
+        (* the exp2 weight of each age, Q15: the peak weighs 2^15 *)
+        let age_weight =
+          Array.init n ~f:(fun a ->
+            exp2_q (((t.scores.(a) - peak) * Constants.log2e_q15) asr 15))
+        in
+        let den = sum n (fun a -> age_weight.(a)) in
         (* the merged context overwrites [y]: the projections took what they needed *)
         for j = 0 to head_d - 1 do
-          let c = num.(j) / !den in
+          let c = sum n (fun a -> age_weight.(a) * t.vc.(slot_base a + j)) / den in
           note_peak t `Ctx c;
           t.y.(hb + j) <- clamp16 c
         done
       done;
       (* the attention branch joins the stream *)
       for o = 0 to d - 1 do
-        let acc = ref 0 in
-        for i = 0 to d - 1 do
-          acc := !acc + (t.y.(i) * lay.wo.q.((i * d) + o))
-        done;
+        let acc = sum d (fun i -> t.y.(i) * lay.wo.q.((i * d) + o)) in
         let v =
-          t.h.(o) + rescale ~from:(Constants.kv_q + lay.wo.e) ~target:Constants.h_q !acc
+          t.h.(o) + rescale ~from:(Constants.kv_q + lay.wo.e) ~target:Constants.h_q acc
         in
         note_peak t `H v;
         t.h.(o) <- v
@@ -417,23 +408,17 @@ module Engine = struct
       rms_into t;
       let dff = 4 * d in
       for o = 0 to dff - 1 do
-        let acc = ref 0 in
-        for i = 0 to d - 1 do
-          acc := !acc + (t.y.(i) * lay.w1.q.((i * dff) + o))
-        done;
+        let acc = sum d (fun i -> t.y.(i) * lay.w1.q.((i * dff) + o)) in
         let v =
-          max 0 (rescale ~from:(Constants.y_q + lay.w1.e) ~target:Constants.hid_q !acc)
+          max 0 (rescale ~from:(Constants.y_q + lay.w1.e) ~target:Constants.hid_q acc)
         in
         note_peak t `Hid v;
         t.scores.(o) <- clamp16 v
       done;
       for o = 0 to d - 1 do
-        let acc = ref 0 in
-        for i = 0 to dff - 1 do
-          acc := !acc + (t.scores.(i) * lay.w2.q.((i * d) + o))
-        done;
+        let acc = sum dff (fun i -> t.scores.(i) * lay.w2.q.((i * d) + o)) in
         let v =
-          t.h.(o) + rescale ~from:(Constants.hid_q + lay.w2.e) ~target:Constants.h_q !acc
+          t.h.(o) + rescale ~from:(Constants.hid_q + lay.w2.e) ~target:Constants.h_q acc
         in
         note_peak t `H v;
         t.h.(o) <- v
@@ -450,11 +435,7 @@ module Engine = struct
     let d = t.config.Transformer.Config.d in
     let e = t.p.embed.e in
     for c = 0 to vocab - 1 do
-      let acc = ref 0 in
-      for i = 0 to d - 1 do
-        acc := !acc + (t.y.(i) * t.p.embed.q.((c * d) + i))
-      done;
-      let l = !acc asr e in
+      let l = sum d (fun i -> t.y.(i) * t.p.embed.q.((c * d) + i)) asr e in
       note_peak t `Logit l;
       t.logits.(c) <- l
     done;
@@ -479,24 +460,23 @@ module Engine = struct
   let draw_code t =
     let (_ : int array) = next_logits t in
     let mask = Sounding_state.legal_mask t.sounding in
-    let peak = ref Int.min_value in
+    let peak =
+      max_over vocab (fun c -> if mask.(c) then t.logits.(c) else Int.min_value)
+    in
+    (* the tempered weight of one code: masked, exp2, and refused under min-p *)
+    let weight c =
+      if mask.(c)
+      then (
+        let u = ((t.logits.(c) - peak) * t.temper_q14) asr 14 in
+        let e = exp2_q u in
+        if e >= t.min_weight then e else 0)
+      else 0
+    in
     for c = 0 to vocab - 1 do
-      if mask.(c) && t.logits.(c) > !peak then peak := t.logits.(c)
+      t.weights.(c) <- weight c
     done;
-    let total = ref 0 in
-    for c = 0 to vocab - 1 do
-      let w =
-        if mask.(c)
-        then (
-          let u = ((t.logits.(c) - !peak) * t.temper_q14) asr 14 in
-          let e = exp2_q u in
-          if e >= t.min_weight then e else 0)
-        else 0
-      in
-      t.weights.(c) <- w;
-      total := !total + w
-    done;
-    let threshold = (u24 t * !total) asr 24 in
+    let total = sum vocab (fun c -> t.weights.(c)) in
+    let threshold = (u24 t * total) asr 24 in
     (* the code whose running total passes the threshold; the fallback of the float
        sampler when no weight remains on the walk *)
     let rec walk c total =
