@@ -7,7 +7,9 @@
 
 open Core
 module Evaluation = Mgen_transformer.Evaluation
+module Fixed = Mgen_transformer.Fixed
 module Jsb = Mgen_corpus.Jsb
+module Token = Mgen_core.Token
 module Transformer = Mgen_transformer.Transformer
 
 (* The gate carries the heads and the ALiBi span, because no other file holds them: a
@@ -83,8 +85,137 @@ let eval_command =
      fun () -> eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out)
 ;;
 
+(* The calibration of the integer twin: run the quantized walk, print the peak of each
+   signal class — the circuit widths read them — and measure the drift against the float
+   model: the top-1 agreement and the cosine of the logits at every draw, on the twin's
+   own walk. *)
+let ranges ~checkpoint ~steps ~seed =
+  let config =
+    Transformer.Config.of_checkpoint
+      checkpoint
+      ~heads:Transformer.Config.baseline.heads
+      ~context:Transformer.Config.baseline.context
+      ~slope_span:Transformer.Config.baseline.slope_span
+  in
+  let quantized = Fixed.Model.of_checkpoint config checkpoint in
+  let params = Transformer.Params.load config ~path:checkpoint in
+  let engine = Fixed.Engine.create quantized ~seed in
+  (* the histories of the float pass, newest first, as the float sampler keeps them *)
+  let codes = ref [ Token.to_code Token.Start ] in
+  let phases = ref [ 0 ] in
+  let progress = ref [ 0 ] in
+  let window history = List.take history 256 |> List.rev |> Array.of_list in
+  let float_logits () =
+    let codes = window !codes in
+    Transformer.logits
+      config
+      params
+      ~codes:[| codes |]
+      ~phases:[| window !phases |]
+      ~progress:[| window !progress |]
+      ~dropout:Transformer.Dropout.none
+    |> Nx.get [ 0; Array.length codes - 1 ]
+    |> Nx.to_array
+  in
+  let argmax values ~value =
+    let best = ref 0 in
+    Array.iteri values ~f:(fun index v ->
+      if Float.(value v > value values.(!best)) then best := index);
+    !best
+  in
+  let cosine q f =
+    let dot = ref 0.0
+    and qq = ref 0.0
+    and ff = ref 0.0 in
+    Array.iteri q ~f:(fun i qi ->
+      let qi = Float.of_int qi in
+      dot := !dot +. (qi *. f.(i));
+      qq := !qq +. (qi *. qi);
+      ff := !ff +. (f.(i) *. f.(i)));
+    !dot /. Float.sqrt (!qq *. !ff)
+  in
+  let agree = ref 0 in
+  let cosine_sum = ref 0.0 in
+  let draws = ref 0 in
+  let events = ref 0 in
+  let step_index = ref 0 in
+  while !step_index < steps do
+    let quantized = Fixed.Engine.next_logits engine in
+    let floated = float_logits () in
+    if argmax quantized ~value:Float.of_int = argmax floated ~value:Fn.id then incr agree;
+    cosine_sum := !cosine_sum +. cosine quantized floated;
+    incr draws;
+    let code = Fixed.Engine.draw_code engine in
+    let phase = !step_index mod Transformer.phase_buckets in
+    let bucket =
+      !step_index / Transformer.progress_stride mod Transformer.progress_buckets
+    in
+    Fixed.Engine.feed engine ~code ~phase ~bucket;
+    codes := code :: !codes;
+    phases := phase :: !phases;
+    progress := bucket :: !progress;
+    match Token.of_code code with
+    | Start -> assert false
+    | On (_ : int) | Off (_ : int) -> incr events
+    | End -> incr step_index
+  done;
+  printf "%d steps  %d events  %d draws\n" steps !events !draws;
+  printf
+    "against the float model: top-1 %.1f%%  cosine %.4f\n"
+    (100.0 *. Float.of_int !agree /. Float.of_int !draws)
+    (!cosine_sum /. Float.of_int !draws);
+  printf "the peaks, before any clamp:\n";
+  List.iter (Fixed.Engine.peaks engine) ~f:(fun (name, peak) ->
+    printf "  %-8s %d\n" name peak)
+;;
+
+let ranges_command =
+  Command.basic
+    ~summary:"calibrate the integer twin: the signal peaks and the float drift"
+    (let%map_open.Command checkpoint =
+       flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
+     and steps = flag "-steps" (optional_with_default 96 int) ~doc:"N the steps to draw"
+     and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
+     fun () -> ranges ~checkpoint ~steps ~seed)
+;;
+
+(* The twin's socket stream: what the board must send, event for event. The comparison
+   script reads these lines against the amidi capture of the S-1 thru. *)
+let twin ~checkpoint ~steps ~seed =
+  let config =
+    Transformer.Config.of_checkpoint
+      checkpoint
+      ~heads:Transformer.Config.baseline.heads
+      ~context:Transformer.Config.baseline.context
+      ~slope_span:Transformer.Config.baseline.slope_span
+  in
+  let model = Fixed.Model.of_checkpoint config checkpoint in
+  let engine = Fixed.Engine.create model ~seed in
+  for step = 1 to steps do
+    let events = Fixed.Engine.step_events engine in
+    printf
+      "step %d:%s\n"
+      step
+      (String.concat
+         (List.map events ~f:(fun { Fixed.Engine.seat; pitch; on } ->
+            sprintf " %s:%d@%d" (if on then "on" else "off") pitch seat)))
+  done
+;;
+
+let twin_command =
+  Command.basic
+    ~summary:"the integer twin's event stream: the reference of the board capture"
+    (let%map_open.Command checkpoint =
+       flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
+     and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
+     and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
+     fun () -> twin ~checkpoint ~steps ~seed)
+;;
+
 let command =
-  Command.group ~summary:"operations on one checkpoint" [ "eval", eval_command ]
+  Command.group
+    ~summary:"operations on one checkpoint"
+    [ "eval", eval_command; "ranges", ranges_command; "twin", twin_command ]
 ;;
 
 let () = Command_unix.run command
