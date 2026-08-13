@@ -23,9 +23,13 @@ module Constants : sig
   (** the residual stream: Q16 in int32 *)
   val h_q : int
 
-  (** the normed vector, the query, the keys, the values and the context: Q12 in int16 *)
+  (** the normed vector, and the score of attention: Q12 in int16 *)
   val y_q : int
 
+  (** the query, the keys, the values and the context: Q12 in int16. This is a name of its
+      own beside [y_q], because the score shift folds the two roles apart: a dot product
+      of two attention vectors is Q(2 [kv_q]), and [2 * kv_q - y_q] carries it back to the
+      format of the stream. *)
   val kv_q : int
 
   (** the feed-forward hidden vector: Q10 in int16 *)

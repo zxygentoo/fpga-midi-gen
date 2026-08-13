@@ -1,49 +1,30 @@
-(* The transformer note source — see source.mli for the contract. This file holds the
-   design: why the machine has the shape it has.
+(* The transformer note source. [source.mli] states the contract, and
+   [docs/transformer_rtl.md] states the design of the whole — the five layers, the
+   memories and the cost. This header holds what neither says: the reasons tied to this
+   code.
 
-   The mathematics is [Quantized], integer for integer. The machine is five layers:
+   The file runs L2, the schedule, then L3, the compiler, then L4, the outer FSM. L0 and
+   L1 are the units it drives.
 
-   - L0, the primitives: [Divider], [Isqrt] and [Exp2] here, each in a file of its own
-     with its contract in an interface file; [Sounding_state.Rtl] and [Prng.Rtl] in the
-     core, each beside the software it must agree with. Real hardware with tiny
-     interfaces.
-   - L1, the datapath: the RAMs, the KV rings, the banked weight ROM, the one 25x18
-     multiplier, and [Mac] (mac.ml) — the walk behind the multiplier as a unit: the issue
-     counters, the tag line that follows the data through the pipe, and the accumulator,
-     at one term a cycle. Built once; the ops mux its ports. No op owns a resource. The
+   The rules that hold the shape:
+
+   - A unit of L1 is built once and the ops mux its ports. No op owns a resource, and the
      per-op facts stay in the ops: the address formulas, the operand sources, the landing
      writes.
-   - L2, the schedule: the walk as a value — [schedule] gives the two programs, the
-     sampler and the forward pass, as [Op.t] lists. One op holds the facts of one step:
-     the tensor base and exponent, the address order, the loop bounds, the landing. The
-     program is config-shaped: the layer count is a loop bound, and each op knows its
-     layer at elaboration. Therefore no register carries a sub-step, a layer index or a
-     return address, and every per-layer mux folds to a constant.
-   - L3, the compiler: [chain] folds a program into cases of a program counter over the
-     datapath, and the ops dispatch as one [switch] on the pc. The why: [Always] compiles
-     a statement list into a linear chain of muxes, one level for each statement that
-     writes a target, and that chain over every op was the thinnest timing path measured
-     in this era; a switch with constant cases compiles into one parallel case. An op's
-     finish runs the next op's entry actions in the same cycle — the one convention that
-     replaces a hand-kept register reset for each op.
-   - L4, the outer FSM, hand-written and small: Idle, Run, Decide, Emit, ForwardDone. The
-     token walk, the seats and the socket handshake stay control; the mathematics is a
-     program.
-
-   The gates:
-
-   - The stream test at the bottom: the events must equal [Quantized.Engine], event for
-     event, on drawn weights. [Quantized] is the reference, and this is the gate that
-     holds the circuit to it.
-   - The block tests of the units, each in the unit's own file: [Mac], [Divider], [Isqrt]
-     and [Exp2] against exact oracles, and [Sounding_state.Rtl] against
-     [Sounding_state.legal_mask] over drawn walks.
-   - The schedule prints: the state table is data, and an expect test pins it.
-   - [Op.cycles], the cost model beside the schedule, pinned against the measured cycle
-     bench.
-
-   Cycle counts are not preserved, and need not be: the socket is latency-insensitive and
-   the PRNG steps only on command, thus a draw cannot move.
+   - The ops dispatch as one [switch] on the pc, not as a chain of guards. [Always]
+     compiles a statement list into a linear chain of muxes, one level for each statement
+     that writes a target, and that chain over every op was the thinnest timing path
+     measured in this era; a switch with constant cases compiles into one parallel case.
+   - An op's finish runs the next op's entry actions in the same cycle. This one
+     convention replaces a hand-kept register reset for each op.
+   - The op vocabulary is closed and concrete. The rule: when a field's meaning would
+     depend on another field, stop extending and write a new op.
+   - A repeated op is an inlined program step and takes no return register. [Rms_norm]
+     appears twice per layer and once in the sampler; control is cheap, and the units it
+     drives exist once.
+   - [Attend] walks lane-major. The age-major order — one exp2, then one MAC over the
+     lanes, age by age — was declined: it needs a register file of lane sums, and
+     lane-major needs none.
 
    The timing design, decided against the measured paths (2026-08-13):
 
@@ -64,23 +45,7 @@
    - The dormant debt, recorded: the product latency — two cycles from the operands to
      [preg] — is hand-encoded as tick numbers in the Exp, Temper and Threshold chains. If
      the pipe ever deepens, replace the tick counts with a wait on a valid bit; do not
-     renumber.
-
-   Design choices, decided here:
-
-   - A repeated op is an inlined program step. [Rms_norm] appears twice per layer and once
-     in the sampler; control is cheap, and the units it drives exist once. No return
-     register.
-   - [Attend] stays one op with an internal stage register, and its stages are walks of
-     the engine: the scores; then the exp2 weight of every age — each weight lands over
-     its score's vram row, and the total accumulates; then the weighted sum lane-major,
-     one dot product over the ages for each lane, from the weight row and the value ring
-     into the divider. Each lane's sum sees the ages in the same order as the reference,
-     thus the lane-major order is exact. The age-major order — one exp2, then one MAC over
-     the lanes, age by age — was declined: it needs a register file of lane sums, and this
-     one needs none.
-   - The op vocabulary is closed and concrete. The rule: when a field's meaning would
-     depend on another field, stop extending and write a new op. *)
+     renumber. *)
 
 open Base
 open Hardcaml
@@ -459,20 +424,14 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let qram_wen = Variable.wire ~default:gnd () in
   let qram_waddr = Variable.wire ~default:(zero dbits) () in
   let qram_wdata = Variable.wire ~default:(zero 16) () in
-  (* Synthesis implements a ROM over the full power of two of its address space, thus the
-     pad that [rom_bits] does not carry would return at the tools. The image splits at
-     power-of-two boundaries into banks — a deeper power of two halves — and a bank holds
-     at most 2^15 rows: one RAMB36 is 32K deep at one bit wide, thus no bank ever needs
-     the block RAM cascade, whose wiring fails the tools' own check REQP-1962 at 2^16 and
-     above. A bank is not a plain rom: the tools demoted deep write-portless arrays to
-     slice logic under two different select shapes — the six-layer image in slice logic is
-     69 percent of the device — so each bank is an initialized memory with one gated-off
-     write port, the class the tools infer soundly at every depth here, and RAM_STYLE pins
-     it to block RAM. The reads sit behind a nest of muxes on registered top address bits:
-     two cycles from address to data, as one ROM — each bank registers its own data a
-     second time before the mux, and that register packs into the block RAM's output
-     register (the travel stage of the timing design). A read past the image selects a
-     bank at a dead offset; no op makes one. *)
+  (* The banking rules are in [docs/transformer_rtl.md]; the measurements behind them are
+     here. The tools demoted deep write-portless arrays to slice logic under two different
+     select shapes — the six-layer image in slice logic is 69 percent of the device — thus
+     a bank is an initialized memory with a gated-off write port, and RAM_STYLE pins it.
+     The reads sit behind a nest of muxes on registered top address bits: two cycles from
+     address to data, as one ROM, because each bank registers its own data a second time
+     before the mux and that register packs into the block RAM's output register. A read
+     past the image selects a bank at a dead offset; no op makes one. *)
   let rec rom_banked bits addr =
     let n = Array.length bits in
     if Int.is_pow2 n && n <= 1 lsl 15
@@ -516,12 +475,10 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
-  (* The rings store the top byte of a Q12 row — [Quantized.coarse_to_ring] — and the read
-     restores the eight zero low bits, thus the format stays Q12 at a granularity of 2^-4
-     and the rings cost half the block RAM. Every memory the walk reads stands two
-     registers deep (the timing design); [nohold] freezes each stage with the walk's tags.
-     The small RAMs keep the one-register tap for the bespoke chains, and a second
-     register makes the walk's tap. *)
+  (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
+     dropped at the write. Every memory the walk reads stands two registers deep, and
+     [nohold] freezes each stage with the walk's tags; the small RAMs keep the
+     one-register tap for the bespoke chains. *)
   let kcd =
     reg
       spec

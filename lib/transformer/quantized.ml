@@ -1,13 +1,8 @@
 open Base
 module Params_data = Transformer.Params_data
 
-(* The design constants of the fixed-point scheme: the formats of docs/transformer_rtl.md,
-   and the values derived from them and from the mathematics. The sampling policy is not
-   here — the model carries it. *)
 module Constants = struct
-  (* the formats: the residual stream is Q16 in int32; the normed vector, the query, the
-     keys, the values and the context are Q12 in int16; the FFN hidden is Q10 in int16;
-     the scores and the logits are Q12 and stay wide *)
+  (* the scores and the logits are Q12 as well, and stay wide; no constant names them *)
   let h_q = 16
   let y_q = 12
   let kv_q = 12
@@ -30,10 +25,6 @@ module Constants = struct
   let exp2_bits = Array.map exp2_table ~f:(Hardcaml.Bits.of_unsigned_int ~width:16)
 end
 
-(* The vectors of the file, flat. [t] is the machine's integer vector — the value side of
-   a weight and every signal of the engine, each in its own Q format. [floats] is the
-   checkpoint side. The drift measures compare the two over one pair of logit vectors;
-   [Drift.walk] measures them over a walk. *)
 module Tensor = struct
   type t = int array
   type floats = float array
@@ -65,18 +56,12 @@ module Tensor = struct
   ;;
 end
 
-(* The quantized model: the configuration and the tensors quantized under it, one value —
-   the unit the engine and the circuit consume. The pairing invariant lives here: after
-   the constructor, no caller can mispair a configuration with another model's tensors. *)
 module Model = struct
-  (* one quantized weight tensor: w ~ q * 2^-e *)
   type quantized =
     { q : Tensor.t
     ; e : int
     }
 
-  (* the structure of [Params_data], over the quantized tensor: one definition holds the
-     shape and the flat order of the checkpoint *)
   type params = quantized Params_data.t
   type layer = quantized Params_data.layer
 
@@ -95,17 +80,12 @@ module Model = struct
       Array.fold shape ~init:1 ~f:( * ))
   ;;
 
-  (* The base of each tensor inside the ROM, in the shape of the parameters: the running
-     sums of the sizes, handed back through the one definition of the flat order. *)
+  (* the running sums of the sizes, handed back through the one definition of the order *)
   let rom_bases t =
     List.folding_map (sizes t.config) ~init:0 ~f:(fun start size -> start + size, start)
     |> Params_data.of_list ~layers:t.config.Transformer.Config.layers
   ;;
 
-  (* The ROM image of the circuit: every tensor in the checkpoint order, one byte for each
-     weight, two's complement. The depth is exact, not a power of two: the synthesis pays
-     block RAM for every row of the image, and the circuit never reads past the last
-     tensor. *)
   let rom_bits t =
     Array.concat_map
       (Array.of_list (Params_data.to_list t.params))
@@ -232,8 +212,7 @@ module Model = struct
 end
 
 module Engine = struct
-  (* The engine as a value: an operation gives the next engine, and everything in [t] is
-     frozen — an update copies its spine or its row. *)
+  (* everything in [t] is frozen: an update copies its spine or its row *)
   type t =
     { config : Transformer.Config.t
     ; p : Model.params
@@ -572,11 +551,6 @@ module Engine = struct
   ;;
 end
 
-(* The drift of the reference against the float model, on one teacher-forced walk: the
-   quantized engine draws every code, and the float model — the same tensors before
-   quantization — is evaluated on the same window, thus the walks cannot split and every
-   draw gives one comparable pair. [checkpoint_tool drift] reports the walk of a
-   checkpoint; the integration test pins the walk of drawn weights. *)
 module Drift = struct
   type stats =
     { draws : int

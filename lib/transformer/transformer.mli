@@ -14,13 +14,20 @@
 (** every tensor of the host model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
 
-(** the rows of the bar-phase table, the rows of the piece-position table, and the steps
-    of one draw bucket; [docs/transformer_model.md] holds the reasoning *)
+(** the rows of the bar-phase table: the steps of one bar *)
 val phase_buckets : int
 
+(** the rows of the piece-position table: the parts of one piece *)
 val progress_buckets : int
+
+(** the steps of one bucket at the draw. The product with [progress_buckets] is the period
+    of the table — 256 steps, about one chorale. [docs/transformer_model.md] holds the
+    reasoning of all three. *)
 val progress_stride : int
 
+(** The shape of the model: the numbers that size every tensor here and every register in
+    the circuit. A configuration and a set of parameters make a model together, and the
+    constructors of [Quantized.Model] keep that pair from slipping. *)
 module Config : sig
   type t =
     { d : int (** the width of the residual stream *)
@@ -81,6 +88,8 @@ module Params_data : sig
   val of_list : layers:int -> 'a list -> 'a t
 end
 
+(** The weights of the float model: the drawn initial set, the checkpoint on disk, and the
+    flat orders that every reader of the tensors shares. *)
 module Params : sig
   (** the weights of the float model: [Params_data] over [tensor] *)
   type t
@@ -113,10 +122,12 @@ module Params : sig
   val of_list : Config.t -> tensor list -> t
 
   (** The flat order as a [Ptree] list, for an optimizer that walks a tree. The checkpoint
-      goes through [save] and [load]; take these only to reach a library that wants the
-      tree itself. *)
+      goes through [save] and [load]; take this and [of_ptree] only to reach a library
+      that wants the tree itself. *)
   val to_ptree : t -> Kaun.Ptree.t
 
+  (** [of_ptree config tree] is the inverse of [to_ptree]. It raises when a leaf is not
+      float32, and it applies the rules of [of_list] to the leaves. *)
   val of_ptree : Config.t -> Kaun.Ptree.t -> t
 end
 

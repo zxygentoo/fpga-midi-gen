@@ -9,11 +9,8 @@ let phase_buckets = 16
 (* the rows of the piece-position table: the parts of one piece *)
 let progress_buckets = 16
 
-(* The steps of one bucket at the draw. The corpus divides each piece into
-   [progress_buckets], and a chorale runs 228 steps at the median, thus a bucket is 14.2
-   steps there and 16 is the nearest power of two. A power of two is a bit-slice in the
-   circuit, and the product with [progress_buckets] is the period: 256 steps, sixteen
-   bars, about one chorale. *)
+(* a chorale runs 228 steps at the median, thus a bucket is 14.2 steps there and 16 is the
+   nearest power of two — and a power of two is a bit-slice in the circuit *)
 let progress_stride = 16
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
