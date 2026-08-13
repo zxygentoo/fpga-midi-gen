@@ -7,9 +7,12 @@
    - L0, the primitives: the divider, the isqrt, the exp2 lookup, the sounding mask, and
      [Prng.Rtl]. Real hardware with tiny interfaces, each block-tested against an exact
      oracle. They stay in this file for now and can move to files of their own.
-   - L1, the datapath: the one 25x18 MAC behind operand registers, the RAMs, the KV rings,
-     the weight ROM and the shared walk registers. Built once; the ops mux its ports. No
-     op owns a resource.
+   - L1, the datapath: the RAMs, the KV rings, the banked weight ROM, the one 25x18
+     multiplier, and [Mac] (mac.ml) — the walk behind the multiplier as a unit: the issue
+     counters, the tag line that follows the data through the pipe, and the accumulator,
+     at one term a cycle. Built once; the ops mux its ports. No op owns a resource. The
+     per-op facts stay in the ops: the address formulas, the operand sources, the landing
+     writes.
    - L2, the schedule: the walk as a value — [schedule] gives the two programs, the
      sampler and the forward pass, as [Op.t] lists. One op holds the facts one switch arm
      of the prototype hand-encodes: the tensor base and exponent, the address order, the
@@ -17,9 +20,13 @@
      bound, and each op knows its layer at elaboration. Therefore the [sub], [lyr] and
      [rms_ret] registers of the prototype do not exist here, and every per-layer mux folds
      to a constant.
-   - L3, the compiler: [chain] folds a program into states of a program counter over the
-     datapath. An op's finish runs the next op's entry actions in the same cycle — the one
-     convention that replaces the prototype's hand-kept register resets.
+   - L3, the compiler: [chain] folds a program into cases of a program counter over the
+     datapath, and the ops dispatch as one [switch] on the pc. The why: [Always] compiles
+     a statement list into a linear chain of muxes, one level for each statement that
+     writes a target, and that chain over every op was the thinnest timing path of the
+     era; a switch with constant cases compiles into one parallel case. An op's finish
+     runs the next op's entry actions in the same cycle — the one convention that replaces
+     the prototype's hand-kept register resets.
    - L4, the outer FSM, hand-written and small: Idle, Run, Decide, Emit, ForwardDone. The
      token walk, the seats and the socket handshake stay control; the mathematics is a
      program.
@@ -29,20 +36,47 @@
    - The stream test at the bottom: the events must equal [Quantized.Engine], event for
      event, on drawn weights — the same gate [Source] passes, thus the two circuits agree
      with each other through the one reference.
-   - The block tests of the L0 units against exact oracles.
+   - The block tests of the L0 units and of [Mac] against exact oracles.
    - The schedule prints: the state table is data, and an expect test pins it.
+   - [Op.cycles], the cost model beside the schedule, pinned against the measured cycle
+     bench.
 
    Cycle counts are not preserved, and need not be: the socket is latency-insensitive and
    the PRNG steps only on command, thus a draw cannot move.
+
+   The timing design, decided against the measured paths (2026-08-13):
+
+   - Every memory the walk reads stands two registers from the multiplier: the read
+     register, then an output register that packs into the block RAM (DO_REG; the
+     clock-to-out falls 2.46 -> 0.89 ns at speed grade -1). The six-layer build failed on
+     the route from a far ROM bank into the DSP at 94 percent occupancy; the travel stage
+     pays for that route, and at one term a cycle it costs only fill latency. A ROM bank
+     registers its own data before the select mux — a register after the mux stays in the
+     fabric and removes nothing. The bespoke chains (Exp, Temper) read the small RAMs at
+     the one-register tap; they touch neither the ROM nor the rings.
+   - The DSP stays a two-register multiply — the operand registers and [preg] — rated 257
+     MHz at -1 against the 100 MHz clock. The accumulator is a fabric adder behind it,
+     loaded on a row's first term by the tag. The full in-DSP accumulate was declined: the
+     M register cannot drive the fabric, thus every reader of the product moves one
+     register later, for headroom this clock does not spend. The bespoke readers of [preg]
+     anchor it as the DSP's final register, thus the tools cannot fold the accumulator in.
+   - The dormant debt, recorded: the product latency — two cycles from the operands to
+     [preg] — is hand-encoded as tick numbers in the Exp, Temper and Threshold chains. If
+     the pipe ever deepens, replace the tick counts with a wait on a valid bit; do not
+     renumber.
 
    Design choices, decided here:
 
    - A repeated op is an inlined program step. [Rms_norm] appears twice per layer and once
      in the sampler; control is cheap, and the units it drives exist once. No return
      register.
-   - [Attend] stays one bespoke op with an internal stage register: its interleave of
-     score, exp and MAC is not a matvec, and forcing one shape onto it would put an
-     interpreter in the generator.
+   - [Attend] stays one op with an internal stage register, and its stages are walks of
+     the engine: the scores; then the exp2 weight of every age — each weight lands over
+     its score's vram row, and the total accumulates; then the weighted sum lane-major,
+     one dot product over the ages for each lane, from the weight row and the value ring
+     into the divider. Each lane's sum sees the ages in the same order as the reference,
+     thus the restructure is exact. The prototype's interleave — one exp2, then one MAC
+     over the lanes, age by age — and its register file of lane sums do not exist here.
    - The op vocabulary is closed and concrete. The rule: when a field's meaning would
      depend on another field, stop extending and write a new op. *)
 
@@ -356,6 +390,34 @@ module Op = struct
     | Threshold
     | Pick
   [@@deriving sexp_of]
+
+  (* The analytic cost of one op, in cycles from its go to its finish, both the cycle a
+     predecessor's finish runs. [n] is the filled slot count of the ring at this token.
+     The constants restate the builders: a walk retires its last term [Mac.read_latency]
+     + 2 cycles after its last issue; the residual join lands one cycle later; the divider
+       costs 42 from its start cycle to its wait's release, and the isqrt 22; a
+       weighted-sum lane adds a 41-cycle hold for its pending divide. The cycle bench pins
+       this model against the measured circuit. *)
+  let cycles (config : Transformer.Config.t) ~n (op : t) =
+    let { Transformer.Config.d; heads; _ } = config in
+    let head_d = d / heads in
+    let vocab = Token.vocab in
+    match op with
+    | Embed _ -> (3 * d) + 4
+    | Rms_norm -> (44 * d) + 26
+    | Matvec { inner; outer; landing; _ } ->
+      (inner * outer)
+      + 4
+      +
+        (match landing with
+        | Add_to_h -> 1
+        | To_q | To_ring _ | To_hidden | To_logits -> 0)
+    | Attend _ -> heads * ((2 * n * head_d) + (7 * n) + (41 * head_d) + 8)
+    | Temper -> 7 * vocab
+    | Draw -> 4
+    | Threshold -> 5
+    | Pick -> 2 * vocab
+  ;;
 end
 
 (* the two programs of the source: a draw, and the forward pass of the drawn token *)
@@ -515,17 +577,19 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let ii = Variable.reg spec ~width:9 in
   let oo = Variable.reg spec ~width:9 in
   let hd = Variable.reg spec ~width:head_bits in
-  let age = Variable.reg spec ~width:(slot_bits + 1) in
   let after_forward = Variable.reg spec ~width:1 in
-  let acc = Variable.reg spec ~width:48 in
-  let preg = Variable.reg spec ~width:43 in
   let thi = Variable.reg spec ~width:43 in
-  let nums = Array.init head_d ~f:(fun (_ : int) -> Variable.reg spec ~width:40) in
   let den = Variable.reg spec ~width:24 in
+  (* the landing helpers: the residual read-modify-write, and the one pending divide *)
+  let rmw = Variable.reg spec ~width:1 in
+  let rmw_row = Variable.reg spec ~width:dbits in
+  let rmw_sum = Variable.reg spec ~width:48 in
+  let pending = Variable.reg spec ~width:1 in
+  let pend_lane = Variable.reg spec ~width:lane_bits in
+  let done_p = Variable.reg spec ~width:1 in
   let peak = Variable.reg spec ~width:32 in
   let diff = Variable.reg spec ~width:32 in
   let nn = Variable.reg spec ~width:22 in
-  let e_reg = Variable.reg spec ~width:16 in
   (* the sampler *)
   let u24 = Variable.reg spec ~width:24 in
   let total = Variable.reg spec ~width:24 in
@@ -588,6 +652,12 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let boot = Variable.wire ~default:gnd () in
   let land_ = Variable.wire ~default:gnd () in
   let legal_query = Variable.wire ~default:(zero 8) () in
+  (* the walk engine's commands, and the freeze that keeps its tags with its data *)
+  let mac_go = Variable.wire ~default:gnd () in
+  let mac_inner = Variable.wire ~default:(zero 9) () in
+  let mac_outer = Variable.wire ~default:(zero 9) () in
+  let hold = Variable.wire ~default:gnd () in
+  let nohold = ~:(hold.value) in
   let { Sounding.O.legal } =
     Sounding.create
       { Sounding.I.clock = i.clock
@@ -632,8 +702,10 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
      69 percent of the device — so each bank is an initialized memory with one gated-off
      write port, the class the tools infer soundly at every depth here, and RAM_STYLE pins
      it to block RAM. The reads sit behind a nest of muxes on registered top address bits:
-     one cycle from address to data, as one ROM. A read past the image selects a bank at a
-     dead offset; no op makes one. *)
+     two cycles from address to data, as one ROM — each bank registers its own data a
+     second time before the mux, and that register packs into the block RAM's output
+     register (the travel stage of the timing design). A read past the image selects a
+     bank at a dead offset; no op makes one. *)
   let rec rom_banked bits addr =
     let n = Array.length bits in
     if Int.is_pow2 n && n <= 1 lsl 15
@@ -652,7 +724,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
              |]
            ~read_addresses:[| addr |]).(0)
       in
-      reg spec data)
+      reg spec ~enable:nohold (reg spec ~enable:nohold data))
     else (
       let split = if Int.is_pow2 n then n / 2 else 1 lsl Int.floor_log2 n in
       let low = rom_banked (Array.subo bits ~len:split) (lsbs addr) in
@@ -661,7 +733,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
           (Array.subo bits ~pos:split)
           (sel_bottom (lsbs addr) ~width:(address_bits_for (n - split)))
       in
-      mux2 (reg spec (msb addr)) high low)
+      mux2 (reg spec ~enable:nohold (reg spec ~enable:nohold (msb addr))) high low)
   in
   let romd = rom_banked rom_bits rom_addr.value in
   let write_port waddr wen wdata =
@@ -679,32 +751,44 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   in
   (* The rings store the top byte of a Q12 row — [Quantized.coarse_to_ring] — and the read
      restores the eight zero low bits, thus the format stays Q12 at a granularity of 2^-4
-     and the rings cost half the block RAM. *)
+     and the rings cost half the block RAM. Every memory the walk reads stands two
+     registers deep (the timing design); [nohold] freezes each stage with the walk's tags.
+     The small RAMs keep the one-register tap for the bespoke chains, and a second
+     register makes the walk's tap. *)
   let kcd =
     reg
       spec
-      (ram
-         ~size:(layers * slots * d)
-         ~waddr:ring_waddr.value
-         ~wen:kc_wen.value
-         ~wdata:ring_wdata.value
-         ~raddr:kc_raddr.value)
+      ~enable:nohold
+      (reg
+         spec
+         ~enable:nohold
+         (ram
+            ~size:(layers * slots * d)
+            ~waddr:ring_waddr.value
+            ~wen:kc_wen.value
+            ~wdata:ring_wdata.value
+            ~raddr:kc_raddr.value))
     @: zero 8
   in
   let vcd =
     reg
       spec
-      (ram
-         ~size:(layers * slots * d)
-         ~waddr:ring_waddr.value
-         ~wen:vc_wen.value
-         ~wdata:ring_wdata.value
-         ~raddr:vc_raddr.value)
+      ~enable:nohold
+      (reg
+         spec
+         ~enable:nohold
+         (ram
+            ~size:(layers * slots * d)
+            ~waddr:ring_waddr.value
+            ~wen:vc_wen.value
+            ~wdata:ring_wdata.value
+            ~raddr:vc_raddr.value))
     @: zero 8
   in
   let vramd =
     reg
       spec
+      ~enable:nohold
       (ram
          ~size:vram_size
          ~waddr:vram_waddr.value
@@ -712,9 +796,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wdata:vram_wdata.value
          ~raddr:vram_raddr.value)
   in
+  let vramd2 = reg spec ~enable:nohold vramd in
   let hramd =
     reg
       spec
+      ~enable:nohold
       (ram
          ~size:d
          ~waddr:hram_waddr.value
@@ -722,9 +808,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wdata:hram_wdata.value
          ~raddr:hram_raddr.value)
   in
+  let hramd2 = reg spec ~enable:nohold hramd in
   let yd =
     reg
       spec
+      ~enable:nohold
       (ram
          ~size:d
          ~waddr:yram_waddr.value
@@ -732,9 +820,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wdata:yram_wdata.value
          ~raddr:yram_raddr.value)
   in
+  let yd2 = reg spec ~enable:nohold yd in
   let qd =
     reg
       spec
+      ~enable:nohold
       (ram
          ~size:d
          ~waddr:qram_waddr.value
@@ -742,61 +832,53 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wdata:qram_wdata.value
          ~raddr:qram_raddr.value)
   in
-  (* L1 — the one DSP-sized product, 25 by 18 signed, behind operand registers *)
+  let qd2 = reg spec ~enable:nohold qd in
+  (* L1 — [Mac], the walk behind the one 25 by 18 multiplier; the ops feed its operand
+     wires and read its counters *)
   let mul_a = Variable.wire ~default:(zero 25) () in
   let mul_b = Variable.wire ~default:(zero 18) () in
-  let opa = Variable.reg spec ~width:25 in
-  let opb = Variable.reg spec ~width:18 in
-  let mul_out = opa.value *+ opb.value in
-  let preg48 = sresize preg.value ~width:48 in
-  let acc_full = acc.value +: preg48 in
+  let mac =
+    Mac.create
+      { Mac.I.clock = i.clock
+      ; clear = i.clear
+      ; go = mac_go.value
+      ; inner = mac_inner.value
+      ; outer = mac_outer.value
+      ; hold = hold.value
+      ; a = mul_a.value
+      ; b = mul_b.value
+      }
+  in
   (* the walk slices *)
   let ii_d = sel_bottom ii.value ~width:dbits in
-  let ii_lane = sel_bottom ii.value ~width:lane_bits in
-  let oo_d = sel_bottom oo.value ~width:dbits in
   let oo8 = sel_bottom oo.value ~width:8 in
+  let ii_slot = sel_bottom ii.value ~width:slot_bits in
+  let mac_ii_d = sel_bottom mac.ii ~width:dbits in
+  let mac_oo_d = sel_bottom mac.oo ~width:dbits in
+  let mac_row_d = sel_bottom mac.row ~width:dbits in
+  let mac_ii_lane = sel_bottom mac.ii ~width:lane_bits in
+  let mac_oo_lane = sel_bottom mac.oo ~width:lane_bits in
+  let mac_ii_slot = sel_bottom mac.ii ~width:slot_bits in
+  let mac_oo_slot = sel_bottom mac.oo ~width:slot_bits in
+  let mac_row_slot = sel_bottom mac.row ~width:slot_bits in
+  let mac_row_lane = sel_bottom mac.row ~width:lane_bits in
   let phase = sel_bottom s.value ~width:4 in
   let bucket = select s.value ~high:7 ~low:4 in
-  let age_s = sel_bottom age.value ~width:slot_bits in
-  let slot = cur.value -: age_s in
   let n =
     mux2
       filled.value
       (of_unsigned_int ~width:(slot_bits + 1) slots)
       (uresize cur.value ~width:(slot_bits + 1) +:. 1)
   in
-  let numv = mux ii_lane (Array.to_list (Array.map nums ~f:(fun v -> v.value))) in
+  let n9 = uresize n ~width:9 in
   let alibi =
-    (* the slope of head k is 2^-(span (k+1) / heads): a shift of the age, in Q12 *)
+    (* the slope of head k is 2^-(span (k+1) / heads): a shift of the age, in Q12; the age
+       is the retired row of the score walk *)
     mux
       hd.value
       (List.init heads ~f:(fun k ->
          let exponent = span * (k + 1) / heads in
-         sll (uresize age.value ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
-  in
-  (* One three-phase multiply-accumulate iteration: tick 0 presents the addresses, tick 1
-     registers the operands, tick 2 the product, tick 3 accumulates. [keep] holds the
-     whole sum at the last iteration instead of zeroing — the two-state residual join
-     reads it. The one definition every matvec-family op walks. *)
-  let mac_walk ?(keep = false) ~last ~at_last ~else_next () =
-    [ if_
-        (tick.value ==:. 0)
-        [ tick <--. 1 ]
-        [ if_
-            (tick.value ==:. 1)
-            [ opa <-- mul_a.value; opb <-- mul_b.value; tick <--. 2 ]
-            [ if_
-                (tick.value ==:. 2)
-                [ preg <-- mul_out; tick <--. 3 ]
-                [ tick <--. 0
-                ; if_
-                    last
-                    (at_last @ [ (acc <-- if keep then acc_full else zero 48) ])
-                    (else_next @ [ acc <-- acc_full ])
-                ]
-            ]
-        ]
-    ]
+         sll (uresize mac.row ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
   in
   (* the seat of the drawn event: an On takes the highest free seat, an Off names the seat
      that holds its pitch *)
@@ -828,61 +910,59 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let build (op : Op.t) ~(finish : Always.t list) =
     match op with
     | Op.Embed { token; phase = ph; progress } ->
-      (* h[ii] = the three table rows summed on the MAC; oo walks the tables *)
-      let entry = [ ii <--. 0; oo <--. 0; tick <--. 0; acc <--. 0 ] in
+      (* h[row] = the three table rows summed on the walk: a term is a table, a row is an
+         element *)
+      let entry = [ mac_go <-- vdd ] in
       let body =
-        [ rom_addr
+        [ mac_inner <--. 3
+        ; mac_outer <--. d
+        ; rom_addr
           <-- mux
-                (sel_bottom oo.value ~width:2)
+                (sel_bottom mac.ii ~width:2)
                 [ rom_const token.base
-                  +: uresize (out_code.value @: ii_d) ~width:rom_addr_bits
-                ; rom_const ph.base +: uresize (phase @: ii_d) ~width:rom_addr_bits
-                ; rom_const progress.base +: uresize (bucket @: ii_d) ~width:rom_addr_bits
+                  +: uresize (out_code.value @: mac_oo_d) ~width:rom_addr_bits
+                ; rom_const ph.base +: uresize (phase @: mac_oo_d) ~width:rom_addr_bits
+                ; rom_const progress.base
+                  +: uresize (bucket @: mac_oo_d) ~width:rom_addr_bits
                 ]
         ; mul_a <-- sresize romd ~width:25
         ; mul_b <-- of_signed_int ~width:18 1
+        ; when_
+            mac.row_done
+            [ hram_wen <-- vdd
+            ; hram_waddr <-- mac_row_d
+            ; hram_wdata
+              <-- sel_bottom
+                    (rescale ~from:token.e ~target:Quantized.Constants.h_q mac.sum)
+                    ~width:32
+            ]
+        ; when_ mac.done_ finish
         ]
-        @ mac_walk
-            ~last:(oo.value ==:. 2)
-            ~at_last:
-              [ hram_wen <-- vdd
-              ; hram_waddr <-- ii_d
-              ; hram_wdata
-                <-- sel_bottom
-                      (rescale ~from:token.e ~target:Quantized.Constants.h_q acc_full)
-                      ~width:32
-              ; oo <--. 0
-              ; if_ (ii.value ==:. d - 1) finish [ ii <-- ii.value +:. 1 ]
-              ]
-            ~else_next:[ oo <-- oo.value +:. 1 ]
-            ()
       in
       entry, body
     | Rms_norm ->
-      (* stage 0 sums the squares of the Q12 copy; stage 1 waits on the isqrt; stage 2
-         divides each element — y = (h << 8) / g, toward zero *)
-      let entry = [ ii <--. 0; tick <--. 0; acc <--. 0; stage <--. 0 ] in
+      (* stage 0 sums the squares of the Q12 copy on the walk, one row of [d] terms; stage
+         1 waits on the isqrt; stage 2 divides each element — y = (h << 8) / g, toward
+         zero *)
+      let entry = [ stage <--. 0; mac_go <-- vdd ] in
       let body =
         [ if_
             (stage.value ==:. 0)
-            ([ hram_raddr <-- ii_d
-             ; mul_a <-- sel_bottom (sra hramd ~by:4) ~width:25
-             ; mul_b <-- sel_bottom (sra hramd ~by:4) ~width:18
-             ]
-             @ mac_walk
-                 ~last:(ii.value ==:. d - 1)
-                 ~at_last:
-                   [ sq_start <-- vdd
-                   ; sq_value
-                     <-- sel_bottom
-                           (srl acc_full ~by:(Int.floor_log2 d) +: eps48)
-                           ~width:42
-                   ; ii <--. 0
-                   ; tick <--. 0
-                   ; stage <--. 1
-                   ]
-                 ~else_next:[ ii <-- ii.value +:. 1 ]
-                 ())
+            [ mac_inner <--. d
+            ; mac_outer <--. 1
+            ; hram_raddr <-- mac_ii_d
+            ; mul_a <-- sel_bottom (sra hramd2 ~by:4) ~width:25
+            ; mul_b <-- sel_bottom (sra hramd2 ~by:4) ~width:18
+            ; when_
+                mac.done_
+                [ sq_start <-- vdd
+                ; sq_value
+                  <-- sel_bottom (srl mac.sum ~by:(Int.floor_log2 d) +: eps48) ~width:42
+                ; ii <--. 0
+                ; tick <--. 0
+                ; stage <--. 1
+                ]
+            ]
             [ if_
                 (stage.value ==:. 1)
                 [ when_ ~:sq_busy [ stage <--. 2; ii <--. 0; tick <--. 0 ] ]
@@ -915,31 +995,32 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
     | Matvec { src; w; outer_major; inner; outer; landing } ->
       let ibits = address_bits_for inner in
       let obits = address_bits_for outer in
-      let ii_i = sel_bottom ii.value ~width:ibits in
-      let oo_o = sel_bottom oo.value ~width:obits in
+      let ii_i = sel_bottom mac.ii ~width:ibits in
+      let oo_o = sel_bottom mac.oo ~width:obits in
+      let row_o = sel_bottom mac.row ~width:obits in
       let addr = if outer_major then oo_o @: ii_i else ii_i @: oo_o in
       let read_src, srcd =
         match src with
-        | `Y -> [ yram_raddr <-- ii_d ], yd
+        | `Y -> [ yram_raddr <-- mac_ii_d ], yd2
         | `Hidden ->
-          [ vram_raddr <-- uresize ii_i ~width:vbits ], sel_bottom vramd ~width:16
+          [ vram_raddr <-- uresize ii_i ~width:vbits ], sel_bottom vramd2 ~width:16
       in
       let common =
         read_src
-        @ [ rom_addr <-- rom_const w.base +: uresize addr ~width:rom_addr_bits
+        @ [ mac_inner <--. inner
+          ; mac_outer <--. outer
+          ; rom_addr <-- rom_const w.base +: uresize addr ~width:rom_addr_bits
           ; mul_a <-- sresize srcd ~width:25
           ; mul_b <-- sresize romd ~width:18
           ]
       in
-      let outer_last = oo.value ==:. outer - 1 in
-      let entry = [ ii <--. 0; oo <--. 0; tick <--. 0; acc <--. 0; stage <--. 0 ] in
       (match landing with
        | To_q | To_ring _ | To_hidden | To_logits ->
          let write v =
            match landing with
            | To_q ->
              [ qram_wen <-- vdd
-             ; qram_waddr <-- oo_d
+             ; qram_waddr <-- mac_row_d
              ; qram_wdata
                <-- clamp16
                      (rescale
@@ -949,7 +1030,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
              ]
            | To_ring { k; layer } ->
              [ (if k then kc_wen else vc_wen) <-- vdd
-             ; ring_waddr <-- of_unsigned_int ~width:layer_bits layer @: cur.value @: oo_d
+             ; ring_waddr
+               <-- of_unsigned_int ~width:layer_bits layer @: cur.value @: mac_row_d
              ; ring_wdata
                <-- sel_top
                      ~width:8
@@ -968,125 +1050,114 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
              in
              let relu = mux2 (shifted <+ zero 48) (zero 48) shifted in
              [ vram_wen <-- vdd
-             ; vram_waddr <-- uresize oo_o ~width:vbits
+             ; vram_waddr <-- uresize row_o ~width:vbits
              ; vram_wdata <-- sresize (clamp16 relu) ~width:32
              ]
            | To_logits ->
              let logit = sel_bottom (sra v ~by:w.e) ~width:32 in
              [ vram_wen <-- vdd
-             ; vram_waddr <-- uresize oo_o ~width:vbits
+             ; vram_waddr <-- uresize row_o ~width:vbits
              ; vram_wdata <-- logit
-             ; legal_query <-- uresize oo_o ~width:8
+             ; legal_query <-- uresize row_o ~width:8
              ; when_ (legal &: (logit >+ peak.value)) [ peak <-- logit ]
              ]
            | Add_to_h -> assert false
          in
          let entry =
            match landing with
-           | To_logits -> entry @ [ peak <-- min32 ]
-           | _ -> entry
+           | To_logits -> [ peak <-- min32; mac_go <-- vdd ]
+           | _ -> [ mac_go <-- vdd ]
          in
          let body =
-           common
-           @ mac_walk
-               ~last:(ii.value ==:. inner - 1)
-               ~at_last:
-                 (write acc_full
-                  @ [ ii <--. 0; if_ outer_last finish [ oo <-- oo.value +:. 1 ] ])
-               ~else_next:[ ii <-- ii.value +:. 1 ]
-               ()
+           common @ [ when_ mac.row_done (write mac.sum); when_ mac.done_ finish ]
          in
          entry, body
        | Add_to_h ->
-         (* the residual join: the whole sum kept, then a two-tick read-modify-write *)
+         (* the residual join: the sum lands in a read-modify-write that overlaps the next
+            row's terms — the walk reads y or the hidden, never h *)
          let from_q =
            match src with
            | `Y -> Quantized.Constants.kv_q
            | `Hidden -> Quantized.Constants.hid_q
          in
+         let entry = [ rmw <-- gnd; done_p <-- gnd; mac_go <-- vdd ] in
          let body =
-           [ if_
-               (stage.value ==:. 0)
-               (common
-                @ mac_walk
-                    ~keep:true
-                    ~last:(ii.value ==:. inner - 1)
-                    ~at_last:[ ii <--. 0; tick <--. 0; stage <--. 1 ]
-                    ~else_next:[ ii <-- ii.value +:. 1 ]
-                    ())
-               [ hram_raddr <-- oo_d
-               ; if_
-                   (tick.value ==:. 0)
-                   [ tick <--. 1 ]
-                   [ hram_wen <-- vdd
-                   ; hram_waddr <-- oo_d
-                   ; hram_wdata
-                     <-- sel_bottom
-                           (sresize hramd ~width:48
-                            +: rescale
-                                 ~from:(from_q + w.e)
-                                 ~target:Quantized.Constants.h_q
-                                 acc.value)
-                           ~width:32
-                   ; acc <--. 0
-                   ; tick <--. 0
-                   ; if_ outer_last finish [ oo <-- oo.value +:. 1; stage <--. 0 ]
-                   ]
-               ]
-           ]
+           common
+           @ [ when_
+                 mac.row_done
+                 [ rmw <-- vdd
+                 ; rmw_row <-- mac_row_d
+                 ; rmw_sum <-- mac.sum
+                 ; hram_raddr <-- mac_row_d
+                 ]
+             ; when_ mac.done_ [ done_p <-- vdd ]
+             ; when_
+                 rmw.value
+                 [ hram_wen <-- vdd
+                 ; hram_waddr <-- rmw_row.value
+                 ; hram_wdata
+                   <-- sel_bottom
+                         (sresize hramd ~width:48
+                          +: rescale
+                               ~from:(from_q + w.e)
+                               ~target:Quantized.Constants.h_q
+                               rmw_sum.value)
+                         ~width:32
+                 ; rmw <-- gnd
+                 ; when_ done_p.value ([ done_p <-- gnd ] @ finish)
+                 ]
+             ]
          in
          entry, body)
     | Attend { layer } ->
-      (* the attention of one layer, head by head: stage 0 scores the ages, stages 1 and 2
-         interleave the exp2 weight and its MAC over the values, stage 3 divides the lanes
-         by the total weight. Age [a] reads slot [(cur - a) & (slots - 1)], thus the ALiBi
-         distance is the age and the causal wall is the walk. *)
+      (* the attention of one layer, head by head, in three walks: stage 0 scores the
+         ages; stage 1 turns each score into its exp2 weight, over the score's own vram
+         row, and accumulates the total; stage 2 sums the values lane-major — one dot
+         product over the ages for each lane, weight row against value ring — and each
+         lane's sum divides by the total as it lands. Age [a] reads slot
+         [(cur - a) & (slots - 1)], thus the ALiBi distance is the age and the causal wall
+         is the walk. *)
       let lconst = of_unsigned_int ~width:layer_bits layer in
       let entry =
         [ hd <--. 0
-        ; age <--. 0
         ; ii <--. 0
         ; tick <--. 0
-        ; acc <--. 0
         ; den <--. 0
         ; peak <-- min32
         ; stage <--. 0
+        ; pending <-- gnd
+        ; done_p <-- gnd
+        ; mac_go <-- vdd
         ]
-        @ Array.to_list (Array.map nums ~f:(fun v -> v <--. 0))
       in
       let body =
         [ if_
             (stage.value ==:. 0)
-            (* Score *)
-            ([ qram_raddr <-- hd.value @: ii_lane
-             ; kc_raddr <-- lconst @: slot @: hd.value @: ii_lane
-             ; mul_a <-- sresize qd ~width:25
-             ; mul_b <-- sresize kcd ~width:18
-             ]
-             @ mac_walk
-                 ~last:(ii.value ==:. head_d - 1)
-                 ~at_last:
-                   [ (let score =
-                        sel_bottom (sra acc_full ~by:score_shift) ~width:32 -: alibi
-                      in
-                      proc
-                        [ vram_wen <-- vdd
-                        ; vram_waddr <-- uresize age_s ~width:vbits
-                        ; vram_wdata <-- score
-                        ; when_ (score >+ peak.value) [ peak <-- score ]
-                        ])
-                   ; ii <--. 0
-                   ; if_
-                       (age.value +:. 1 ==: n)
-                       [ age <--. 0; tick <--. 0; stage <--. 1 ]
-                       [ age <-- age.value +:. 1 ]
-                   ]
-                 ~else_next:[ ii <-- ii.value +:. 1 ]
-                 ())
+            (* Score: one row of [head_d] terms per age *)
+            [ mac_inner <--. head_d
+            ; mac_outer <-- n9
+            ; qram_raddr <-- hd.value @: mac_ii_lane
+            ; kc_raddr <-- lconst @: (cur.value -: mac_oo_slot) @: hd.value @: mac_ii_lane
+            ; mul_a <-- sresize qd2 ~width:25
+            ; mul_b <-- sresize kcd ~width:18
+            ; when_
+                mac.row_done
+                [ (let score =
+                     sel_bottom (sra mac.sum ~by:score_shift) ~width:32 -: alibi
+                   in
+                   proc
+                     [ vram_wen <-- vdd
+                     ; vram_waddr <-- uresize mac_row_slot ~width:vbits
+                     ; vram_wdata <-- score
+                     ; when_ (score >+ peak.value) [ peak <-- score ]
+                     ])
+                ]
+            ; when_ mac.done_ [ ii <--. 0; tick <--. 0; stage <--. 1 ]
+            ]
             [ if_
                 (stage.value ==:. 1)
-                (* Exp: the weight of one age *)
-                [ vram_raddr <-- uresize age_s ~width:vbits
+                (* ExpAll: the weight of age [ii] lands over its score; den accumulates *)
+                [ vram_raddr <-- uresize ii_slot ~width:vbits
                 ; mul_a <-- sel_bottom diff.value ~width:25
                 ; mul_b <-- of_signed_int ~width:18 Quantized.Constants.log2e_q15
                 ; if_
@@ -1097,26 +1168,30 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                         [ diff <-- vramd -: peak.value; tick <--. 2 ]
                         [ if_
                             (tick.value ==:. 2)
-                            [ opa <-- mul_a.value; opb <-- mul_b.value; tick <--. 3 ]
+                            [ tick <--. 3 ]
                             [ if_
                                 (tick.value ==:. 3)
-                                [ preg <-- mul_out; tick <--. 4 ]
+                                [ tick <--. 4 ]
                                 [ if_
                                     (tick.value ==:. 4)
                                     [ nn
                                       <-- sel_bottom
-                                            (negate (sra preg.value ~by:15))
+                                            (negate (sra mac.product ~by:15))
                                             ~width:22
                                     ; tick <--. 5
                                     ]
                                     [ if_
                                         (tick.value ==:. 5)
                                         [ tick <--. 6 ]
-                                        [ e_reg <-- exp2_e
+                                        [ vram_wen <-- vdd
+                                        ; vram_waddr <-- uresize ii_slot ~width:vbits
+                                        ; vram_wdata <-- uresize exp2_e ~width:32
                                         ; den <-- den.value +: uresize exp2_e ~width:24
-                                        ; ii <--. 0
                                         ; tick <--. 0
-                                        ; stage <--. 2
+                                        ; if_
+                                            (ii.value ==: n9 -:. 1)
+                                            [ ii <--. 0; stage <--. 2; mac_go <-- vdd ]
+                                            [ ii <-- ii.value +:. 1 ]
                                         ]
                                     ]
                                 ]
@@ -1124,76 +1199,42 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                         ]
                     ]
                 ]
-                [ if_
-                    (stage.value ==:. 2)
-                    (* ExpMac: nums += e * v over the head's lanes *)
-                    [ vc_raddr <-- lconst @: slot @: hd.value @: ii_lane
-                    ; mul_a <-- uresize e_reg.value ~width:25
-                    ; mul_b <-- sresize vcd ~width:18
-                    ; if_
-                        (tick.value ==:. 0)
-                        [ tick <--. 1 ]
-                        [ if_
-                            (tick.value ==:. 1)
-                            [ opa <-- mul_a.value; opb <-- mul_b.value; tick <--. 2 ]
-                            [ if_
-                                (tick.value ==:. 2)
-                                [ preg <-- mul_out; tick <--. 3 ]
-                                [ tick <--. 0
-                                ; proc
-                                    (List.init head_d ~f:(fun k ->
-                                       when_
-                                         (ii.value ==:. k)
-                                         [ nums.(k)
-                                           <-- nums.(k).value
-                                               +: sel_bottom preg.value ~width:40
-                                         ]))
-                                ; if_
-                                    (ii.value ==:. head_d - 1)
-                                    [ ii <--. 0
-                                    ; if_
-                                        (age.value +:. 1 ==: n)
-                                        [ age <--. 0; tick <--. 0; stage <--. 3 ]
-                                        [ age <-- age.value +:. 1
-                                        ; tick <--. 0
-                                        ; stage <--. 1
-                                        ]
-                                    ]
-                                    [ ii <-- ii.value +:. 1 ]
-                                ]
-                            ]
-                        ]
+                (* WeightedSum: lane [row] = (sum over the ages of weight * value) / den;
+                   the one pending divide holds the walk until its lane lands *)
+                [ mac_inner <-- n9
+                ; mac_outer <--. head_d
+                ; hold <-- pending.value
+                ; vram_raddr <-- uresize mac_ii_slot ~width:vbits
+                ; vc_raddr
+                  <-- lconst @: (cur.value -: mac_ii_slot) @: hd.value @: mac_oo_lane
+                ; mul_a <-- uresize (sel_bottom vramd2 ~width:16) ~width:25
+                ; mul_b <-- sresize vcd ~width:18
+                ; when_
+                    mac.row_done
+                    [ div_start <-- vdd
+                    ; div_num <-- sel_bottom mac.sum ~width:40
+                    ; div_den <-- den.value
+                    ; pending <-- vdd
+                    ; pend_lane <-- mac_row_lane
                     ]
-                    (* CtxDiv: ctx = nums / den, toward zero, into the y RAM *)
-                    [ if_
-                        (tick.value ==:. 0)
-                        [ div_start <-- vdd
-                        ; div_num <-- numv
-                        ; div_den <-- den.value
-                        ; tick <--. 1
-                        ]
-                        [ when_
-                            ~:div_busy
-                            [ yram_wen <-- vdd
-                            ; yram_waddr <-- hd.value @: ii_lane
-                            ; yram_wdata <-- clamp16 div_quotient
-                            ; tick <--. 0
-                            ; if_
-                                (ii.value ==:. head_d - 1)
-                                [ ii <--. 0
-                                ; if_
-                                    (hd.value ==:. heads - 1)
-                                    finish
-                                    ([ hd <-- hd.value +:. 1
-                                     ; age <--. 0
-                                     ; den <--. 0
-                                     ; peak <-- min32
-                                     ; stage <--. 0
-                                     ]
-                                     @ Array.to_list
-                                         (Array.map nums ~f:(fun v -> v <--. 0)))
-                                ]
-                                [ ii <-- ii.value +:. 1 ]
+                ; when_ mac.done_ [ done_p <-- vdd ]
+                ; when_
+                    (pending.value &: ~:div_busy)
+                    [ yram_wen <-- vdd
+                    ; yram_waddr <-- hd.value @: pend_lane.value
+                    ; yram_wdata <-- clamp16 div_quotient
+                    ; pending <-- gnd
+                    ; when_
+                        done_p.value
+                        [ if_
+                            (hd.value ==:. heads - 1)
+                            finish
+                            [ hd <-- hd.value +:. 1
+                            ; stage <--. 0
+                            ; den <--. 0
+                            ; peak <-- min32
+                            ; done_p <-- gnd
+                            ; mac_go <-- vdd
                             ]
                         ]
                     ]
@@ -1218,13 +1259,14 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                 [ diff <-- vramd -: peak.value; tick <--. 2 ]
                 [ if_
                     (tick.value ==:. 2)
-                    [ opa <-- mul_a.value; opb <-- mul_b.value; tick <--. 3 ]
+                    [ tick <--. 3 ]
                     [ if_
                         (tick.value ==:. 3)
-                        [ preg <-- mul_out; tick <--. 4 ]
+                        [ tick <--. 4 ]
                         [ if_
                             (tick.value ==:. 4)
-                            [ nn <-- sel_bottom (negate (sra preg.value ~by:14)) ~width:22
+                            [ nn
+                              <-- sel_bottom (negate (sra mac.product ~by:14)) ~width:22
                             ; tick <--. 5
                             ]
                             [ if_
@@ -1295,21 +1337,21 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                 ~width:18
         ; if_
             (tick.value ==:. 0)
-            [ opa <-- mul_a.value; opb <-- mul_b.value; tick <--. 1 ]
+            [ tick <--. 1 ]
             [ if_
                 (tick.value ==:. 1)
-                [ preg <-- mul_out; tick <--. 2 ]
+                [ tick <--. 2 ]
                 [ if_
                     (tick.value ==:. 2)
-                    [ thi <-- preg.value; opb <-- mul_b.value; tick <--. 3 ]
+                    [ thi <-- mac.product; tick <--. 3 ]
                     [ if_
                         (tick.value ==:. 3)
-                        [ preg <-- mul_out; tick <--. 4 ]
+                        [ tick <--. 4 ]
                         ([ thr
                            <-- sel_bottom
                                  (srl
                                     (sll (uresize thi.value ~width:56) ~by:12
-                                     +: uresize preg.value ~width:56)
+                                     +: uresize mac.product ~width:56)
                                     ~by:24)
                                  ~width:24
                          ]
@@ -1364,9 +1406,13 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   in
   let enter_sample = sample_entry @ [ sm.set_next Run ] in
   let enter_forward = forward_entry @ [ sm.set_next Run ] in
+  (* one parallel case, not a chain of guards: see the L3 note of the module comment *)
   let run_body =
-    List.map (sample_bodies @ forward_bodies) ~f:(fun (index, body) ->
-      when_ (pc.value ==:. index) body)
+    [ switch
+        pc.value
+        (List.map (sample_bodies @ forward_bodies) ~f:(fun (index, body) ->
+           of_unsigned_int ~width:pc_bits index, body))
+    ]
   in
   compile
     [ sm.switch
@@ -1646,4 +1692,87 @@ let%expect_test "source2 agrees with the reference, event for event" =
     Stdio.print_s ([%sexp_of: (int * int * bool) list list] circuit);
     Stdio.print_s ([%sexp_of: (int * int * bool) list list] reference));
   [%expect {| 3 steps, 8 events, the streams agree: true |}]
+;;
+
+(* The cycle bench: the circuit's measured cost against [Op.cycles], phase by phase. A
+   phase counts from its command cycle to the cycle [idle] reads true. A round of the walk
+   is one draw and its forward: a note round costs the two programs plus three control
+   cycles (Decide, Emit, ForwardDone); the closing round (the drawn 0) has no Emit but
+   ends over ForwardDone and Idle, thus three as well; the observation lands one cycle
+   after Idle sets. The ring's fill [n] is the forward count so far, capped at the slot
+   count. *)
+let%expect_test "the cycle bench: the measured walk against the cost model" =
+  let config = Transformer.Config.baseline in
+  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let prog = schedule model in
+  let module Sim = Cyclesim.With_interface (I) (O) in
+  let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
+  let inp = Cyclesim.inputs sim in
+  let out = Cyclesim.outputs ~clock_edge:Before sim in
+  inp.ready := Bits.vdd;
+  let slots = config.context in
+  let forwards = ref 0 in
+  let sum_ops ops ~n =
+    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles config ~n op)
+  in
+  let model_round ~closing =
+    let n = Int.min (!forwards + 1) slots in
+    Int.incr forwards;
+    sum_ops prog.sample ~n + sum_ops prog.forward ~n + if closing then 4 else 3
+  in
+  let events = ref 0 in
+  let count_until_idle () =
+    let cycles = ref 0 in
+    while not (Bits.to_bool !(out.idle)) do
+      Cyclesim.cycle sim;
+      if Bits.to_bool !(out.valid) then Int.incr events;
+      Int.incr cycles;
+      assert (!cycles < 20_000_000)
+    done;
+    !cycles
+  in
+  inp.rewind := Bits.vdd;
+  Cyclesim.cycle sim;
+  inp.rewind := Bits.gnd;
+  Cyclesim.cycle sim;
+  let boot_measured = 2 + count_until_idle () in
+  let n_boot = Int.min (!forwards + 1) slots in
+  Int.incr forwards;
+  let boot_model = sum_ops prog.forward ~n:n_boot + 3 in
+  Stdio.printf
+    "boot: measured %d, model %d, delta %d\n"
+    boot_measured
+    boot_model
+    (boot_measured - boot_model);
+  let step k =
+    events := 0;
+    inp.step := Bits.vdd;
+    Cyclesim.cycle sim;
+    inp.step := Bits.gnd;
+    Cyclesim.cycle sim;
+    let measured = 2 + count_until_idle () in
+    let rounds = !events + 1 in
+    let modeled =
+      List.init rounds ~f:(fun r -> model_round ~closing:(r = rounds - 1))
+      |> List.fold ~init:0 ~f:( + )
+    in
+    Stdio.printf
+      "step %d: %d events, measured %d, model %d, delta %d\n"
+      k
+      !events
+      measured
+      modeled
+      (measured - modeled);
+    measured
+  in
+  let total = List.fold (List.range 1 4) ~init:boot_measured ~f:(fun t k -> t + step k) in
+  Stdio.printf "total %d\n" total;
+  [%expect
+    {|
+    boot: measured 115547, model 115547, delta 0
+    step 1: 4 events, measured 690131, model 690131, delta 0
+    step 2: 2 events, measured 417823, model 417823, delta 0
+    step 3: 2 events, measured 420631, model 420631, delta 0
+    total 1644132
+    |}]
 ;;
