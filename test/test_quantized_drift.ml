@@ -62,13 +62,15 @@ let report weight_seed =
     sum.low_cosine
 ;;
 
-(* The floors of the property, with the calibration of 2026-08-12: the minima over this
-   trial set are the printed line of the expected file, and the floors sit far under them.
-   Thus a fail is a break of the scheme, not a re-draw of the set, and the counterexample
+(* The floors of the property, with the calibration of 2026-08-13 — the int8 KV ring moved
+   the minima down, most at this small shape: a head averages four lanes, thus the ring's
+   coarse byte weighs about twice what the board's shape feels. The minima over this trial
+   set are the printed line of the expected file, and the floors sit far under them. Thus
+   a fail is a break of the scheme, not a re-draw of the set, and the counterexample
    prints its seed pair. *)
-let top1_floor = 0.75
-let same_draw_floor = 0.9
-let cosine_floor = 0.995
+let top1_floor = 0.55
+let same_draw_floor = 0.8
+let cosine_floor = 0.98
 
 let check_floors () =
   let low_top1 = ref 1.0 in

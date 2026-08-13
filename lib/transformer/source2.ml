@@ -605,7 +605,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let kc_wen = Variable.wire ~default:gnd () in
   let vc_wen = Variable.wire ~default:gnd () in
   let ring_waddr = Variable.wire ~default:(zero ring_bits) () in
-  let ring_wdata = Variable.wire ~default:(zero 16) () in
+  let ring_wdata = Variable.wire ~default:(zero 8) () in
   let vram_raddr = Variable.wire ~default:(zero vbits) () in
   let vram_wen = Variable.wire ~default:gnd () in
   let vram_waddr = Variable.wire ~default:(zero vbits) () in
@@ -622,7 +622,48 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let qram_wen = Variable.wire ~default:gnd () in
   let qram_waddr = Variable.wire ~default:(zero dbits) () in
   let qram_wdata = Variable.wire ~default:(zero 16) () in
-  let romd = reg spec (rom ~read_addresses:[| rom_addr.value |] rom_bits).(0) in
+  (* Synthesis implements a ROM over the full power of two of its address space, thus the
+     pad that [rom_bits] does not carry would return at the tools. The image splits at
+     power-of-two boundaries into banks — a deeper power of two halves — and a bank holds
+     at most 2^15 rows: one RAMB36 is 32K deep at one bit wide, thus no bank ever needs
+     the block RAM cascade, whose wiring fails the tools' own check REQP-1962 at 2^16 and
+     above. A bank is not a plain rom: the tools demoted deep write-portless arrays to
+     slice logic under two different select shapes — the six-layer image in slice logic is
+     69 percent of the device — so each bank is an initialized memory with one gated-off
+     write port, the class the tools infer soundly at every depth here, and RAM_STYLE pins
+     it to block RAM. The reads sit behind a nest of muxes on registered top address bits:
+     one cycle from address to data, as one ROM. A read past the image selects a bank at a
+     dead offset; no op makes one. *)
+  let rec rom_banked bits addr =
+    let n = Array.length bits in
+    if Int.is_pow2 n && n <= 1 lsl 15
+    then (
+      let data =
+        (multiport_memory
+           ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
+           ~initialize_to:bits
+           n
+           ~write_ports:
+             [| { Write_port.write_clock = i.clock
+                ; write_address = zero (width addr)
+                ; write_enable = gnd
+                ; write_data = zero 8
+                }
+             |]
+           ~read_addresses:[| addr |]).(0)
+      in
+      reg spec data)
+    else (
+      let split = if Int.is_pow2 n then n / 2 else 1 lsl Int.floor_log2 n in
+      let low = rom_banked (Array.subo bits ~len:split) (lsbs addr) in
+      let high =
+        rom_banked
+          (Array.subo bits ~pos:split)
+          (sel_bottom (lsbs addr) ~width:(address_bits_for (n - split)))
+      in
+      mux2 (reg spec (msb addr)) high low)
+  in
+  let romd = rom_banked rom_bits rom_addr.value in
   let write_port waddr wen wdata =
     { Write_port.write_clock = i.clock
     ; write_address = waddr
@@ -636,6 +677,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
+  (* The rings store the top byte of a Q12 row — [Quantized.coarse_to_ring] — and the read
+     restores the eight zero low bits, thus the format stays Q12 at a granularity of 2^-4
+     and the rings cost half the block RAM. *)
   let kcd =
     reg
       spec
@@ -645,6 +689,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wen:kc_wen.value
          ~wdata:ring_wdata.value
          ~raddr:kc_raddr.value)
+    @: zero 8
   in
   let vcd =
     reg
@@ -655,6 +700,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wen:vc_wen.value
          ~wdata:ring_wdata.value
          ~raddr:vc_raddr.value)
+    @: zero 8
   in
   let vramd =
     reg
@@ -905,11 +951,13 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
              [ (if k then kc_wen else vc_wen) <-- vdd
              ; ring_waddr <-- of_unsigned_int ~width:layer_bits layer @: cur.value @: oo_d
              ; ring_wdata
-               <-- clamp16
-                     (rescale
-                        ~from:(Quantized.Constants.y_q + w.e)
-                        ~target:Quantized.Constants.kv_q
-                        v)
+               <-- sel_top
+                     ~width:8
+                     (clamp16
+                        (rescale
+                           ~from:(Quantized.Constants.y_q + w.e)
+                           ~target:Quantized.Constants.kv_q
+                           v))
              ]
            | To_hidden ->
              let shifted =

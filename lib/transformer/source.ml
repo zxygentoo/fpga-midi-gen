@@ -195,7 +195,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let kc_wen = Variable.wire ~default:gnd () in
   let vc_wen = Variable.wire ~default:gnd () in
   let ring_waddr = Variable.wire ~default:(zero 15) () in
-  let ring_wdata = Variable.wire ~default:(zero 16) () in
+  let ring_wdata = Variable.wire ~default:(zero 8) () in
   let vram_raddr = Variable.wire ~default:(zero 8) () in
   let vram_wen = Variable.wire ~default:gnd () in
   let vram_waddr = Variable.wire ~default:(zero 8) () in
@@ -230,6 +230,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
+  (* the rings store the top byte of a Q12 row — [Quantized.coarse_to_ring]; the read
+     restores the eight zero low bits *)
   let kcd =
     reg
       spec
@@ -239,6 +241,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wen:kc_wen.value
          ~wdata:ring_wdata.value
          ~raddr:kc_raddr.value)
+    @: zero 8
   in
   let vcd =
     reg
@@ -249,6 +252,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wen:vc_wen.value
          ~wdata:ring_wdata.value
          ~raddr:vc_raddr.value)
+    @: zero 8
   in
   let vramd =
     reg
@@ -635,7 +639,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                        ; kc_wen <-- (sub.value ==:. 1)
                        ; vc_wen <-- (sub.value ==:. 2)
                        ; ring_waddr <-- lyr.value @: cur.value @: oo6
-                       ; ring_wdata <-- value
+                       ; ring_wdata <-- sel_top ~width:8 value
                        ])
                   ; ii <--. 0
                   ; if_

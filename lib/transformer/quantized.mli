@@ -88,8 +88,8 @@ module Model : sig
     }
 
   (** the ROM image of the circuit: every tensor in the checkpoint order, one byte for
-      each weight, two's complement, padded to the next power of two — the depth of the
-      address *)
+      each weight, two's complement. The depth is exact — block RAM is paid for every row,
+      and the circuit never reads past the last tensor *)
   val rom_bits : t -> Hardcaml.Bits.t array
 
   (** the base of each tensor inside the ROM, in the shape of the parameters — the address

@@ -103,18 +103,14 @@ module Model = struct
   ;;
 
   (* The ROM image of the circuit: every tensor in the checkpoint order, one byte for each
-     weight, two's complement, padded to the next power of two — the depth of the address. *)
+     weight, two's complement. The depth is exact, not a power of two: the synthesis pays
+     block RAM for every row of the image, and the circuit never reads past the last
+     tensor. *)
   let rom_bits t =
-    let image =
-      Array.concat_map
-        (Array.of_list (Params_data.to_list t.params))
-        ~f:(fun { q; e = (_ : int) } -> Array.map q ~f:(fun v -> v land 255))
-    in
-    let depth = Int.ceil_pow2 (Array.length image) in
-    Array.init depth ~f:(fun at ->
-      if at < Array.length image
-      then Hardcaml.Bits.of_unsigned_int ~width:8 image.(at)
-      else Hardcaml.Bits.zero 8)
+    Array.concat_map
+      (Array.of_list (Params_data.to_list t.params))
+      ~f:(fun { q; e = (_ : int) } ->
+        Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
   ;;
 
   (* the policy in the integer forms of the machine; the rules of the float sampler *)
@@ -405,6 +401,14 @@ module Engine = struct
       above + rescale ~from:(from + w.e) ~target:Constants.h_q acc)
   ;;
 
+  (* The ring keeps the top byte of a Q12 row: the circuit stores eight bits and restores
+     eight zero low bits at the read, thus the granularity is 2^-4 and the format stays
+     Q12. The query does not pass here — only the stored rows coarsen. *)
+  (* [asr] and [lsl] associate to the right; the parentheses are the expression *)
+  let coarse_to_ring (row : Tensor.t) : Tensor.t =
+    Array.map row ~f:(fun v -> (v asr 8) lsl 8)
+  ;;
+
   (* one token through the engine: the next engine *)
   let forward t ~code ~phase ~bucket =
     let d = t.config.Transformer.Config.d in
@@ -416,8 +420,8 @@ module Engine = struct
     let layer l h (lay : Model.layer) =
       let y = rms_norm t h in
       let q, k_row, v_row = projections t lay y in
-      kc.((l * slots) + cur) <- k_row;
-      vc.((l * slots) + cur) <- v_row;
+      kc.((l * slots) + cur) <- coarse_to_ring k_row;
+      vc.((l * slots) + cur) <- coarse_to_ring v_row;
       let ctx = attend t kc vc ~l ~cur ~n q in
       let h = join t h lay.wo ~values:ctx ~len:d ~from:Constants.kv_q in
       let y = rms_norm t h in
@@ -742,9 +746,9 @@ let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
     {|
     (((voice 3) (pitch 17) (on true)) ((voice 2) (pitch 12) (on true))
      ((voice 1) (pitch 9) (on true)) ((voice 0) (pitch 1) (on true)))
-    (((voice 3) (pitch 17) (on false)) ((voice 3) (pitch 113) (on true)))
+    (((voice 3) (pitch 17) (on false)) ((voice 3) (pitch 112) (on true)))
     (((voice 0) (pitch 1) (on false)) ((voice 0) (pitch 101) (on true)))
-    (((voice 3) (pitch 113) (on false)) ((voice 3) (pitch 10) (on true)))
-    12 steps  22 events  0 illegal  the seed repeats: true
+    (((voice 3) (pitch 112) (on false)) ((voice 3) (pitch 8) (on true)))
+    12 steps  20 events  0 illegal  the seed repeats: true
     |}]
 ;;

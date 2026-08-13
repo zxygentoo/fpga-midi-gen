@@ -6,16 +6,13 @@
 open Core
 
 let checkpoint = "_train/d64-mk-do01-48k-s4-prog.ckpt"
+let config = Mgen_transformer.Transformer.Config.baseline
 
 let () =
   let argv = Sys.get_argv () in
   let dir = if Array.length argv > 1 then argv.(1) else "board/_generated" in
   Core_unix.mkdir_p dir ~perm:0o755;
-  let model =
-    Mgen_transformer.Quantized.Model.of_checkpoint
-      Mgen_transformer.Transformer.Config.baseline
-      checkpoint
-  in
+  let model = Mgen_transformer.Quantized.Model.of_checkpoint config checkpoint in
   let rtl =
     Hardcaml.Rtl.create Verilog [ Mgen_nexys4.Top.create ~model () ]
     |> Hardcaml.Rtl.full_hierarchy
