@@ -2,7 +2,7 @@
 
     The control port serves the wire protocol on the host UART, [Control_regs] holds the
     cells, and the MIDI path is [Midi_merge] and [Midi_out]. The structure is the one of
-    [docs/host_control_rtl.md]. The model seat holds the transformer prototype of
+    [docs/host_control_rtl.md]. The model seat holds the transformer source of
     [docs/transformer_rtl.md]; the quantized model arrives as [model] at elaboration — the
     bitstream carries the weights — thus [create] takes it whole.
 
@@ -82,7 +82,7 @@ let create ~model () =
     (* the one line that names the model of the era *)
     Socket.create
       ~clocks_per_ms
-      ~source:(Mgen_transformer.Source2.create ~model ~seed:control_regs.params.seed)
+      ~source:(Mgen_transformer.Source.create ~model ~seed:control_regs.params.seed)
       { Socket.I.clock = clk
       ; clear
       ; params = control_regs.params

@@ -22,8 +22,10 @@
     Two of these rules protect the instrument itself: no [On] of a sounding pitch (the
     cross-kill of the S-1), and no fifth voice. The rest hold the sentence order.
 
-    This state is the register set of the future circuit: the sounding vector, the last
-    ON, the last OFF and the seat count. *)
+    This state is the register set of the circuit below: the sounding vector, the last ON,
+    the last OFF and the seat count. *)
+
+open Hardcaml
 
 type t
 
@@ -35,3 +37,48 @@ val step : t -> Token.t -> t
 
 (** [legal_mask t] is the grammar flag of every code, indexed by the code. *)
 val legal_mask : t -> bool array
+
+(** The circuit: the same grammar, in registers. The state above is the reference, and the
+    block test in this module drives the two side by side over drawn walks. Therefore the
+    definition of the grammar has one home, and a change to the rules must move both.
+
+    [land_] walks one token into the state, as [step] does; [query] asks the legality of
+    one code, as [legal_mask] answers it. The two ports are independent: a source queries
+    every code of the vocabulary while the state stands, and lands one token at the end of
+    the step.
+
+    Every width comes from the encoding of [Token]. A code is one byte, its top bit is the
+    type and the rest is the pitch, thus [Token.vocab] and [Token.seats] shape every
+    register and the reserved codes come from [Token.to_code].
+
+    The contract:
+
+    - [clear] and [boot] both put the state at silence. [clear] is the reset of the
+      circuit, and [boot] is the rewind of a source. [boot] wins over [land_] in the same
+      cycle.
+    - [land_] is a strobe: it applies the token in [code] one time. It does not test
+      legality, as [step] does not. The caller lands only a token the grammar allows: the
+      seat count is a register and not a set, thus an illegal token moves it where [step]
+      would hold it, and the two states part.
+    - [query] is combinational into [legal]. It costs no cycle and it changes no state,
+      thus the unit puts no wait and no handshake on its caller. *)
+module Rtl : sig
+  module I : sig
+    type 'a t =
+      { clock : 'a
+      ; clear : 'a
+      ; boot : 'a (** a strobe: the state takes silence *)
+      ; land_ : 'a (** a strobe: apply the token in [code] *)
+      ; code : 'a (** the token to apply, one byte *)
+      ; query : 'a (** the code to test, one byte *)
+      }
+    [@@deriving hardcaml]
+  end
+
+  module O : sig
+    type 'a t = { legal : 'a (** the grammar allows [query] in this state *) }
+    [@@deriving hardcaml]
+  end
+
+  val create : Signal.t I.t -> Signal.t O.t
+end

@@ -1,5 +1,4 @@
-(** The quantized transformer: the reference of the prototype circuit, in exact integer
-    arithmetic.
+(** The quantized transformer: the reference of the circuit, in exact integer arithmetic.
 
     The circuit of [Source] must match this module bit for bit, as the pink source matches
     [Pink]. The float model of [Transformer] is not: post-training quantization separates
