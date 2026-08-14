@@ -58,7 +58,7 @@ let harness ~model () =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim =
     Sim.create (fun (i : _ I.t) ->
-      create ~clocks_per_ms ~source:(Voss.create ~model ~seed:i.params.seed) i)
+      create ~clocks_per_ms ~source:(Source.create ~model ~seed:i.params.seed) i)
   in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
@@ -92,7 +92,9 @@ let harness ~model () =
 (* the messages of the reference: the player gives the events of each step and of each
    gate, and the run ends with the stop. One definition of the rule serves the audition
    tool and this test. *)
-let reference_messages ~model ~seed ~channel ~velocity ~steps ~gated =
+(* the ungated player: the board sequencer has no gate, thus the highest voice sends its
+   Note Off immediately before its next Note On, and the stop closes every voice *)
+let reference_messages ~model ~seed ~channel ~velocity ~steps =
   let encode = function
     | Player.Event.On note -> Midi.note_on_bytes ~channel ~note ~velocity
     | Player.Event.Off note -> Midi.note_off_bytes ~channel ~note
@@ -105,20 +107,18 @@ let reference_messages ~model ~seed ~channel ~velocity ~steps ~gated =
       ~init:(Player.create ~model ~seed, [])
       ~f:(fun (player, acc) _ ->
         let player, struck = Player.step player in
-        let player, closed = if gated then Player.gate player else player, [] in
-        player, List.rev_append (struck @ closed) acc)
+        player, List.rev_append struck acc)
   in
   let _, stopped = Player.stop player in
   List.map (List.rev_append reversed stopped) ~f:encode
 ;;
 
-let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
+let compare_run ~model ~seed ~step_ms ~steps =
   let inp, set, play = harness ~model () in
   set inp.params.seed seed;
   set inp.params.channel Control_intf.Default.channel;
   set inp.params.velocity Control_intf.Default.velocity;
   set inp.params.step_ms step_ms;
-  set inp.params.gate_ms gate_ms;
   let circuit = play ~steps in
   let reference =
     reference_messages
@@ -127,7 +127,6 @@ let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
       ~channel:Control_intf.Default.channel
       ~velocity:Control_intf.Default.velocity
       ~steps
-      ~gated:(gate_ms < step_ms)
   in
   Stdio.printf
     "%d messages, the stream agrees: %b\n"
@@ -140,25 +139,8 @@ let compare_run ~model ~seed ~step_ms ~gate_ms ~steps =
 ;;
 
 let%expect_test "the four voices agree with the player, message for message" =
-  compare_run
-    ~model:Pink.default
-    ~seed:Control_intf.Default.seed
-    ~step_ms:20
-    ~gate_ms:8
-    ~steps:32;
+  compare_run ~model:Pink.default ~seed:Control_intf.Default.seed ~step_ms:20 ~steps:32;
   [%expect {| 88 messages, the stream agrees: true |}]
-;;
-
-let%expect_test "the four voices agree with no gate" =
-  (* the gate is not less than the step, thus it never comes: the highest voice sends its
-     Note Off immediately before its next Note On, and the stop closes every voice *)
-  compare_run
-    ~model:Pink.default
-    ~seed:Control_intf.Default.seed
-    ~step_ms:20
-    ~gate_ms:40
-    ~steps:16;
-  [%expect {| 46 messages, the stream agrees: true |}]
 ;;
 
 let%expect_test "a new run repeats the sequence from the seed" =
@@ -167,7 +149,6 @@ let%expect_test "a new run repeats the sequence from the seed" =
   set inp.params.channel 2;
   set inp.params.velocity 100;
   set inp.params.step_ms 20;
-  set inp.params.gate_ms 8;
   let first = play ~steps:12 in
   let again = play ~steps:12 in
   Stdio.printf

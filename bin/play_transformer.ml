@@ -1,10 +1,14 @@
 (* play_transformer: samples the trained transformer, prints the steps, and with -play
    sends them to the synthesizer. The model states its own Note Offs, thus the player is
    only a clock and a wire encoder: no gate and no seat logic. The config flags must equal
-   the flags of the training run; the checkpoint holds only tensors. *)
+   the flags of the training run; the checkpoint holds only tensors.
+
+   -quantized samples the reference of the circuit instead: the same seed then gives the
+   piece the board plays, note for note — the audition of the quantized model. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
+module Quantized = Mgen_transformer.Quantized
 module Jsb = Mgen_corpus.Jsb
 module Midi = Mgen_core.Midi
 module Token = Mgen_core.Token
@@ -43,10 +47,8 @@ let step_ms_arg =
 let sleep_ms ms = ignore (Core_unix.nanosleep (Float.of_int ms /. 1000.) : float)
 let default_device = "/dev/snd/midiC2D0"
 
-(* The common chorale tempo is near 72 to 80 quarters each minute. One step is a
-   sixteenth, thus 200 ms puts the quarter at exactly 75. The register default of 250 ms
-   (60 quarters) serves the board, not the audition of this corpus. *)
-let default_step_ms = 200
+(* the STEP_MS power-on value: the board and the audition share one tempo *)
+let default_step_ms = Control_intf.Default.step_ms
 
 let show_sentence sentence =
   match sentence with
@@ -228,6 +230,23 @@ let command =
          ~doc:
            "F drop tokens under this share of the peak; 0 turns the filter off. The \
             default is 1/256: wider filters eat the melody, per the sweep of 2026-08-05"
+     and piece_steps =
+       flag
+         "-piece-steps"
+         (optional_with_default Transformer.piece_steps int)
+         ~doc:
+           "N re-anchor the walk every N steps: release the sounding pitches, clear the \
+            context and feed START, carrying the step count and the PRNG. 0 is the \
+            endless walk, which decays into a drone; the default is one arc of the \
+            piece-position table"
+     and quantized =
+       flag
+         "-quantized"
+         no_arg
+         ~doc:
+           " sample the reference of the circuit: the piece the board plays at this \
+            seed. Every configuration and sampling flag applies as in the float path; \
+            the board commits to the values its bitstream was elaborated with"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
      and show_stats =
        flag "-stats" no_arg ~doc:" print the audition metrics of the sample"
@@ -256,9 +275,60 @@ let command =
        let config =
          Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
        in
-       let params = Transformer.Params.load config ~path:checkpoint in
-       let ~music, ~stats =
-         Transformer.sample config params ~seed ~steps ~temperature ~min_p
+       let music, stats =
+         if quantized
+         then (
+           (* the reference takes the rule of the SEED cell, as the board does *)
+           if seed < 1 || seed > 0xFFFF_FFFF
+           then (
+             Printf.eprintf
+               "-quantized takes the seed of the SEED cell: 1 to 0xFFFFFFFF\n";
+             exit 2);
+           (* the circuit takes the boundary as a bit-slice of its step counter *)
+           if piece_steps > 0 && ((not (Int.is_pow2 piece_steps)) || piece_steps = 1)
+           then (
+             Printf.eprintf
+               "-quantized takes -piece-steps as a power of two above 1, or 0\n";
+             exit 2);
+           let model =
+             Quantized.Model.of_checkpoint
+               ~temperature
+               ~min_p
+               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
+               config
+               checkpoint
+           in
+           let engine = Quantized.Engine.init model ~seed in
+           let sentence events =
+             List.map events ~f:(fun { Quantized.Engine.voice = (_ : int); pitch; on } ->
+               if on then Token.On pitch else Token.Off pitch)
+           in
+           (* the fold threads the engine through the steps in the drawn order *)
+           let music =
+             let (_ : Quantized.Engine.t), reversed =
+               List.fold
+                 (List.range 0 steps)
+                 ~init:(engine, [])
+                 ~f:(fun (engine, acc) (_ : int) ->
+                   let engine, events = Quantized.Engine.next_step engine in
+                   engine, sentence events :: acc)
+             in
+             List.rev reversed
+           in
+           music, None)
+         else (
+           let params = Transformer.Params.load config ~path:checkpoint in
+           let ~music, ~stats =
+             Transformer.sample
+               config
+               params
+               ~seed
+               ~steps
+               ~temperature
+               ~min_p
+               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
+           in
+           music, Some stats)
        in
        if send
        then play music ~device ~step_ms ~channel ~velocity
@@ -268,14 +338,15 @@ let command =
        then (
          print_stats music;
          print_repetition music);
-       printf
-         "min-p refused %.4f of the legal mass; guard held %.4f of the raw mass, %.4f of \
-          the raw top choices, over %d draws\n\
-          %!"
-         stats.Transformer.refused
-         stats.illegal_mass
-         stats.illegal_top
-         stats.draws)
+       Option.iter stats ~f:(fun (stats : Transformer.sample_stats) ->
+         printf
+           "min-p refused %.4f of the legal mass; guard held %.4f of the raw mass, %.4f \
+            of the raw top choices, over %d draws\n\
+            %!"
+           stats.Transformer.refused
+           stats.illegal_mass
+           stats.illegal_top
+           stats.draws))
 ;;
 
 let () = Command_unix.run command

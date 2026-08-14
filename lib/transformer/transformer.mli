@@ -14,6 +14,25 @@
 (** every tensor of the host model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
 
+(** the rows of the bar-phase table: the steps of one bar *)
+val phase_buckets : int
+
+(** the rows of the piece-position table: the parts of one piece *)
+val progress_buckets : int
+
+(** the steps of one bucket at the draw. The product with [progress_buckets] is the period
+    of the table — 256 steps, about one chorale. [docs/transformer_model.md] holds the
+    reasoning of all three. *)
+val progress_stride : int
+
+(** the steps of one synthetic piece at the draw: [progress_stride * progress_buckets],
+    the arc of the piece-position table one time around. A walk that re-anchors takes this
+    as its period, thus the piece boundary and bucket zero fall on the same step. *)
+val piece_steps : int
+
+(** The shape of the model: the numbers that size every tensor here and every register in
+    the circuit. A configuration and a set of parameters make a model together, and the
+    constructors of [Quantized.Model] keep that pair from slipping. *)
 module Config : sig
   type t =
     { d : int (** the width of the residual stream *)
@@ -42,15 +61,52 @@ module Config : sig
   val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
+(** The parameter structure of the model, over any tensor type: the three tables — the
+    tied embedding, the bar phase and the piece position — and six tensors for each layer.
+    One definition holds the structure and the flat order of the checkpoint: [Params]
+    instantiates it with the float tensor and keeps its own type opaque, and
+    [Quantized.Model] instantiates it with the quantized tensor. The module holds the
+    shape alone — the tensor shapes, the draw and the checkpoint live with the models. *)
+module Params_data : sig
+  type 'a t =
+    { embed : 'a (** the tied token table; the head reads it backward *)
+    ; phase : 'a (** the bar-phase table *)
+    ; progress : 'a (** the piece-position table *)
+    ; layers : 'a layer array
+    }
+
+  and 'a layer =
+    { wq : 'a
+    ; wk : 'a
+    ; wv : 'a
+    ; wo : 'a
+    ; w1 : 'a
+    ; w2 : 'a
+    }
+
+  (** the flat order of the tensors — the order of the checkpoint; [of_list] reads the
+      same order *)
+  val to_list : 'a t -> 'a list
+
+  (** [of_list ~layers items] reads the order of [to_list]. It raises [Invalid_argument]
+      when the count of items is not three tables and six for each of [layers]. *)
+  val of_list : layers:int -> 'a list -> 'a t
+end
+
+(** The weights of the float model: the drawn initial set, the checkpoint on disk, and the
+    flat orders that every reader of the tensors shares. *)
 module Params : sig
-  (** the weights of one model: the three tables — the tied embedding, the bar phase and
-      the piece position — and six tensors for each layer *)
+  (** the weights of the float model: [Params_data] over [tensor] *)
   type t
 
-  (** [draw config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
+  (** the shapes of the tensors in the flat order, from the configuration; the
+      quantization of [Quantized] reads the same table *)
+  val shapes : Config.t -> int array list
+
+  (** [init config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
       Box-Muller make the draw, thus the seed is an input and the same seed gives the same
       start. The tensors come in the order of [to_list]. *)
-  val draw : Config.t -> seed:int -> t
+  val init : Config.t -> seed:int -> t
 
   (** [save t ~path] writes the checkpoint: the tensors in the flat order, and nothing
       else. The width and the layer count come back from the shapes with
@@ -71,10 +127,12 @@ module Params : sig
   val of_list : Config.t -> tensor list -> t
 
   (** The flat order as a [Ptree] list, for an optimizer that walks a tree. The checkpoint
-      goes through [save] and [load]; take these only to reach a library that wants the
-      tree itself. *)
+      goes through [save] and [load]; take this and [of_ptree] only to reach a library
+      that wants the tree itself. *)
   val to_ptree : t -> Kaun.Ptree.t
 
+  (** [of_ptree config tree] is the inverse of [to_ptree]. It raises when a leaf is not
+      float32, and it applies the rules of [of_list] to the leaves. *)
   val of_ptree : Config.t -> Kaun.Ptree.t -> t
 end
 
@@ -110,6 +168,18 @@ module Dropout : sig
   val create : rate:float -> seed:int -> t
 end
 
+(** [logits config params ~codes ~phases ~progress ~dropout] is the raw next-code logits
+    of each input position, shape \[batch; length; vocab\] — the forward pass that the
+    loss and the sampler share. The drift report of the reference compares against it. *)
+val logits
+  :  Config.t
+  -> Params.t
+  -> codes:int array array
+  -> phases:int array array
+  -> progress:int array array
+  -> dropout:Dropout.t
+  -> tensor
+
 (** [loss config params ~codes ~phases ~progress ~masks ~weights ~dropout] is the cross
     entropy of the next code, a scalar. [progress] holds the piece-position bucket of each
     input position. A row of [codes] holds [length + 1] codes: the inputs and the shifted
@@ -144,8 +214,17 @@ val loss
     below [min_p] of the peak's; the peak always stays, thus a draw always exists, and
     zero turns the filter off. The same seed gives the same music.
 
-    It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
-    outside 0 up to 1. *)
+    [piece_steps] bounds the walk: every that many steps the sounding pitches release,
+    climbing, and the histories return to an empty context and START, while the step index
+    and the PRNG carry. START's row reads the carried step index, as every row does — at
+    the default arc its phase and bucket are zero, because the arc and the two table
+    periods divide it. [None] is one endless walk, which decays into a drone within
+    minutes. This is the policy of [Quantized.Engine.next_step]; the two need not agree
+    token for token, because quantization has already parted them, and the boundary reads
+    the step index and never the music, thus both take it at the same step.
+
+    It raises [Invalid_argument] when [temperature] is 0 or less, when [min_p] falls
+    outside 0 up to 1, or when [piece_steps] is [Some steps] with [steps] 0 or less. *)
 val sample
   :  Config.t
   -> Params.t
@@ -153,4 +232,20 @@ val sample
   -> steps:int
   -> temperature:float
   -> min_p:float
+  -> piece_steps:int option
   -> music:Token.t list list * stats:sample_stats
+
+(** [draw_code raw ~mask ~temperature ~min_p ~uniform] is the draw stage of [sample] as
+    one function: the tempered weights over the legal set, the min-p refusal, and the pick
+    whose running total passes [uniform] times the total weight — the same arithmetic, one
+    definition. The drift walk of [Quantized] draws through it with the same uniform as
+    the quantized engine, thus the two pipelines are comparable pick for pick. The rules
+    of [sample] on [temperature] and [min_p] hold here too; this function does not check
+    them. *)
+val draw_code
+  :  float array
+  -> mask:bool array
+  -> temperature:float
+  -> min_p:float
+  -> uniform:float
+  -> int

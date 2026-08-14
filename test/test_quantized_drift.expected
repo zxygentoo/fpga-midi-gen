@@ -1,0 +1,5 @@
+weights 11 over 4 walks: top-1 202/252  same draw 248/252  low cosine 0.9943
+weights 23 over 4 walks: top-1 207/255  same draw 251/255  low cosine 0.9911
+weights 37 over 4 walks: top-1 217/255  same draw 253/255  low cosine 0.9945
+weights 41 over 4 walks: top-1 220/254  same draw 249/254  low cosine 0.9936
+100 drawn seed pairs: low top-1 0.741  low same draw 0.914  low cosine 0.9875

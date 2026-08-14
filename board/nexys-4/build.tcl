@@ -15,6 +15,7 @@ read_xdc $script_dir/nexys4.xdc
 synth_design -top top -part xc7a100tcsg324-1
 opt_design
 place_design
+phys_opt_design
 route_design
 report_timing_summary -file $build_dir/timing.rpt
 report_utilization -file $build_dir/utilization.rpt

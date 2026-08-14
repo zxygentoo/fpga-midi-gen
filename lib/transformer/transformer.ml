@@ -9,12 +9,14 @@ let phase_buckets = 16
 (* the rows of the piece-position table: the parts of one piece *)
 let progress_buckets = 16
 
-(* The steps of one bucket at the draw. The corpus divides each piece into
-   [progress_buckets], and a chorale runs 228 steps at the median, thus a bucket is 14.2
-   steps there and 16 is the nearest power of two. A power of two is a bit-slice in the
-   circuit, and the product with [progress_buckets] is the period: 256 steps, sixteen
-   bars, about one chorale. *)
+(* a chorale runs 228 steps at the median, thus a bucket is 14.2 steps there and 16 is the
+   nearest power of two — and a power of two is a bit-slice in the circuit *)
 let progress_stride = 16
+
+(* The steps of one synthetic piece at the draw: the arc of the piece-position table, one
+   time around. A walk that re-anchors takes this as its period, thus the piece boundary
+   and bucket zero are the same instant. *)
+let piece_steps = progress_stride * progress_buckets
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
 module Config = struct
@@ -47,21 +49,21 @@ module Config = struct
   ;;
 end
 
-module Params = struct
-  type t =
-    { embed : tensor
-    ; phase : tensor
-    ; progress : tensor
-    ; layers : layer array
+module Params_data = struct
+  type 'a t =
+    { embed : 'a
+    ; phase : 'a
+    ; progress : 'a
+    ; layers : 'a layer array
     }
 
-  and layer =
-    { wq : tensor
-    ; wk : tensor
-    ; wv : tensor
-    ; wo : tensor
-    ; w1 : tensor
-    ; w2 : tensor
+  and 'a layer =
+    { wq : 'a
+    ; wk : 'a
+    ; wv : 'a
+    ; wo : 'a
+    ; w1 : 'a
+    ; w2 : 'a
     }
 
   let to_list { embed; phase; progress; layers } =
@@ -72,25 +74,36 @@ module Params = struct
       [ wq; wk; wv; wo; w1; w2 ])
   ;;
 
-  let of_list (config : Config.t) tensors =
-    match tensors with
+  let of_list ~layers items =
+    match items with
     | embed :: phase :: progress :: rest ->
-      let layers =
+      let groups =
         List.chunks_of rest ~length:6
         |> List.map ~f:(function
           | [ wq; wk; wv; wo; w1; w2 ] -> { wq; wk; wv; wo; w1; w2 }
           | _ -> invalid_arg "a layer takes six tensors")
         |> Array.of_list
       in
-      if Array.length layers <> config.layers
+      if Array.length groups <> layers
       then
         invalid_argf
           "%d layer groups do not fit %d layers"
-          (Array.length layers)
-          config.layers
+          (Array.length groups)
+          layers
           ();
-      { embed; phase; progress; layers }
+      { embed; phase; progress; layers = groups }
     | _ -> invalid_arg "the parameters start with the three tables"
+  ;;
+end
+
+module Params = struct
+  type t = tensor Params_data.t
+  type layer = tensor Params_data.layer
+
+  let to_list = Params_data.to_list
+
+  let of_list (config : Config.t) tensors =
+    Params_data.of_list ~layers:config.layers tensors
   ;;
 
   (* the shapes in the flat order of [to_list], which [of_list] reads back *)
@@ -109,7 +122,7 @@ module Params = struct
   (* The draw is a walk, thus the order of the tensors is part of the result. A record
      literal and [Array.init] leave that order to the compiler; the fold over [shapes]
      states it. *)
-  let draw config ~seed =
+  let init config ~seed =
     let open Prng in
     let normal shape =
       let+ draws = normals ~count:(numel shape) ~scale:0.02 in
@@ -350,12 +363,57 @@ type tally =
   ; mutable draws : int
   }
 
+(* The draw stage of the sampler, at module level: one definition serves [sample], which
+   takes its telemetry from the pieces, and [draw_code], which the drift walk of
+   [Quantized] runs against the quantized draw. *)
+
+(* The tempered weight of each code, against the peak of the set that [keep] admits: the
+   peak weighs one, and a code outside the set weighs zero. Therefore the min-p filter is
+   one compare for each code. *)
+let tempered raw ~keep ~temperature =
+  let peak = ref Float.neg_infinity in
+  Array.iteri raw ~f:(fun code value ->
+    if keep code && Float.(value > !peak) then peak := value);
+  Array.mapi raw ~f:(fun code value ->
+    if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
+;;
+
+let above_min_p weights ~min_p =
+  if Float.(min_p <= 0.0)
+  then weights
+  else
+    Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
+;;
+
+(* the code whose running total passes [draw]; a total that never passes it falls to 0 *)
+let pick weights ~draw =
+  let rec walk code total =
+    if code = Token.vocab - 1
+    then code
+    else (
+      let total = total +. weights.(code) in
+      if Float.(total > draw) then code else walk (code + 1) total)
+  in
+  let chosen = walk 0 0.0 in
+  if Float.(weights.(chosen) > 0.0) then chosen else 0
+;;
+
+let draw_code raw ~mask ~temperature ~min_p ~uniform =
+  let weights =
+    above_min_p (tempered raw ~keep:(fun code -> mask.(code)) ~temperature) ~min_p
+  in
+  let total = Array.fold weights ~init:0.0 ~f:( +. ) in
+  pick weights ~draw:(uniform *. total)
+;;
+
 (* The sampler is a loop with state at the edge of the module: the histories, the walk of
    the mask, and the PRNG. The forward pass recomputes the whole window for each token;
    the host affords that, per the design document. *)
-let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
+let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~piece_steps =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
+  Option.iter piece_steps ~f:(fun steps ->
+    if steps <= 0 then invalid_arg "piece_steps is positive");
   (* the newest items of a history, oldest first: the row the forward pass reads *)
   let window history = List.take history config.context |> List.rev |> Array.of_list in
   (* The logits of the code that follows the window. The forward pass gives one row for
@@ -389,42 +447,14 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
         top := code));
     !top
   in
-  (* The tempered weight of each code, against the peak of the set that [keep] admits: the
-     peak weighs one, and a code outside the set weighs zero. Therefore the min-p filter
-     is one compare for each code. *)
-  let tempered raw ~keep =
-    let peak = ref Float.neg_infinity in
-    Array.iteri raw ~f:(fun code value ->
-      if keep code && Float.(value > !peak) then peak := value);
-    Array.mapi raw ~f:(fun code value ->
-      if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
-  in
   let illegal_share raw ~mask =
-    let weights = tempered raw ~keep:(fun (_ : int) -> true) in
+    let weights = tempered raw ~keep:(fun (_ : int) -> true) ~temperature in
     let all = Array.fold weights ~init:0.0 ~f:( +. ) in
     let legal =
       Array.foldi weights ~init:0.0 ~f:(fun code total weight ->
         if mask.(code) then total +. weight else total)
     in
     1.0 -. (legal /. all)
-  in
-  let above_min_p weights =
-    if Float.(min_p <= 0.0)
-    then weights
-    else
-      Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
-  in
-  (* the code whose running total passes [draw]; a total that never passes it falls to 0 *)
-  let pick weights ~draw =
-    let rec walk code total =
-      if code = Token.vocab - 1
-      then code
-      else (
-        let total = total +. weights.(code) in
-        if Float.(total > draw) then code else walk (code + 1) total)
-    in
-    let chosen = walk 0 0.0 in
-    if Float.(weights.(chosen) > 0.0) then chosen else 0
   in
   let stream = ref (Prng.create_folded ~seed) in
   (* The boot of the design document: an empty context, then START — power on, music on.
@@ -438,6 +468,29 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   let current = ref [] in
   let out = ref [] in
   let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
+  (* The piece boundary: the walk plays a sequence of pieces and not one endless stream,
+     which decays into a drone. The histories return to START alone and the sounding set
+     to silence, thus the model draws from the condition the corpus trained it on; the
+     step index and the PRNG carry, thus each piece is a new draw. START's row reads the
+     carried step index, as every row does — at the default arc its phase and bucket are
+     zero, because the arc and the two table periods divide it. The release states the
+     OFFs of the sounding pitches, climbing, as the grammar would state them.
+
+     The rule is [Quantized.Engine.next_step]'s, and the two need not agree token for
+     token: quantization has already parted them. The boundary reads the step index and
+     never the music, thus both take it at the same step however far they have parted. *)
+  let boundary () =
+    match piece_steps with
+    | Some steps when !step_index % steps = 0 ->
+      (* [current] holds a sentence reversed, thus the release goes in descending and
+         comes out climbing, ahead of the tokens the next step draws *)
+      current := List.rev_map (Sounding_state.sounding !state) ~f:(fun p -> Token.Off p);
+      codes := [ Token.to_code Token.Start ];
+      phases := [ !step_index mod phase_buckets ];
+      progress := [ bucket !step_index ];
+      state := Sounding_state.silence
+    | Some (_ : int) | None -> ()
+  in
   while !step_index < steps do
     let raw =
       next_code_logits
@@ -448,8 +501,8 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     let mask = Sounding_state.legal_mask !state in
     tally.illegal_mass <- tally.illegal_mass +. illegal_share raw ~mask;
     if not mask.(peak_code raw) then tally.illegal_top <- tally.illegal_top + 1;
-    let legal = tempered raw ~keep:(fun code -> mask.(code)) in
-    let weights = above_min_p legal in
+    let legal = tempered raw ~keep:(fun code -> mask.(code)) ~temperature in
+    let weights = above_min_p legal ~min_p in
     (* the refused share is the mass the model wanted and the filter did not give *)
     let legal_total = Array.fold legal ~init:0.0 ~f:( +. ) in
     let total = Array.fold weights ~init:0.0 ~f:( +. ) in
@@ -474,7 +527,9 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     | End ->
       out := List.rev !current :: !out;
       current := [];
-      incr step_index
+      incr step_index;
+      (* the loop above walks tokens and this walks steps, thus the boundary lands here *)
+      boundary ()
   done;
   let count = Float.of_int (max 1 tally.draws) in
   (* the annotation picks the means, not the sums of [tally] beside them *)
@@ -498,14 +553,14 @@ let%expect_test "the seed names the walk" =
     mean, Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. count)
   in
   (* 0 is legal here and no state of the walk: [Prng.create_folded] moves it to the top *)
-  let zero = embed (Params.draw config ~seed:0) in
-  let one = embed (Params.draw config ~seed:1) in
+  let zero = embed (Params.init config ~seed:0) in
+  let one = embed (Params.init config ~seed:1) in
   let mean, deviation = moments one in
   printf
     "mean %.4f  deviation %.4f  repeats %b  differs %b\n"
     mean
     deviation
-    (Array.equal Float.equal one (embed (Params.draw config ~seed:1)))
+    (Array.equal Float.equal one (embed (Params.init config ~seed:1)))
     (not (Array.equal Float.equal zero one));
   [%expect {| mean 0.0000  deviation 0.0199  repeats true  differs true |}]
 ;;
@@ -539,7 +594,7 @@ let%expect_test "each block draws from a walk of its own" =
 
 let%expect_test "the shapes of the forward pass" =
   let config = { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8 } in
-  let params = Params.draw config ~seed:1 in
+  let params = Params.init config ~seed:1 in
   let out =
     logits
       config
@@ -560,9 +615,18 @@ let%expect_test "the shapes of the forward pass" =
    which is the property the sampler owes whatever the weights say. *)
 let%expect_test "the sampler draws only what the mask allows" =
   let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
-  let params = Params.draw config ~seed:5 in
+  let params = Params.init config ~seed:5 in
   let ~music, ~stats =
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+    (* the short arc crosses two boundaries, thus the walk below also proves the release
+       legal: its OFFs climb from a sentence that holds no ON yet *)
+    sample
+      config
+      params
+      ~seed:7
+      ~steps:24
+      ~temperature:0.9
+      ~min_p:(1.0 /. 256.0)
+      ~piece_steps:(Some 8)
   in
   (* [sample] drops the [End] that closed each sentence; the walk needs it back *)
   let sentence step = step @ [ Token.End ] in
@@ -588,7 +652,14 @@ let%expect_test "the sampler draws only what the mask allows" =
   |> List.iter ~f:(fun step -> print_s ([%sexp_of: Token.t list] step));
   (* the same seed draws the same music; Token.t carries no compare, thus the codes do *)
   let ~music:again, ~stats:_ =
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+    sample
+      config
+      params
+      ~seed:7
+      ~steps:24
+      ~temperature:0.9
+      ~min_p:(1.0 /. 256.0)
+      ~piece_steps:(Some 8)
   in
   let codes steps = List.map steps ~f:(List.map ~f:Token.to_code) in
   printf
@@ -596,10 +667,10 @@ let%expect_test "the sampler draws only what the mask allows" =
     (List.equal (List.equal Int.equal) (codes music) (codes again));
   [%expect
     {|
-    24 steps  58 tokens  0 illegal   the mask held 0.8441 of the raw mass over 58 draws
-    ((On 114) (On 30) (On 21) (On 0))
-    ((Off 21) (On 75))
-    ((Off 30) (On 99))
+    24 steps  80 tokens  0 illegal   the mask held 0.8232 of the raw mass over 72 draws
+    ((On 114) (On 30) (On 22))
+    ((On 82))
+    ((Off 22) (On 52))
     the seed repeats: true
     |}]
 ;;

@@ -19,7 +19,14 @@ let hex s = Mgen_core.Bytes_util.hex (Bytes.of_string s)
 
 let () =
   let open Hardcaml in
-  let sim = Cyclesim.create (Mgen_nexys4.Top.create ()) in
+  (* drawn weights: the control path does not read them, and the test must not read a file
+     that git ignores *)
+  let model =
+    Mgen_transformer.Quantized.Model.For_test.init
+      Mgen_transformer.Transformer.Config.baseline
+      ~seed:1
+  in
+  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
   let txd = Cyclesim.out_port sim "RsTx" in

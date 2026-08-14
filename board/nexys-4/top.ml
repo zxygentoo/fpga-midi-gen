@@ -2,7 +2,9 @@
 
     The control port serves the wire protocol on the host UART, [Control_regs] holds the
     cells, and the MIDI path is [Midi_merge] and [Midi_out]. The structure is the one of
-    [docs/host_control_rtl.md].
+    [docs/host_control_rtl.md]. The model seat holds the transformer source of
+    [docs/transformer_rtl.md]; the quantized model arrives as [model] at elaboration — the
+    bitstream carries the weights — thus [create] takes it whole.
 
     The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
     [led 2], MIDI activity on [led 3], the busy state of the port on [led 4], and the run
@@ -25,7 +27,7 @@ let midi_clocks_per_bit = 3200
 let clocks_per_ms = 100_000
 let button_debounce_ms = 10
 
-let create () =
+let create ~model () =
   let clk = input "clk" 1 in
   let rstn = input "btnCpuReset" 1 in
   let rx_pin = input "RsRx" 1 in
@@ -77,10 +79,11 @@ let create () =
   in
   assign read_data control_regs.read_data;
   let model =
-    Source.create
+    (* the one line that names the model of the era *)
+    Socket.create
       ~clocks_per_ms
-      ~source:(Voss.create ~model:Pink.default ~seed:control_regs.params.seed)
-      { Source.I.clock = clk
+      ~source:(Mgen_transformer.Source.create ~model ~seed:control_regs.params.seed)
+      { Socket.I.clock = clk
       ; clear
       ; params = control_regs.params
       ; midi_ready = model_ready

@@ -7,7 +7,6 @@ module Params = struct
     { run : 'a [@bits 1]
     ; channel : 'a [@bits 4]
     ; step_ms : 'a [@bits 16]
-    ; gate_ms : 'a [@bits 16]
     ; velocity : 'a [@bits 8]
     ; seed : 'a [@bits 32]
     }
@@ -141,7 +140,6 @@ let create (i : _ I.t) : _ O.t =
       { Params.run = lsb (view Control_intf.Reg.run)
       ; channel = sel_bottom (view Control_intf.Reg.channel) ~width:4
       ; step_ms = view Control_intf.Reg.step_ms
-      ; gate_ms = view Control_intf.Reg.gate_ms
       ; velocity = view Control_intf.Reg.velocity
       ; seed = view Control_intf.Reg.seed
       }
@@ -201,9 +199,9 @@ let%expect_test "the defaults need no init walk" =
   Stdio.printf "after clear %s\n" (Bytes_util.hex (dump ()));
   [%expect
     {|
-    power-on   00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00
-    after write 00 00 00 00 00 2a 00 00 00 30 7d 00 fa 00 02 00
-    after clear 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00
+    power-on   00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00
+    after write 00 00 00 00 00 2a 00 00 00 30 00 00 c8 00 02 00
+    after clear 00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00
     |}]
 ;;
 
@@ -236,9 +234,9 @@ let%expect_test "the write is atomic" =
   show "committed";
   [%expect
     {|
-    power-on       step_ms 250
-    byte 0 written step_ms 250
-    byte 1 written step_ms 250
+    power-on       step_ms 200
+    byte 0 written step_ms 200
+    byte 1 written step_ms 200
     committed      step_ms 8721
     |}]
 ;;
@@ -376,7 +374,7 @@ let%expect_test "the waveform of the atomic commit" =
     │commit         ││                  ┌─────┐                          │
     │               ││──────────────────┘     └─────────────────         │
     │               ││────────────────────────┬─────────────────         │
-    │params$step_ms ││ 00FA                   │2211                      │
+    │params$step_ms ││ 00C8                   │2211                      │
     │               ││────────────────────────┴─────────────────         │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]

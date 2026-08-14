@@ -366,7 +366,7 @@ let%expect_test "transactions against the cells" =
   transact
     (Control_frame.encode_request
        (Read { addr = Control_intf.Reg.base; len = Control_intf.Reg.size }));
-  [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 7d 00 fa 00 02 00 |}];
+  [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00 |}];
   (* write, then read back *)
   transact
     (Control_frame.encode_request
