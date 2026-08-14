@@ -479,7 +479,17 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
      dropped at the write. Every memory the walk reads stands two registers deep, and
      [nohold] freezes each stage with the walk's tags; the small RAMs keep the
-     one-register tap for the bespoke chains. *)
+     one-register tap for the bespoke chains.
+
+     The ring WRITE stands one register behind its landing, for the same reason the reads
+     stand two: the rings sit far across the die at high occupancy, and the sum-to-write
+     route wants the travel stage. The register is safe by the schedule: a ring row's
+     nearest read is an op away — attention reads what the k and v walks wrote — and a
+     hold never overlaps a ring write, thus no enable. *)
+  let ring_waddr_r = reg spec ring_waddr.value in
+  let ring_wdata_r = reg spec ring_wdata.value in
+  let kc_wen_r = reg spec kc_wen.value in
+  let vc_wen_r = reg spec vc_wen.value in
   let kcd =
     reg
       spec
@@ -489,9 +499,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~enable:nohold
          (ram
             ~size:(layers * slots * d)
-            ~waddr:ring_waddr.value
-            ~wen:kc_wen.value
-            ~wdata:ring_wdata.value
+            ~waddr:ring_waddr_r
+            ~wen:kc_wen_r
+            ~wdata:ring_wdata_r
             ~raddr:kc_raddr.value))
     @: zero 8
   in
@@ -504,9 +514,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~enable:nohold
          (ram
             ~size:(layers * slots * d)
-            ~waddr:ring_waddr.value
-            ~wen:vc_wen.value
-            ~wdata:ring_wdata.value
+            ~waddr:ring_waddr_r
+            ~wen:vc_wen_r
+            ~wdata:ring_wdata_r
             ~raddr:vc_raddr.value))
     @: zero 8
   in
