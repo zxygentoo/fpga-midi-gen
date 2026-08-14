@@ -23,6 +23,14 @@ module Constants = struct
   ;;
 
   let exp2_bits = Array.map exp2_table ~f:(Hardcaml.Bits.of_unsigned_int ~width:16)
+
+  (* The score walk sums the products of two Q[kv_q] values, thus its sum is Q(2 kv_q);
+     this brings it to Q[y_q] and applies the 1/sqrt(head_d) of the reference in the same
+     shift, thus [head_d] is a power of four. *)
+  let score_shift ~head_d = (2 * kv_q) - y_q + (Int.floor_log2 head_d / 2)
+
+  (* The ALiBi slope of head [head] is 2^-(this), thus the penalty is a shift of the age. *)
+  let slope_exponent ~span ~heads ~head = span * (head + 1) / heads
 end
 
 module Tensor = struct
@@ -72,6 +80,19 @@ module Model = struct
     (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
+
+  (* The arithmetic of the circuit is shifts, thus the shape obeys the shift rules. The
+     reference holds this check because the reference states the rules; the circuit calls
+     it at elaboration, where a bad shape must fail loudly. *)
+  let check_shape t =
+    let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
+      t.config
+    in
+    assert (Int.is_pow2 d);
+    assert (Int.is_pow2 slots);
+    assert (Int.floor_log2 (d / heads) % 2 = 0);
+    assert (layers = Array.length t.params.Params_data.layers)
+  ;;
 
   (* the element counts of the tensors in the flat order, from the one definition of the
      shapes *)
@@ -328,18 +349,18 @@ module Engine = struct
       t.config
     in
     let head_d = d / heads in
-    (* the ring row that age [a] reads *)
+    (* the ring row that age [a] reads. The rows depend on neither the head nor the lane,
+       thus they are named once: the weighted sum below would otherwise walk the ring for
+       every (head, lane, age). *)
     let row ring a = ring.((l * slots) + ((cur - a) land (slots - 1))) in
+    let k_rows = Array.init n ~f:(row kc) in
+    let v_rows = Array.init n ~f:(row vc) in
     let head_context head =
       let hb = head * head_d in
-      let slope_exponent = span * (head + 1) / heads in
-      (* Q(2 kv_q) to Q12, then the 1/sqrt(head_d) of the reference — a shift, thus head_d
-         is a power of four *)
-      let score_shift =
-        (2 * Constants.kv_q) - Constants.y_q + (Int.floor_log2 head_d / 2)
-      in
+      let slope_exponent = Constants.slope_exponent ~span ~heads ~head in
+      let score_shift = Constants.score_shift ~head_d in
       let score a =
-        let k = row kc a in
+        let k = k_rows.(a) in
         (sum head_d (fun j -> q.(hb + j) * k.(hb + j)) asr score_shift)
         - (a lsl (Constants.y_q - slope_exponent))
       in
@@ -352,7 +373,7 @@ module Engine = struct
       in
       let den = sum n (fun a -> age_weight.(a)) in
       Array.init head_d ~f:(fun j ->
-        clamp16 (sum n (fun a -> age_weight.(a) * (row vc a).(hb + j)) / den))
+        clamp16 (sum n (fun a -> age_weight.(a) * v_rows.(a).(hb + j)) / den))
     in
     (* head [k] gives the lanes [k * head_d] up to the next head; the heads are
        independent, thus the order of [List.init] moves nothing *)
@@ -421,14 +442,10 @@ module Engine = struct
 
   let init (model : Model.t) ~seed =
     let { Model.config; params = p; temper_q14; min_weight } = model in
-    let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
+    let { Transformer.Config.d; heads = (_ : int); context = slots; layers; _ } =
       config
     in
-    (* the arithmetic of the circuit is shifts, thus the shape obeys the shift rules *)
-    assert (Int.is_pow2 d);
-    assert (Int.is_pow2 slots);
-    assert (Int.floor_log2 (d / heads) % 2 = 0);
-    assert (layers = Array.length p.Params_data.layers);
+    Model.check_shape model;
     let engine =
       { config
       ; p
@@ -468,9 +485,9 @@ module Engine = struct
       prng
   ;;
 
-  let next_code t =
-    let logits = logits t in
-    let mask = Sounding_state.legal_mask t.sounding in
+  (* the draw, over logits and a mask the caller already holds: a walk that compares
+     against the float model has both in hand, and neither is cheap to build twice *)
+  let next_code_of_logits t ~logits ~mask =
     let peak = max_over vocab (fun c -> if mask.(c) then logits.(c) else Int.min_value) in
     (* the tempered weight of one code: masked, exp2, and refused under min-p *)
     let weight c =
@@ -496,6 +513,10 @@ module Engine = struct
     in
     let chosen = walk 0 0 in
     { t with prng }, if weights.(chosen) > 0 then chosen else 0
+  ;;
+
+  let next_code t =
+    next_code_of_logits t ~logits:(logits t) ~mask:(Sounding_state.legal_mask t.sounding)
   ;;
 
   (* an On takes the highest free seat — the melody sits high; an Off names the seat that
@@ -549,6 +570,13 @@ module Engine = struct
     in
     go t [] 0
   ;;
+
+  (* the scalar rules the L0 circuit units must reproduce; their gate tests read them here
+     rather than restate them *)
+  module For_test = struct
+    let isqrt = isqrt
+    let exp2_q = exp2_q
+  end
 end
 
 module Drift = struct
@@ -606,6 +634,7 @@ module Drift = struct
     while !step_index < steps do
       let t = !engine in
       let quantized = Engine.logits t in
+      let mask = Sounding_state.legal_mask t.Engine.sounding in
       let floated = float_logits () in
       if Tensor.same_peak quantized floated then Int.incr same_peak;
       cosine_sum := !cosine_sum +. Tensor.cosine quantized floated;
@@ -615,12 +644,12 @@ module Drift = struct
       let float_code =
         Transformer.draw_code
           floated
-          ~mask:(Sounding_state.legal_mask t.Engine.sounding)
+          ~mask
           ~temperature:Model.default_temperature
           ~min_p:Model.default_min_p
           ~uniform
       in
-      let t, code = Engine.next_code t in
+      let t, code = Engine.next_code_of_logits t ~logits:quantized ~mask in
       if code = float_code then Int.incr same_draw;
       Int.incr draws;
       let phase = !step_index % Transformer.phase_buckets in

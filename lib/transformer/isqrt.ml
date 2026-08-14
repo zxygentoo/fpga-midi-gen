@@ -74,14 +74,10 @@ let%expect_test "the isqrt floors, as the reference does" =
     done;
     Bits.to_int_trunc !(out.root)
   in
-  (* the oracle of the reference: floor of the square root *)
-  let floor_sqrt v =
-    let rec shrink g = if g * g > v then shrink (g - 1) else g in
-    shrink (Float.to_int (Float.sqrt (Float.of_int v)) + 1)
-  in
+  let oracle = Quantized.Engine.For_test.isqrt in
   List.iter
     [ 0; 15; 16; 4295; (1 lsl 41) + 12345 ]
-    ~f:(fun v -> Stdio.printf "%d -> %d (oracle %d)\n" v (isqrt v) (floor_sqrt v));
+    ~f:(fun v -> Stdio.printf "%d -> %d (oracle %d)\n" v (isqrt v) (oracle v));
   [%expect
     {|
     0 -> 0 (oracle 0)

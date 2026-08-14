@@ -48,17 +48,8 @@ let%expect_test "the exp2 unit is the table and the shift" =
     Cyclesim.cycle sim;
     Bits.to_int_trunc !(out.e)
   in
-  (* the oracle: exp2 of -nn/4096, in Q15 — [Quantized.Engine.exp2_q] *)
-  let oracle nn =
-    if nn lsr 16 <> 0
-    then 0
-    else (
-      let entry =
-        Float.iround_nearest_exn
-          Float.(32768.0 * (2.0 ** (-of_int ((nn asr 4) land 255) / 256.0)))
-      in
-      entry asr ((nn asr 12) land 15))
-  in
+  (* the unit takes the negated exponent, thus the reference's rule reads [-nn] *)
+  let oracle nn = Quantized.Engine.For_test.exp2_q (-nn) in
   List.iter [ 0; 2048; 4096; 8192; 70000 ] ~f:(fun nn ->
     Stdio.printf "%d -> %d (oracle %d)\n" nn (e nn) (oracle nn));
   [%expect

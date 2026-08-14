@@ -49,12 +49,12 @@ let create (i : _ I.t) : _ O.t =
   let ii = Variable.reg spec ~width:9 in
   let oo = Variable.reg spec ~width:9 in
   let row = Variable.reg spec ~width:9 in
-  let running = Variable.reg spec ~width:1 in
-  let issued_all = Variable.reg spec ~width:1 in
-  let issuing = running.value &: ~:(issued_all.value) in
+  (* one flag, because the retire side needs none of its own: the tags carry the terms
+     still in flight. [go] raises it and the last term's issue lowers it. *)
+  let issuing = Variable.reg spec ~width:1 in
   let last_in = ii.value ==: i.inner -:. 1 in
   (* the tags follow a term from its address to its retirement *)
-  let tag_in = issuing @: (ii.value ==:. 0) @: last_in in
+  let tag_in = issuing.value @: (ii.value ==:. 0) @: last_in in
   let tags = pipeline spec ~enable:run ~n:depth tag_in in
   let valid_r = msb tags in
   let first_r = select tags ~high:1 ~low:1 in
@@ -72,24 +72,23 @@ let create (i : _ I.t) : _ O.t =
     [ when_
         run
         [ when_
-            (issuing &: ~:(i.go))
+            (issuing.value &: ~:(i.go))
             [ if_
                 last_in
                 [ ii <--. 0
                 ; if_
                     (oo.value ==: i.outer -:. 1)
-                    [ issued_all <-- vdd ]
+                    [ issuing <-- gnd ]
                     [ oo <-- oo.value +:. 1 ]
                 ]
                 [ ii <-- ii.value +:. 1 ]
             ]
         ; when_ row_done [ row <-- row.value +:. 1 ]
-        ; when_ done_ [ running <-- gnd ]
         ]
     ; (* last, thus its resets win when a walk starts in the old walk's [done_] cycle —
          the chain convention. A command also lands under hold: the walk is over when the
          caller starts one. *)
-      when_ i.go [ ii <--. 0; oo <--. 0; row <--. 0; running <-- vdd; issued_all <-- gnd ]
+      when_ i.go [ ii <--. 0; oo <--. 0; row <--. 0; issuing <-- vdd ]
     ];
   { O.ii = ii.value; oo = oo.value; product; sum; row_done; row = row.value; done_ }
 ;;
@@ -110,10 +109,6 @@ let%expect_test "the walk sums its rows, as the reference does" =
   let oracle inner outer =
     List.init outer ~f:(fun oo ->
       List.init inner ~f:(fun ii -> a_of ii oo * b_of ii oo) |> List.fold ~init:0 ~f:( + ))
-  in
-  let signed_of width bits =
-    let v = Bits.to_int_trunc bits in
-    if v land (1 lsl (width - 1)) <> 0 then v - (1 lsl width) else v
   in
   (* the feed models the memories: the operands of the term the counters named arrive
      [read_latency] cycles later, and the feed freezes under hold as the read registers
@@ -143,7 +138,7 @@ let%expect_test "the walk sums its rows, as the reference does" =
       if Bits.to_bool !(out.row_done)
       then (
         Int.incr pulses;
-        sums := (Bits.to_int_trunc !(out.row), signed_of 48 !(out.sum)) :: !sums)
+        sums := (Bits.to_int_trunc !(out.row), Bits.to_signed_int !(out.sum)) :: !sums)
     in
     inp.go := Bits.vdd;
     step ~hold:false;
@@ -194,8 +189,7 @@ let%expect_test "the product tap holds the bespoke cadence: operands, one wait, 
     inp.b := Bits.of_signed_int ~width:18 b;
     Cyclesim.cycle sim;
     Cyclesim.cycle sim;
-    let v = Bits.to_int_trunc !(out.product) in
-    if v land (1 lsl 42) <> 0 then v - (1 lsl 43) else v
+    Bits.to_signed_int !(out.product)
   in
   List.iter
     [ 3, 4; -100, 7; 12345, -678; 0, 999 ]

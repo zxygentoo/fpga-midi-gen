@@ -45,6 +45,15 @@ module Constants : sig
       [round(2^15 * 2^-(j/256))], 16 bits each — the quantized exponential, the same
       species as the weights *)
   val exp2_bits : Hardcaml.Bits.t array
+
+  (** [score_shift ~head_d] carries a score walk's sum from Q(2 [kv_q]) to Q[y_q] and
+      applies the 1/sqrt([head_d]) of the reference in the same shift. This is why
+      [head_d] must be a power of four. *)
+  val score_shift : head_d:int -> int
+
+  (** [slope_exponent ~span ~heads ~head] is the ALiBi exponent of one head: its slope is
+      2^-(this), thus the distance penalty is a shift of the age. *)
+  val slope_exponent : span:int -> heads:int -> head:int -> int
 end
 
 (** The vectors of the file, flat. [t] is the machine's integer vector — the value side of
@@ -89,6 +98,12 @@ module Model : sig
     (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
+
+  (** [check_shape t] raises when the shape breaks a shift rule: [d] and the context a
+      power of two, [d / heads] a power of four, and the layer count matching the tensors.
+      The arithmetic of both the reference and the circuit is shifts, thus both check this
+      — the engine at [Engine.init], the circuit at elaboration. *)
+  val check_shape : t -> unit
 
   (** the ROM image of the circuit: every tensor in the checkpoint order, one byte for
       each weight, two's complement. The depth is exact — block RAM is paid for every row,
@@ -164,6 +179,21 @@ module Engine : sig
       token; [phase] and [bucket] are the rows of the bar-phase and the piece-position
       tables. *)
   val forward : t -> code:int -> phase:int -> bucket:int -> t
+
+  (** The scalar rules of the engine that a circuit unit must reproduce exactly. The gate
+      test of each unit reads its oracle from here, thus the unit is measured against the
+      reference and not against a second hand-written formula. *)
+  module For_test : sig
+    (** [isqrt n] is the floor of the square root, and 0 at or below zero — the rule of
+        [Isqrt]. *)
+    val isqrt : int -> int
+
+    (** [exp2_q u] is exp2 of the Q12 value [u], which is 0 or less, in Q15: the integer
+        part shifts and the top eight bits of the fraction index the table. The peak —
+        input 0 — is 2^15, and 16 or more integer steps down give 0. This is the rule of
+        [Exp2], whose input is [-u]. *)
+    val exp2_q : int -> int
+  end
 end
 
 (** The drift of the reference against the float model, on one teacher-forced walk: the

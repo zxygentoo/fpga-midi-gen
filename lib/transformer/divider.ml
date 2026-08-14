@@ -72,10 +72,6 @@ let%expect_test "the divider is the reference division, toward zero" =
   let sim = Sim.create create in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs sim in
-  let signed_of bits =
-    let v = Bits.to_int_trunc bits in
-    if v land (1 lsl 39) <> 0 then v - (1 lsl 40) else v
-  in
   let divide n d =
     inp.numerator := Bits.of_signed_int ~width:40 n;
     inp.denominator := Bits.of_unsigned_int ~width:24 d;
@@ -85,7 +81,7 @@ let%expect_test "the divider is the reference division, toward zero" =
     while Bits.to_bool !(out.busy) do
       Cyclesim.cycle sim
     done;
-    signed_of !(out.quotient)
+    Bits.to_signed_int !(out.quotient)
   in
   List.iter
     [ 100, 7; -100, 7; 0, 5; 1234567, 89; -(1 lsl 38), 3 ]
