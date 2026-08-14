@@ -25,6 +25,9 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+(* one cycle for each bit of the quotient, thus the width of the numerator *)
+let busy_cycles = 40
+
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
@@ -32,7 +35,7 @@ let create (i : _ I.t) : _ O.t =
   let d = Variable.reg spec ~width:24 in
   let q = Variable.reg spec ~width:40 in
   let r = Variable.reg spec ~width:25 in
-  let n = Variable.reg spec ~width:6 in
+  let n = Variable.reg spec ~width:(Int.ceil_log2 (busy_cycles + 1)) in
   let sign = Variable.reg spec ~width:1 in
   let busy = Variable.reg spec ~width:1 in
   compile
@@ -43,7 +46,7 @@ let create (i : _ I.t) : _ O.t =
         ; d <-- i.denominator
         ; q <--. 0
         ; r <--. 0
-        ; n <--. 40
+        ; n <--. busy_cycles
         ; busy <-- vdd
         ]
         [ when_

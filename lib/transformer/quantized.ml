@@ -12,8 +12,23 @@ module Constants = struct
      Q12 copy, thus the mean is Q(2 y_q) *)
   let eps_q = Float.iround_nearest_exn (Float.ldexp 1e-6 (2 * y_q))
 
-  (* log2(e) in Q15: the exp2 form of the softmax exponent *)
-  let log2e_q15 = Float.iround_nearest_exn (32768.0 /. Float.log 2.0)
+  (* A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
+     the value because the two are one fact — a multiply that takes the wrong shift is
+     silently wrong, and both the reference and the circuit apply these scales. *)
+  type scale =
+    { q_value : int
+    ; q : int
+    }
+
+  (* [apply s v] scales [v] by [s], toward negative infinity — an arithmetic shift, as the
+     circuit's. *)
+  let apply { q_value; q } v = (v * q_value) asr q
+
+  (* log2(e): the exp2 form of the softmax exponent *)
+  let log2e =
+    let q = 15 in
+    { q_value = Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0) q); q }
+  ;;
 
   (* the quantized exponential: exp2 of -j/256 in Q15 — the table of the softmax and the
      sampler, and the same species as the weights *)
@@ -76,22 +91,29 @@ module Model = struct
   type t =
     { config : Transformer.Config.t
     ; params : params
-    ; temper_q14 : int
-    (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
+    ; temper : Constants.scale
+    (** the sampling temper, log2(e) / T — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
 
   (* The arithmetic of the circuit is shifts, thus the shape obeys the shift rules. The
      reference holds this check because the reference states the rules; the circuit calls
-     it at elaboration, where a bad shape must fail loudly. *)
+     it at elaboration, where a bad shape must fail loudly. The record is open, thus a
+     model that no constructor here made can break a rule, and both consumers of a broken
+     model would be silently wrong. *)
   let check_shape t =
     let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
       t.config
     in
+    let { Params_data.embed; phase; progress; layers = tensors } = t.params in
     assert (Int.is_pow2 d);
     assert (Int.is_pow2 slots);
     assert (Int.floor_log2 (d / heads) % 2 = 0);
-    assert (layers = Array.length t.params.Params_data.layers)
+    assert (layers = Array.length tensors);
+    (* the three tables add row for row — [Engine.embed] adds them, and the Embed op of
+       the circuit walks them as one tensor — thus one exponent must cover all three *)
+    assert (phase.e = embed.e);
+    assert (progress.e = embed.e)
   ;;
 
   (* the element counts of the tensors in the flat order, from the one definition of the
@@ -114,13 +136,21 @@ module Model = struct
         Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
   ;;
 
-  (* the policy in the integer forms of the machine; the rules of the float sampler *)
+  (* The policy in the integer forms of the machine; the rules of the float sampler. The
+     temper is log2(e) / T, and its Q is one below the Q of [Constants.log2e]. The extra
+     bit is headroom for the temperature: the circuit multiplies by this constant on an
+     18-bit signed port, thus the Q of [log2e] would overflow that port under a
+     temperature of about 0.36, and this Q holds down to about 0.18. *)
   let policy ~temperature ~min_p =
     if Float.(temperature <= 0.0)
     then invalid_arg "Quantized: the temperature is positive";
     if Float.(min_p < 0.0 || min_p >= 1.0)
     then invalid_arg "Quantized: min_p is 0 up to 1";
-    ( Float.iround_nearest_exn (32768.0 /. Float.log 2.0 /. temperature /. 2.0)
+    let q = Constants.log2e.q - 1 in
+    ( { Constants.q_value =
+          Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0 /. temperature) q)
+      ; q
+      }
     , Float.iround_nearest_exn (min_p *. 32768.0) )
   ;;
 
@@ -150,7 +180,7 @@ module Model = struct
 
   (* the three tables add row for row, thus they share one exponent *)
   let of_floats (config : Transformer.Config.t) ~temperature ~min_p tensors =
-    let temper_q14, min_weight = policy ~temperature ~min_p in
+    let temper, min_weight = policy ~temperature ~min_p in
     let { embed; phase; progress; layers } : Tensor.floats Params_data.t =
       Params_data.of_list ~layers:config.layers tensors
     in
@@ -159,7 +189,7 @@ module Model = struct
         (Float.max (max_abs embed) (Float.max (max_abs phase) (max_abs progress)))
     in
     { config
-    ; temper_q14
+    ; temper
     ; min_weight
     ; params =
         { Params_data.embed = quantize ~e embed
@@ -237,7 +267,7 @@ module Engine = struct
   type t =
     { config : Transformer.Config.t
     ; p : Model.params
-    ; temper_q14 : int
+    ; temper : Constants.scale
     ; min_weight : int
     ; kc : Tensor.t array (* the K ring: [layer * slots + slot] rows of [d], Q12 int16 *)
     ; vc : Tensor.t array
@@ -369,7 +399,7 @@ module Engine = struct
       (* the exp2 weight of each age, Q15: the peak weighs 2^15 *)
       let age_weight =
         Array.init n ~f:(fun a ->
-          exp2_q (((scores.(a) - peak) * Constants.log2e_q15) asr 15))
+          exp2_q (Constants.apply Constants.log2e (scores.(a) - peak)))
       in
       let den = sum n (fun a -> age_weight.(a)) in
       Array.init head_d ~f:(fun j ->
@@ -441,15 +471,21 @@ module Engine = struct
   ;;
 
   let init (model : Model.t) ~seed =
-    let { Model.config; params = p; temper_q14; min_weight } = model in
-    let { Transformer.Config.d; heads = (_ : int); context = slots; layers; _ } =
+    let { Model.config; params = p; temper; min_weight } = model in
+    let { Transformer.Config.d
+        ; heads = (_ : int)
+        ; context = slots
+        ; layers
+        ; slope_span = (_ : int)
+        }
+      =
       config
     in
     Model.check_shape model;
     let engine =
       { config
       ; p
-      ; temper_q14
+      ; temper
       ; min_weight
       ; (* a walk never reads an unwritten slot, thus one zero row serves them all *)
         kc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
@@ -493,7 +529,7 @@ module Engine = struct
     let weight c =
       if mask.(c)
       then (
-        let u = ((logits.(c) - peak) * t.temper_q14) asr 14 in
+        let u = Constants.apply t.temper (logits.(c) - peak) in
         let e = exp2_q u in
         if e >= t.min_weight then e else 0)
       else 0

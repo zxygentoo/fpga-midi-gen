@@ -23,18 +23,21 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+(* one cycle for each bit pair of the radicand, thus the width of the root *)
+let busy_cycles = 21
+
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let m = Variable.reg spec ~width:42 in
   let root = Variable.reg spec ~width:21 in
   let r = Variable.reg spec ~width:25 in
-  let n = Variable.reg spec ~width:5 in
+  let n = Variable.reg spec ~width:(Int.ceil_log2 (busy_cycles + 1)) in
   let busy = Variable.reg spec ~width:1 in
   compile
     [ if_
         i.start
-        [ m <-- i.value; root <--. 0; r <--. 0; n <--. 21; busy <-- vdd ]
+        [ m <-- i.value; root <--. 0; r <--. 0; n <--. busy_cycles; busy <-- vdd ]
         [ when_
             busy.value
             [ (let r' =

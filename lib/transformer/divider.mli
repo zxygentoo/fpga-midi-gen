@@ -9,8 +9,8 @@
 
     - [start] loads the operands and begins the walk. It wins over a walk in flight: a
       [start] in a busy cycle discards that walk and begins a new one.
-    - [busy] reads 1 in the cycle after [start], and it reads 0 again 40 cycles later —
-      one cycle for each bit of the quotient. [quotient] is whole in the cycle [busy]
+    - [busy] reads 1 in the cycle after [start], and it reads 0 again [busy_cycles] later
+      — one cycle for each bit of the quotient. [quotient] is whole in the cycle [busy]
       reads 0, and it stands until the next [start]. Therefore the caller waits on [busy]
       and reads the result in the cycle the wait releases.
     - [numerator] is signed and [denominator] is unsigned.
@@ -19,6 +19,10 @@
     - The operands are read in the [start] cycle only, and the caller may move them after. *)
 
 open Hardcaml
+
+(** the length of one walk, in cycles: the caller's cost model reads it here rather than
+    restate it *)
+val busy_cycles : int
 
 module I : sig
   type 'a t =

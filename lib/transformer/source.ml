@@ -109,8 +109,9 @@ module Op = struct
   (* One step of the walk: the facts that one case of the pc switch needs. The bespoke ops
      close over the model at elaboration and carry no fields here. *)
   type t =
-    (* the three tables add row for row, thus one exponent covers all of them —
-       [Quantized.Model.of_floats] quantizes them together *)
+    (* the three tables add row for row, thus one exponent covers all of them; the walk
+       reads them as one tensor of three bases. [Quantized.Model.check_shape] holds the
+       rule, and [create] calls it before it reads a base. *)
     | Embed of
         { token : int
         ; phase : int
@@ -126,33 +127,59 @@ module Op = struct
     | Pick
   [@@deriving sexp_of]
 
+  (* The cycles the builders below cost, each derived from the unit that spends them. The
+     bespoke chains are the one exception: a chain's cost is the length of its tick list,
+     which lives inside [create] where the bodies close over the datapath, thus the four
+     counts stand here as numbers. The cycle bench holds every one of these against the
+     measured circuit. *)
+  module Cost = struct
+    (* a walk retires its last term this long after its last issue *)
+    let drain = Mac.read_latency + 2
+
+    (* the start cycle, the walk, and the cycle the wait releases *)
+    let divide = Divider.busy_cycles + 2
+
+    (* the same, less the start cycle the caller's walk already counts *)
+    let pending_hold = Divider.busy_cycles + 1
+    let root = Isqrt.busy_cycles + 1
+
+    (* the ticks of [exp_weight_chain], [Draw], [Threshold] and [Pick] *)
+    let exp_weight = 7
+    let draw = 4
+    let threshold = 5
+    let pick = 2
+  end
+
   (* The analytic cost of one op, in cycles from its go to its finish, both the cycle a
-     predecessor's finish runs. [n] is the filled slot count of the ring at this token.
-     The constants restate the builders: the residual join lands one cycle after the walk
-     drains; the divider costs 42 from its start cycle to its wait's release, and the
-     isqrt 22; a weighted-sum lane adds a 41-cycle hold for its pending divide. The cycle
-     bench pins this model against the measured circuit. *)
+     predecessor's finish runs. [n] is the filled slot count of the ring at this token. *)
   let cycles (config : Transformer.Config.t) ~n (op : t) =
     let { Transformer.Config.d; heads; _ } = config in
     let head_d = d / heads in
     let vocab = Token.vocab in
-    (* a walk retires its last term this long after its last issue *)
-    let drain = Mac.read_latency + 2 in
     match op with
-    | Embed _ -> (3 * d) + drain
-    | Rms_norm -> (44 * d) + 26
+    | Embed _ -> (3 * d) + Cost.drain
+    | Rms_norm ->
+      (* the sum-squares walk, the isqrt, then one read tick and one divide an element *)
+      d + Cost.drain + Cost.root + (d * (1 + Cost.divide))
     | Matvec { inner; outer; landing; _ } ->
       (inner * outer)
-      + drain
+      + Cost.drain
       +
         (match landing with
         | Add_to_h -> 1
         | To_q | To_ring _ | To_hidden | To_logits -> 0)
-    | Attend _ -> heads * ((2 * n * head_d) + (7 * n) + (41 * head_d) + 8)
-    | Temper -> 7 * vocab
-    | Draw -> 4
-    | Threshold -> 5
-    | Pick -> 2 * vocab
+    | Attend _ ->
+      heads
+      * ((n * head_d)
+         + Cost.drain (* the score walk: one row of lanes an age *)
+         + (Cost.exp_weight * n) (* the weight of each age *)
+         + (n * head_d)
+         + Cost.drain (* the merge walk: one row of ages a lane *)
+         + (Cost.pending_hold * head_d) (* its one pending divide a lane *))
+    | Temper -> Cost.exp_weight * vocab
+    | Draw -> Cost.draw
+    | Threshold -> Cost.threshold
+    | Pick -> Cost.pick * vocab
   ;;
 end
 
@@ -230,7 +257,7 @@ module State = struct
 end
 
 let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
-  let { Quantized.Model.config; params; temper_q14; min_weight } = model in
+  let { Quantized.Model.config; params; temper; min_weight } = model in
   let { Transformer.Config.d; heads; context = slots; slope_span = span; layers } =
     config
   in
@@ -564,8 +591,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          sll (uresize mac.row ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
   in
   (* The derived values of L1, named once. A builder runs for each op of the program —
-     five [Rms_norm], two [Attend] — thus an expression written inside one is elaborated
-     once for each of them, and Hardcaml shares nothing by itself. These read only wires
+     [2 * layers + 1] [Rms_norm] and [layers] [Attend], thus five and two at two layers
+     and thirteen and six at six — and an expression written inside one is elaborated once
+     for each of them, because Hardcaml shares nothing by itself. These read only wires
      that exist once, thus one instance serves every op: the pc case already muxes the
      destination. *)
   let quotient16 = clamp16 div_quotient in
@@ -625,20 +653,21 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
      weight, over the same address: read the value, take its distance below the peak,
      scale that into the exp2 argument, and land the weight where the value stood.
      [Attend] runs it over the ages of a head and [Temper] over the codes; they differ in
-     the address, in the scale and its Q, in what the landing makes of the weight, and in
-     how the walk advances. The tick numbers of the multiply and of the exp2 read live
-     here alone — the dormant debt of the module comment has one home. *)
-  let exp_weight_chain ~addr ~scale ~shift ~land_ ~advance =
+     the address, in the scale, in what the landing makes of the weight, and in how the
+     walk advances. The scale carries its own Q, thus the port and the shift under it
+     cannot disagree. The tick numbers of the multiply and of the exp2 read live here
+     alone — the dormant debt of the module comment has one home. *)
+  let exp_weight_chain ~addr ~(scale : Quantized.Constants.scale) ~land_ ~advance =
     let at_addr = uresize addr ~width:vbits in
     [ vram_raddr <-- at_addr
     ; mul_a <-- sel_bottom diff.value ~width:25
-    ; mul_b <-- of_signed_int ~width:18 scale
+    ; mul_b <-- of_signed_int ~width:18 scale.q_value
     ; by_tick
         [ []
         ; [ diff <-- below_peak ]
         ; []
         ; []
-        ; [ nn <-- sel_bottom (negate (sra mac.product ~by:shift)) ~width:22 ]
+        ; [ nn <-- sel_bottom (negate (sra mac.product ~by:scale.q)) ~width:22 ]
         ; []
         ; [ vram_wen <-- vdd; vram_waddr <-- at_addr ] @ land_ @ [ tick <--. 0 ] @ advance
         ]
@@ -871,8 +900,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
       let weigh_ages =
         exp_weight_chain
           ~addr:ii_slot
-          ~scale:Quantized.Constants.log2e_q15
-          ~shift:15
+          ~scale:Quantized.Constants.log2e
           ~land_:[ vram_wdata <-- uresize exp2_e ~width:32; den <-- den_next ]
           ~advance:
             [ if_
@@ -933,8 +961,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         (legal_query <-- oo8)
         :: exp_weight_chain
              ~addr:oo8
-             ~scale:temper_q14
-             ~shift:14
+             ~scale:temper
              ~land_:
                [ vram_wdata <-- uresize w ~width:32
                ; total <-- total.value +: uresize w ~width:24

@@ -38,8 +38,22 @@ module Constants : sig
   (** the rms epsilon of the float model, in the Q of the squared stream *)
   val eps_q : int
 
-  (** log2(e) in Q15: the exp2 form of the softmax exponent *)
-  val log2e_q15 : int
+  (** A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
+      the value because the two are one fact — a multiply that takes the wrong shift is
+      silently wrong, and both the reference and the circuit apply these scales. The
+      circuit reads [q_value] onto its 18-bit signed multiplier port and [q] as the shift
+      that follows the product. *)
+  type scale =
+    { q_value : int
+    ; q : int
+    }
+
+  (** [apply s v] scales [v] by [s], toward negative infinity — an arithmetic shift, as
+      the circuit's. *)
+  val apply : scale -> int -> int
+
+  (** log2(e): the exp2 form of the softmax exponent *)
+  val log2e : scale
 
   (** the exp2 table of the softmax and the sampler as the circuit's ROM: 256 entries of
       [round(2^15 * 2^-(j/256))], 16 bits each — the quantized exponential, the same
@@ -94,15 +108,18 @@ module Model : sig
   type t =
     { config : Transformer.Config.t
     ; params : params
-    ; temper_q14 : int
-    (** the sampling temper, log2(e) / T in Q14 — folded with the exp2 form *)
+    ; temper : Constants.scale
+    (** the sampling temper, log2(e) / T — folded with the exp2 form. Its Q is one below
+        the Q of [Constants.log2e], as headroom for a low temperature. *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
     }
 
-  (** [check_shape t] raises when the shape breaks a shift rule: [d] and the context a
-      power of two, [d / heads] a power of four, and the layer count matching the tensors.
-      The arithmetic of both the reference and the circuit is shifts, thus both check this
-      — the engine at [Engine.init], the circuit at elaboration. *)
+  (** [check_shape t] raises when the model breaks a rule that its consumers assume: [d]
+      and the context a power of two, [d / heads] a power of four, the layer count
+      matching the tensors, and one exponent over the three tables. The arithmetic of both
+      the reference and the circuit is shifts, thus both check this — the engine at
+      [Engine.init], the circuit at elaboration. The constructors here hold every rule; a
+      model built by hand from the open record does not. *)
   val check_shape : t -> unit
 
   (** the ROM image of the circuit: every tensor in the checkpoint order, one byte for
