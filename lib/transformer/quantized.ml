@@ -94,6 +94,8 @@ module Model = struct
     ; temper : Constants.scale
     (** the sampling temper, log2(e) / T — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
+    ; piece_steps : int option
+    (** the steps of one piece, or [None] for one endless walk *)
     }
 
   (* The arithmetic of the circuit is shifts, thus the shape obeys the shift rules. The
@@ -113,7 +115,12 @@ module Model = struct
     (* the three tables add row for row — [Engine.embed] adds them, and the Embed op of
        the circuit walks them as one tensor — thus one exponent must cover all three *)
     assert (phase.e = embed.e);
-    assert (progress.e = embed.e)
+    assert (progress.e = embed.e);
+    (* the circuit takes the piece boundary as a bit-slice of its step counter, as it
+       takes every other period of the walk *)
+    Option.iter t.piece_steps ~f:(fun steps ->
+      assert (Int.is_pow2 steps);
+      assert (steps > 1))
   ;;
 
   (* the element counts of the tensors in the flat order, from the one definition of the
@@ -179,7 +186,7 @@ module Model = struct
   ;;
 
   (* the three tables add row for row, thus they share one exponent *)
-  let of_floats (config : Transformer.Config.t) ~temperature ~min_p tensors =
+  let of_floats (config : Transformer.Config.t) ~temperature ~min_p ~piece_steps tensors =
     let temper, min_weight = policy ~temperature ~min_p in
     let { embed; phase; progress; layers } : Tensor.floats Params_data.t =
       Params_data.of_list ~layers:config.layers tensors
@@ -191,6 +198,7 @@ module Model = struct
     { config
     ; temper
     ; min_weight
+    ; piece_steps
     ; params =
         { Params_data.embed = quantize ~e embed
         ; phase = quantize ~e phase
@@ -212,9 +220,16 @@ module Model = struct
   let default_temperature = 0.9
   let default_min_p = 1.0 /. 256.0
 
+  (* The walk plays a sequence of pieces, one arc of the piece-position table each. The
+     boundary and bucket zero then fall on the same step, thus every re-anchor lands where
+     the table already taught the model to close: the corpus put bucket 15 at the final
+     fermata, and the draw winds down there. *)
+  let default_piece_steps = Some Transformer.piece_steps
+
   let of_checkpoint
     ?(temperature = default_temperature)
     ?(min_p = default_min_p)
+    ?(piece_steps = default_piece_steps)
     (config : Transformer.Config.t)
     path
     =
@@ -241,13 +256,14 @@ module Model = struct
                size);
         values)
     in
-    of_floats config ~temperature ~min_p tensors
+    of_floats config ~temperature ~min_p ~piece_steps tensors
   ;;
 
   module For_test = struct
     let init
       ?(temperature = default_temperature)
       ?(min_p = default_min_p)
+      ?(piece_steps = default_piece_steps)
       (config : Transformer.Config.t)
       ~seed
       =
@@ -257,7 +273,7 @@ module Model = struct
              (List.map (sizes config) ~f:(fun count -> Prng.normals ~count ~scale:0.02)))
           (Prng.create_folded ~seed)
       in
-      of_floats config ~temperature ~min_p tensors
+      of_floats config ~temperature ~min_p ~piece_steps tensors
     ;;
   end
 end
@@ -269,6 +285,7 @@ module Engine = struct
     ; p : Model.params
     ; temper : Constants.scale
     ; min_weight : int
+    ; piece_steps : int option
     ; kc : Tensor.t array (* the K ring: [layer * slots + slot] rows of [d], Q12 int16 *)
     ; vc : Tensor.t array
     ; h : Tensor.t (* the residual stream after the last forwarded token, Q16 *)
@@ -470,8 +487,11 @@ module Engine = struct
     }
   ;;
 
-  let init (model : Model.t) ~seed =
-    let { Model.config; params = p; temper; min_weight } = model in
+  (* The boot context: an empty ring, no residual, nothing sounding and no seat taken.
+     [init] starts here and a piece boundary returns here, thus the two states are one
+     definition. What the caller carries across a boundary — the PRNG and the step index —
+     is the whole difference between a rewind and a re-anchor. *)
+  let boot_context t =
     let { Transformer.Config.d
         ; heads = (_ : int)
         ; context = slots
@@ -479,24 +499,40 @@ module Engine = struct
         ; slope_span = (_ : int)
         }
       =
-      config
+      t.config
     in
+    { t with
+      (* a walk never reads an unwritten slot, thus one zero row serves them all *)
+      kc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
+    ; vc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
+    ; h = Array.create ~len:d 0
+    ; position = 0
+    ; sounding = Sounding_state.silence
+    ; seats = Array.create ~len:Token.seats None
+    }
+  ;;
+
+  let init (model : Model.t) ~seed =
+    let { Model.config; params = p; temper; min_weight; piece_steps } = model in
     Model.check_shape model;
     let engine =
-      { config
-      ; p
-      ; temper
-      ; min_weight
-      ; (* a walk never reads an unwritten slot, thus one zero row serves them all *)
-        kc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
-      ; vc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
-      ; h = Array.create ~len:d 0
-      ; position = 0
-      ; prng = Prng.create ~seed
-      ; sounding = Sounding_state.silence
-      ; seats = Array.create ~len:Token.seats None
-      ; step_index = 0
-      }
+      (* [boot_context] writes every field of the context; these stand for the shapes it
+         does not need to read *)
+      boot_context
+        { config
+        ; p
+        ; temper
+        ; min_weight
+        ; piece_steps
+        ; kc = [||]
+        ; vc = [||]
+        ; h = [||]
+        ; position = 0
+        ; prng = Prng.create ~seed
+        ; sounding = Sounding_state.silence
+        ; seats = [||]
+        ; step_index = 0
+        }
     in
     forward engine ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0
   ;;
@@ -575,10 +611,32 @@ module Engine = struct
     go (Token.seats - 1)
   ;;
 
+  (* The piece boundary. The release states the OFFs the grammar would state — the
+     sounding pitches, climbing — and they are events and not drawn tokens, because the
+     context they would enter is cleared on the next line. Then the walk returns to the
+     boot context and forwards START, thus the model draws from the condition the corpus
+     trained it on. The boundary reads the step index alone and never the music, thus the
+     software model, this reference and the circuit all take it at the same step however
+     far their content has parted. *)
+  let reanchor t ~phase ~bucket =
+    let release =
+      List.map (Sounding_state.sounding t.sounding) ~f:(fun pitch ->
+        { voice = seat_of t.seats pitch; pitch; on = false })
+    in
+    release, forward (boot_context t) ~code:(Token.to_code Token.Start) ~phase ~bucket
+  ;;
+
   let next_step t =
     let phase = t.step_index % Transformer.phase_buckets in
     let bucket =
       t.step_index / Transformer.progress_stride % Transformer.progress_buckets
+    in
+    (* the boundary falls where the bucket returns to zero *)
+    let release, t =
+      match t.piece_steps with
+      | Some steps when t.step_index > 0 && t.step_index % steps = 0 ->
+        reanchor t ~phase ~bucket
+      | Some (_ : int) | None -> [], t
     in
     let sit t seat holds =
       let seats = Array.copy t.seats in
@@ -604,7 +662,7 @@ module Engine = struct
         let seat = seat_of t.seats pitch in
         go (sit t seat None) ({ voice = seat; pitch; on = false } :: events) (count + 1)
     in
-    go t [] 0
+    go t (List.rev release) 0
   ;;
 
   (* the scalar rules the L0 circuit units must reproduce; their gate tests read them here
@@ -639,6 +697,10 @@ module Drift = struct
         config
         ~temperature:Model.default_temperature
         ~min_p:Model.default_min_p
+          (* the walk of the machine, boundaries and all: the report says how far
+             quantization moves the model on the walk the board takes, thus it takes the
+             same one *)
+        ~piece_steps:Model.default_piece_steps
         (List.map (Transformer.Params.to_list params) ~f:flatten)
     in
     let engine = ref (Engine.init model ~seed) in
@@ -660,6 +722,24 @@ module Drift = struct
         ~dropout:Transformer.Dropout.none
       |> Nx.get [ 0; Array.length codes - 1 ]
       |> Nx.to_array
+    in
+    (* The piece boundary of [Engine.next_step]. This walk teacher-forces the float pass
+       on the quantized walk, thus both sides return to the boot context together — the
+       same START row, at the carried phase and bucket — and the report keeps measuring
+       like against like: a boundary on one side alone, or a row conditioned differently
+       across the pair, would read as a drift the quantization never caused. The release
+       is a socket event and not a draw, thus this walk, which counts draws, does not
+       state it. *)
+    let reanchor ~phase ~bucket =
+      engine
+      := Engine.forward
+           (Engine.boot_context !engine)
+           ~code:(Token.to_code Token.Start)
+           ~phase
+           ~bucket;
+      codes := [ Token.to_code Token.Start ];
+      phases := [ phase ];
+      progress := [ bucket ]
     in
     let draws = ref 0 in
     let events = ref 0 in
@@ -699,7 +779,15 @@ module Drift = struct
       match Token.of_code code with
       | Start -> assert false
       | On (_ : int) | Off (_ : int) -> Int.incr events
-      | End -> Int.incr step_index
+      | End ->
+        Int.incr step_index;
+        (match model.Model.piece_steps with
+         | Some steps when !step_index % steps = 0 ->
+           reanchor
+             ~phase:(!step_index % Transformer.phase_buckets)
+             ~bucket:
+               (!step_index / Transformer.progress_stride % Transformer.progress_buckets)
+         | Some (_ : int) | None -> ())
     done;
     { draws = !draws
     ; events = !events
@@ -783,11 +871,11 @@ let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
           ~f:(List.map ~f:(fun { Engine.voice; pitch; on } -> voice, pitch, on))));
   [%expect
     {|
-    (((voice 3) (pitch 17) (on true)) ((voice 2) (pitch 12) (on true))
-     ((voice 1) (pitch 9) (on true)) ((voice 0) (pitch 1) (on true)))
-    (((voice 3) (pitch 17) (on false)) ((voice 3) (pitch 112) (on true)))
-    (((voice 0) (pitch 1) (on false)) ((voice 0) (pitch 101) (on true)))
-    (((voice 3) (pitch 112) (on false)) ((voice 3) (pitch 8) (on true)))
+    (((voice 3) (pitch 18) (on true)) ((voice 2) (pitch 13) (on true))
+     ((voice 1) (pitch 11) (on true)) ((voice 0) (pitch 2) (on true)))
+    (((voice 3) (pitch 18) (on false)) ((voice 3) (pitch 113) (on true)))
+    (((voice 0) (pitch 2) (on false)) ((voice 0) (pitch 101) (on true)))
+    (((voice 3) (pitch 113) (on false)) ((voice 3) (pitch 10) (on true)))
     12 steps  20 events  0 illegal  the seed repeats: true
     |}]
 ;;

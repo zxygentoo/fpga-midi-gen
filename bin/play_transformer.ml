@@ -230,6 +230,15 @@ let command =
          ~doc:
            "F drop tokens under this share of the peak; 0 turns the filter off. The \
             default is 1/256: wider filters eat the melody, per the sweep of 2026-08-05"
+     and piece_steps =
+       flag
+         "-piece-steps"
+         (optional_with_default Transformer.piece_steps int)
+         ~doc:
+           "N re-anchor the walk every N steps: release the sounding pitches, clear the \
+            context and feed START, carrying the step count and the PRNG. 0 is the \
+            endless walk, which decays into a drone; the default is one arc of the \
+            piece-position table"
      and quantized =
        flag
          "-quantized"
@@ -275,8 +284,19 @@ let command =
              Printf.eprintf
                "-quantized takes the seed of the SEED cell: 1 to 0xFFFFFFFF\n";
              exit 2);
+           (* the circuit takes the boundary as a bit-slice of its step counter *)
+           if piece_steps > 0 && ((not (Int.is_pow2 piece_steps)) || piece_steps = 1)
+           then (
+             Printf.eprintf
+               "-quantized takes -piece-steps as a power of two above 1, or 0\n";
+             exit 2);
            let model =
-             Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint
+             Quantized.Model.of_checkpoint
+               ~temperature
+               ~min_p
+               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
+               config
+               checkpoint
            in
            let engine = Quantized.Engine.init model ~seed in
            let sentence events =
@@ -299,7 +319,14 @@ let command =
          else (
            let params = Transformer.Params.load config ~path:checkpoint in
            let ~music, ~stats =
-             Transformer.sample config params ~seed ~steps ~temperature ~min_p
+             Transformer.sample
+               config
+               params
+               ~seed
+               ~steps
+               ~temperature
+               ~min_p
+               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
            in
            music, Some stats)
        in

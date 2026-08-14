@@ -112,6 +112,9 @@ module Model : sig
     (** the sampling temper, log2(e) / T — folded with the exp2 form. Its Q is one below
         the Q of [Constants.log2e], as headroom for a low temperature. *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
+    ; piece_steps : int option
+    (** the steps of one piece, or [None] for one endless walk. See [Engine.next_step] for
+        what a boundary does. *)
     }
 
   (** [check_shape t] raises when the model breaks a rule that its consumers assume: [d]
@@ -135,10 +138,13 @@ module Model : sig
       when the file does not hold the tensors of the shapes of [config]. [temperature] and
       [min_p] set the sampling policy — the machine commits to them, as it commits to the
       weights — and their defaults are the settled values of the era; the rules of the
-      float sampler apply to both. *)
+      float sampler apply to both. [piece_steps] sets the walk policy: the steps of one
+      piece, or [None] for one endless walk. Its default is one arc of the piece-position
+      table, thus a boundary falls where the table already taught the model to close. *)
   val of_checkpoint
     :  ?temperature:float
     -> ?min_p:float
+    -> ?piece_steps:int option
     -> Transformer.Config.t
     -> string
     -> t
@@ -147,7 +153,13 @@ module Model : sig
     (** [init config ~seed] is a model of drawn weights in the shapes of [config] — the
         initial parameters of [Transformer.Params.init], quantized: the elaboration and
         the engine need no checkpoint file. *)
-    val init : ?temperature:float -> ?min_p:float -> Transformer.Config.t -> seed:int -> t
+    val init
+      :  ?temperature:float
+      -> ?min_p:float
+      -> ?piece_steps:int option
+      -> Transformer.Config.t
+      -> seed:int
+      -> t
   end
 end
 
@@ -176,7 +188,19 @@ module Engine : sig
 
   (** [next_step t] draws one sentence: the engine after it, and its socket events in the
       drawn order. An On takes the highest free seat; an Off names the seat that holds its
-      pitch. The END that closes the sentence is forwarded and not reported. *)
+      pitch. The END that closes the sentence is forwarded and not reported.
+
+      When the model carries a [piece_steps] policy, the step whose index is a positive
+      multiple of it opens with a piece boundary, and its release leads the events of the
+      sentence. A boundary releases every sounding pitch, climbing, and returns the
+      context to the boot state — an empty ring and START — thus the model draws from the
+      condition the corpus trained it on. The step index and the PRNG carry across, thus
+      each piece is a new draw and the walk stays one function of the seed. This is the
+      whole difference from a rewind, which reloads both.
+
+      The boundary reads the step index and never the music. Therefore the software model,
+      this reference and the circuit all take it at the same step, however far their
+      content has parted. *)
   val next_step : t -> t * event list
 
   (** The block-level interface below: the tests and the drift report drive the engine one

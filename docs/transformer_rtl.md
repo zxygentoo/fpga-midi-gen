@@ -207,9 +207,14 @@ The cost, measured by the cycle bench against the analytic model:
 | the rewind walk, one forward pass | 115 547 |
 | one token: a draw, its forward pass and the control | about 139 000 |
 | a step of four events | 690 131 |
+| a piece boundary: the release and the forward of START | 115 554 |
 
-One token is about 1.4 ms at 100 MHz, and the worst sentence of nine
-tokens is under 13 ms against a step of 250 ms. The budget makes speed
+The bench measures the two-layer shape over a short ring. The worst step
+is a sentence of nine tokens over a full ring, and the analytic model
+gives it as 19.5 ms at two layers and 54.6 ms at six, against a step of
+200 ms. A boundary step costs less than that, not more: the boundary
+empties the ring, thus the tokens after it attend to a few slots. It is
+13.6 ms at two layers and 37.0 ms at six. The budget makes speed
 worthless here; the cost model beside the schedule states each operation
 exactly, and the bench pins the model to the circuit.
 
@@ -223,6 +228,50 @@ The token walk:
    and ends the step.
 3. the phase of a drawn token is `step mod 16`; the bucket is
    `step / 16 mod 16`; the counters are bit-slices of the step count.
+4. a piece boundary: a step whose index is a positive multiple of
+   `piece_steps` releases and re-anchors before it draws.
+
+### The piece boundary
+
+The walk plays a sequence of pieces and not one endless stream. An
+endless walk decays. The texture leaves the corpus within minutes and
+settles at a quarter of the onset rate, with no note shorter than a
+quarter note. The cause is the walk and not the circuit: the reference
+does the same, and the float model does the same more slowly. The
+corpus-like opening is the transient of the boot condition, and nothing
+holds the content to the corpus after START leaves the window.
+
+At a boundary the source releases every sounding pitch, climbing, and
+returns to the boot context: an empty ring and START. START's row reads
+the carried step count, as every row does — at the default arc its phase
+and bucket are zero, because the arc and the two table periods divide
+it. The release states events and not drawn tokens, because the context
+they would enter is cleared in the same walk. The step count and the
+PRNG stand.
+
+There are two resets, and the difference between them is the design:
+
+| | ring, counters, sounding | `out_code` | step count | PRNG |
+|---|---|---|---|---|
+| rewind | clear | START | 0 | reload from SEED |
+| piece boundary | clear | START | stands | stands |
+
+A boundary that reloaded the PRNG would play one piece for ever. The
+boundary carries it, thus each piece is a new draw and the whole walk
+stays one function of SEED.
+
+`piece_steps` is one arc of the piece-position table: 256 steps. The
+boundary and bucket 0 then fall on the same step, thus each re-anchor
+lands where the table taught the model to close. The corpus puts bucket
+15 at the final fermata, and the draw winds down there — a third of the
+opening onset rate, and notes 2.6 times longer. The policy is a power of
+two, thus the circuit takes the boundary as a bit-slice of its step
+counter, and `Quantized.Model.check_shape` holds that rule.
+
+The grammar has one rule for the same reason. `Off 0` has no code,
+because code 0 is END, thus a sounding pitch 0 could never be released
+and the mask refuses `On 0`. `Jsb.escape_reserved` moves the same two
+pitches, thus the corpus never states one either.
 
 ## The board
 
@@ -253,7 +302,10 @@ The top level seats the transformer:
   a gate — the audition judges it.
 - `Source` against `Quantized`: a short stream gives the same events,
   integer for integer. This is the gate that holds the circuit to the
-  reference.
+  reference. A second stream runs a short arc over two piece boundaries,
+  thus the release and the re-anchor stand under the same gate. The arc
+  of the gates is short because the rule under test is the boundary and
+  not its period; a boundary costs a whole forward pass in simulation.
 - The units against exact oracles, each beside its own code: `Mac`
   against a summed walk, `Divider` and `Isqrt` against the reference
   arithmetic, `Exp2` against the table rule, and `Sounding_state.Rtl`

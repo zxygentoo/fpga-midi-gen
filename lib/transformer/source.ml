@@ -181,6 +181,19 @@ module Op = struct
     | Threshold -> Cost.threshold
     | Pick -> Cost.pick * vocab
   ;;
+
+  (* The cycles a piece boundary costs, before the step it opens draws anything: the
+     release states one OFF for each sounding pitch — a command cycle and a [ready] cycle
+     for each — then one cycle finds none sounding and commands the forward of START,
+     which walks a ring of one, and one cycle lands it. [forward] is the forward program.
+     The cycle that leaves [Idle] is the one a step without a boundary spends entering its
+     draw, thus it is not here. *)
+  let boundary_cycles config forward ~released =
+    (2 * released)
+    + 1
+    + List.fold forward ~init:0 ~f:(fun total op -> total + cycles config ~n:1 op)
+    + 1
+  ;;
 end
 
 (* the two programs of the source: a draw, and the forward pass of the drawn token *)
@@ -252,12 +265,13 @@ module State = struct
     | Run
     | Decide
     | Emit
+    | Release
     | ForwardDone
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
 let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
-  let { Quantized.Model.config; params; temper; min_weight } = model in
+  let { Quantized.Model.config; params; temper; min_weight; piece_steps } = model in
   let { Transformer.Config.d; heads; context = slots; slope_span = span; layers } =
     config
   in
@@ -317,7 +331,10 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* the token walk *)
   let out_code = Variable.reg spec ~width:8 in
   let out_seat = Variable.reg spec ~width:2 in
-  let s = Variable.reg spec ~width:16 in
+  (* 32 bits: the boundary test below reads [s <> 0], thus a wrap would skip one boundary
+     and part the circuit from the reference for good. At 200 ms a step, 16 bits wrap in
+     under four hours — an overnight walk — and 32 bits in 27 years. *)
+  let s = Variable.reg spec ~width:32 in
   let cur = Variable.reg spec ~width:slot_bits in
   let filled = Variable.reg spec ~width:1 in
   let seat_pitch =
@@ -625,6 +642,31 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          (hit 2)
          (of_unsigned_int ~width:2 2)
          (mux2 (hit 1) (of_unsigned_int ~width:2 1) (zero 2)))
+  in
+  (* The release of a piece boundary: the lowest sounding pitch and the seat that holds
+     it, thus the OFFs climb as the grammar states them. The seats hold exactly the
+     sounding pitches, thus these four registers answer it and the sounding mask needs no
+     port of its own. The sentinel is 127, above every pitch an On may take. *)
+  let release_any, release_pitch, release_seat =
+    let lower (any, pitch, seat) k =
+      let full = seat_full.(k).value in
+      let held = seat_pitch.(k).value in
+      let takes = full &: (~:any |: (held <: pitch)) in
+      any |: full, mux2 takes held pitch, mux2 takes (of_unsigned_int ~width:2 k) seat
+    in
+    List.fold (List.range 0 Token.seats) ~init:(gnd, ones 7, zero 2) ~f:lower
+  in
+  (* The piece boundary: a positive multiple of the policy. The policy is a power of two,
+     thus the test is a bit-slice of the step counter — the shift rule the width, the
+     context and the two table periods all obey. *)
+  let at_boundary =
+    match piece_steps with
+    | None -> gnd
+    | Some steps ->
+      (* the slice must sit strictly inside the counter, or the guard on zero would
+         swallow every boundary *)
+      assert (Int.floor_log2 steps < width s.value);
+      sel_bottom s.value ~width:(Int.floor_log2 steps) ==:. 0 &: (s.value <>:. 0)
   in
   (* ================================================================== *)
   (* L3 — the compiler: one builder per op kind, then the chain *)
@@ -1083,7 +1125,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                      (List.init Token.seats ~f:(fun k ->
                         [ seat_full.(k) <--. 0; seat_pitch.(k) <--. 0 ]))
                  @ enter_forward)
-            ; when_ (i.step &: ~:(i.rewind)) enter_sample
+            ; when_
+                (i.step &: ~:(i.rewind))
+                [ if_ at_boundary [ tick <--. 0; sm.set_next Release ] enter_sample ]
             ] )
         ; Run, run_body
         ; ( Decide
@@ -1114,6 +1158,38 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
                  ]
                  @ enter_forward)
             ] )
+        ; ( Release
+          , (* The piece boundary. The release states its OFFs climbing, one to a [ready],
+               and those events are not drawn tokens: the context they would enter is
+               cleared below. Then the walk returns to the boot state and START feeds the
+               engine, as it does at a rewind — but the step counter and the PRNG stand,
+               thus the piece is new and the whole walk is still one function of the seed. *)
+            [ if_
+                release_any
+                [ if_
+                    (tick.value ==:. 0)
+                    [ (* the code of an Off is its pitch *)
+                      out_code <-- uresize release_pitch ~width:8
+                    ; out_seat <-- release_seat
+                    ; tick <--. 1
+                    ]
+                    [ when_
+                        i.ready
+                        [ proc
+                            (List.init Token.seats ~f:(fun k ->
+                               when_ (out_seat.value ==:. k) [ seat_full.(k) <--. 0 ]))
+                        ; tick <--. 0
+                        ]
+                    ]
+                ]
+                ([ cur <--. 0
+                 ; filled <--. 0
+                 ; boot <-- vdd
+                 ; out_code <--. Token.to_code Token.Start
+                 ; after_forward <--. 1
+                 ]
+                 @ enter_forward)
+            ] )
         ; ( ForwardDone
           , [ land_ <-- vdd
             ; when_ (out_code.value ==:. 0) [ s <-- s.value +:. 1 ]
@@ -1128,7 +1204,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
       ; pitch = uresize (sel_bottom out_code.value ~width:7) ~width:8
       ; on = msb out_code.value
       }
-  ; valid = sm.is Emit
+  ; valid = sm.is Emit |: (sm.is Release &: release_any &: (tick.value ==:. 1))
   ; idle = sm.is Idle
   }
 ;;
@@ -1180,10 +1256,7 @@ let%expect_test "the program is data: the state table prints" =
 
 (* The stream comparison: the circuit against the reference, event for event, on drawn
    weights. This is the gate that holds the circuit to [Quantized]. *)
-let%expect_test "the source agrees with the reference, event for event" =
-  let model = Quantized.Model.For_test.init Transformer.Config.baseline ~seed:11 in
-  let seed = 42 in
-  let steps = 3 in
+let stream_agrees ~model ~seed ~steps =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
   let inp = Cyclesim.inputs sim in
@@ -1241,8 +1314,30 @@ let%expect_test "the source agrees with the reference, event for event" =
   if not ([%compare.equal: (int * int * bool) list list] circuit reference)
   then (
     Stdio.print_s ([%sexp_of: (int * int * bool) list list] circuit);
-    Stdio.print_s ([%sexp_of: (int * int * bool) list list] reference));
+    Stdio.print_s ([%sexp_of: (int * int * bool) list list] reference))
+;;
+
+let%expect_test "the source agrees with the reference, event for event" =
+  stream_agrees
+    ~model:(Quantized.Model.For_test.init Transformer.Config.baseline ~seed:11)
+    ~seed:42
+    ~steps:3;
   [%expect {| 3 steps, 8 events, the streams agree: true |}]
+;;
+
+(* The same gate over a piece boundary. The arc is short here and 256 on the board: a
+   boundary costs a whole forward pass in simulation, and the rule under test is the
+   boundary and not its period. Twenty steps cross two of them. *)
+let%expect_test "the source agrees with the reference over a piece boundary" =
+  stream_agrees
+    ~model:
+      (Quantized.Model.For_test.init
+         ~piece_steps:(Some 8)
+         Transformer.Config.baseline
+         ~seed:11)
+    ~seed:42
+    ~steps:20;
+  [%expect {| 20 steps, 44 events, the streams agree: true |}]
 ;;
 
 (* The cycle bench: the circuit's measured cost against [Op.cycles], phase by phase. A
@@ -1252,9 +1347,9 @@ let%expect_test "the source agrees with the reference, event for event" =
    ends over ForwardDone and Idle, thus three as well; the observation lands one cycle
    after Idle sets. The ring's fill [n] is the forward count so far, capped at the slot
    count. *)
-let%expect_test "the cycle bench: the measured walk against the cost model" =
+let bench ~piece_steps ~steps () =
   let config = Transformer.Config.baseline in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let model = Quantized.Model.For_test.init ~piece_steps config ~seed:11 in
   let prog = schedule model in
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
@@ -1272,11 +1367,19 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
     sum_ops prog.sample ~n + sum_ops prog.forward ~n + if closing then 4 else 3
   in
   let events = ref 0 in
+  (* the sounding set follows the socket, thus a boundary step knows what it will release
+     before it runs *)
+  let sounding = ref (Set.empty (module Int)) in
   let count_until_idle () =
     let cycles = ref 0 in
     while not (Bits.to_bool !(out.idle)) do
       Cyclesim.cycle sim;
-      if Bits.to_bool !(out.valid) then Int.incr events;
+      if Bits.to_bool !(out.valid)
+      then (
+        Int.incr events;
+        let pitch = Bits.to_int_trunc !(out.note.pitch) in
+        sounding
+        := (if Bits.to_bool !(out.note.on) then Set.add else Set.remove) !sounding pitch);
       Int.incr cycles;
       assert (!cycles < 20_000_000)
     done;
@@ -1295,29 +1398,56 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
     boot_measured
     boot_model
     (boot_measured - boot_model);
+  (* [k] counts the steps the bench has commanded, thus the step counter of the source is
+     [k - 1] when this one draws *)
   let step k =
+    let boundary =
+      match piece_steps with
+      | Some period when k - 1 > 0 && (k - 1) % period = 0 -> Some (Set.length !sounding)
+      | Some (_ : int) | None -> None
+    in
     events := 0;
     inp.step := Bits.vdd;
     Cyclesim.cycle sim;
     inp.step := Bits.gnd;
     Cyclesim.cycle sim;
     let measured = 2 + count_until_idle () in
-    let rounds = !events + 1 in
+    (* the release is a socket event and not a draw, thus the rounds count the rest; the
+       ring is empty behind the boundary, and its START forward fills the one slot *)
+    let released = Option.value boundary ~default:0 in
+    let opening =
+      match boundary with
+      | None -> 0
+      | Some released ->
+        forwards := 1;
+        Op.boundary_cycles config prog.forward ~released
+    in
+    let rounds = !events - released + 1 in
     let modeled =
-      List.init rounds ~f:(fun r -> model_round ~closing:(r = rounds - 1))
-      |> List.fold ~init:0 ~f:( + )
+      opening
+      + (List.init rounds ~f:(fun r -> model_round ~closing:(r = rounds - 1))
+         |> List.fold ~init:0 ~f:( + ))
     in
     Stdio.printf
-      "step %d: %d events, measured %d, model %d, delta %d\n"
+      "step %d:%s %d events, measured %d, model %d, delta %d\n"
       k
+      (match boundary with
+       | None -> ""
+       | Some released -> Printf.sprintf " boundary releases %d," released)
       !events
       measured
       modeled
       (measured - modeled);
     measured
   in
-  let total = List.fold (List.range 1 4) ~init:boot_measured ~f:(fun t k -> t + step k) in
-  Stdio.printf "total %d\n" total;
+  let total =
+    List.fold (List.range 1 (steps + 1)) ~init:boot_measured ~f:(fun t k -> t + step k)
+  in
+  Stdio.printf "total %d\n" total
+;;
+
+let%expect_test "the cycle bench: the measured walk against the cost model" =
+  bench ~piece_steps:None ~steps:3 ();
   [%expect
     {|
     boot: measured 115547, model 115547, delta 0
@@ -1325,5 +1455,21 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
     step 2: 2 events, measured 417823, model 417823, delta 0
     step 3: 2 events, measured 420631, model 420631, delta 0
     total 1644132
+    |}]
+;;
+
+(* The same bench over a piece boundary. A boundary costs the release, the forward of
+   START over an empty ring, and the landing — the cycles a step of the board pays four
+   times an hour. The arc is short here for the same reason the stream gate's is. *)
+let%expect_test "the cycle bench over a piece boundary" =
+  bench ~piece_steps:(Some 2) ~steps:4 ();
+  [%expect
+    {|
+    boot: measured 115547, model 115547, delta 0
+    step 1: 4 events, measured 690131, model 690131, delta 0
+    step 2: 2 events, measured 417823, model 417823, delta 0
+    step 3: boundary releases 4, 8 events, measured 805685, model 805685, delta 0
+    step 4: 2 events, measured 417823, model 417823, delta 0
+    total 2447009
     |}]
 ;;

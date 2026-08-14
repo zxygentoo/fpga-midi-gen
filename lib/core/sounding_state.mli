@@ -3,11 +3,11 @@
     model spends no mass on a code that the draw would refuse.
 
     [legal_mask] is the full grammar of the corpus encoding: [Start] never — it is input
-    only; an [On] when its pitch does not sound, a seat of the four is open, and its pitch
-    is below the last ON of the sentence; an [Off] when its pitch sounds, the sentence
-    holds no ON yet, and its pitch is above the last OFF; [End] always. The training loss
-    carries this mask, thus the model needs it at the draw: its raw mass on the codes
-    outside is untrained.
+    only; an [On] when its pitch is not 0, its pitch does not sound, a seat of the four is
+    open, and its pitch is below the last ON of the sentence; an [Off] when its pitch
+    sounds, the sentence holds no ON yet, and its pitch is above the last OFF; [End]
+    always. The training loss carries this mask, thus the model needs it at the draw: its
+    raw mass on the codes outside is untrained.
 
     The ONs fall and the OFFs climb, and each direction earns its place. The fall is the
     melody leading: the top voice is chosen before the voices under it and conditions on
@@ -20,7 +20,9 @@
     spend mass to learn an order the mask could refuse for nothing.
 
     Two of these rules protect the instrument itself: no [On] of a sounding pitch (the
-    cross-kill of the S-1), and no fifth voice. The rest hold the sentence order.
+    cross-kill of the S-1), and no fifth voice. One protects the encoding: [Off 0] has no
+    code, because code 0 is End, thus a sounding pitch 0 could never be released and pitch
+    0 never starts. The rest hold the sentence order.
 
     This state is the register set of the circuit below: the sounding vector, the last ON,
     the last OFF and the seat count. *)
@@ -37,6 +39,11 @@ val step : t -> Token.t -> t
 
 (** [legal_mask t] is the grammar flag of every code, indexed by the code. *)
 val legal_mask : t -> bool array
+
+(** [sounding t] is the pitches that sound, ascending. A release walks them in this order,
+    thus its OFFs climb as the grammar states, and the order needs no seat: the software
+    model, the reference and the circuit can all state it the same way. *)
+val sounding : t -> int list
 
 (** The circuit: the same grammar, in registers. The state above is the reference, and the
     block test in this module drives the two side by side over drawn walks. Therefore the

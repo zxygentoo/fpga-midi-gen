@@ -12,6 +12,11 @@ let progress_buckets = 16
 (* a chorale runs 228 steps at the median, thus a bucket is 14.2 steps there and 16 is the
    nearest power of two — and a power of two is a bit-slice in the circuit *)
 let progress_stride = 16
+
+(* The steps of one synthetic piece at the draw: the arc of the piece-position table, one
+   time around. A walk that re-anchors takes this as its period, thus the piece boundary
+   and bucket zero are the same instant. *)
+let piece_steps = progress_stride * progress_buckets
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
 module Config = struct
@@ -404,9 +409,11 @@ let draw_code raw ~mask ~temperature ~min_p ~uniform =
 (* The sampler is a loop with state at the edge of the module: the histories, the walk of
    the mask, and the PRNG. The forward pass recomputes the whole window for each token;
    the host affords that, per the design document. *)
-let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
+let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~piece_steps =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
+  Option.iter piece_steps ~f:(fun steps ->
+    if steps <= 0 then invalid_arg "piece_steps is positive");
   (* the newest items of a history, oldest first: the row the forward pass reads *)
   let window history = List.take history config.context |> List.rev |> Array.of_list in
   (* The logits of the code that follows the window. The forward pass gives one row for
@@ -461,6 +468,29 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   let current = ref [] in
   let out = ref [] in
   let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
+  (* The piece boundary: the walk plays a sequence of pieces and not one endless stream,
+     which decays into a drone. The histories return to START alone and the sounding set
+     to silence, thus the model draws from the condition the corpus trained it on; the
+     step index and the PRNG carry, thus each piece is a new draw. START's row reads the
+     carried step index, as every row does — at the default arc its phase and bucket are
+     zero, because the arc and the two table periods divide it. The release states the
+     OFFs of the sounding pitches, climbing, as the grammar would state them.
+
+     The rule is [Quantized.Engine.next_step]'s, and the two need not agree token for
+     token: quantization has already parted them. The boundary reads the step index and
+     never the music, thus both take it at the same step however far they have parted. *)
+  let boundary () =
+    match piece_steps with
+    | Some steps when !step_index % steps = 0 ->
+      (* [current] holds a sentence reversed, thus the release goes in descending and
+         comes out climbing, ahead of the tokens the next step draws *)
+      current := List.rev_map (Sounding_state.sounding !state) ~f:(fun p -> Token.Off p);
+      codes := [ Token.to_code Token.Start ];
+      phases := [ !step_index mod phase_buckets ];
+      progress := [ bucket !step_index ];
+      state := Sounding_state.silence
+    | Some (_ : int) | None -> ()
+  in
   while !step_index < steps do
     let raw =
       next_code_logits
@@ -497,7 +527,9 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     | End ->
       out := List.rev !current :: !out;
       current := [];
-      incr step_index
+      incr step_index;
+      (* the loop above walks tokens and this walks steps, thus the boundary lands here *)
+      boundary ()
   done;
   let count = Float.of_int (max 1 tally.draws) in
   (* the annotation picks the means, not the sums of [tally] beside them *)
@@ -585,7 +617,16 @@ let%expect_test "the sampler draws only what the mask allows" =
   let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
   let params = Params.init config ~seed:5 in
   let ~music, ~stats =
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+    (* the short arc crosses two boundaries, thus the walk below also proves the release
+       legal: its OFFs climb from a sentence that holds no ON yet *)
+    sample
+      config
+      params
+      ~seed:7
+      ~steps:24
+      ~temperature:0.9
+      ~min_p:(1.0 /. 256.0)
+      ~piece_steps:(Some 8)
   in
   (* [sample] drops the [End] that closed each sentence; the walk needs it back *)
   let sentence step = step @ [ Token.End ] in
@@ -611,7 +652,14 @@ let%expect_test "the sampler draws only what the mask allows" =
   |> List.iter ~f:(fun step -> print_s ([%sexp_of: Token.t list] step));
   (* the same seed draws the same music; Token.t carries no compare, thus the codes do *)
   let ~music:again, ~stats:_ =
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+    sample
+      config
+      params
+      ~seed:7
+      ~steps:24
+      ~temperature:0.9
+      ~min_p:(1.0 /. 256.0)
+      ~piece_steps:(Some 8)
   in
   let codes steps = List.map steps ~f:(List.map ~f:Token.to_code) in
   printf
@@ -619,10 +667,10 @@ let%expect_test "the sampler draws only what the mask allows" =
     (List.equal (List.equal Int.equal) (codes music) (codes again));
   [%expect
     {|
-    24 steps  58 tokens  0 illegal   the mask held 0.8441 of the raw mass over 58 draws
-    ((On 114) (On 30) (On 21) (On 0))
-    ((Off 21) (On 75))
-    ((Off 30) (On 99))
+    24 steps  80 tokens  0 illegal   the mask held 0.8232 of the raw mass over 72 draws
+    ((On 114) (On 30) (On 22))
+    ((On 82))
+    ((Off 22) (On 52))
     the seed repeats: true
     |}]
 ;;

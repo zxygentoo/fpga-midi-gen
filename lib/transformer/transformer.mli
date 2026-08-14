@@ -25,6 +25,11 @@ val progress_buckets : int
     reasoning of all three. *)
 val progress_stride : int
 
+(** the steps of one synthetic piece at the draw: [progress_stride * progress_buckets],
+    the arc of the piece-position table one time around. A walk that re-anchors takes this
+    as its period, thus the piece boundary and bucket zero fall on the same step. *)
+val piece_steps : int
+
 (** The shape of the model: the numbers that size every tensor here and every register in
     the circuit. A configuration and a set of parameters make a model together, and the
     constructors of [Quantized.Model] keep that pair from slipping. *)
@@ -209,8 +214,17 @@ val loss
     below [min_p] of the peak's; the peak always stays, thus a draw always exists, and
     zero turns the filter off. The same seed gives the same music.
 
-    It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
-    outside 0 up to 1. *)
+    [piece_steps] bounds the walk: every that many steps the sounding pitches release,
+    climbing, and the histories return to an empty context and START, while the step index
+    and the PRNG carry. START's row reads the carried step index, as every row does — at
+    the default arc its phase and bucket are zero, because the arc and the two table
+    periods divide it. [None] is one endless walk, which decays into a drone within
+    minutes. This is the policy of [Quantized.Engine.next_step]; the two need not agree
+    token for token, because quantization has already parted them, and the boundary reads
+    the step index and never the music, thus both take it at the same step.
+
+    It raises [Invalid_argument] when [temperature] is 0 or less, when [min_p] falls
+    outside 0 up to 1, or when [piece_steps] is [Some steps] with [steps] 0 or less. *)
 val sample
   :  Config.t
   -> Params.t
@@ -218,6 +232,7 @@ val sample
   -> steps:int
   -> temperature:float
   -> min_p:float
+  -> piece_steps:int option
   -> music:Token.t list list * stats:sample_stats
 
 (** [draw_code raw ~mask ~temperature ~min_p ~uniform] is the draw stage of [sample] as

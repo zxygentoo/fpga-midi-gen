@@ -29,7 +29,12 @@ let is_legal t (token : Token.t) =
   match token with
   | Start -> false
   | On pitch ->
-    (not (Set.mem t.sounding pitch))
+    (* A pitch that sounds must be releasable, and [Off 0] has no code: code 0 is End.
+       Therefore pitch 0 never starts, or its voice would hold for the rest of the walk
+       with no token able to close it. [Jsb.escape_reserved] moves the same two pitches,
+       thus the corpus never states one either. *)
+    pitch <> 0
+    && (not (Set.mem t.sounding pitch))
     && Set.length t.sounding < Token.seats
     && below_last_on t pitch
   | Off pitch ->
@@ -46,6 +51,7 @@ let step t (token : Token.t) =
 ;;
 
 let legal_mask t = Array.init Token.vocab ~f:(fun code -> is_legal t (Token.of_code code))
+let sounding t = Set.to_list t.sounding
 
 let%expect_test "the legal mask enforces the sentence rules" =
   let walk tokens = List.fold tokens ~init:silence ~f:step in
@@ -196,8 +202,13 @@ module Rtl = struct
     let q = sel_bottom i.query ~width:pitch_bits in
     let bit = mux q (bits_lsb mask.value) in
     let off_ok = bit &: ~:(lov.value) &: (~:(lofv.value) |: (q >: last_off.value)) in
+    (* [q <>:. 0] is the rule of [is_legal]: [Off 0] has no code, thus pitch 0 never
+       starts *)
     let on_ok =
-      ~:bit &: (count.value <:. Token.seats) &: (~:(lov.value) |: (q <: last_on.value))
+      ~:bit
+      &: (q <>:. 0)
+      &: (count.value <:. Token.seats)
+      &: (~:(lov.value) |: (q <: last_on.value))
     in
     { O.legal =
         mux2
