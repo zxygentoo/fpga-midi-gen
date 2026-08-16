@@ -71,11 +71,19 @@ def sample(params, *, seeds, steps, context, heads, span, temperature, min_p):
         )
     )
     state = prng.states(seeds)
-    codes = np.full((batch, 1), data.START, dtype=np.int32)
-    phases = np.zeros((batch, 1), dtype=np.int32)
-    buckets = np.zeros((batch, 1), dtype=np.int32)
+    # The boot of docs/improviser.md: a silent lead-in of one bar, each step one END
+    # alone. Attention needs one token, and the packed corpus holds a run of silent steps
+    # at every seam, thus the model opens the music itself. The lead-in counts inside
+    # [steps] and stands at the head of the music, as it does in Transformer.sample.
+    lead = model.PHASE_BUCKETS
+    ahead = np.arange(lead, dtype=np.int64)
+    codes = np.zeros((batch, lead), dtype=np.int32)  # END
+    phases = np.tile(ahead % model.PHASE_BUCKETS, (batch, 1)).astype(np.int32)
+    buckets = np.tile(
+        ahead // model.PROGRESS_STRIDE % model.PROGRESS_BUCKETS, (batch, 1)
+    ).astype(np.int32)
     sounding = data.Sounding(batch)
-    step_index = np.zeros(batch, dtype=np.int64)
+    step_index = np.full(batch, lead, dtype=np.int64)
     music = [[[] for _ in range(steps)] for _ in range(batch)]
     sentence = [[] for _ in range(batch)]
 

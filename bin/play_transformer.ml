@@ -236,9 +236,9 @@ let command =
          (optional_with_default Transformer.piece_steps int)
          ~doc:
            "N re-anchor the walk every N steps: release the sounding pitches, clear the \
-            context and feed START, carrying the step count and the PRNG. 0 is the \
-            endless walk, which decays into a drone; the default is one arc of the \
-            piece-position table"
+            context and feed START, carrying the step count and the PRNG. It applies to \
+            -quantized alone: the float sampler is the improviser of docs/improviser.md, \
+            which knows no piece. 0 is the endless walk"
      and quantized =
        flag
          "-quantized"
@@ -319,14 +319,7 @@ let command =
          else (
            let params = Transformer.Params.load config ~path:checkpoint in
            let ~music, ~stats =
-             Transformer.sample
-               config
-               params
-               ~seed
-               ~steps
-               ~temperature
-               ~min_p
-               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
+             Transformer.sample config params ~seed ~steps ~temperature ~min_p
            in
            music, Some stats)
        in

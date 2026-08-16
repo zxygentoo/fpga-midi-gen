@@ -409,11 +409,9 @@ let draw_code raw ~mask ~temperature ~min_p ~uniform =
 (* The sampler is a loop with state at the edge of the module: the histories, the walk of
    the mask, and the PRNG. The forward pass recomputes the whole window for each token;
    the host affords that, per the design document. *)
-let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~piece_steps =
+let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
-  Option.iter piece_steps ~f:(fun steps ->
-    if steps <= 0 then invalid_arg "piece_steps is positive");
   (* the newest items of a history, oldest first: the row the forward pass reads *)
   let window history = List.take history config.context |> List.rev |> Array.of_list in
   (* The logits of the code that follows the window. The forward pass gives one row for
@@ -457,40 +455,25 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~piece_st
     1.0 -. (legal /. all)
   in
   let stream = ref (Prng.create_folded ~seed) in
-  (* The boot of the design document: an empty context, then START — power on, music on.
-     START takes phase zero; the host takes zero as the boot value of the bar counter, the
-     choice the RTL keeps free. *)
-  let codes = ref [ Token.to_code Token.Start ] in
-  let phases = ref [ 0 ] in
-  let progress = ref [ 0 ] in
+  let codes = ref [] in
+  let phases = ref [] in
+  let progress = ref [] in
   let state = ref Sounding_state.silence in
   let step_index = ref 0 in
   let current = ref [] in
   let out = ref [] in
   let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
-  (* The piece boundary: the walk plays a sequence of pieces and not one endless stream,
-     which decays into a drone. The histories return to START alone and the sounding set
-     to silence, thus the model draws from the condition the corpus trained it on; the
-     step index and the PRNG carry, thus each piece is a new draw. START's row reads the
-     carried step index, as every row does — at the default arc its phase and bucket are
-     zero, because the arc and the two table periods divide it. The release states the
-     OFFs of the sounding pitches, climbing, as the grammar would state them.
-
-     The rule is [Quantized.Engine.next_step]'s, and the two need not agree token for
-     token: quantization has already parted them. The boundary reads the step index and
-     never the music, thus both take it at the same step however far they have parted. *)
-  let boundary () =
-    match piece_steps with
-    | Some steps when !step_index % steps = 0 ->
-      (* [current] holds a sentence reversed, thus the release goes in descending and
-         comes out climbing, ahead of the tokens the next step draws *)
-      current := List.rev_map (Sounding_state.sounding !state) ~f:(fun p -> Token.Off p);
-      codes := [ Token.to_code Token.Start ];
-      phases := [ !step_index mod phase_buckets ];
-      progress := [ bucket !step_index ];
-      state := Sounding_state.silence
-    | Some (_ : int) | None -> ()
-  in
+  (* The boot of docs/improviser.md: a silent lead-in. Attention needs one token, and the
+     packed corpus holds a run of silent steps at every seam, thus this condition is one
+     the model trained on and the model opens the music itself. One bar is the longest
+     seam of that corpus, and it leaves the first draw on a downbeat. *)
+  for _ = 1 to phase_buckets do
+    codes := Token.to_code Token.End :: !codes;
+    phases := (!step_index mod phase_buckets) :: !phases;
+    progress := bucket !step_index :: !progress;
+    out := [] :: !out;
+    incr step_index
+  done;
   while !step_index < steps do
     let raw =
       next_code_logits
@@ -527,9 +510,7 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p ~piece_st
     | End ->
       out := List.rev !current :: !out;
       current := [];
-      incr step_index;
-      (* the loop above walks tokens and this walks steps, thus the boundary lands here *)
-      boundary ()
+      incr step_index
   done;
   let count = Float.of_int (max 1 tally.draws) in
   (* the annotation picks the means, not the sums of [tally] beside them *)
@@ -617,16 +598,9 @@ let%expect_test "the sampler draws only what the mask allows" =
   let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
   let params = Params.init config ~seed:5 in
   let ~music, ~stats =
-    (* the short arc crosses two boundaries, thus the walk below also proves the release
-       legal: its OFFs climb from a sentence that holds no ON yet *)
-    sample
-      config
-      params
-      ~seed:7
-      ~steps:24
-      ~temperature:0.9
-      ~min_p:(1.0 /. 256.0)
-      ~piece_steps:(Some 8)
+    (* the lead-in holds sixteen of these steps, thus eight are drawn and the walk below
+       also proves the boot legal: the model draws its first ON against one bar of END *)
+    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
   in
   (* [sample] drops the [End] that closed each sentence; the walk needs it back *)
   let sentence step = step @ [ Token.End ] in
@@ -652,14 +626,7 @@ let%expect_test "the sampler draws only what the mask allows" =
   |> List.iter ~f:(fun step -> print_s ([%sexp_of: Token.t list] step));
   (* the same seed draws the same music; Token.t carries no compare, thus the codes do *)
   let ~music:again, ~stats:_ =
-    sample
-      config
-      params
-      ~seed:7
-      ~steps:24
-      ~temperature:0.9
-      ~min_p:(1.0 /. 256.0)
-      ~piece_steps:(Some 8)
+    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
   in
   let codes steps = List.map steps ~f:(List.map ~f:Token.to_code) in
   printf
@@ -667,7 +634,7 @@ let%expect_test "the sampler draws only what the mask allows" =
     (List.equal (List.equal Int.equal) (codes music) (codes again));
   [%expect
     {|
-    24 steps  80 tokens  0 illegal   the mask held 0.8232 of the raw mass over 72 draws
+    24 steps  40 tokens  0 illegal   the mask held 0.8019 of the raw mass over 24 draws
     ((On 114) (On 30) (On 22))
     ((On 82))
     ((Off 22) (On 52))

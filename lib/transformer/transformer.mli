@@ -201,30 +201,30 @@ val loss
   -> dropout:Dropout.t
   -> tensor
 
-(** [sample config params ~seed ~steps ~temperature ~min_p] draws [steps] steps from the
-    boot: an empty context, then [Start] at phase zero — power on, music on. The
-    piece-position bucket of step [i] is [i / 16 mod 16]: sixteen bars to the arc, about
-    the length of a chorale, and the arc repeats for as long as the draw runs. Therefore a
-    short draw is a prefix of a long one, and a draw of any length stays inside the walk
-    the corpus taught — where dividing by the length of the draw would stretch one arc
-    over a span no piece ever had, and would ask the board, which plays for ever, for a
-    length it does not know. One element of [music] is one drawn step: the events of its
-    sentence, without the [End]. The mask of the design document guards every draw, thus
-    each sentence is valid. [min_p] removes each legal token whose tempered probability is
-    below [min_p] of the peak's; the peak always stays, thus a draw always exists, and
-    zero turns the filter off. The same seed gives the same music.
+(** [sample config params ~seed ~steps ~temperature ~min_p] draws one endless walk of
+    [steps] steps — the improviser of docs/improviser.md, which knows no piece and takes
+    no boundary.
 
-    [piece_steps] bounds the walk: every that many steps the sounding pitches release,
-    climbing, and the histories return to an empty context and START, while the step index
-    and the PRNG carry. START's row reads the carried step index, as every row does — at
-    the default arc its phase and bucket are zero, because the arc and the two table
-    periods divide it. [None] is one endless walk, which decays into a drone within
-    minutes. This is the policy of [Quantized.Engine.next_step]; the two need not agree
-    token for token, because quantization has already parted them, and the boundary reads
-    the step index and never the music, thus both take it at the same step.
+    The boot is the silent lead-in: the walk opens with one bar of silent steps, each one
+    [End] alone, and the model opens the music itself. Attention needs one token, and the
+    packed corpus holds a run of silent steps at every seam, thus this is a condition the
+    model trained on. One bar is the longest seam of that corpus, and it leaves the first
+    drawn step on a downbeat. The lead-in counts inside [steps] and stands at the head of
+    [music], because it is silence the walk really plays.
 
-    It raises [Invalid_argument] when [temperature] is 0 or less, when [min_p] falls
-    outside 0 up to 1, or when [piece_steps] is [Some steps] with [steps] 0 or less. *)
+    The frame of step [i] is [i / 16 mod 16]: sixteen bars to the arc, which is the memory
+    window of the model, and the arc repeats for as long as the draw runs. Therefore a
+    short draw is a prefix of a long one, and the board, which plays for ever, needs no
+    length it cannot know.
+
+    One element of [music] is one drawn step: the events of its sentence, without the
+    [End]. The mask of the design document guards every draw, thus each sentence is valid.
+    [min_p] removes each legal token whose tempered probability is below [min_p] of the
+    peak's; the peak always stays, thus a draw always exists, and zero turns the filter
+    off. The same seed gives the same music.
+
+    It raises [Invalid_argument] when [temperature] is 0 or less, or when [min_p] falls
+    outside 0 up to 1. *)
 val sample
   :  Config.t
   -> Params.t
@@ -232,7 +232,6 @@ val sample
   -> steps:int
   -> temperature:float
   -> min_p:float
-  -> piece_steps:int option
   -> music:Token.t list list * stats:sample_stats
 
 (** [draw_code raw ~mask ~temperature ~min_p ~uniform] is the draw stage of [sample] as
