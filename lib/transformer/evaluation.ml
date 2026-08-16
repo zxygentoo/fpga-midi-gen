@@ -14,15 +14,21 @@ type batch =
   ; masks : bool array array array
   }
 
-let masks_after codes =
+let walk state codes =
+  Array.fold codes ~init:state ~f:(fun state code ->
+    Sounding_state.step state (Token.of_code code))
+;;
+
+let masks_from state codes =
   let (_ : Sounding_state.t), masks =
-    Array.fold_map codes ~init:Sounding_state.silence ~f:(fun state code ->
+    Array.fold_map codes ~init:state ~f:(fun state code ->
       let state = Sounding_state.step state (Token.of_code code) in
       state, Sounding_state.legal_mask state)
   in
   masks
 ;;
 
+let masks_after codes = masks_from Sounding_state.silence codes
 let words_per_mask = Token.vocab / 32
 
 let mask_words mask =
@@ -45,28 +51,37 @@ let batch_of_rows rows =
   }
 ;;
 
-let rows chorales ~context ~limit =
-  let rows =
-    List.concat_map chorales ~f:(fun chorale ->
-      let ~codes, ~phases, ~progress = Jsb.encode chorale in
-      let need = context + 1 in
-      let length = Array.length codes in
-      if length < need
-      then []
-      else (
-        let masks = masks_after codes in
-        List.init
-          (((length - need) / context) + 1)
-          ~f:(fun window ->
-            let start = min (window * context) (length - need) in
-            ({ codes = Array.sub codes ~pos:start ~len:need
-             ; phases = Array.sub phases ~pos:start ~len:context
-             ; progress = Array.sub progress ~pos:start ~len:context
-             ; masks = Array.sub masks ~pos:start ~len:context
-             }
-             : row))))
+(* The last anchor at or below an offset. A stream is too long to hold a mask for each of
+   its tokens, thus a row walks [Sounding_state] to its start; the seam before a piece
+   releases every sounding pitch, thus the walk begins at silence there. Before the first
+   piece the stream is silent, and offset zero serves. *)
+let anchor_at (stream : Jsb.stream) offset =
+  let nearer anchor start = if start <= offset then start else anchor in
+  Array.fold stream.anchors ~init:0 ~f:nearer
+;;
+
+let row (stream : Jsb.stream) ~start ~context =
+  let anchor = anchor_at stream start in
+  let state =
+    walk Sounding_state.silence (Array.sub stream.codes ~pos:anchor ~len:(start - anchor))
   in
-  List.take rows limit
+  let coordinate pos = stream.positions.(start + pos) in
+  ({ codes = Array.sub stream.codes ~pos:start ~len:(context + 1)
+   ; phases = Array.init context ~f:(fun pos -> coordinate pos % Jsb.bar_steps)
+   ; progress = Array.init context ~f:(fun pos -> coordinate pos / Jsb.bar_steps)
+   ; masks = masks_from state (Array.sub stream.codes ~pos:start ~len:context)
+   }
+   : row)
+;;
+
+let rows stream ~context ~limit =
+  let need = context + 1 in
+  let length = Array.length stream.Jsb.codes in
+  if length < need
+  then []
+  else (
+    let windows = min limit (((length - need) / context) + 1) in
+    List.init windows ~f:(fun window -> row stream ~start:(window * context) ~context))
 ;;
 
 let loss (config : Transformer.Config.t) params rows ~batch =

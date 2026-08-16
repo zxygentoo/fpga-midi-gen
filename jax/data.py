@@ -1,18 +1,23 @@
 """The data side of the JAX trainer.
 
-Reads the export of corpus_tool -- codes, phases, bitpacked masks and the variant index
-per split -- and mirrors the two batching policies of the OCaml trainer: the training
-draw (uniform piece, then uniform legal shift, then a random window) and the fixed
-evaluation windows of the referee (shift zero, stride context, pieces in order). Gate B
-holds this file honest: the JAX valid loss and the checkpoint_tool eval of the same
-checkpoint must agree, and they only can if these rows equal Evaluation.rows.
+Reads the export of corpus_tool -- codes, rolling coordinates, bitpacked masks and the
+stream index per split -- and mirrors the two batching policies of the OCaml trainer: the
+training draw (a uniform stream, then a uniform window) and the fixed evaluation windows
+of the referee (the canonical stream, stride context, from its start). Gate B holds this
+file honest: the JAX valid loss and the checkpoint_tool eval of the same checkpoint must
+agree, and they only can if these rows equal Evaluation.rows.
+
+A split is a set of packed streams -- piece, seam, piece, seam -- and not a set of pieces.
+There is no piece position and no short-piece padding: a window of a packed stream is
+always full, thus every position weighs one. The two position tables read one array, the
+coordinate of docs/improviser.md: the bar phase is its low four bits and the frame is its
+high four.
 """
 
 import numpy as np
 from safetensors.numpy import load_file
 
 BAR_STEPS = 16
-PROGRESS_BUCKETS = 16
 SPLITS = ("train", "valid", "test")
 
 VOCAB = 256
@@ -73,49 +78,26 @@ class Sounding:
         self.last_off = np.where(is_end & active, NO_LAST_OFF, self.last_off)
 
 
-def piece_progress(codes):
-    """The progress bucket of each token: which sixteenth of its piece the step sits in.
-
-    The bar phase says where a step is in the bar; nothing else in the stream says where
-    it is in the piece. The corpus earns the ratio: a repeated bar of the top line comes
-    again at a distance that is more constant as a part of the piece (CV 0.48) than as a
-    count of steps (CV 0.58). The step of a token is the count of ENDs before it, and the
-    length of the piece is its count of ENDs."""
-    ends = codes == 0
-    before = np.cumsum(ends) - ends
-    total = max(int(ends.sum()), 1)
-    bucket = before * PROGRESS_BUCKETS // total
-    return np.minimum(bucket, PROGRESS_BUCKETS - 1).astype(np.int32)
-
-
 class Split:
+    """The packed streams of one split. Stream zero is the canonical one -- every piece at
+    shift zero, in the order of the corpus -- and the referee reads it alone."""
+
     def __init__(self, tensors, name):
         self.codes = tensors[f"{name}/codes"]
-        self.phases = tensors[f"{name}/phases"]
+        self.positions = tensors[f"{name}/positions"]
         self.masks = tensors[f"{name}/masks"]  # packed words [tokens, 8]
-        self.index = tensors[
-            f"{name}/index"
-        ]  # [variants, 4]: piece, shift, offset, length
-        pieces = int(self.index[:, 0].max()) + 1 if len(self.index) else 0
-        self.by_piece = [[] for _ in range(pieces)]
-        for row, (piece, _, _, _) in enumerate(self.index):
-            self.by_piece[piece].append(row)
-        # progress needs the whole piece, so it is built here and sliced like the phases
-        self.progress = np.zeros(len(self.codes), dtype=np.int32)
-        for _, _, offset, length in self.index:
-            sl = slice(offset, offset + length)
-            self.progress[sl] = piece_progress(self.codes[sl])
+        self.index = tensors[f"{name}/index"]  # [streams, 2]: offset, length
 
-    def variant(self, row):
-        _, _, offset, length = self.index[row]
-        sl = slice(offset, offset + length)
-        return self.codes[sl], self.phases[sl], self.progress[sl], self.masks[sl]
-
-    def zero_shift_row(self, piece):
-        for row in self.by_piece[piece]:
-            if self.index[row, 1] == 0:
-                return row
-        raise ValueError(f"piece {piece} has no zero shift")
+    def window(self, row, start, context):
+        """one window of stream [row]: the codes, the two position tables and the masks"""
+        at = int(self.index[row, 0]) + start
+        positions = self.positions[at : at + context]
+        return (
+            self.codes[at : at + context + 1],
+            (positions % BAR_STEPS).astype(np.int32),
+            (positions // BAR_STEPS).astype(np.int32),
+            self.masks[at : at + context],
+        )
 
 
 def load_corpus(path):
@@ -132,60 +114,31 @@ def unpack_masks(words):
 
 
 def train_pool(corpus, train_on):
-    """the (split, piece) pool of the -train-on flag"""
+    """the (split, stream) pool of the -train-on flag"""
     names = {
         "train": ("train",),
         "train+test": ("train", "test"),
         "all": ("train", "test", "valid"),
     }[train_on]
     return [
-        (corpus[name], piece)
+        (corpus[name], row)
         for name in names
-        for piece in range(len(corpus[name].by_piece))
+        for row in range(len(corpus[name].index))
     ]
 
 
 def train_row(rng, pool, context):
-    """one training row: uniform piece, uniform legal shift, then a random window. A
-    short piece pads with the zero word, and the weights drop the padded positions from
-    the loss: a padded label would teach the walk to hold the last chord of the piece and
-    emit END for ever, the drone. The padding grows with the context — one piece of 306
-    at 256 tokens, but 81 of 306 at 512."""
-    split, piece = pool[rng.integers(len(pool))]
-    rows = split.by_piece[piece]
-    codes, phases, progress, masks = split.variant(rows[rng.integers(len(rows))])
-    need = context + 1
-    length = len(codes)
-    if length >= need:
-        start = rng.integers(length - need + 1)
-        return (
-            codes[start : start + need],
-            phases[start : start + context],
-            progress[start : start + context],
-            masks[start : start + context],
-            np.ones(context, dtype=np.float32),
-        )
-    steps = int((codes == 0).sum())
-    padded_codes = np.zeros(need, dtype=codes.dtype)
-    padded_codes[:length] = codes
-    pad = np.arange(length, context)
-    padded_phases = np.concatenate([phases[:length], (steps + pad - length) % BAR_STEPS])
-    # the piece is over in the padding, thus the last bucket holds it
-    padded_progress = np.concatenate(
-        [progress[:length], np.full(context - length, PROGRESS_BUCKETS - 1)]
-    )
-    padded_masks = np.concatenate(
-        [masks[:length], np.repeat(masks[length - 1 : length], context - length, axis=0)]
-    )
-    # position i draws label i + 1: it is real while i + 1 is inside the piece
-    weights = (np.arange(context) + 1 < length).astype(np.float32)
-    return (
-        padded_codes,
-        padded_phases.astype(phases.dtype),
-        padded_progress.astype(progress.dtype),
-        padded_masks,
-        weights,
-    )
+    """One training row: a uniform stream, then a uniform window of it.
+
+    A window of a packed stream is always full -- there is no short piece to pad and no
+    position to drop from the loss -- thus every position weighs one. The piece draw is no
+    longer uniform: a long piece holds more windows than a short one, which is the
+    objective the endless walk asks for."""
+    split, row = pool[rng.integers(len(pool))]
+    length = int(split.index[row, 1])
+    start = rng.integers(length - context)
+    codes, phases, progress, masks = split.window(row, start, context)
+    return codes, phases, progress, masks, np.ones(context, dtype=np.float32)
 
 
 def train_batch(rng, pool, batch, context):
@@ -199,28 +152,14 @@ def train_batch(rng, pool, batch, context):
 
 
 def eval_rows(split, context, limit):
-    """the fixed windows of the referee: shift zero, pieces in order, stride context,
-    short pieces skipped -- Evaluation.rows in lib/evaluation.ml"""
-    rows = []
+    """the fixed windows of the referee: the canonical stream, cut at stride context from
+    its start -- Evaluation.rows in lib/transformer/evaluation.ml"""
     need = context + 1
-    for piece in range(len(split.by_piece)):
-        codes, phases, progress, masks = split.variant(split.zero_shift_row(piece))
-        length = len(codes)
-        if length < need:
-            continue
-        for window in range((length - need) // context + 1):
-            start = min(window * context, length - need)
-            rows.append(
-                (
-                    codes[start : start + need],
-                    phases[start : start + context],
-                    progress[start : start + context],
-                    masks[start : start + context],
-                )
-            )
-            if len(rows) == limit:
-                return rows
-    return rows
+    length = int(split.index[0, 1])
+    if length < need:
+        return []
+    windows = min(limit, (length - need) // context + 1)
+    return [split.window(0, window * context, context) for window in range(windows)]
 
 
 def eval_batches(split, context, limit, batch):

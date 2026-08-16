@@ -31,63 +31,20 @@ module Pool = struct
   ;;
 end
 
-(* One train row: a window of context + 1 codes from one chorale, with a fresh
-   transposition — a draw from the legal shifts of the piece, or from the fixed window of
-   the [-augment] control. A short chorale takes padding: the zero word, which is silence. *)
-let train_row rng pool ~context ~augment =
-  let chorale = pool.(Random.State.int rng (Array.length pool)) in
-  let shift =
-    match augment with
-    | Some window -> Random.State.int rng ((2 * window) + 1) - window
-    | None ->
-      let shifts = Array.of_list chorale.Jsb.legal_shifts in
-      shifts.(Random.State.int rng (Array.length shifts))
-  in
-  let ~codes, ~phases, ~progress = Jsb.encode (Jsb.transpose ~by:shift chorale) in
-  let masks = Evaluation.masks_after codes in
-  let need = context + 1 in
-  let length = Array.length codes in
-  if length >= need
-  then (
-    let start = Random.State.int rng (length - need + 1) in
-    ( ({ Evaluation.codes = Array.sub codes ~pos:start ~len:need
-       ; phases = Array.sub phases ~pos:start ~len:context
-       ; progress = Array.sub progress ~pos:start ~len:context
-       ; masks = Array.sub masks ~pos:start ~len:context
-       }
-       : Evaluation.row)
-    , Array.create ~len:context 1.0 ))
-  else (
-    let steps = Array.count codes ~f:(fun code -> code = 0) in
-    let padded_codes = Array.create ~len:need 0 in
-    Array.blit ~src:codes ~src_pos:0 ~dst:padded_codes ~dst_pos:0 ~len:length;
-    let padded_phases =
-      Array.init context ~f:(fun i ->
-        if i < length then phases.(i) else (steps + i - length) mod Jsb.bar_steps)
-    in
-    let padded_masks =
-      Array.init context ~f:(fun i ->
-        if i < length then masks.(i) else masks.(length - 1))
-    in
-    (* the piece is over in the padding, thus the last bucket holds it *)
-    let padded_progress =
-      Array.init context ~f:(fun i ->
-        if i < length then progress.(i) else Jsb.progress_buckets - 1)
-    in
-    (* position [i] draws label [i + 1]: it is real while the label is inside the piece *)
-    let weights = Array.init context ~f:(fun i -> if i + 1 < length then 1.0 else 0.0) in
-    ( ({ Evaluation.codes = padded_codes
-       ; phases = padded_phases
-       ; progress = padded_progress
-       ; masks = padded_masks
-       }
-       : Evaluation.row)
-    , weights ))
+(* One train row: a uniform stream, then a uniform window of it. A window of a packed
+   stream is always full — there is no short piece to pad and no position to drop from the
+   loss — thus every position weighs one. *)
+let train_row rng streams ~context =
+  let stream = streams.(Random.State.int rng (Array.length streams)) in
+  let start = Random.State.int rng (Array.length stream.Jsb.codes - context) in
+  Evaluation.row stream ~start ~context
 ;;
 
-let train_batch rng pool ~batch ~context ~augment =
-  let rows = List.init batch ~f:(fun (_ : int) -> train_row rng pool ~context ~augment) in
-  Evaluation.batch_of_rows (List.map rows ~f:fst), Array.of_list_map rows ~f:snd
+let train_batch rng streams ~batch ~context =
+  let rows = List.init batch ~f:(fun (_ : int) -> train_row rng streams ~context) in
+  ( Evaluation.batch_of_rows rows
+  , Array.of_list_map rows ~f:(fun (_ : Evaluation.row) -> Array.create ~len:context 1.0)
+  )
 ;;
 
 (* The schedule story: a linear warmup to the peak, then a cosine decay to zero over the
@@ -121,7 +78,7 @@ let train
   ~steps
   ~learning_rate
   ~seed
-  ~augment
+  ~corpus_streams
   ~log_every
   ~eval_every
   ~eval_limit
@@ -136,22 +93,32 @@ let train
   =
   let config = { Transformer.Config.d; layers; heads; context; slope_span } in
   let data = Jsb.load ~path:corpus in
-  let pool = Array.of_list (Pool.chorales train_on data) in
-  (* The windows of the referee come from whole pieces, thus a long training context
-     leaves almost none: 149 valid rows at 256, 56 at 512, 6 at 1024, none at 2048. ALiBi
-     holds no position table, so a model trained long evaluates short, and one evaluation
-     context makes every run of a sweep compare. *)
+  (* ALiBi holds no position table, so a model trained long evaluates short, and one
+     evaluation context makes every run of a sweep compare. *)
   let eval_context = Option.value eval_context ~default:context in
-  let train_eval = Evaluation.rows data.train ~context:eval_context ~limit:eval_limit in
-  let valid_eval = Evaluation.rows data.valid ~context:eval_context ~limit:eval_limit in
+  (* the referee reads the canonical stream of the split, which both trainers make the
+     same way, thus Gate A and Gate B hold *)
+  let referee chorales =
+    Evaluation.rows (Jsb.pack chorales) ~context:eval_context ~limit:eval_limit
+  in
+  let train_eval = referee data.train in
+  let valid_eval = referee data.valid in
   (* the batch stream takes its own lane: the parameter draw reads [| seed |], the batches
      [| seed; 1 |] and the dropout [| seed; 2 |], thus the three stay distinct *)
   let rng = Random.State.make [| seed; 1 |] in
   let dropout_rng = Random.State.make [| seed; 2 |] in
+  let streams =
+    Jsb.streams
+      (Pool.chorales train_on data)
+      ~count:corpus_streams
+      ~random_state:(Random.State.make [| seed; 3 |])
+    |> Array.of_list
+  in
   let params = ref (Transformer.Params.init config ~seed) in
   printf
-    "corpus: %d train chorales; eval rows: %d train, %d valid; parameters: %d\n%!"
-    (Array.length pool)
+    "corpus: %d streams, %d tokens; eval rows: %d train, %d valid; parameters: %d\n%!"
+    (Array.length streams)
+    (Array.sum (module Int) streams ~f:(fun s -> Array.length s.Jsb.codes))
     (List.length train_eval)
     (List.length valid_eval)
     (parameter_count !params);
@@ -182,7 +149,7 @@ let train
     printf "step %4d  eval  train %.4f  valid %.4f%s\n%!" step train_loss valid_loss mark
   in
   for step = 1 to steps do
-    let rows, weights = train_batch rng pool ~batch ~context ~augment in
+    let rows, weights = train_batch rng streams ~batch ~context in
     (* the dropout takes its own lane, thus the draw and the batch streams stay put *)
     let dropout =
       Transformer.Dropout.create
@@ -277,13 +244,13 @@ let command =
      and learning_rate =
        flag "-lr" (optional_with_default 3e-4 float) ~doc:"F the learning rate"
      and seed = flag "-seed" (optional_with_default 1 int) ~doc:"N the seed"
-     and augment =
+     and corpus_streams =
        flag
-         "-augment"
-         (optional int)
+         "-streams"
+         (optional_with_default 8 int)
          ~doc:
-           "N the fixed transposition window of the old policy, the control; absent \
-            draws from the legal shifts of each piece"
+           "N the packed streams of the pool. Stream zero is the canonical one, and each \
+            of the others draws a fresh order and a fresh shift for each piece."
      and log_every =
        flag "-log-every" (optional_with_default 10 int) ~doc:"N the log period"
      and eval_every =
@@ -344,7 +311,7 @@ let command =
          ~steps
          ~learning_rate
          ~seed
-         ~augment
+         ~corpus_streams
          ~log_every
          ~eval_every
          ~eval_limit

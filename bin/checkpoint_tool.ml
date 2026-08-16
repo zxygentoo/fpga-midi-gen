@@ -43,7 +43,7 @@ let eval ~checkpoint ~corpus ~heads ~context ~slope_span ~rows ~batch ~out =
   let config = Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span in
   let params = Transformer.Params.load config ~path:checkpoint in
   let data = Jsb.load ~path:corpus in
-  let eval_rows = Evaluation.rows data.valid ~context ~limit:rows in
+  let eval_rows = Evaluation.rows (Jsb.pack data.valid) ~context ~limit:rows in
   let loss = Evaluation.loss config params eval_rows ~batch in
   printf "%d valid rows  loss %.4f\n%!" (List.length eval_rows) loss;
   Option.iter out ~f:(fun path ->

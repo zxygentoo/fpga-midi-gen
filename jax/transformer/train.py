@@ -211,8 +211,9 @@ def main(
     step_fn = make_step(heads, dropout, clip, wd, alibi_span)
     eval_fn = make_eval(heads, alibi_span)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
+    tokens = sum(int(split.index[row, 1]) for split, row in pool)
     print(
-        f"corpus: {len(pool)} pool pieces; eval rows: "
+        f"corpus: {len(pool)} pool streams, {tokens} tokens; eval rows: "
         f"{sum(b[4] for b in train_eval)} train, {sum(b[4] for b in valid_eval)} valid; "
         f"parameters: {count}",
         flush=True,

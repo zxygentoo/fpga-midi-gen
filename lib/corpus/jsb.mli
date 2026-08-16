@@ -21,15 +21,31 @@ type t =
   ; test : chorale list
   }
 
+(** one packed stream: piece, seam, piece, seam, with one element of [codes] and one of
+    [positions] per token *)
+type stream =
+  { codes : int array (** each token as its code, per [Token.to_code] *)
+  ; positions : int array
+  (** the rolling coordinate of the step of each token: the step count of the stream
+      modulo [window_steps]. The bar phase is the low four bits and the frame is the high
+      four, thus the two 16-row tables of the model read one number. *)
+  ; anchors : int array
+  (** the token offset of the first token of each piece, ascending. The seam before a
+      piece releases every sounding pitch, thus [Sounding_state.silence] is the state at
+      an anchor. A reader that wants the masks of one window walks from the anchor at or
+      below it; a stream is too long to hold a mask for each of its tokens. *)
+  }
+
 (** the committed place of the corpus in this repository *)
 val default_path : string
 
-(** the steps of one bar on the sixteenth grid *)
+(** the steps of one bar on the sixteenth grid: the rows of the bar-phase table of the
+    model, and the one clock the packed stream carries *)
 val bar_steps : int
 
-(** the parts of one piece: the rows of the piece-position table of the model, which must
-    hold the same count *)
-val progress_buckets : int
+(** the period of the rolling coordinate, in steps: [bar_steps] bars, which is the memory
+    window of the model *)
+val window_steps : int
 
 val load : path:string -> t
 
@@ -38,23 +54,34 @@ val load : path:string -> t
     of [legal_shifts] never raises. *)
 val transpose : by:int -> chorale -> chorale
 
-(** [encode chorale] is the walk of the design document: three parallel arrays with one
-    element per token.
+(** [pack chorales] is the packed stream of docs/improviser.md: piece, seam, piece, seam.
+    The caller states the order of the pieces and the transposition each one takes, thus
+    one call is one stream and a split needs more than one to carry its transpositions.
 
-    [codes] holds each token as its code, per [Token.to_code] — the stream the model
-    trains on. The walk opens with [Start]; then each step gives the OFF events ascending,
-    the ON events descending, then [End]. The two directions are rules of the instrument,
-    and [Sounding_state] holds them: one chord gives one sentence and not a permutation
-    family, and the falling ONs put the top voice first.
+    Each step gives the OFF events ascending, the ON events descending, then [End]. The
+    two directions are rules of the instrument, and [Sounding_state] holds them: one chord
+    gives one sentence and not a permutation family, and the falling ONs put the top voice
+    first. The walk opens with no token of its own: there is no [Start] and there are no
+    pieces to the model, only one walk.
 
-    [phases] holds the bar phase (0 to bar − 1) of the step of each token, and zero is the
-    downbeat. [Start] takes phase zero: the entry draw does not see a bar position. The
-    bar length (16 or 12 steps) and the pickup come from the cadential holds; a piece with
-    too few holds keeps the plain sixteen-step grid. The model reads the phase as the
-    index into its bar-phase table.
+    A seam is a count of empty steps, and the tokenizer alone makes it: the first empty
+    step after a piece gives the OFFs of its last chord, ascending, then [End] — the
+    release — and each empty step after that gives [End] alone. The count is the smallest
+    that puts the downbeats of the next piece on the clock, and it is never zero, because
+    the release needs one step. Every piece of this corpus is a whole number of quarter
+    notes and every rotation is one, thus a seam is 4, 8, 12 or 16 steps: never shorter
+    than a quarter note and never longer than a bar. The stream closes with a seam of its
+    own, thus it leaves no chord sounding and it ends on a bar boundary. *)
+val pack : chorale list -> stream
 
-    [progress] holds the piece position of the step of each token: which sixteenth of the
-    whole piece it sits in, 0 to [progress_buckets] − 1. The bar phase says where a step
-    is in the bar and nothing else in the stream says where it is in the piece. [Start]
-    takes bucket zero. *)
-val encode : chorale -> codes:int array * phases:int array * progress:int array
+(** [streams chorales ~count ~random_state] is the streams of one split, [count] of them.
+
+    The first is the canonical stream: every piece at shift zero, in the order given. The
+    referee of both trainers reads it alone, thus Gate A and Gate B stay deterministic and
+    neither trainer needs the streams of the other.
+
+    Each of the others takes a uniform permutation of the pieces and a uniform draw from
+    the legal shifts of each. One stream holds one draw, thus the count decides how many
+    transpositions of a piece the trainer sees: a piece of this corpus has 7.4 legal
+    shifts at the mean. *)
+val streams : chorale list -> count:int -> random_state:Core.Random.State.t -> stream list

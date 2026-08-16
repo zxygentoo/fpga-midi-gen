@@ -12,12 +12,22 @@ type t =
   ; test : chorale list
   }
 
+type stream =
+  { codes : int array
+  ; positions : int array
+  ; anchors : int array
+  }
+
 let bar_steps = 16
 
-(* the parts of one piece: the rows of the piece-position table of the model. It pairs
-   with [Transformer.progress_buckets] the way [bar_steps] pairs with the bar-phase table,
-   and the two counts must agree. *)
-let progress_buckets = 16
+(* the bars of the memory window: the rows of the frame table of the model. It pairs with
+   [Transformer.progress_buckets] the way [bar_steps] pairs with the bar-phase table, and
+   the two counts must agree. *)
+let frame_bars = 16
+
+(* the period of the rolling coordinate: the phase is the low four bits and the frame is
+   the high four *)
+let window_steps = bar_steps * frame_bars
 let default_path = "corpus/JSB-Chorales-dataset/Jsb16thSeparated.json"
 
 (* The observed range of each voice over the corpus, from the corpus study of 2026-08-06
@@ -118,8 +128,10 @@ let transpose ~by { steps; legal_shifts } =
    family. [Sounding_state] holds both directions, thus they are rules of the instrument
    and this tokenizer only obeys them. The fall is the melody leading: the top voice is
    chosen first and conditions on no voice below it. The climb then makes the two runs
-   meet in the middle, so the release of the top moving voice sits beside its attack. *)
-let tokenize steps =
+   meet in the middle, so the release of the top moving voice sits beside its attack.
+
+   The sentences stay apart, because the packer counts the tokens of each step. *)
+let sentences steps =
   let sentence ~previous ~current =
     let on pitch = Token.On pitch in
     let off pitch = Token.Off pitch in
@@ -131,7 +143,7 @@ let tokenize steps =
     @ [ Token.End ]
   in
   let aux previous current = current, sentence ~previous ~current in
-  steps |> Array.to_list |> List.folding_map ~init:[] ~f:aux |> List.concat
+  List.folding_map steps ~init:[] ~f:aux
 ;;
 
 (* The cadential holds of one chorale, from the corpus study of 2026-08-06: a sonority
@@ -148,63 +160,97 @@ let cadential_holds steps =
   List.filter_opt holds
 ;;
 
-(* The vote of one bar length: the rotation that puts the most holds on a downbeat, with
-   the smallest rotation on a tie. The lift — hits times bar length — normalizes the two
-   bar lengths against their chance rates, thus the votes of 12 and 16 compare. *)
-let vote holds bar =
-  List.map (List.range 0 bar) ~f:(fun rotation ->
-    let hits = List.count holds ~f:(fun hold -> (hold - rotation) mod bar = 0) in
-    hits * bar, rotation)
-  |> List.max_elt ~compare:(fun (lift, _) (lift', _) -> Int.compare lift lift')
-  |> Option.value_exn
+(* the vote of one rotation: the count of holds it puts on a downbeat *)
+let vote holds rotation =
+  List.count holds ~f:(fun hold -> (hold - rotation) % bar_steps = 0)
 ;;
 
-(* Fewer than three holds gives no signal: the piece keeps the plain sixteen-step grid. *)
-let metre steps =
+(* The rotation of one piece: the placement on the rolling clock that puts the most of its
+   cadences on a downbeat, and the smallest rotation on a tie. Fewer than three holds
+   gives no signal, and the piece opens on the downbeat.
+
+   The clock has one length, thus a piece has no bar length of its own. The corpus study
+   of 2026-08-14 in docs/improviser.md settles this: 27 of the 382 pieces vote for a
+   12-step bar, they hold 8.1 percent of the steps, and a rolling clock of 16 steps still
+   puts 44.6 percent of their cadences on a downbeat. To remove them buys 1.9 points of
+   alignment over the whole corpus and costs those steps. *)
+let rotation steps =
   let holds = cadential_holds steps in
   if List.length holds < 3
-  then bar_steps, 0
-  else (
-    let lift12, rotation12 = vote holds 12 in
-    let lift16, rotation16 = vote holds 16 in
-    if lift16 >= lift12 then 16, rotation16 else 12, rotation12)
+  then 0
+  else
+    List.range 0 bar_steps
+    |> List.max_elt ~compare:(fun a b -> Int.compare (vote holds a) (vote holds b))
+    |> Option.value_exn
 ;;
 
-(* the step each token belongs to: the count of ENDs before it, thus the END of a step
-   carries that step and the count rises after it *)
-let step_of_each tokens =
-  let (_ : int), steps =
-    List.fold_map tokens ~init:0 ~f:(fun step token ->
-      let next =
-        match token with
-        | Token.Start | On _ | Off _ -> step
-        | End -> step + 1
-      in
-      next, step)
-  in
-  steps
+(* The state of the placement: the count of steps laid down, those steps with the newest
+   first, and the first step of each piece with the newest first. The steps do not take
+   the name [steps]: the field of a chorale holds that name, and one of the two would then
+   need a type to read it. *)
+type placement =
+  { at : int
+  ; behind : int list list
+  ; starts : int list
+  }
+
+let empty_steps count steps = List.init count ~f:(fun (_ : int) -> []) @ steps
+
+(* One piece and the seam before it. The gap is the smallest count of empty steps that
+   puts the downbeats of the piece on the clock. It is never zero after another piece,
+   because the release needs one step; the stream itself may open with no silence.
+
+   Every piece is a whole number of quarter notes and every rotation is one, thus the gap
+   is 4, 8, 12 or 16 steps. The quiet of a seam is never shorter than a quarter note and
+   never longer than a bar, and no rule states this. *)
+let place state chorale =
+  let lead = (-rotation chorale.steps - state.at) % bar_steps in
+  let gap = if state.at = 0 then lead else if lead = 0 then bar_steps else lead in
+  let start = state.at + gap in
+  { at = start + Array.length chorale.steps
+  ; behind =
+      Array.fold chorale.steps ~init:(empty_steps gap state.behind) ~f:(fun behind step ->
+        step :: behind)
+  ; starts = start :: state.starts
+  }
 ;;
 
-(* The walk opens with START, per the design document: the boot writes START and the music
-   follows at once. START takes phase zero and bucket zero; the entry draw sees neither a
-   bar position nor a piece position. The phases align to the estimated downbeats. *)
-let encode { steps; legal_shifts = _ } =
-  let bar, rotation = metre steps in
-  let tokens = tokenize steps in
-  let codes =
-    Array.of_list (Token.to_code Token.Start :: List.map tokens ~f:Token.to_code)
+let pack chorales =
+  let placed = List.fold chorales ~init:{ at = 0; behind = []; starts = [] } ~f:place in
+  (* the stream closes as a seam does: it leaves no chord sounding, and it ends on a bar
+     boundary *)
+  let tail =
+    match -placed.at % bar_steps with
+    | 0 -> bar_steps
+    | gap -> gap
   in
-  let piece = step_of_each tokens in
-  let closes_a_step = function
-    | Token.End -> true
-    | Token.Start | On _ | Off _ -> false
+  let sentences = sentences (List.rev (empty_steps tail placed.behind)) in
+  let of_each ~f = Array.of_list (List.concat_mapi sentences ~f) in
+  let first_token =
+    List.folding_map sentences ~init:0 ~f:(fun at tokens -> at + List.length tokens, at)
+    |> Array.of_list
   in
-  let length = Int.max 1 (List.count tokens ~f:closes_a_step) in
-  let phase step = (((step - rotation) mod bar) + bar) mod bar in
-  let bucket step = Int.min (progress_buckets - 1) (step * progress_buckets / length) in
-  ( ~codes
-  , ~phases:(Array.of_list (0 :: List.map piece ~f:phase))
-  , ~progress:(Array.of_list (0 :: List.map piece ~f:bucket)) )
+  { codes = of_each ~f:(fun (_ : int) tokens -> List.map tokens ~f:Token.to_code)
+  ; positions =
+      of_each ~f:(fun step tokens ->
+        List.map tokens ~f:(fun (_ : Token.t) -> step % window_steps))
+  ; anchors = Array.of_list_map (List.rev placed.starts) ~f:(Array.get first_token)
+  }
+;;
+
+(* One stream is one draw of the transpositions, thus a split needs more than one. The
+   first is the canonical stream, and both trainers make it the same way: the referee
+   reads it alone, thus Gate A and Gate B stay deterministic. *)
+let streams chorales ~count ~random_state =
+  let drawn_shift chorale =
+    let shifts = Array.of_list chorale.legal_shifts in
+    transpose chorale ~by:shifts.(Random.State.int random_state (Array.length shifts))
+  in
+  let drawn (_ : int) =
+    List.permute chorales ~random_state |> List.map ~f:drawn_shift |> pack
+  in
+  (* [List.init] walks its range from the end; the range keeps the draws in order *)
+  pack chorales :: List.map (List.range 0 (count - 1)) ~f:drawn
 ;;
 
 let%expect_test "the cells of one step" =
@@ -255,7 +301,7 @@ let%expect_test "the chorale of the separated json" =
     |}]
 ;;
 
-let%expect_test "the metre from the cadential holds" =
+let%expect_test "the rotation from the cadential holds" =
   (* a bar = a six-step hold on the downbeat, then moving single notes *)
   let hold = Array.create ~len:6 [ 60; 64; 67 ] in
   let motion count = Array.init count ~f:(fun i -> [ 40 + i ]) in
@@ -263,39 +309,58 @@ let%expect_test "the metre from the cadential holds" =
   let bar_34 = Array.append hold (motion 6) in
   (* three 16-step bars: common time, downbeats at 0, 16, 32 *)
   let common = Array.concat [ bar_44; bar_44; bar_44 ] in
-  print_s ([%sexp_of: int * int] (metre common));
-  [%expect {| (16 0) |}];
-  (* three 12-step bars: a waltz, downbeats at 0, 12, 24 *)
-  let waltz = Array.concat [ bar_34; bar_34; bar_34 ] in
-  print_s ([%sexp_of: int * int] (metre waltz));
-  [%expect {| (12 0) |}];
+  print_s ([%sexp_of: int] (rotation common));
+  [%expect {| 0 |}];
   (* a four-step pickup moves every downbeat: the rotation follows *)
   let pickup = Array.append (motion 4) common in
-  print_s ([%sexp_of: int * int] (metre pickup));
-  [%expect {| (16 4) |}];
-  (* two holds are no signal: the plain grid *)
+  print_s ([%sexp_of: int] (rotation pickup));
+  [%expect {| 4 |}];
+  (* Three 12-step bars: a waltz. The clock cannot hold its downbeats — 0, 12 and 24 sit
+     in three classes of the 16 grid — thus one hold is the most that any rotation takes,
+     and the smallest rotation of the tie wins. *)
+  let waltz = Array.concat [ bar_34; bar_34; bar_34 ] in
+  print_s ([%sexp_of: int] (rotation waltz));
+  [%expect {| 0 |}];
+  (* two holds are no signal: the piece opens on the downbeat *)
   let short = Array.concat [ bar_44; bar_44 ] in
-  print_s ([%sexp_of: int * int] (metre short));
-  [%expect {| (16 0) |}]
+  print_s ([%sexp_of: int] (rotation short));
+  [%expect {| 0 |}]
 ;;
 
 let%expect_test "the walk of a small chorale" =
   (* a chord, a hold, a move of two voices, a rest, then a unison *)
-  let steps = [| [ 67; 64; 60 ]; [ 67; 64; 60 ]; [ 67; 65; 62 ]; []; [ 60; 60 ] |] in
-  print_s ([%sexp_of: Token.t list] (tokenize steps));
+  let steps = [ [ 67; 64; 60 ]; [ 67; 64; 60 ]; [ 67; 65; 62 ]; []; [ 60; 60 ] ] in
+  print_s ([%sexp_of: Token.t list] (List.concat (sentences steps)));
   [%expect
     {|
     ((On 67) (On 64) (On 60) End End (Off 60) (Off 64) (On 65) (On 62) End
      (Off 62) (Off 65) (Off 67) End (On 60) End)
-    |}];
-  let ~codes, ~phases, ~progress = encode { steps; legal_shifts = [ 0 ] } in
+    |}]
+;;
+
+let%expect_test "the packed stream of two pieces" =
+  (* Two pieces of four steps, each one chord held. Neither holds three cadences, thus
+     both take rotation zero and both must open on a downbeat of the clock. *)
+  let chorale pitches = { steps = Array.create ~len:4 pitches; legal_shifts = [ 0 ] } in
+  let { codes; positions; anchors } =
+    pack [ chorale [ 60; 64; 67 ]; chorale [ 62; 65; 69 ] ]
+  in
+  (* The first piece opens the stream and takes no seam. The seam between the pieces is
+     twelve steps: the release at step 4, then eleven silent steps, and the second piece
+     at step 16. *)
+  print_s ([%sexp_of: int array] anchors);
+  [%expect {| (0 22) |}];
   print_s ([%sexp_of: int array] codes);
-  print_s ([%sexp_of: int array] phases);
-  print_s ([%sexp_of: int array] progress);
   [%expect
     {|
-    (255 195 192 188 0 0 60 64 193 190 0 62 65 67 0 188 0)
-    (0 0 0 0 0 1 2 2 2 2 2 3 3 3 3 4 4)
-    (0 0 0 0 0 3 6 6 6 6 6 9 9 9 9 12 12)
+    (195 192 188 0 0 0 0 60 64 67 0 0 0 0 0 0 0 0 0 0 0 0 197 193 190 0 0 0 0 62
+     65 69 0 0 0 0 0 0 0 0 0 0 0 0)
+    |}];
+  (* the coordinate rolls with the stream and never restarts at a piece *)
+  print_s ([%sexp_of: int array] positions);
+  [%expect
+    {|
+    (0 0 0 0 1 2 3 4 4 4 4 5 6 7 8 9 10 11 12 13 14 15 16 16 16 16 17 18 19 20 20
+     20 20 21 22 23 24 25 26 27 28 29 30 31)
     |}]
 ;;
