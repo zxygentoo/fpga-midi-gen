@@ -366,6 +366,13 @@ The table shapes are fixed when the bitstream is elaborated, as the
 weights are. A corpus with a wider range takes a wider table and a new
 bitstream; nothing at run time reads the size.
 
+**The window belongs to the corpus and not to this model.** The corpus
+states the pitches, and the shift rule holds each voice inside them;
+this model states only how many tables read the window, and a later
+model of another kind reads the same one. Therefore `Vocab` sits in the
+corpus library beside `Jsb`, and an expect test there holds the observed
+range of the corpus inside the window.
+
 **The size is what sets 48.** Four tables of 129 rows put the six-layer
 model at 99 percent of the block RAM of the device, which does not fit.
 Four tables of 48 rows put it at 93 percent, under the six-layer design
@@ -809,9 +816,9 @@ not the other way around.
 
 What steps 4 to 6 remove from the machine:
 
-- `Token` becomes a pair of small maps: the class index of a wire code,
-  and the wire code of a class index. `Token.Start`, the START rule and
-  the grammar go with it.
+- `Token` goes. Its two maps — the class index of a wire code, and the
+  wire code of a class index — are `Vocab` in the corpus library, and
+  `Token.Start`, the START rule and the grammar go with the file.
 - `Sounding_state` and `Sounding_state.Rtl`, because no frame is
   illegal.
 - The mask words of the export, and the mask of the training loss.

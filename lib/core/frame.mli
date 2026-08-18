@@ -12,8 +12,9 @@
     that this design does not use.
 
     **The wire is general and the model is not.** A frame states any MIDI pitch, and the
-    vocabulary of a model is sized to its corpus. The two are different questions: the
-    class index of a model lives with that model, and this module never sees one.
+    vocabulary a model draws over is sized to the corpus it learns. The two are different
+    questions: the class index lives with the corpus that sizes it — [Vocab] — and this
+    module never sees one.
 
     The design is [docs/transformer_model.md]. *)
 

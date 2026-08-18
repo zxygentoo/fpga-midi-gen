@@ -230,6 +230,24 @@ let streams chorales ~count ~random_state =
   pack chorales :: List.map (List.range 0 (count - 1)) ~f:drawn
 ;;
 
+(* The cut of the referee. A window holds one step more than the context, because the last
+   frame is a label alone: [context] inputs state [context] labels. Therefore two windows
+   in sequence share one step — the label of the first is the first input of the second —
+   and the stride is the context and not the length. *)
+let windows { frames; positions } ~context =
+  if context < 1 then invalid_argf "a window takes a context of 1 step or more" ();
+  let need = context + 1 in
+  let length = Array.length frames in
+  let count = if length < need then 0 else ((length - need) / context) + 1 in
+  let window at =
+    let pos = at * context in
+    { frames = Array.sub frames ~pos ~len:need
+    ; positions = Array.sub positions ~pos ~len:need
+    }
+  in
+  List.init count ~f:window
+;;
+
 let%expect_test "the cells of one step" =
   let cells json = cells_of_json (Json.from_string json) in
   (* a full chord, the soprano first *)
@@ -259,6 +277,26 @@ let%expect_test "the shifts of the range-limited policy" =
   (* a silent piece takes the identity alone *)
   print_s ([%sexp_of: int list] (legal_shifts_of_cells [ [ -1; -1; -1; -1 ] ]));
   [%expect {| (0) |}]
+;;
+
+let%expect_test "the vocabulary covers the corpus" =
+  (* [Vocab] states its window and derives it from nothing, and this table is the fact the
+     window must cover: the corpus states the pitches, a model draws over the classes, and
+     one test holds the two together. A pitch outside the window raises, thus this fails
+     loudly on the day a corpus widens. *)
+  let low, high =
+    Array.fold voice_ranges ~init:(127, 0) ~f:(fun (low, high) (lowest, highest) ->
+      min low lowest, max high highest)
+  in
+  let class_of pitch = Vocab.class_of_code (Frame.code_of_pitch pitch) in
+  printf
+    "the corpus sings %d to %d: the classes %d to %d of %d\n"
+    low
+    high
+    (class_of low)
+    (class_of high)
+    Vocab.classes;
+  [%expect {| the corpus sings 36 to 81: the classes 1 to 46 of 48 |}]
 ;;
 
 let%expect_test "the frame of one step" =
@@ -324,4 +362,34 @@ let%expect_test "the packed stream of two pieces" =
     (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28
      29 30 31)
     |}]
+;;
+
+let%expect_test "the windows of the referee" =
+  let chorale cells = { cells = Array.create ~len:4 cells; legal_shifts = [ 0 ] } in
+  let stream = pack [ chorale [ 67; 64; 60; -1 ]; chorale [ 69; 65; 62; -1 ] ] in
+  let show ~context =
+    let rows = windows stream ~context in
+    printf "context %d: %d windows of the %d steps\n" context (List.length rows) 32;
+    List.iteri rows ~f:(fun at { frames; positions } ->
+      printf
+        "  window %d: %d steps, the coordinate %d to %d\n"
+        at
+        (Array.length frames)
+        positions.(0)
+        positions.(Array.length positions - 1))
+  in
+  (* The stride is the context, thus each window opens where the one before it closed: the
+     label of a window is the first input of the next. The tail that cannot fill a window
+     is dropped. *)
+  show ~context:8;
+  [%expect
+    {|
+    context 8: 3 windows of the 32 steps
+      window 0: 9 steps, the coordinate 0 to 8
+      window 1: 9 steps, the coordinate 8 to 16
+      window 2: 9 steps, the coordinate 16 to 24
+    |}];
+  (* a stream shorter than one window gives none, and never a short one *)
+  show ~context:32;
+  [%expect {| context 32: 0 windows of the 32 steps |}]
 ;;

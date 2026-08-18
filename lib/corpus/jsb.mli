@@ -94,3 +94,23 @@ val pack : chorale list -> stream
     transpositions of a piece the trainer sees: a piece of this corpus has 7.4 legal
     shifts at the mean. *)
 val streams : chorale list -> count:int -> random_state:Core.Random.State.t -> stream list
+
+(** [windows stream ~context] cuts [stream] into the fixed windows of a referee: whole
+    windows of [context + 1] steps, at stride [context], from the start. The tail that
+    cannot fill a window is dropped, thus every window carries the same count of steps and
+    a short one never reaches a mean.
+
+    A window holds one step more than the context because its last frame is a label alone:
+    [context] inputs state [context] labels. Therefore two windows in sequence share one
+    step — the label of the first is the first input of the second.
+
+    Give it the canonical stream, which [streams] gives first. A referee reads that stream
+    alone, thus its measurement is deterministic and two referees that read one checkpoint
+    must agree; the twin of this cut is in [jax/data.py], and the two state the same
+    windows. A caller that wants fewer windows takes a prefix of the list.
+
+    The training draw is not here. A trainer takes a uniform stream and then a uniform
+    window of it, and the trainer of this project is on the JAX side.
+
+    It raises [Invalid_argument] when [context] is 0 or less. *)
+val windows : stream -> context:int -> stream list
