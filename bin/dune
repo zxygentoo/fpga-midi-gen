@@ -12,18 +12,22 @@
   (pps ppx_let))
  (libraries core core_unix core_unix.command_unix mgen_core mgen_pink))
 
-(executable
- (name play_transformer)
- (modules play_transformer)
- (preprocess
-  (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  mgen_core
-  mgen_corpus
-  mgen_transformer))
+; The two tools of era three leave the build with the model they read, and their code
+; stays in the tree. [play_transformer] comes back at step 5 of docs/transformer_model.md,
+; on frames; [checkpoint_tool] comes back with the quantized model of era four.
+;
+; (executable
+;  (name play_transformer)
+;  (modules play_transformer)
+;  (preprocess
+;   (pps ppx_let))
+;  (libraries
+;   core
+;   core_unix
+;   core_unix.command_unix
+;   mgen_core
+;   mgen_corpus
+;   mgen_transformer))
 
 (executable
  (name corpus_tool)
@@ -32,9 +36,9 @@
   (pps ppx_let))
  (libraries core core_unix core_unix.command_unix nx nx.io mgen_corpus))
 
-(executable
- (name checkpoint_tool)
- (modules checkpoint_tool)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix nx nx.io mgen_transformer))
+; (executable
+;  (name checkpoint_tool)
+;  (modules checkpoint_tool)
+;  (preprocess
+;   (pps ppx_let))
+;  (libraries core core_unix core_unix.command_unix nx nx.io mgen_transformer))

@@ -744,6 +744,14 @@ not the other way around.
    word and the rule, with the eight cases as its expect test. The
    reader and the model in OCaml follow, with the gates of the project.
 
+   **Era three leaves the build at the head of this step, and it stays
+   in the tree.** `Quantized` reads the vocabulary of the token, and the
+   circuit reads `Quantized`, thus neither one can stand while the model
+   of the frame takes their place. Each part comes back when its
+   era-four version is written, and the old code stands beside the new
+   one while a person writes it. The model seat of the board holds
+   `Pink` until the circuit of era four exists.
+
    The gates are a chain, and each link is an equivalence and not a
    judgement of the music: the OCaml float model against the JAX one, by
    the drawn walk compared line for line and by the loss on a fixed batch
@@ -765,12 +773,12 @@ not the other way around.
 
    **The socket cannot move first, and an earlier draft of this plan was
    wrong to say that it stands alone.** One interface serves every
-   model: the source of era three sits on it, and that source is 1,485
-   lines of RTL which plays on the board today. To move the socket
-   before this step would mean teaching a token source to gather a
-   sentence into a frame, or deleting the one bitstream that works. The
-   source of era three is therefore **deleted here and never ported**,
-   because the source of era four takes its seat.
+   model. The source of era three sat on it, and `Pink` sits on it now:
+   to move the socket before this step would mean that the pink source
+   and the pink player change while no model of era four can play. The
+   source of era three is **never ported**. It left the build at step 4,
+   because the integer twin under it could not stand, and the source of
+   era four takes its seat here.
 
 6. **`Pink` on the frame socket.** Last, and it is the only step that
    touches music the ear has already elected.

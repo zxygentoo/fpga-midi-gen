@@ -1,5 +1,11 @@
 (library
  (name mgen_transformer)
+ ; Era three leaves the build and stays in the tree, because each of these is the model of
+ ; the token: [Quantized] reads its vocabulary, [Source] is the circuit of [Quantized], and
+ ; [Exp2] and [Isqrt] read the constants of that twin. Each comes back when its era-four
+ ; version is written, and the old code stands beside the new one while it is. [Divider]
+ ; and [Mac] name no model and keep their tests.
+ (modules :standard \ source quantized exp2 isqrt)
  (libraries
   base
   core
