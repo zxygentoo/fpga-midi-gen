@@ -1,5 +1,11 @@
 (library
  (name mgen_pink)
+ ; [Source] is the pink circuit on the note socket of era three: it leaves the build until
+ ; it answers the frame socket, and that version owes a musical decision — a frame cannot
+ ; state a re-strike, thus the pink player loses about a fifth of its articulations.
+ ; [docs/transformer_model.md], step 6, holds the three answers. [Pink] and [Player], the
+ ; model and its software reference, stay in the build.
+ (modules :standard \ source)
  (libraries base stdio hardcaml hardcaml_waveterm mgen_core)
  (flags
   (:standard -open Mgen_core))

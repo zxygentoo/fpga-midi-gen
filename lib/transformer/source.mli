@@ -1,34 +1,39 @@
-(** The transformer as a circuit: the note source of era three.
+(** The transformer as a circuit: the note source of era four.
 
     The block computes the integers of [Quantized], operation for operation. [Quantized]
-    is the reference, and the stream comparison in this module proves the match: the
-    events of the circuit must equal the events of [Quantized.Engine], event for event.
+    is the reference, and the frame comparison in this module proves the match: the frames
+    of the circuit must equal the frames of [Quantized.Engine], step for step.
 
-    The block sits behind [Source_intf] and states its own releases. An On takes the
-    highest free seat, an Off names the seat that holds its pitch, and
-    [Sounding_state.Rtl] guarantees both: no draw crosses the socket that the grammar of
-    the instrument refuses.
+    One step of music is one pass of the network and one frame on the socket. Nothing here
+    chooses a seat and nothing masks a draw: a frame states which voice holds which pitch,
+    thus the grammar of the instrument needs no registers and no frame is illegal. This is
+    the first source of the frame socket, and [Source_intf] states that contract.
 
     The shape, in five layers. L0 is the primitives — [Divider], [Isqrt], [Exp2] here, and
-    [Sounding_state.Rtl] and [Prng.Rtl] in the core. L1 is the datapath: the RAMs, the KV
-    rings, the banked weight ROM, and [Mac] behind the one multiplier. L2 is the schedule,
-    a value: the forward pass and the sampler are lists of operations, and one operation
-    holds the facts of one step. L3 compiles that list into cases of a program counter. L4
-    is a small outer machine that keeps the token walk, the seats and the handshake.
-    source.ml holds the design and its reasons.
+    [Prng.Rtl] in the core. L1 is the datapath: the RAMs, the KV rings, the banked weight
+    ROM, and [Mac] behind the one multiplier. L2 is the schedule, a value: the forward
+    pass and the chain of the four seats are lists of operations, and one operation holds
+    the facts of one step. L3 compiles those lists into cases of a program counter. L4 is
+    a small outer machine that holds the drawn frame and answers the socket. source.ml
+    holds the design and its reasons, and [docs/transformer_rtl.md] holds the design of
+    the whole.
 
     What a caller must know:
 
     - The weights arrive at elaboration — the bitstream carries them — thus [create] takes
       the whole model. The seed arrives live from the SEED cell, and a [rewind] captures
       it, as the pink era does.
+    - **The source answers [step] from a frame it has already drawn.** It states the frame
+      at once, runs the pass of that frame, and then draws the frame of the next step,
+      thus the tempo waits for the wire and never for the network. The first bar is the
+      lead-in of the model: every frame of it is silence, nothing is drawn, and the
+      generator does not move.
     - Cycle counts are not a contract. The socket is latency-insensitive, and the PRNG
       steps only on command, thus a draw cannot move when the timing of the circuit
-      changes. One step costs of the order of a million cycles at the shape of the era;
-      the cost model beside the schedule states it exactly, and a bench pins the model to
-      the circuit.
-    - One step gives the events of one sentence, and a step where nothing speaks gives no
-      note. The block returns to [idle] between commands, as the socket demands. *)
+      changes. The cost model beside the schedule states the cost of a step exactly, and a
+      bench pins the model to the circuit.
+    - There is one reset, and it is [rewind]: it loads the PRNG and returns the walk to
+      its origin. It runs no pass, thus [idle] never falls for it. *)
 
 open Hardcaml
 module I = Source_intf.I

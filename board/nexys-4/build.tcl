@@ -17,6 +17,12 @@ opt_design
 place_design
 phys_opt_design
 route_design
+# The design needs this pass and does not merely gain from it. At six layers it stands at
+# 126 block RAM tiles of 135, thus routing is three quarters of every long path, and the
+# route gives back the whole slack that placement won: measured at -0.252 ns here and
+# +0.031 ns after this pass. Post-route physical synthesis replicates the drivers that the
+# congestion stretched. Remove it and the bitstream misses the period.
+phys_opt_design
 report_timing_summary -file $build_dir/timing.rpt
 report_utilization -file $build_dir/utilization.rpt
 write_bitstream -force $build_dir/top.bit

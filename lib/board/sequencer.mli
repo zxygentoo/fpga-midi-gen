@@ -2,30 +2,32 @@
 
     The block reads the parameter views, drives the note source, and gives the model
     messages on the [Midi.Rtl.Message] interface. The rules are the ones of
-    [docs/pink_rtl.md]:
+    [docs/pink_rtl.md] and [docs/transformer_rtl.md]:
 
     - A prescaler divides the clock by [clocks_per_ms]. The run start resets it, thus a
       run is the same cycle for cycle in each simulation and on the board.
     - The source goes to its origin at the run start and at no other time.
     - At each step boundary the block samples RUN and STEP_MS: a change applies at the
       next step. A sampled STEP_MS of 0 counts as 1.
-    - At each step the source gives the notes that speak, one at a time. For a note with
-      [on] at 1 the block closes the note of that voice, if it holds one, and then opens
-      the new note. Therefore the number of open notes is never more than the number of
-      voices. For a note with [on] at 0 the block sends one Note Off from the stored pair
-      of that voice and frees the seat — the path of a source that states its own
-      releases.
-    - The block takes a note with [source_ready] in the cycle that completes its Note On,
-      thus the source holds a stable pitch for both messages.
-    - Each voice has an open-note register. It keeps the note and the channel of the Note
-      On, and the Note Off takes the stored pair. When the run stops, each open voice gets
-      its Note Off, from the highest voice downward.
-    - The block sends a Note Off only to keep its state true — the steal and the stop. It
-      does not shape the music: a musical release is the source's, stated with [on] at 0.
-    - The millisecond count does not pause while the merge stalls a message, thus the beat
-      does not drift. One step sends at most two messages for each voice, which is about
-      7.7 ms of line time for four voices. A step that is shorter than its messages
-      stretches. *)
+    - **At each step the source states one frame, and the block decodes it.** It holds the
+      set of pitches that sound; the frame states the set that must sound. It sends the
+      releases — the first set less the second — and then the strikes — the second less
+      the first — each in ascending pitch order. This is the rule of
+      [Frame.events_of_frames], and that document states why a seat walk breaks on the
+      exchange and the unison.
+    - **The run stop is a silent frame**, thus the stop needs no rule of its own: the
+      release walk closes every pitch that sounds, ascending, and the block returns to
+      rest.
+    - Each held pitch keeps the channel of its Note On, and its Note Off takes that pair.
+      Therefore a change of CHANNEL inside a run cannot leave a note open.
+    - The block strobes [step] only while the source is idle, thus a source that has not
+      finished its draw holds the boundary; the millisecond count does not pause while it
+      waits, thus the beat does not drift. One step sends at most two messages for each
+      voice, which is about 7.7 ms of line time for four voices. A step that is shorter
+      than its messages stretches.
+
+    The block sends no Note Off of its own. Every message follows from the frames: there
+    is no steal, because a frame states the whole sonority, and there is no gate. *)
 
 open Hardcaml
 
@@ -44,8 +46,7 @@ module O : sig
   type 'a t =
     { midi : 'a Midi.Rtl.Message.t (** the model source *)
     ; source_rewind : 'a (** a strobe: the source goes to its origin — the run start *)
-    ; source_step : 'a (** a strobe: take one step and give the notes that speak *)
-    ; source_ready : 'a (** 1 in the cycle that takes the note of the source *)
+    ; source_step : 'a (** a strobe: state one step of music *)
     }
   [@@deriving hardcaml]
 end

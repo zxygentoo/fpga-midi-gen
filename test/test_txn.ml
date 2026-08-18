@@ -19,9 +19,11 @@ let hex s = Mgen_core.Bytes_util.hex (Bytes.of_string s)
 
 let () =
   let open Hardcaml in
-  (* the model seat holds [Pink] while era four is written, and the control path does not
-     read the model in any case *)
-  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model:Mgen_pink.Pink.default ()) in
+  (* The model seat takes a model of drawn weights in the test shape: the control path
+     does not read the weights, and a test must not read a checkpoint that git ignores.
+     The shape only sizes the counters and the ROM, thus a small one elaborates in a test. *)
+  let model = Mgen_transformer.Quantized.Model.For_test.(init config ~seed:11) in
+  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
   let txd = Cyclesim.out_port sim "RsTx" in

@@ -1,11 +1,11 @@
 (library
  (name mgen_nexys4)
  (modules top)
- (libraries hardcaml mgen_board mgen_pink)
+ (libraries hardcaml mgen_board mgen_transformer)
  (flags
-  (:standard -open Mgen_board -open Mgen_pink)))
+  (:standard -open Mgen_board -open Mgen_transformer)))
 
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries core core_unix hardcaml jane_rope mgen_pink mgen_nexys4))
+ (libraries core core_unix hardcaml jane_rope mgen_transformer mgen_nexys4))

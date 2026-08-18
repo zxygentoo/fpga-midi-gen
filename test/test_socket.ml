@@ -1,4 +1,4 @@
-(* Integration test: the note-source socket against the software player.
+(* Integration test: the note-source socket against the reference of the model.
 
    [Socket] wires a source to the [Sequencer] and takes no model of its own — the source
    is a parameter, typed by [Source_intf]. Therefore its behaviour is only observable with
@@ -6,30 +6,40 @@
    unit test of the module.
 
    It lives here and not beside [Socket] for one more reason. A test in [Socket] would put
-   a concrete model in the library that exists so that the board knows none of them: with
-   [Pink] in [lib/board], the transformer would ask for the same and the board would
-   depend on every model it carries. The socket is the abstraction that keeps it from
-   having to.
+   a concrete model in the library that exists so that the board knows none of them: the
+   board would then depend on every model it carries. The socket is the abstraction that
+   keeps it from having to.
 
-   The gate: the circuit sends the messages the software player composes, byte for byte
-   and in order, and a second run from the same seed repeats the first. *)
+   The gate: the circuit sends the messages that [Frame.events_of_frames] states over the
+   frames of [Quantized.Engine], byte for byte and in order, and a second run from the
+   same seed repeats the first. The two halves of the model path are proved separately —
+   [Source] gives the same frames as the engine, and this gives the same messages as the
+   frames — thus a failure here names the sequencer and not the network.
+
+   **The run stop is a silent frame.** The reference states it by playing one more frame,
+   which is the whole rule the sequencer keeps. *)
 
 open Base
 module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
+module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
-module Pink = Mgen_pink.Pink
-module Player = Mgen_pink.Player
-module Source = Mgen_pink.Source
+module Quantized = Mgen_transformer.Quantized
+module Source = Mgen_transformer.Source
+
+(* The model of the test: drawn weights in the test shape, thus the test reads no
+   checkpoint that git ignores. A step of it costs about 32 000 cycles, thus the step
+   period below must be longer than that — the sequencer holds the boundary until the
+   source is idle, and a period that is too short would only stretch the step and prove
+   nothing about the decode. *)
+let model = Quantized.Model.For_test.(init config ~seed:11)
+let clocks_per_ms = 4
+let step_ms = 9000
 
 (* The harness drives the parameter views directly and takes every message. [play] runs
    one whole run of [steps] steps: run to 1, then run to 0 in the middle of the last step,
-   then the drain. The run start costs the rewind walk, thus the drop is at the middle of
-   a step and not at a boundary; the step period must be longer than the rewind walk,
-   which the tests give it. *)
-let clocks_per_ms = 4
-
-let harness ~model () =
+   then the drain. *)
+let harness () =
   let open Hardcaml in
   let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
   let sim =
@@ -65,26 +75,22 @@ let harness ~model () =
   inp, set, play
 ;;
 
-(* the messages of the reference: the player gives the events of each step, and the run
-   ends with the stop. The board sequencer has no gate, thus the highest voice sends its
-   Note Off immediately before its next Note On, and the stop closes every voice. *)
-let reference_messages ~model ~seed ~channel ~velocity ~steps =
-  let encode = function
-    | Player.Event.On note -> Midi.note_on_bytes ~channel ~note ~velocity
-    | Player.Event.Off note -> Midi.note_off_bytes ~channel ~note
-  in
-  (* the fold pushes each step in front and one [List.rev_append] puts the run in order:
-     an append inside the fold is quadratic *)
-  let player, reversed =
-    List.fold
+(* the messages of the reference: the frames the engine draws, the silent frame of the
+   stop behind them, and [Frame.events_of_frames] over the whole run *)
+let reference_messages ~seed ~channel ~velocity ~steps =
+  let (_ : Quantized.Engine.t), frames =
+    List.fold_map
       (List.range 0 steps)
-      ~init:(Player.create ~model ~seed, [])
-      ~f:(fun (player, acc) _ ->
-        let player, struck = Player.step player in
-        player, List.rev_append struck acc)
+      ~init:(Quantized.Engine.init model ~seed)
+      ~f:(fun engine (_ : int) ->
+        let engine, step = Quantized.Engine.next_step engine in
+        engine, step.Quantized.Engine.frame)
   in
-  let _, stopped = Player.stop player in
-  List.map (List.rev_append reversed stopped) ~f:encode
+  Frame.events_of_frames (Array.of_list (frames @ [ Frame.silent ]))
+  |> List.concat
+  |> List.map ~f:(function
+    | Frame.Event.On note -> Midi.note_on_bytes ~channel ~note ~velocity
+    | Frame.Event.Off note -> Midi.note_off_bytes ~channel ~note)
 ;;
 
 let same_messages = List.equal (List.equal Int.equal)
@@ -100,8 +106,8 @@ let show label messages =
           String.concat (List.map bytes ~f:(Printf.sprintf "%02x")))))
 ;;
 
-let compare_run ~model ~seed ~step_ms ~steps =
-  let inp, set, play = harness ~model () in
+let compare_run ~seed ~steps =
+  let inp, set, play = harness () in
   set inp.params.seed seed;
   set inp.params.channel Control_intf.Default.channel;
   set inp.params.velocity Control_intf.Default.velocity;
@@ -109,7 +115,6 @@ let compare_run ~model ~seed ~step_ms ~steps =
   let circuit = play ~steps in
   let reference =
     reference_messages
-      ~model
       ~seed
       ~channel:Control_intf.Default.channel
       ~velocity:Control_intf.Default.velocity
@@ -126,14 +131,16 @@ let compare_run ~model ~seed ~step_ms ~steps =
 ;;
 
 let () =
-  compare_run ~model:Pink.default ~seed:Control_intf.Default.seed ~step_ms:20 ~steps:32;
-  let inp, set, play = harness ~model:Pink.default () in
+  (* the walk must cross the lead-in of one bar, which draws nothing: the steps after it
+     are the ones that state notes *)
+  compare_run ~seed:Control_intf.Default.seed ~steps:20;
+  let inp, set, play = harness () in
   set inp.params.seed 99;
   set inp.params.channel 2;
   set inp.params.velocity 100;
-  set inp.params.step_ms 20;
-  let first = play ~steps:12 in
-  let again = play ~steps:12 in
+  set inp.params.step_ms step_ms;
+  let first = play ~steps:19 in
+  let again = play ~steps:19 in
   Stdio.printf
     "%d messages, the second run repeats: %b\n"
     (List.length first)

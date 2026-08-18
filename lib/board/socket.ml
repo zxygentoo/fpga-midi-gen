@@ -21,14 +21,12 @@ let create ~clocks_per_ms ~source (i : _ I.t) : _ O.t =
      order *)
   let source_rewind = wire 1 in
   let source_step = wire 1 in
-  let source_ready = wire 1 in
   let source_out =
     source
       { Source_intf.I.clock = i.clock
       ; clear = i.clear
       ; rewind = source_rewind
       ; step = source_step
-      ; ready = source_ready
       }
   in
   let sequencer =
@@ -43,6 +41,5 @@ let create ~clocks_per_ms ~source (i : _ I.t) : _ O.t =
   in
   assign source_rewind sequencer.source_rewind;
   assign source_step sequencer.source_step;
-  assign source_ready sequencer.source_ready;
   { O.midi = sequencer.midi }
 ;;

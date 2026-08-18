@@ -1,9 +1,5 @@
 (library
  (name mgen_transformer)
- ; [Source] is the circuit of era three and the last of that era in the tree: it leaves
- ; the build until the circuit of era four takes its seat, and the era-four version is
- ; written beside it.
- (modules :standard \ source)
  (libraries
   base
   core

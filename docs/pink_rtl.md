@@ -14,6 +14,16 @@ the rule that makes note events from the steps of the model, and `Sequencer`
 does the same on the wire. Therefore the same seed gives the same notes and
 the same messages in the reference, in the simulation and on the board.
 
+**Era four supersedes the socket and the sequencer of this document.**
+`docs/transformer_rtl.md` states them: a source gives one frame for each
+step, `Source_intf` carries no note and no `ready`, and the sequencer holds
+the set of pitches that sound and decodes the frame with the rule of
+`Core.Frame`. The socket section and the `Sequencer` section below describe
+era three and are kept for the history. `Pink` and `Player` stand as they
+are; `Pink.Source` left the build until it answers the frame socket, and
+that version owes a musical decision, because a frame cannot state a
+re-strike — `docs/transformer_model.md`, step 6, holds the three answers.
+
 ## The constants
 
 The audition froze the model constants. They are elaboration constants: the

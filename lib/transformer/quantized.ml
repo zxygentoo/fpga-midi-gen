@@ -240,6 +240,26 @@ module Model = struct
     in
     of_floats config ~temperature ~min_p tensors
   ;;
+
+  module For_test = struct
+    (* the shape of a test model: small enough to run in a simulation, and the same
+       structure as the model of the era *)
+    let config =
+      { Transformer.Config.baseline with d = 32; layers = 1; heads = 2; context = 16 }
+    ;;
+
+    (* a model of drawn weights, quantized: a test reads no checkpoint, thus it reads no
+       file that git ignores *)
+    let init config ~seed =
+      let (_ : Prng.state), tensors =
+        Prng.run
+          (Prng.all
+             (List.map (sizes config) ~f:(fun count -> Prng.normals ~count ~scale:0.02)))
+          (Prng.create_folded ~seed)
+      in
+      of_floats config ~temperature:default_temperature ~min_p:default_min_p tensors
+    ;;
+  end
 end
 
 module Engine = struct
@@ -662,26 +682,8 @@ module Drift = struct
   ;;
 end
 
-(* the shapes of a test model: small enough to run in a test, and the same structure *)
-let test_config =
-  { Transformer.Config.baseline with d = 32; layers = 1; heads = 2; context = 16 }
-;;
-
-(* a model of drawn weights: the tests read no file that git ignores *)
-let test_model ~seed =
-  let (_ : Prng.state), tensors =
-    Prng.run
-      (Prng.all
-         (List.map (Model.sizes test_config) ~f:(fun count ->
-            Prng.normals ~count ~scale:0.02)))
-      (Prng.create_folded ~seed)
-  in
-  Model.of_floats
-    test_config
-    ~temperature:Model.default_temperature
-    ~min_p:Model.default_min_p
-    tensors
-;;
+(* the model the expect tests below walk: drawn weights in the test shape *)
+let test_model ~seed = Model.For_test.(init config ~seed)
 
 let%expect_test "the exp2 table: the peak, the floor and the halving" =
   (* entry 0 is the peak 2^15; a full fractional step halves; the last entry sits one

@@ -131,6 +131,20 @@ module Model : sig
     -> Transformer.Config.t
     -> string
     -> t
+
+  module For_test : sig
+    (** the shape of a test model: small enough to run in a simulation, and the same
+        structure as the model of the era. The gates of [Source] take it, thus the circuit
+        and the reference are compared at a shape a test can afford. *)
+    val config : Transformer.Config.t
+
+    (** [init config ~seed] is a model of drawn weights in the shapes of [config],
+        quantized under the draw of the era: the elaboration of a circuit and the engine
+        both take one, thus a test reads no checkpoint and no file that git ignores. The
+        weights are not the weights the trainer draws from the same number — only a
+        trained checkpoint crosses that seam. *)
+    val init : Transformer.Config.t -> seed:int -> t
+  end
 end
 
 (** One running inference, as a value: an operation gives the engine after it. *)

@@ -186,17 +186,35 @@ five layers of era three:
 **L2 and L4 are where the frame pays.** The schedule of era three held a
 forward pass and a sampler, and the outer machine ran them again and
 again until a sentence ended. A step is one pass and four draws now, thus
-**the whole step is one straight-line schedule** and the outer machine
-keeps no return address, no token count and no sentence state. What is
-left of L4 is: take `rewind`, run the lead-in, hold a drawn frame, answer
-`step`, and start the next draw.
+the outer machine keeps no return address, no token count and no sentence
+state. What is left of L4 is: take `rewind`, run the lead-in, hold a drawn
+frame, answer `step`, and start the next draw.
+
+**The chain is one seat, and the machine runs it four times.** The four
+seats were inlined at first, which made the step one straight-line program
+and gave the machine no counter at all. That shape was built and measured:
+it cost **4 406 slice LUTs against era three's 2 999** at the same six
+layers and the same 93 percent of the block RAM, and the six-layer build
+**missed the period by 0.4 ns** where era three met it by 0.110. The cost
+is not the operations — control is cheap — but the muxes they share: every
+case of the program counter that writes a register widens that register's
+parallel case, and inlining put four writers where era three had one. The
+seat register is the price of the room, and it returns three quarters of
+the chain's control for two bits of state.
 
 One operation still holds the facts of one step of the program: the
 tensor base and exponent, the address order, the loop bounds, the
-landing. Each operation knows its layer and its seat at elaboration, thus
-no register carries a sub-step, a layer index or a seat, and every mux
-folds to a constant. An operation's finish runs the next operation's
-entry in the same cycle.
+landing. Each operation knows its layer at elaboration; the **seat** is the
+one thing a register carries, and it reaches exactly two places, which the
+schedule states rather than implies — the address of a tensor is `Fixed`
+or `Seat_block`. An operation's finish runs the next operation's entry in
+the same cycle, thus the loop back to the head of the chain costs no cycle
+of its own.
+
+The last seat accumulates a row that nothing reads. The reference does not
+add it; the circuit does not test for it, because the test would cost a
+case of the program and the row costs `d` cycles of a step that has
+hundreds of thousands. The stream is dead there in any case.
 
 `Mac` walks the terms at one term a cycle. A tag travels beside each term
 from its address to its retirement, thus the control needs no knowledge
@@ -253,7 +271,35 @@ as block RAM at every depth here; a plain write-portless array demotes to
 slice logic.
 
 The budget, from `docs/transformer_model.md`: 126 tiles of 135 at six
-layers, which is one tile under the design that played in era three.
+layers, which is one tile under the design that played in era three. The
+six-layer build measures exactly that.
+
+## What the six-layer build measures
+
+| | era three, six layers | era four |
+|---|---|---|
+| slice LUTs | 2 999 | 4 069 |
+| slice registers | 1 743 | 1 645 |
+| block RAM tiles | 127 | 126 |
+| DSPs | 2 | 2 |
+| worst negative slack | +0.110 ns | **+0.031 ns** |
+
+**The margin is thin and it needs the post-route pass.** `build.tcl` runs
+`phys_opt_design` after `route_design`, and the design does not close
+without it: the route measures −0.252 ns and that pass recovers it. At 93
+percent of the block RAM, routing is three quarters of every long path,
+thus placement wins slack that the route gives back. A change to `Source`
+or to `Sequencer` that adds a little logic can put the period out of
+reach, and the failure is not loud — the bitstream builds and the board
+plays at the wrong baud rate.
+
+Registers **fell** against era three while the LUTs rose by a third. Era
+four really does hold less state — the grammar of the instrument, the
+seats and four states of the outer machine all left — and pays it back in
+combinational area. About a thousand LUTs of that rise are **not** yet
+accounted for. The chain loop returned 337 of them, which was measured;
+the rest wants each block synthesized on its own, and no reader should
+trust a number here that a measurement did not make.
 
 ## The cost
 
