@@ -28,14 +28,16 @@
 
    The timing design, decided against the measured paths (2026-08-13):
 
-   - Every memory the walk reads stands two registers from the multiplier: the read
-     register, then an output register that packs into the block RAM (DO_REG; the
-     clock-to-out falls 2.46 -> 0.89 ns at speed grade -1). The six-layer build failed on
-     the route from a far ROM bank into the DSP at 94 percent occupancy; the travel stage
-     pays for that route, and at one term a cycle it costs only fill latency. A ROM bank
-     registers its own data before the select mux — a register after the mux stays in the
-     fabric and removes nothing. The bespoke chains (Exp, Temper) read the small RAMs at
-     the one-register tap; they touch neither the ROM nor the rings.
+   - Every read is two cycles from address to data. The rings and the small RAMs spend
+     both on the data side: the read register, then an output register that packs into the
+     block RAM (DO_REG; the clock-to-out falls 2.46 -> 0.89 ns at speed grade -1). The ROM
+     spends the first cycle on its ADDRESS instead — the note at [rom_banked] states why
+     that register is load-bearing. The six-layer build failed on the route from a far ROM
+     bank into the DSP at 94 percent occupancy; the travel stage pays for that route, and
+     at one term a cycle it costs only fill latency. A ROM bank registers its own data
+     before the select mux — a register after the mux stays in the fabric and removes
+     nothing. The bespoke chains (Exp, Temper) read the small RAMs at the one-register
+     tap; they touch neither the ROM nor the rings.
    - The DSP stays a two-register multiply — the operand registers and [preg] — rated 257
      MHz at -1 against the 100 MHz clock. The accumulator is a fabric adder behind it,
      loaded on a row's first term by the tag. The full in-DSP accumulate was declined: the
@@ -463,10 +465,15 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
      here. The tools demoted deep write-portless arrays to slice logic under two different
      select shapes — the six-layer image in slice logic is 69 percent of the device — thus
      a bank is an initialized memory with a gated-off write port, and RAM_STYLE pins it.
-     The reads sit behind a nest of muxes on registered top address bits: two cycles from
-     address to data, as one ROM, because each bank registers its own data a second time
-     before the mux and that register packs into the block RAM's output register. A read
-     past the image selects a bank at a dead offset; no op makes one. *)
+     The address registers once before the tree, and each bank registers its data once
+     behind it: two cycles from address to data, as one ROM, because
+     [reg (reg rom.(addr))] equals [reg (rom.(reg addr))] when the contents never change.
+     The address register is load-bearing, not style: with a combinational address, the
+     tools retime the data register onto the address pins of every block RAM primitive and
+     rebuild the whole op-dispatch address cone inside each one — 27 LUTs a primitive, 12
+     primitives a layer, which was the entire layer scaling of this block (3 466 -> 2 352
+     LUTs at six layers, measured out of context). A read past the image selects a bank at
+     a dead offset; no op makes one. *)
   let rec rom_banked bits addr =
     let n = Array.length bits in
     if Int.is_pow2 n && n <= 1 lsl 15
@@ -485,7 +492,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
              |]
            ~read_addresses:[| addr |]).(0)
       in
-      reg spec ~enable:nohold (reg spec ~enable:nohold data))
+      reg spec ~enable:nohold data)
     else (
       let split = if Int.is_pow2 n then n / 2 else 1 lsl Int.floor_log2 n in
       let low = rom_banked (Array.subo bits ~len:split) (lsbs addr) in
@@ -494,9 +501,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
           (Array.subo bits ~pos:split)
           (sel_bottom (lsbs addr) ~width:(address_bits_for (n - split)))
       in
-      mux2 (reg spec ~enable:nohold (reg spec ~enable:nohold (msb addr))) high low)
+      mux2 (reg spec ~enable:nohold (msb addr)) high low)
   in
-  let romd = rom_banked rom_bits rom_addr.value in
+  let romd = rom_banked rom_bits (reg spec ~enable:nohold rom_addr.value) in
   let write_port waddr wen wdata =
     { Write_port.write_clock = i.clock
     ; write_address = waddr

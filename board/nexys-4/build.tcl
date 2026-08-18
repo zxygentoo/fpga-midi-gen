@@ -19,8 +19,9 @@ phys_opt_design
 route_design
 # The design needs this pass and does not merely gain from it. At six layers it stands at
 # 126 block RAM tiles of 135, thus routing is three quarters of every long path, and the
-# route gives back the whole slack that placement won: measured at -0.252 ns here and
-# +0.031 ns after this pass. Post-route physical synthesis replicates the drivers that the
+# route gives back the whole slack that placement won: measured at -0.233 ns here and
+# +0.059 ns after this pass (2026-08-19, with the registered ROM address; -0.252 and
+# +0.031 before it). Post-route physical synthesis replicates the drivers that the
 # congestion stretched. Remove it and the bitstream misses the period.
 phys_opt_design
 report_timing_summary -file $build_dir/timing.rpt

@@ -222,9 +222,15 @@ of the depth of the pipe: the first tag of a row loads the accumulator,
 and the last raises the row's done. Rows stream back to back.
 
 The timing rules of era three hold, and they were decided against
-measured paths: every memory the walk reads stands two registers from the
-multiplier, and the DSP stays a two-register multiply with a fabric adder
-behind it.
+measured paths: every read is two cycles from address to data, and the
+DSP stays a two-register multiply with a fabric adder behind it. The ROM
+spends its two cycles as one address register before the bank tree and
+one data register in each bank; the address register is load-bearing.
+With a combinational address, the tools retime the data register onto
+the address pins of every block RAM primitive and rebuild the whole
+op-dispatch address cone inside each one — 27 LUTs a primitive, 12
+primitives a layer, which was the entire layer scaling of the source
+(3 466 -> 2 352 LUTs at six layers, measured out of context).
 
 ### The lead-in and the rewind
 
