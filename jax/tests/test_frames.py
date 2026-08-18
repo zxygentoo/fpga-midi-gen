@@ -1,7 +1,7 @@
 """The step frame: the class map, the decode and the chain.
 
-The decode has an OCaml twin in lib/transformer/texture.ml, and the eight cases here are
-the eight cases of its expect test and of the table in docs/transformer_model.md. Both were
+The decode has an OCaml twin in Frame.events_of_frames of lib/core/frame.ml, and the eight
+cases here are the eight of its expect test and of docs/transformer_model.md. Both were
 measured against the packed corpus and give its texture -- onsets/step 0.81, single-ON
 0.10, median 4.0, under a quarter 0.37 -- which is the number the token era recorded.
 """
@@ -43,7 +43,7 @@ def test_a_pitch_outside_the_vocabulary_refuses():
 
 
 def test_the_decode_makes_the_eight_cases():
-    """the table of docs/transformer_model.md, and the expect test of texture.ml"""
+    """the table of docs/transformer_model.md, and the expect test of Frame"""
     cases = {
         "hold": ([frame([60, -1, -1, -1])] * 2, []),
         "strike": ([SILENT, frame([60, -1, -1, -1])], [("on", 60)]),
@@ -101,11 +101,12 @@ def test_the_chain_conditions_downward():
     # moves when it changes
     soprano = base.copy()
     soprano[..., 3] = 2
-    assert np.allclose(logits(base)[..., 3, :], logits(soprano)[..., 3, :])
+    from_base, from_soprano = logits(base), logits(soprano)
+    assert np.allclose(from_base[..., 3, :], from_soprano[..., 3, :])
     for seat in (2, 1, 0):
-        assert not np.allclose(logits(base)[..., seat, :], logits(soprano)[..., seat, :])
+        assert not np.allclose(from_base[..., seat, :], from_soprano[..., seat, :])
 
     # the bass is drawn last, thus no seat reads it and the whole readout stands still
     bass = base.copy()
     bass[..., 0] = 2
-    assert np.allclose(logits(base), logits(bass))
+    assert np.allclose(from_base, logits(bass))

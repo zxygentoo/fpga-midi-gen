@@ -57,7 +57,9 @@ def need(*paths):
 
 
 def run(*argv):
-    done = subprocess.run(argv, capture_output=True, text=True)
+    # check=False: the assert below carries the stderr into the report, where a
+    # CalledProcessError would show the command alone
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
     return done.stdout
 

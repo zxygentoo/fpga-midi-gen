@@ -5,8 +5,8 @@ where a wrong dtype or a wrong mask hides: it still produces plausible numbers. 
 tests pin the walk against a scalar reference written straight from the OCaml, and pin
 the one invariant batching adds -- an inactive element must consume nothing.
 
-The end-to-end proof that this walk is the board's walk is `infer.py --gate`, which
-compares whole token streams against the OCaml sampler.
+The end-to-end proof that this walk is the board's walk is gate C of tests/test_parity.py,
+which compares whole frame streams against the OCaml sampler.
 """
 
 import numpy as np
