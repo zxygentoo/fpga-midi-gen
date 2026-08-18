@@ -21,6 +21,7 @@ Two questions, two groups of numbers:
   hears as fractured.
 """
 
+import math
 import statistics as st
 
 import numpy as np
@@ -84,10 +85,13 @@ def silences(sounding):
     return out
 
 
-def of_walk(classes):
-    """one walk of frames against the corpus: the silence, its placement, and the texture"""
+def of_walk(classes, music=None):
+    """one walk of frames against the corpus: the silence, its placement, and the texture
+
+    [music] is the decode of [classes], which a caller that already holds it passes in --
+    the decode walks every step and every voice, and the canonical stream is long."""
     sounding = [frozenset(int(c) for c in f if c != data.SILENCE) for f in classes]
-    music = data.decode(classes)
+    music = data.decode(classes) if music is None else music
     whole = windows(music, len(music))[0]
     gaps = silences(sounding)
     return {
@@ -107,14 +111,16 @@ def of_walk(classes):
 
 def of_canonical_stream(corpus_path):
     """the same numbers over stream zero of the train split: the row every other row is
-    read against"""
+    read against, and the decode it was measured from"""
     split = data.load_corpus(corpus_path)["train"]
-    return split, of_walk(split.classes[: int(split.index[0, 1])])
+    classes = split.classes[: int(split.index[0, 1])]
+    music = data.decode(classes)
+    return music, of_walk(classes, music)
 
 
 def mean_of(rows, name):
     """the mean of one measure over several walks, skipping a walk that has none"""
-    kept = [row[name] for row in rows if row[name] == row[name]]
+    kept = [row[name] for row in rows if not math.isnan(row[name])]
     return st.mean(kept) if kept else float("nan")
 
 

@@ -133,7 +133,8 @@ def train_row(rng, pool, context):
 
 
 def stack_rows(rows):
-    return tuple(np.stack([row[field] for row in rows]) for field in range(2))
+    """the rows of (classes, phases) stacked into one batch of each"""
+    return tuple(np.stack(column) for column in zip(*rows))
 
 
 def train_batch(rng, pool, batch, context):

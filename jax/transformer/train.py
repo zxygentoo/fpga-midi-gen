@@ -38,7 +38,8 @@ def draw_params(key, d, layers):
     def normal(k, shape):
         return jax.random.normal(k, shape, dtype=jnp.float32) * 0.02
 
-    keys = iter(jax.random.split(key, 3 + 6 * layers))
+    # the two tables, the skipped key below, then the tensors of each layer
+    keys = iter(jax.random.split(key, len(model.TABLES) + 1 + model.PER_LAYER * layers))
     params = {
         "seats": normal(next(keys), (data.SEATS, data.CLASSES, d)),
         "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
@@ -124,12 +125,18 @@ def make_eval(heads, span):
     return jax.jit(eval_fn)
 
 
+def on_device(batches):
+    """the evaluation windows are fixed for the whole run, thus they cross to the device
+    one time and not at every evaluation"""
+    return [(jnp.asarray(classes), jnp.asarray(phases)) for classes, phases in batches]
+
+
 def eval_loss(eval_fn, params, batches):
     """nats for each step, over every step and over the moving steps alone"""
     total = moved = 0.0
     steps = moves = 0
     for classes, phases in batches:
-        sums = eval_fn(params, jnp.asarray(classes), jnp.asarray(phases))
+        sums = eval_fn(params, classes, phases)
         total += float(sums[0])
         moved += float(sums[1])
         moves += int(sums[2])
@@ -195,8 +202,8 @@ def main(
 ):
     corpus = data.load_corpus(corpus_path)
     pool = data.train_pool(corpus, train_on)
-    train_eval = data.eval_batches(corpus["train"], context, eval_limit, batch)
-    valid_eval = data.eval_batches(corpus["valid"], context, eval_limit, batch)
+    train_eval = on_device(data.eval_batches(corpus["train"], context, eval_limit, batch))
+    valid_eval = on_device(data.eval_batches(corpus["valid"], context, eval_limit, batch))
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     key, draw_key = jax.random.split(key)
@@ -227,7 +234,9 @@ def main(
             mark = "  *"
             if ckpt and train_on != "all":
                 save_checkpoint(ckpt, params)
-        if average_top > 0:
+        # the snapshot crosses to the host only when it can stay: the sort would drop it
+        # again, and the copy is the whole parameter tree
+        if average_top > 0 and (len(top) < average_top or valid_all < top[-1][0]):
             top.append((valid_all, step, jax.tree.map(np.asarray, params)))
             top.sort(key=lambda entry: entry[0])
             del top[average_top:]
@@ -252,11 +261,16 @@ def main(
             jnp.float32(rate),
             step_key,
         )
-        losses.append(float(value))
+        # the device array, NOT float(value): a read blocks until the step finishes, and
+        # the loop then cannot overlap the next batch draw and its transfer with the
+        # compute of this one. Measured at the baseline config: 27.0 ms each step against
+        # 19.3. The log below reads, thus the run-ahead stays inside one log window.
+        losses.append(value)
         if step % log_every == 0 or step == 1:
             # the training number is nats for each step too: the mean over the predictions
             # times the four seats
-            click.echo(f"step {step:5d}  loss {data.SEATS * np.mean(losses):.4f}")
+            mean = float(jnp.mean(jnp.stack(losses)))
+            click.echo(f"step {step:5d}  loss {data.SEATS * mean:.4f}")
             losses = []
         if step % eval_every == 0 or step == steps:
             evaluate(step, params)

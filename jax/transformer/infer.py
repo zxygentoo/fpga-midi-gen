@@ -66,7 +66,7 @@ def pick(weights, uniform):
     return (running > (uniform * running[:, -1])[:, None]).argmax(axis=1)
 
 
-def draw_frame(params, h, state, temperature, min_p, support=None):
+def draw_frame(params, h, state, temperature, min_p):
     """One step of the chained head, on the host: the soprano first, and each seat under it
     reading the stream the seats above have written.
 
@@ -82,10 +82,6 @@ def draw_frame(params, h, state, temperature, min_p, support=None):
     for seat in reversed(range(data.SEATS)):
         raw = (rms_norm(stream) @ seats[seat].T).astype(np.float64)
         weights = temper(raw, temperature, min_p)
-        # the classes the floor leaves standing: what the knob really does to the draw,
-        # and the quantity that trades against a dull one
-        if support is not None:
-            support.append(float((weights > 0.0).sum(axis=1).mean()))
         state, uniform = prng.uniform(state, True)
         frame[:, seat] = pick(weights, uniform)
         if seat:
@@ -93,9 +89,7 @@ def draw_frame(params, h, state, temperature, min_p, support=None):
     return state, frame
 
 
-def sample(
-    params, *, seeds, steps, context, heads, span, temperature, min_p, support=None
-):
+def sample(params, *, seeds, steps, context, heads, span, temperature, min_p):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. It is
@@ -110,30 +104,29 @@ def sample(
         )
     )
     state = prng.states(seeds)
-    lead = model.PHASE_BUCKETS
+    lead = data.BAR_STEPS
     classes = np.zeros((batch, lead, data.SEATS), dtype=np.int32)
-    phases = np.tile(np.arange(lead) % model.PHASE_BUCKETS, (batch, 1)).astype(np.int32)
 
+    # [classes] carries one column for each step drawn so far and the loop starts at
+    # [lead], thus the width is [step] at the head of every pass.
     for step in range(lead, steps):
         # ONE shape for the whole run, or every window length compiles its own kernel --
         # the history is right-padded to [batch, context] and read at its last real
         # position. The causal wall keeps a real position from seeing the padding.
-        held = classes.shape[1]
-        low = max(0, held - context)
-        length = held - low
+        low = max(0, step - context)
+        length = step - low
         window = np.zeros((batch, context, data.SEATS), dtype=np.int32)
-        window[:, :length] = classes[:, low:held]
+        window[:, :length] = classes[:, low:step]
+        # the phase of a position is the position folded into the bar, which is the rule
+        # the corpus export states; nothing has to be carried beside the frames
         table = np.zeros((batch, context), dtype=np.int32)
-        table[:, :length] = phases[:, low:held]
+        table[:, :length] = np.arange(low, step) % model.PHASE_BUCKETS
         h = np.asarray(forward(jnp.asarray(window), jnp.asarray(table)))[
             :, length - 1, :
         ].astype(np.float64)
 
-        state, frame = draw_frame(params, h, state, temperature, min_p, support)
+        state, frame = draw_frame(params, h, state, temperature, min_p)
         classes = np.concatenate([classes, frame[:, None, :]], axis=1)
-        phases = np.concatenate(
-            [phases, np.full((batch, 1), step % model.PHASE_BUCKETS, np.int32)], axis=1
-        )
     # [steps] frames and not [max(lead, steps)]. The lead-in counts inside [steps], thus a
     # walk shorter than one bar is that many silent frames and not a whole bar of them --
     # the loop adds nothing there, and the integer twin gives exactly [steps] in any case.
@@ -143,6 +136,25 @@ def sample(
 def step_line(step, events):
     """the line format of bin/play_transformer.ml, so that a dump reads back"""
     return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
+
+
+def report_texture(walks, music, *, seeds, span, corpus_path):
+    """both questions of measure.py, and the corpus row above each: does the texture hold
+    over the windows, and does the walk arrive before it goes quiet?"""
+    canonical, corpus = measure.of_canonical_stream(corpus_path)
+    for index, row in enumerate(measure.windows(canonical, len(canonical))):
+        click.echo(measure.window_line("the packed corpus", index, row))
+    for seed, walk in zip(seeds, music):
+        for index, row in enumerate(measure.windows(walk, span)):
+            click.echo(measure.window_line(f"seed {seed:4d} window", index, row))
+    click.echo("")
+    click.echo(measure.walk_line("the packed corpus", corpus))
+    rows = [measure.of_walk(walk, decoded) for walk, decoded in zip(walks, music)]
+    for seed, row in zip(seeds, rows):
+        click.echo(measure.walk_line(f"seed {seed:4d}", row))
+    if len(seeds) > 1:
+        mean = {name: measure.mean_of(rows, name) for name in rows[0]}
+        click.echo(measure.walk_line("the mean", mean))
 
 
 def play(music, *, device, step_ms, channel, velocity):
@@ -215,6 +227,9 @@ def parse_seeds(ctx, param, value):
 # about one and a half classes standing at a draw, and it reads as dull and MORE silent --
 # silence 5.83 percent against 4.22, gaps 13.4 steps against 9.8, where the corpus gives
 # 4.19 and 9.9.
+# The OCaml side states these once, as Transformer.elected_temperature and
+# Transformer.elected_min_p; no constant crosses the language seam, thus they stand here
+# again and the two must move together.
 @click.option("--temperature", default=1.0)
 @click.option("--min-p", default=0.05)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}")
@@ -267,28 +282,9 @@ def main(
     music = [data.decode(walk) for walk in walks]
 
     if texture_span:
-        # both questions of measure.py, and the corpus row above each: does the texture
-        # hold over the windows, and does the walk arrive before it goes quiet?
-        split, corpus = measure.of_canonical_stream(corpus_path)
-        length = int(split.index[0, 1])
-        canonical = data.decode(split.classes[:length])
-        for index, row in enumerate(measure.windows(canonical, length)):
-            click.echo(measure.window_line("the packed corpus", index, row))
-        for seed, walk in zip(seeds, music):
-            for index, row in enumerate(measure.windows(walk, texture_span)):
-                click.echo(measure.window_line(f"seed {seed:4d} window", index, row))
-        click.echo("")
-        click.echo(measure.walk_line("the packed corpus", corpus))
-        rows = [measure.of_walk(walk) for walk in walks]
-        for seed, row in zip(seeds, rows):
-            click.echo(measure.walk_line(f"seed {seed:4d}", row))
-        if len(seeds) > 1:
-            click.echo(
-                measure.walk_line(
-                    "the mean",
-                    {name: measure.mean_of(rows, name) for name in rows[0]},
-                )
-            )
+        report_texture(
+            walks, music, seeds=seeds, span=texture_span, corpus_path=corpus_path
+        )
         return
     if to_synth or to_file:
         if len(seeds) > 1:

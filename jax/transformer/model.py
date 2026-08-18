@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 from safetensors.numpy import load_file
 
-from data import SEATS
+from data import BAR_STEPS, SEATS
 
 jax.config.update("jax_default_matmul_precision", "float32")
 
@@ -24,32 +24,34 @@ jax.config.update("jax_default_matmul_precision", "float32")
 # -- 5 to 7 times tighter over six seeds, replicated at two step budgets. Every head is
 # then local, and seeds stop latching onto whatever distant structure their init favours.
 SLOPE_SPAN = 4
-PHASE_BUCKETS = 16
+# the phase table IS the bar -- one row for each step of it. Two names for one number let
+# the corpus phase and the table part, and a phase outside the table gathers a clamped row
+# in silence.
+PHASE_BUCKETS = BAR_STEPS
 TABLES = ("seats", "phase")
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
+PER_LAYER = len(LAYER_TENSORS)
 
 
 def load_params(path):
-    """The two tables, then six tensors for each layer."""
+    """The two tables, then the tensors of each layer, in construction order."""
     tensors = load_file(path)
     count = len(tensors)
-    if count < len(TABLES) + 6 or (count - len(TABLES)) % 6:
+    if count < len(TABLES) + PER_LAYER or (count - len(TABLES)) % PER_LAYER:
         raise ValueError(
-            f"{path}: {count} tensors is not {TABLES} and six for each layer"
+            f"{path}: {count} tensors is not {TABLES} and {PER_LAYER} for each layer"
         )
-    layers = (count - len(TABLES)) // 6
+
+    def layer_at(index):
+        base = len(TABLES) + PER_LAYER * index
+        return {
+            name: jnp.asarray(tensors[str(base + at)])
+            for at, name in enumerate(LAYER_TENSORS)
+        }
+
     params = {name: jnp.asarray(tensors[str(at)]) for at, name in enumerate(TABLES)}
     params["layers"] = [
-        dict(
-            zip(
-                LAYER_TENSORS,
-                (
-                    jnp.asarray(tensors[str(len(TABLES) + 6 * layer + i)])
-                    for i in range(6)
-                ),
-            )
-        )
-        for layer in range(layers)
+        layer_at(index) for index in range((count - len(TABLES)) // PER_LAYER)
     ]
     return params
 
@@ -102,16 +104,15 @@ def hidden(params, classes, phases, *, heads, dropout=0.0, key=None, span=SLOPE_
         key, sub = jax.random.split(key)
         return _dropout(x, dropout, sub)
 
+    def split_heads(x):
+        return x.reshape(batch, length, heads, head_d).transpose(0, 2, 1, 3)
+
     h = drop(embed(params, classes) + params["phase"][phases])
     for layer in params["layers"]:
         normed = rms_norm(h)
-
-        def split(x):
-            return x.reshape(batch, length, heads, head_d).transpose(0, 2, 1, 3)
-
-        q = split(normed @ layer["wq"])
-        k = split(normed @ layer["wk"])
-        v = split(normed @ layer["wv"])
+        q = split_heads(normed @ layer["wq"])
+        k = split_heads(normed @ layer["wk"])
+        v = split_heads(normed @ layer["wv"])
         scores = q @ k.transpose(0, 1, 3, 2) * (1.0 / jnp.sqrt(float(head_d))) + bias
         context = jax.nn.softmax(scores, axis=-1) @ v
         merged = context.transpose(0, 2, 1, 3).reshape(batch, length, d)
