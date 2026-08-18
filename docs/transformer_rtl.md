@@ -2,10 +2,17 @@
 
 ## Scope
 
-The transformer of era three on the board: the model of
-`docs/transformer_model.md` as a note source behind `Source_intf`, with
-the checkpoint `d64-mk-do01-48k-s4-prog` — d 64, 2 layers, 4 heads,
-context 256, ALiBi span 8, the piece-position table.
+The transformer of era three on the board: the token model as a note
+source behind `Source_intf`, with the checkpoint
+`d64-mk-do01-48k-s4-prog` — d 64, 2 layers, 4 heads, context 256, ALiBi
+span 8, the piece-position table.
+
+**This document describes the circuit that plays today, and era four
+supersedes its model.** The design of the token model is the 2026-08-14
+entry of `build-log.md`; `docs/transformer_model.md` now holds era four,
+where one step is one frame. When the frame lands, the sections "The
+socket" and "The piece boundary" below become wrong, and era four takes
+an RTL document of its own.
 
 The design keeps the project rules. The reference of the circuit is
 exact integer arithmetic in OCaml — `Quantized` — and the circuit must

@@ -2,266 +2,289 @@
 
 ## Scope
 
-Era three puts a small transformer in the model seat. This document gives
-the design of the model: the token, the step sentence, the sequencer
-socket, the legality mask, the network, the sizes, the tokenizer and the
-plan. The RTL block design comes in a later document, after the audition
-on the host.
+This document gives the design of the model of era four. One step of
+music is one position of the network and one 32-bit word on the wire —
+the step frame — and the four voices of that step keep their names from
+the corpus to the synthesizer.
+
+The design has two halves. The corpus and the model are built, trained
+and elected by ear; the OCaml reference, the socket and the circuit are
+not. Each section states which of the two it is in.
 
 The design keeps the project rules. The board does the inference. The
 bitstream initializes the weights. The host trains the model. At MIDI
 rates the compute is never the limit; the block RAM is. Therefore the
 design spends its care on memory and on simplicity, not on throughput.
 
-## The token
+The RTL block design of era four comes in a later document.
+`docs/transformer_rtl.md` gives the circuit of era three, which plays on
+the board today.
 
-One token is one byte:
+## Why the frame
+
+Era three carried one note at a time. A step gave zero notes or up to
+four, and the sequencer took them in a handshake loop. The model above
+it gave a sentence of tokens: the OFF events, the ON events, then END.
+The count of tokens in a sentence was not constant.
+
+Three costs came from that.
+
+**The worst case sized the design.** One token was one pass of the
+network. The corpus needs 2.673 passes for each step at the mean, and 9
+at the worst. The worst case must hold inside `step_ms`. The frame makes
+the work of a step constant: one pass, always.
+
+**The window held too little music.** 256 tokens hold 96 steps — 6 bars.
+One chorale of the 382 fits in that window, and it fits by two tokens.
+256 steps hold 16 bars, and 247 of the 382 chorales fit whole.
+
+**The reader threw the voices away.** The corpus file separates the four
+voices, and the reader merged each step into a sorted pitch set. The
+frame keeps the voice. The model then learns the soprano, the alto, the
+tenor and the bass as four lines, and voice leading is the craft of a
+chorale.
+
+## The step frame
+
+One voice code is one byte:
 
 | Bits | Field | Values |
 |---|---|---|
-| 7 | type | 1 = Note On, 0 = Note Off |
+| 7 | sounds | 1 = the voice sounds a pitch, 0 = the voice is silent |
 | 6:0 | pitch | 0 to 127, the MIDI pitch |
 
-The code `0x00` is END. END closes the sentence of a step. END takes the
-code of "Note Off, pitch 0". Pitch 0 is C-1, 8.18 Hz, and no music holds
-that pitch. If a corpus holds pitch 0, the tokenizer moves the note up
-one semitone.
+The frame is four voice codes in one 32-bit word. Seat 0 takes the low
+byte. Seat 0 is the lowest voice and seat 3 is the highest. The corpus
+file gives the soprano first, thus the reader turns the order around:
+the soprano takes seat 3 and the bass takes seat 0.
 
-The code `0xFF` is START. START opens the walk: it is the first token
-of every training sequence, and the source writes it one time at
-rewind, before the first draw. The model never draws START, because
-the mask forbids it. START takes the code of "Note On, pitch 127".
-Pitch 127 is G9, 12544 Hz, and no music holds that pitch. If a corpus
-holds pitch 127, the tokenizer moves the note down one semitone.
+The flag gives three properties:
 
-The zero word gives three properties for free:
+- A silent voice is the code `0x00`, thus a cleared frame is silence and
+  a cleared context memory reads as silence.
+- The pitch field holds all of 0 to 127. No pitch is reserved, thus the
+  reader moves no note and the MIDI range is the MIDI range.
+- The circuit reads the flag as a bit and not as a compare.
 
-- A cleared context memory reads as a run of ENDs, and that history is
-  silence: a safe value for every slot that the boot does not write.
-- The padding of a training batch is `0x00`, and it means silence.
-- The idle test in the circuit is a compare with zero.
+The codes `0x01` to `0x7F` have the flag clear, thus they are silence
+with a pitch field that no reader writes. They are 127 spare codes.
 
-The channel, the velocity and the time are not in the token. The control
-registers hold the channel and the velocity. The step clock holds the
-time. A voice identity is not in the token: in MIDI the channel is the
-voice identity, and the channel is a constant of this system.
+They keep one door open. This frame states which pitch a voice holds,
+and it cannot state that the voice strikes the same pitch again: the
+code of a held note and the code of a repeated note are the same. The
+JSB corpus does not mark a repeated note, thus nothing is lost today. A
+later corpus that marks one can take a spare code for "strike the pitch
+of the step before". This design does not use them.
 
-## The step sentence
+There is no START code and no END code. The context starts at silence,
+and the frame of a step is one word: no code must open a walk, and no
+code must close a sentence.
 
-The sequencer is the clock of the model. One step of `step_ms` asks for
-one sentence: zero or more event tokens, then END.
+The channel, the velocity and the time stay out of the frame. The
+control registers hold the channel and the velocity. The step clock
+holds the time.
 
-- A rest is a bare END.
-- A held note is a note without an OFF. The vocabulary has no hold
-  token, because MIDI has none.
-- A repeated note is the OFF and then the ON of one pitch, in one
-  sentence.
+**The wire is general and the model is not.** The frame states any MIDI
+pitch. The vocabulary of the model is sized to the corpus, below. The
+two are different questions and the code must keep them apart.
 
-The sentence has one canonical order. The OFF events come first and
-climb: each OFF pitch is greater than the OFF pitch before it. The ON
-events follow and fall: each ON pitch is less than the ON pitch before
-it. Therefore one chord has exactly one sentence and not a permutation
-family, and the position of an ON in the sentence acts as a voice rank.
+## The decode
 
-Each direction earns its place. The fall is the melody leading: the top
-voice is chosen before the voices under it, and conditions on none of
-them, as the music is written. The climb then makes the two runs meet in
-the middle, so the release of the top moving voice sits beside its
-attack and one melodic step is two adjacent tokens.
+The sequencer holds the set of pitches that sound. Each step gives a new
+frame. Let `sounding` be the set that sounds now, and let `wanted` be
+the set of pitches of the frame. Then:
 
-The mask holds both directions, so they are rules of the instrument and
-not conventions of the tokenizer. A convention would leave the
-permutations of a chord inside the softmax, where the model must spend
-mass to learn an order that the mask can refuse for nothing.
+- The releases are `sounding` minus `wanted`.
+- The strikes are `wanted` minus `sounding`.
+- The sequencer sends **all releases, then all strikes**.
 
-Tempo is not in the sentence. The host changes `step_ms` and the music
-changes speed, with no new training. A groove is a clock-side pattern:
-an alternation of `step_ms` gives swing, and the model does not see it.
+The sequencer sends each message in seat order inside its pass. The two
+passes are the rule; the order inside a pass is free.
+
+The sets are small. Four slots hold the sounding pitches, and the frame
+holds four pitches. Therefore each membership test is a compare of one
+pitch against four, and the whole decode is 38 compares of eight bits:
+sixteen for the releases, sixteen for the strikes, and six that find a
+unison inside the frame.
+
+### Why the sets, and not the seats
+
+A rule that walks seat by seat, and closes the note of a seat before it
+opens the new one, is wrong here. Two cases break it.
+
+**The exchange.** Seat 1 moves to pitch 64 while seat 2 leaves pitch 64.
+A seat walk sends the Note On of 64 before the Note Off of 64. The synth
+stops the new note, because the four voices share one MIDI channel and a
+Note Off releases a note by pitch. The corpus holds this case at 2.77
+percent of the step boundaries, and every one of the 382 chorales holds
+at least one. Two passes make the case safe: the release of 64 goes
+first, thus the strike of 64 finds the pitch free.
+
+**The unison.** Two voices hold one pitch. The corpus holds a unison at
+7.97 percent of the steps. A set holds each pitch one time, thus the
+decode sends one Note On and one Note Off for it. A seat walk sends two
+of each, and the second Note Off stops nothing while the second Note On
+is a strike of a pitch that already sounds.
+
+The set rule also gives the safety rules for nothing:
+
+- The decode never strikes a pitch that sounds, because a strike comes
+  from `wanted` minus `sounding`.
+- The decode never releases a pitch that must stay, because a release
+  comes from `sounding` minus `wanted`.
+- Five notes never sound at the same time. The releases only make the
+  set smaller, and the strikes then fill it to four or less, because the
+  frame has four slots.
+
+Era three held the first two rules with a legality mask, and the third
+with a seat count. The decode holds all three now, thus **the mask
+leaves the design**. `Sounding_state` and its registers — the sounding
+vector, the last ON, the last OFF and the seat count — leave the RTL
+with it, and the model draws no illegal code because no frame is
+illegal.
+
+The sequencer keeps the set and does not compare the frame against the
+frame before. The two rules agree while nothing else moves the notes,
+and the set is the rule that stays true if something does. The stop
+sweep needs the set in any case: it releases what sounds.
+
+`Pink` keeps its four disjoint registers. That is a rule of the pink
+model and it stays. The decode no longer needs it.
 
 ## The socket
 
-The model is a source of `Sequencer`, behind the same interface as the
-pink model: `rewind`, `step`, then `valid`, `idle` and `ready`. The
-sequencer waits in `Take`, so a slow source is legal. The contract is
-one sentence inside one step period.
+Not built.
 
-At rewind the source starts from an empty context and writes START.
-The first sentence follows inside the first step: power on, music on.
-The entry draw does not see a bar position — the composer writes now —
-and the bar counter takes its boot value at rewind, a free RTL choice.
+```ocaml
+(** the number of voices of the synthesizer *)
+let voices = 4
 
-The source decodes its own END: on token `0x00` it raises `idle` and
-sends no event. One field is new on the interface: each event carries
-its type bit, On or Off, because the model states the releases and the
-seat compare of the sequencer does not. `gate_ms` stays a clock-side
-trim of the articulation.
+module I = struct
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; rewind : 'a  (** a strobe: go to the origin of the sequence *)
+    ; step : 'a    (** a strobe: take one step and give its frame *)
+    }
+  [@@deriving hardcaml]
+end
 
-The worst sentence is four OFFs, four ONs and END: nine tokens, eight
-messages, 24 bytes on the wire, 7.68 ms at 31250 baud. A `step_ms`
-below 8 cannot carry that burst. If the register ranges become strict,
-the floor of `step_ms` is 8.
+module O = struct
+  type 'a t =
+    { frame : 'a [@bits 8 * voices]
+      (** the four voice codes; seat 0 is the low byte *)
+    ; valid : 'a  (** a strobe: [frame] holds the frame of the step *)
+    ; idle : 'a   (** 1 when the source is at rest and can take a command *)
+    }
+  [@@deriving hardcaml]
+end
+```
 
-## The legality mask
+`Note` leaves the interface, and `ready` leaves it with the note. The
+sequencer strobes `step` and then waits, thus it is always ready and no
+handshake is necessary. `valid` answers `step`, one time for each step.
+`idle` answers `rewind`.
 
-The sampler masks the logits before the softmax. A masked token has
-probability zero.
+Every step gives a frame. A step where nothing sounds gives the frame of
+four zeros; it does not give silence on the socket. Therefore `valid`
+comes one time for each `step`, and the sequencer counts on it.
 
-| Token | Legal when |
-|---|---|
-| OFF(p) | p sounds now, the sentence holds no ON yet, p above the last OFF |
-| ON(p) | p does not sound, open seats < 4, p below the last ON of the sentence |
-| END | always |
-| START | never |
+`Pink.Source` becomes smaller. It holds the four notes in registers
+already, and its report state, its owed flags and its lowest-voice fold
+exist only to give one note at a time. The frame takes the four
+registers as they are.
 
-Therefore every sentence is valid MIDI, at most four voices sound, and
-two seats never hold one pitch. The disjoint-register rule of the S-1
-holds by construction. The same mask sits inside the softmax of the
-training loss, thus the composer spends no mass on a code that the
-sampler would refuse. Therefore its raw mass outside the legal set stays
-untrained, and the mask must guard every draw.
+The wire is the constraint on the tempo. The worst step sends four Note
+Offs and four Note Ons: 24 bytes, 7.68 ms at 31250 baud. Therefore the
+floor of `step_ms` is 8. The worst case is common and not rare — all
+four voices move at 7.6 percent of the step boundaries.
 
-## The network
+## The corpus
 
-The model is a decoder-only transformer with integer weights.
+Built. `Jsb.pack` and `corpus_tool export` carry it.
 
-| Part | Design |
-|---|---|
-| embedding | one 256-row table, tied with the output head |
-| position | ALiBi: a constant slope per head, a power of two |
-| bar phase | a 16-row table, indexed by the bar counter of the sequencer |
-| norm | RMSNorm; the trainer folds the scale into the next matrix |
-| bias | none |
-| feed-forward | `d_ff = 4 * d` |
-| context | `T` tokens, KV cache `2 * L * T * d` bytes, or recompute |
+### The packed stream
 
-ALiBi makes the position bias a shift, so the model has no position
-table. The step period is long, so the recompute datapath with no KV
-cache is also legal; the choice is simplicity against 64 KB and it can
-wait for the RTL document.
+The corpus is one stream for each split: piece, seam, piece, seam, and
+so on. The splits never mix. There are no pieces in the stream, and
+there is no boundary in the walk.
 
-The integer ladder has three rungs. Int8 weights from post-training
-quantization are the base, with no training risk. Int4 and ternary
-weights need quantization-aware training. Ternary weights remove the
-multipliers: the MAC becomes add, subtract or skip, and the DSP blocks
-leave the design.
+**The packing is the change that carries the design, and the reason is
+the quiet.** A chorale is full of movement toward quiet: the cadences,
+the fermatas, the wind-down at the end. The movement back — silence,
+then a new piece — is at the boundary between two pieces, and a training
+window of a corpus of separate pieces never crosses one. Such a corpus
+teaches the roads into the quiet and no road out. The packed stream
+states what follows the quiet, thus the model learns the transition it
+has never seen, and the walk needs no counter to start the next piece.
 
-## The piece position
+### The seam
 
-The bar phase gives the position in the bar. It does not give the
-position in the piece. The tokens hold no other measure of time.
-Therefore the model cannot know that it is near the end, and it cannot
-name the part of the piece that it must state again.
+The seam is the count of empty steps between the last step of a piece
+and the first step of the next. It is the smallest count that puts the
+next piece on its rotation, and it is never zero.
 
-A second table gives that position. The table has 16 rows, and the row
-adds to the token embedding beside the bar phase. The two tables have
-the same shape and the same use: one says where the step is in the bar,
-the other says where the step is in the piece.
+The arithmetic gives its size: a piece is a whole number of quarter
+notes and a rotation is a whole number of quarter notes, thus the seam
+is 4, 8, 12 or 16 steps. The quiet of a seam is never shorter than a
+quarter note and never longer than a bar. No rule states this.
 
-Training and the draw index it differently, because training knows the
-length of a piece and a draw does not. The corpus divides:
+A seam of frames states silence, and the decode makes the release of the
+last chord for nothing. Era three had to write that release into the
+corpus, because a piece ends with its four voices still sounding.
 
-    piece_phase = 16 * step / steps_in_piece
+### The metre of the corpus
 
-The ratio is the correct measure, and the corpus shows it. A repeated
-bar of the top line comes again after a distance. That distance is more
-constant as a part of the piece than as a count of steps: the
-coefficient of variation is 0.48 against 0.58 for the exact repeat, and
-0.49 against 0.59 for the contour. Therefore a ratio names a repeat
-better than a step count.
+The measurement, over all 382 pieces and 92,536 steps:
 
-The count of rows is a balance. With 16 rows, one offset holds 44
-percent of the repeats. With 32 rows it holds 31 percent, and the other
-repeats divide between 25 offsets that each get less data. With 8 rows
-it holds 52 percent, but the last row is then 1.8 bars, and the model
-cannot tell "prepare the cadence" from "make the cadence". 16 rows keep
-both properties.
+| | pieces | steps |
+|---|---|---|
+| a 16-step bar | 226 | 64.4% |
+| a 12-step bar | 27 | 8.1% |
+| too few holds to vote | 129 | 27.5% |
+| a pickup | 211 | — |
 
-The draw counts; it does not divide. The corpus divides each piece by
-its length, but a draw has no length: the board plays for ever, and a
-long draw would stretch one arc of sixteen buckets over a span that no
-training piece ever had. Therefore the bucket of step `i` is
+Every rotation is 0, 4, 8 or 12 steps, and every piece is a whole number
+of quarter notes.
 
-    piece_phase = i / 16 mod 16
+One rolling clock of 16 steps holds this corpus. Each piece takes the
+rotation that puts the most of its cadences on a downbeat, and the seam
+places it there. The cadences on a downbeat are then 73.8 percent of
+those of the 16-vote pieces, 44.6 percent of those of the 12-vote
+pieces, and 71.9 percent of all. To remove the 27 odd-metre pieces moves
+the last number to 73.8 percent and costs 8.1 percent of the steps. That
+is a bad trade, and the votes it would act on are weak: 8 of the 27 win
+by a lift of 4 and 4 more by a lift of 16, near-ties on 2 to 4 holds.
+**The corpus needs no rule for the odd metre.**
 
-One bucket is 16 steps, one arc is 256 steps, and the arc repeats. A
-chorale runs 228 steps at the median, thus one arc is about one piece
-and the walk gives chorale-shaped arcs, one after another.
+The bar length is therefore not in the corpus. `Jsb.rotation` votes the
+pickup of a piece at one bar length of 16 steps.
 
-Both numbers are powers of two, thus the circuit takes a bit-slice of
-the step counter. **The piece length is not an input**: no control
-register holds it, the host states nothing, and the counter never
-stops. A draw of exactly 256 steps gives the buckets that a division by
-the length would give, so that case fixes the two rules together.
+### The streams
 
-The table costs 16 rows of `d`: 1 KB at `d` 64 with int8 weights, which
-is 0.9 percent of the parameters.
+A piece takes one of its legal shifts each time it enters a stream, thus
+one stream is one draw and a split needs more than one. The export
+writes eight streams for each split: a piece has 7.4 legal shifts at the
+mean, thus eight streams hold the step count of the corpus.
 
-## What the piece position gave
+Stream zero is the canonical one — every piece at shift zero, in the
+order of the corpus. The referee reads it alone, thus a gate between two
+trainers stays deterministic. The other streams take a uniform
+permutation of the pieces and a uniform legal shift for each.
 
-The table was tested at the recipe of the best model: `d` 64, 2 layers,
-`T` 256, dropout 0.1, seed 4, 48000 steps. One variable changed.
+The draw of a training row is: a uniform stream, then a uniform window.
+The piece draw is not uniform — a long piece holds more windows than a
+short one — and this is the objective the endless walk asks for.
 
-The loss did not move. The valid loss is 0.6298, and the model without
-the table gives 0.6299. A test at `T` 512 gave the same answer: the
-table moved the loss by 0.0001 or less at every evaluation, and the
-sign changed from one evaluation to the next.
+A shift is legal while each voice stays inside the observed range of
+that voice in the corpus: soprano 60 to 81, alto 52 to 74, tenor 46 to
+69, bass 36 to 66. The transposition happens for each piece, before the
+packing.
 
-The ear moved. The music keeps the same craft, and it becomes more
-dynamic and more intentional. Therefore the table stays. This is the
-second change of the era that the ear accepted, and both were invisible
-to the loss: the other is the order of the sentence. Both change what
-the model is conditioned on. No change of capacity, depth, context,
-dropout, weight decay or ALiBi has ever passed the ear.
+### The reader
 
-The one measurable effect of the table is a smaller distance between
-the train loss and the valid loss: 0.0698 against 0.0750. The train
-loss is worse, not the valid loss better. Thus the table acts as a weak
-regularizer, and that is not the reason to keep it.
-
-**The crop dilution is not a reason for a longer window.** A repeat
-pair 80 steps apart is in about one training window in five at `T` 256.
-The model without the table has the same dilution, and the ear prefers
-it to every model with a longer context. Therefore the dilution is a
-condition of this corpus and not a fault. A `T` 512 test moved the loss
-by 0.005, moved the effect of the table by nothing, and the ear found
-the music worse. Test a change against the best model, and change one
-thing.
-
-## The sizes
-
-The budget is the block RAM: 607.5 KB, with about ten percent reserved
-for the rest of the design. Sizes below are int8, `T = 256`.
-
-| Config | Params | Weights | KV | Total | Of 607.5 KB |
-|---|---|---|---|---|---|
-| d=64, L=2 | 115 K | 113 KB | 64 KB | 177 KB | 29% |
-| d=96, L=3 | 358 K | 349 KB | 144 KB | 493 KB | 81% |
-| d=128, L=2 | 428 K | 418 KB | 128 KB | 546 KB | 90%, the ceiling |
-
-The floor is near 50 K parameters. A transformer repeats a motif with
-an induction circuit, and that circuit needs two attention layers.
-Music lives on repetition. Therefore the model has at least two layers,
-at any size.
-
-The optimum comes from the data and not from the board. The rule of
-thumb is twenty training tokens per parameter. Transposition of a
-training piece is legal while each voice stays inside the observed
-range of its voice in the corpus: soprano 60 to 81, alto 52 to 74,
-tenor 46 to 69, bass 36 to 66. The measured gain on the training pool
-is seven to eight, not twelve.
-
-- A chorale-scale corpus gives 100 K to 200 K parameters.
-- The ceiling serves a corpus of ten million tokens or more.
-- Above the ceiling the board is the limit, not the model.
-
-A model above the optimum of its corpus does not fail loudly: it stores
-the corpus and replays it. The audition must listen for that.
-
-## The tokenizer
-
-One module turns a MIDI file into sentences. The trainer, the reference
-model and the tests all read that one module: one definition of the
-walk.
+One module turns a corpus into frames. The trainer, the reference model
+and the tests all read that one module: one definition of the walk.
 
 | Policy | Rule |
 |---|---|
@@ -270,20 +293,192 @@ walk.
 | grid | one step is a sixteenth: PPQ / 4 ticks |
 | quantize | each event moves to the nearest grid line |
 | short notes | a note below half a step becomes one step |
-| voices | at most four sound at once; thin the middle voices |
-| order | the canonical sentence order, per step |
-| pitch 0 | move to pitch 1 |
-| pitch 127 | move to pitch 126 |
+| voices | four voices, one seat for each |
+| silence | a voice that does not sound gives the code `0x00` |
 
 The JSB corpus reads from the voice-separated file,
-`Jsb16thSeparated.json`. The voices give the transposition rule; the
-pitch sets of the walk derive from them: drop the rests, merge the
-unisons, sort ascending.
+`Jsb16thSeparated.json`. One step of that file is four cells indexed by
+voice, and one frame is four codes indexed by seat. The whole transform
+is: turn the order around, send −1 to `0x00` and a pitch p to
+`0x80 lor p`, then pack the four bytes.
 
-The gate restores a part of the articulation that the grid removes, so
+The gate restores a part of the articulation that the grid removes, thus
 the round-up of short notes is safe.
 
+The parts that measure the music stay: `cadential_holds`, `vote` and
+`rotation`, because the file does not say where the bar lines are; and
+`voice_ranges` with the transposition policy above.
+
+### The boot
+
+The walk boots from a lead-in of silence: one bar of silent frames, then
+the draw. Attention needs one position, and a silent one is a position
+the model trained on at every seam.
+
+This is measured and settled. Over 12 seeds, the first ON fell at step
+16 for six seeds, 20 for two, 24 for two and 28 for two — every seed
+inside one bar of the end of the lead-in, and every opening on a
+multiple of four steps, which is the grid the seams teach. Half of them
+open on the downbeat itself. **The model opens the music itself**, thus
+the boot needs no pitch, no range and no table.
+
+## The model
+
+Built, in `jax/transformer`.
+
+### The input: one table for each seat
+
+Four codes must become one vector of the residual stream. Each seat
+reads its own table, and the four rows sum:
+
+```
+e = E[3][c3] + E[2][c2] + E[1][c1] + E[0][c0] + phase
+```
+
+**A shared table with a voice tag cannot work, and the reason is
+arithmetic and not capacity.** Every step carries all four seats, thus
+the sum of the four tags is the same vector at every position — a
+constant, which is a bias and carries nothing. What remains is symmetric
+in the four codes: a soprano on 72 with a bass on 48 and a soprano on 48
+with a bass on 72 give the identical vector. The design would throw the
+voices away on the way in, which is one of the three reasons for the
+frame. Four tables break the symmetry, and the voice tag is then not
+necessary anywhere.
+
+**Each table is tied to the head that draws its seat.** The table that
+reads a voice is the table that writes it, which is the argument for the
+tied table of era three, one time for each seat.
+
+### The vocabulary
+
+The head draws over 48 classes. Class 0 is silence, and class 1 + i is
+the pitch 36 + i. The corpus states the pitches 36 to 81, and the shift
+rule holds each voice inside its own observed range, thus 47 classes
+cover the music and the 48th is spare.
+
+The class index and the wire code are not the same number. The flag
+makes the wire code cheap for the circuit, and the class index makes the
+table small for the model. The map is one subtraction.
+
+The table shapes are fixed when the bitstream is elaborated, as the
+weights are. A corpus with a wider range takes a wider table and a new
+bitstream; nothing at run time reads the size.
+
+**The size is what sets 48.** Four tables of 129 rows put the six-layer
+model at 99 percent of the block RAM of the device, which does not fit.
+Four tables of 48 rows put it at 93 percent, under the six-layer design
+of era three.
+
+### The head
+
+One step gives four voice codes. The head draws them in a **chain**, and
+not in parallel:
+
+```
+h3 = h                   logits(seat 3) = E[3] · rms(h3)
+h2 = h3 + E[3][c3]       logits(seat 2) = E[2] · rms(h2)
+h1 = h2 + E[2][c2]       logits(seat 1) = E[1] · rms(h1)
+h0 = h1 + E[1][c1]       logits(seat 0) = E[0] · rms(h0)
+```
+
+`h` is the output of the last layer at that step. `c3` to `c1` are the
+codes the chain has drawn already, and the training pass takes the true
+codes, thus all four heads run in one pass with no sampling.
+
+The chain runs from seat 3 down to seat 0: soprano, alto, tenor, bass.
+The order keeps the one decision the ear accepted in era three: the top
+voice is chosen first, and it conditions on no voice under it, as the
+music is written.
+
+The chain is necessary, and it is measured. Four heads that draw in
+parallel make the voices conditionally independent, and a chord is a
+joint choice. **Parallel heads cost 0.3157 nats for each step — 0.456
+bits, sixteen times the seed spread.** The chain removes that cost for
+**no parameters at all** — parallel heads need the same four tables —
+and three adds of a vector.
+
+The chain is exact and not an approximation. Any joint distribution is a
+product of conditionals, in any order.
+
+What the chain adds is also what the next position reads. Write
+`a[v] = E[v][c[v]]`; then the input embedding of step t+1 is
+`a3 + a2 + a1 + a0`, and the stream at the bass head is `h + a3 + a2 +
+a1`. The chain assembles the next frame's embedding, one voice at a
+time, and needs no table of its own to do it.
+
+**The one restriction, stated:** each conditional is an additive step
+into the residual stream, with a normalization and a projection and no
+non-linearity between the seats. The factorization is exact; this form
+of it is not free to represent any conditional. The measured gain
+appeared in full, thus the restriction costs nothing that can be seen
+today. If a later corpus asks for more, the fallback is a small map for
+each seat on the accumulated context, before the readout.
+
+### The position signal
+
+One table of 16 rows holds the bar phase, `step mod 16`. The row adds to
+the sum of the four seat rows.
+
+The window position — a second table of 16 rows over `step / 16 mod 16`
+— was designed, built and **removed**. It is free on the loss and the
+ear prefers the model without it. The export still writes one rolling
+coordinate modulo 256, and the reader takes the bar phase from its low
+four bits; the high four bits are the window position and no reader
+takes them. That costs nothing, and it keeps one export honest for a
+model that wants either.
+
+### ALiBi
+
+The slope of head k is `2 ** -(span * (k + 1) / heads)`, and the span is
+**4**.
+
+The span did not carry over from era three, where 8 was settled when a
+position was one token. A token is 1/2.673 of a step at the mean, thus a
+position now reaches about 2.7 times further in music at the same span.
+No single span rescales the four slopes by one factor, because the set
+is geometric in the head index.
+
+The measurement elected 4, and it is the most robust number of the era.
+The means of 4 and 8 are a dead heat; **the variance is the finding**:
+
+| | mean | sd | worst |
+|---|---|---|---|
+| 48k, span 8 | 1.6404 | 0.0100 | 1.6496 |
+| 48k, span 4 | 1.6381 | **0.0019** | 1.6394 |
+| 96k, span 8 | 1.6272 | 0.0108 | 1.6377 |
+| 96k, span 4 | 1.6276 | **0.0016** | 1.6288 |
+
+Six seeds at each budget, and the result replicates at both. The spread
+is 5 to 7 times tighter.
+
+The mechanism agrees with the ear. The slopes of span 4 are 1/2, 1/4,
+1/8 and 1/16, thus every head is local: the gentlest of them still costs
+16 logits at 256 steps. A gentle slope lets each seed hold on to
+whatever distant structure its initial values favour, and a steep one
+holds every head near the bar, thus the seeds agree. The ear reads span
+4 as more balanced and smooth.
+
+A gentler span is worse, and flat is worst: span 16 costs 0.023, span 24
+costs 0.044, and span 64 — which is no ALiBi — costs 0.053. Era three
+paid 0.105 for the same flattening. The frame retires a job its steep
+head used to do: the position of a token in a sentence was a voice rank,
+and a frame states the voice.
+
+### The rest of the network
+
+The model is a decoder with no bias terms, RMSNorm before each sublayer,
+ALiBi for the position, and `d_ff = 4 * d`. The trainer folds the
+RMSNorm scale into the next matrix. The floor of two layers stays: a
+transformer repeats a motif with an induction circuit, and that circuit
+needs two attention layers. Music lives on repetition.
+
+The context is `T` positions. The KV cache is `2 * L * T * d` bytes, and
+the step period is long, thus the recompute datapath with no cache is
+also legal. That choice belongs to the RTL document.
+
 ## The draw
+
+Built.
 
 One generator makes every random number of the model: `Prng`, the
 xorshift32 of the circuit. The initial parameters, the dropout masks and
@@ -292,36 +487,275 @@ the software, in the simulation and on the board, and that seed is the
 value of the SEED cell of the host control.
 
 One step of the walk gives eight bits, and one uniform takes three
-steps. The grid of `2 ** -24` holds the tail of the Box-Muller draw,
-which one byte would cut at 3.3 sigma. A seed from a flag or from a
-stream folds into the 32 bits of the state; a seed already inside the
-range names itself, so seed 7 is the walk of the board's seed 7.
+steps. The grid of `2 ** -24` holds the tail of a draw that one byte
+would cut at 3.3 sigma. A seed from a flag or from a stream folds into
+the 32 bits of the state; a seed already inside the range names itself,
+so seed 7 is the walk of the board's seed 7.
 
 A part of the model that must draw on its own takes an independent walk.
 Each dropout block takes one. Therefore the block holds no place in the
 order of the parent, and the parent can gain or lose draws while the
 masks stay.
 
-The initial parameters moved when the draw came to this generator. A
-checkpoint of an earlier sweep still loads, because the file holds only
-tensors, but a run from a given seed does not repeat the numbers of that
-sweep.
+The sampler tempers the logits, applies a min-p floor as a share of the
+peak, and walks the cumulative weights. **Temperature 1.0 and min_p
+0.05**, elected by ear over a sweep of temperature 0.7 to 1.3 against
+min_p 0.0039 to 0.15. No mask stands before the draw, because no frame
+is illegal.
 
-## The plan and the tests
+The numbers of era three do not carry over. That sampler drew from a
+masked distribution, and the model put 84 percent of its raw mass
+outside the legal set.
 
-1. Tokenizer and trainer on the host, in OCaml. Raven carries the
-   work: Nx computes, Rune differentiates, Kaun optimizes.
-2. The sweep: `d` in {64, 96, 128} and the integer ladder, on the real
-   corpus. The validation loss picks the band; the audition through the
-   S-1 USB picks the model. The ear decides.
-3. Freeze the config. Then the RTL document, the blocks and the board.
+## The sizes
 
-Experiments that wait for the fast trainer: a boot phase that the
-entry draw can see, a learned silent lead after START, voice
-supervision in the loss.
+int8 weights, `T` 256 positions, `d` 64. A RAMB36 tile holds 4,096 bytes
+at eight bits wide, and the device holds 135 tiles. The model below is
+validated against the routed builds of era three: the same arithmetic
+gives 47 tiles for its two-layer model and 127 for its six-layer model,
+which is what the tools report.
 
-The tests follow the project rules. The reference model is exact
-integer arithmetic, so the stream comparison against Cyclesim is a
-cheap test, block by block below it: the MAC array, the mask, the
-sampler. The seed is an input, and one seed gives one sequence in the
-reference, in the simulation and on the board.
+| | two layers | six layers |
+|---|---|---|
+| the layers | 98,304 B | 294,912 B |
+| four voice tables, 48 rows | 12,288 B | 12,288 B |
+| bar phase | 1,024 B | 1,024 B |
+| **the weights** | **111,616 B — 27.5 tiles** | **308,224 B — 75.5 tiles** |
+| the KV rings, int8 | 65,536 B — 16 tiles | 196,608 B — 48 tiles |
+| the small RAMs | 2.5 tiles | 2.5 tiles |
+| **total** | **46.0 tiles — 34%** | **126.0 tiles — 93%** |
+| era three, for comparison | 47 tiles | 127 tiles |
+
+The six-layer model therefore fits one tile under the design that plays
+now, and that build meets the clock at +0.110 ns. The 1,024 bytes that
+the window position gave back do not buy a tile: they buy margin inside
+one.
+
+The compute of one step:
+
+| | era three | with the frame |
+|---|---|---|
+| mean | 482 K multiplies | 176 K multiplies |
+| worst | 1,622 K multiplies | 176 K multiplies |
+
+The mean falls 2.7 times. The worst falls 9.2 times, and the worst is
+the number the step period must hold. At six layers the worst step of
+era three measures 61 ms of a 200 ms period; the frame takes it near 7
+ms. Compute stops being the constraint on the tempo, and the wire
+becomes it.
+
+## The measurements
+
+The numbers come from `corpus/JSB-Chorales-dataset/Jsb16thSeparated.json`:
+382 chorales, 92,536 steps. The train split is 229 chorales and 55,228
+steps, and one packed train stream holds 57,546 steps.
+
+| Measure | Value |
+|---|---|
+| positions for each step, the encoding of era three | 2.673 mean, 9 worst |
+| steps in a piece | 228 median, 100 to 640 |
+| pieces inside 256 steps | 247 of 382 = 65% |
+| pieces inside 256 tokens | 1 of 382 |
+| steps with a unison | 7,375 = 7.97% |
+| boundaries with an exchange | 2,552 = 2.77%, in all 382 pieces |
+| boundaries where all four voices move | 6,992 = 7.6% |
+| voice slots that repeat the step before | 77.91% |
+| pitches in the corpus | 36 to 81 |
+| pieces that vote a 16-step bar | 226; 27 vote 12; 129 cannot vote |
+| cadences on a downbeat, one rolling clock | 71.9% |
+| silence in a packed stream | 4.19%, and 97% of it is seam |
+
+### The cost of independent voices
+
+Two count models gave the first estimate. Both fit on the train split
+and score on the valid split. Both take the same context — the step
+before — and the same smoothing. The only difference is the
+independence.
+
+Cross entropy on the valid split, in bits for each step:
+
+| Context | Joint | Independent | Cost |
+|---|---|---|---|
+| none | 10.892 | 15.065 | 4.173 |
+| one step | 5.361 | 6.624 | 1.263 |
+| one step, contexts seen 20 times or more | 3.474 | 4.369 | 0.895 |
+| one step, two or more voices move | 10.774 | 13.238 | 2.464 |
+| one step, one or zero voices move | 3.550 | 4.411 | 0.861 |
+
+The levels are high because a count model is weak. The difference is the
+measure, and not the level.
+
+**The transformer measures the cost at 0.456 bits, and not at 1.263.**
+The count model sees one step of context; the transformer sees 256, and
+that context absorbs two thirds of the cost. The count model gave the
+sign and the order of size, and the model itself gave the number. Use
+0.456.
+
+The cost stands where the music is. Two or more voices move at 25
+percent of the boundaries, and the count model reads 2.464 bits there.
+That is the part a listener hears, thus a small mean would not make the
+parallel head safe.
+
+## What the era measured
+
+The model of the board is
+`_train/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt`: **d 64, 6 layers, 4
+heads, `T` 256, ALiBi span 4, dropout 0.3, 96,000 steps, seed 6, the
+tied chain, no window position. 308,224 parameters, valid 1.6282 nats
+for each step.** The ear elected it 2026-08-18. Those are the defaults
+of `jax/transformer/train.py`.
+
+It is not the lowest number of the table. A span-8 run of the same
+recipe reached 1.6162, and that is the lucky tail of a wide
+distribution: the ear likes its character less, and the span-4 spread is
+the reason to trust it.
+
+| Question | Answer |
+|---|---|
+| the chain against parallel heads | the chain, by 0.3157 nats for each step |
+| the untied readout | null: 1.6470 against 1.6496, inside the noise, and it costs three tiles |
+| the window position | free on the loss, and the ear prefers it gone |
+| dropout at 6 layers | 0.3 is a real optimum: 0.1 gives 1.7683, 0.2 gives 1.6975, 0.3 gives 1.6404, 0.4 gives 1.6638 |
+| the ALiBi span | 4, for the variance |
+| 96,000 steps against 48,000 | 0.010 to 0.013, at both spans, 3 seeds of 3 |
+| `T` 512 against `T` 256 | nothing: 1.6440 against 1.6404 |
+| the draw | temperature 1.0, min_p 0.05 |
+
+Dropout 0.3 at six layers settles a confound that era three could not:
+depth and regularization are not interchangeable. The distance of about
+0.42 between the train loss and the valid loss is benign — the valid
+loss descends to the last step — and its cause is arithmetic. One packed
+train stream holds 57,546 steps against about 152,000 tokens of era
+three, thus 48,000 steps is 2.64 times the epochs the same budget bought
+before.
+
+**A retraction, kept because the wrong reading is attractive.** An
+earlier measurement said the six-layer model of era three drones — its
+onset rate falling from 0.72 to 0.20 over 8192 steps — and it named the
+packed corpus as the cure. That was a fault in the JAX reader, which
+permitted the code `On 0`. Code 0 was END, thus a drawn pitch 0 could
+never be released and it held a voice for the whole walk. The OCaml side
+and the RTL corrected it at `12c43b8`; the JAX twin did not. With the
+correction, the two-layer and the six-layer models of era three both
+hold their texture. **The frame does not cure a drone. What it wins on
+texture is consistency**: the spread of the onset rate over the seeds is
+0.13 against 0.52.
+
+## The traps
+
+**The loss does not carry across the encoding.** The frame gives four
+predictions for each step and the sentence gave 2.673 tokens, thus a
+loss for each prediction divides against a different count. Report
+**nats for each step** and never nats for each prediction.
+
+Even nats for each step do not compare the two encodings. The frame
+predicts which voice holds which pitch, and the sentence predicted only
+the set, thus the frame answers a harder question by a small amount. Use
+the loss to rank inside one encoding. The ear ranks across.
+
+**77.91 percent of the predictions repeat the step before.** They are
+easy, they dominate the mean, and they invite a second failure: a model
+that holds its chord for ever scores well on a mean and plays a drone.
+Report a second number over the steps where two or more voices move, and
+read `Texture` for the movement, not the loss.
+
+**Numbers nominate; the ear elects.** Ten times in this project a metric
+has ranked a model against the ear. Two of the levers of this era — the
+window position and the ALiBi span — were settled by the ear over a loss
+that saw nothing.
+
+## The tests
+
+The rules of the project hold: expect tests in the module, waveform
+tests where a waveform shows the behaviour, Cyclesim block by block, and
+the comparison of the reference against the circuit.
+
+The decode needs one expect test for each case of the rule:
+
+| Case | Frame before | Frame now | Messages |
+|---|---|---|---|
+| hold | p | p | none |
+| strike | silent | p | On p |
+| release | p | silent | Off p |
+| move | p | q | Off p, On q |
+| exchange | seat 1 = p, seat 2 = q | seat 1 = q, seat 2 = p | none |
+| unison arrives | seat 1 = p, seat 2 = q | seat 1 = p, seat 2 = p | Off q |
+| unison leaves | seat 1 = p, seat 2 = p | seat 1 = p, seat 2 = q | On q |
+| seam | a chord | four silent codes | four Note Offs |
+
+Three properties hold over any stream of frames, and a test must state
+them:
+
+- No Note On names a pitch that sounds.
+- No Note Off names a pitch that does not sound.
+- Four notes sound at the most, at every cycle.
+
+The corpus reader needs an expect test of a small chorale: the frames,
+the seam and the coordinate over the seam into the downbeat.
+
+`Texture` measures events and not frames, thus the frame walk reaches it
+through the decode. The instrument does not change.
+
+The stream comparison stays. The reference and the Cyclesim sequencer
+must give the same messages, byte for byte, from one seed.
+
+## The open question
+
+**The model stops without arriving.** Only 67 to 73 percent of its
+silences follow a sonority held six steps or more; the corpus is 99.2
+percent. A chorale never stops without an arrival first, and a model
+that goes quiet in the middle of a phrase reads as fractured however
+short the gap is.
+
+Ruled out by measurement:
+
+- the rate — 253 steps between silences, against 236 in the corpus;
+- the placement — as even over the 256 coordinate as the corpus, and
+  there is no re-anchor in this design;
+- the timing — the walk resumes on a beat 100 percent of the time, and
+  on a downbeat 43.6 percent against the corpus 42.0.
+
+The draw cannot correct it. The best cell of the sampler sweep reaches
+89 percent, and the ear rejects that character as dull.
+
+**One lever is untried: hold the final chord of a piece into the seam,
+and release it late.** The cadence cue is then longer and the true
+silence shorter. This is a change of the corpus, thus it needs a change
+of this document first. Note that a seam is 4, 8, 12 or 16 steps with a
+mean of 10.2, and that 51 of the 230 seams of a stream are a forced full
+bar whose reason is vestigial under the frame.
+
+## The plan
+
+The ear decides, and it decides on the host. The RTL follows the ear and
+not the other way around.
+
+1. **The JAX prototype.** DONE. `jax/transformer` holds the reader, the
+   model, the trainer, the sampler and the sweep.
+2. **The measurement.** DONE. `Texture` over long walks, twelve seeds,
+   against the canonical packed stream.
+3. **The ear.** DONE, 2026-08-18. The frame wins.
+4. **The reference.** The reader, the decode and the model in OCaml,
+   with the gates of the project: the expect tests, the drift report and
+   the stream comparison.
+5. **The socket, the sequencer and `Pink`.** This part stands alone and
+   carries no risk to the model. It can happen at any time, and the
+   Cyclesim comparison tests it.
+6. **The circuit and the board.** The block design comes in its own
+   document, as before.
+
+What steps 4 and 5 remove from the machine:
+
+- `Token` becomes a pair of small maps: the class index of a wire code,
+  and the wire code of a class index. `Token.Start`, the START rule and
+  the grammar go with it.
+- `Sounding_state` and `Sounding_state.Rtl`, because no frame is
+  illegal.
+- The mask words of the export, and the mask of the training loss.
+- `Quantized.Model.piece_steps`, `Engine.boot_context`,
+  `Engine.reanchor` and the boundary of `Engine.next_step`.
+- `Transformer.piece_steps`, the `piece_steps` argument of
+  `Transformer.sample`, and the boundary of the sampler loop.
+- `State.Release` of the source, `at_boundary`, the release scan over
+  the seats, the extra term of `valid` and `Op.boundary_cycles`.
+- `-piece-steps` of `play_transformer`.

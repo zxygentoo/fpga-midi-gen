@@ -132,3 +132,82 @@ against the design that gave all four voices at one time, because the
 report of the source and the walk of the sequencer are the same work in one
 place instead of two. The bitstream is in the QSPI flash, and the board
 powers on into it.
+
+## 2026-08-14 — the transformer (feat/transformer, feat/transformer-rtl)
+
+The board does inference. A small decoder-only transformer takes the model
+seat, and it learns the Bach chorales. `feat/transformer` merged into
+develop at `0b3dc56` and `feat/transformer-rtl` at `dd2264e`.
+
+**The design of that model, which this log now keeps.** One token was one
+byte: bit 7 gave the type, 1 for Note On and 0 for Note Off, and bits 6:0
+gave the MIDI pitch. The code `0x00` was END and closed the sentence of a
+step; the code `0xFF` was START and opened the walk. Each took a pitch that
+no music holds — 0 is C-1 at 8.18 Hz and 127 is G9 at 12544 Hz — and the
+tokenizer moved a corpus note off those two pitches. The zero word made a
+cleared memory read as silence, made the padding of a batch mean silence,
+and made the idle test in the circuit a compare with zero.
+
+One step of `step_ms` asked for one sentence: zero or more events, then
+END. A rest was a bare END, a held note was a note with no OFF, and a
+repeated note was the OFF and then the ON of one pitch. The sentence had
+one canonical order. The OFF events came first and climbed, and the ON
+events followed and fell. Each direction earned its place: the fall is the
+melody leading, because the top voice is chosen before the voices under it
+and conditions on none of them, as the music is written; the climb then
+made the two runs meet in the middle, so that the release of the top moving
+voice sat beside its attack. **The reorder was the first change the ear
+ever accepted, and the loss did not see it.**
+
+A legality mask held the grammar before the softmax, in the training loss
+and at the draw. An OFF was legal when its pitch sounded, the sentence held
+no ON yet, and the pitch stood above the last OFF. An ON was legal when its
+pitch was silent, a seat of the four was open, and the pitch fell below the
+last ON. END was always legal and START never. Therefore every sentence was
+valid MIDI, four voices sounded at the most, and two seats never held one
+pitch — the disjoint-register rule of the S-1 by construction.
+
+The network was `d` 64, RMSNorm before each sublayer, no bias terms,
+`d_ff = 4 d`, ALiBi for the position, and one 256-row embedding tied with
+the output head. Two small tables added to the token embedding: the bar
+phase, 16 rows over the position in the bar, and the piece position, 16
+rows over the position in the piece. **The piece-position table was the
+second change the ear accepted, and the loss saw 0.0001 of it.** Training
+divided by the length of a piece; the draw counted `step / 16 mod 16`,
+because a draw has no length and the board plays for ever. The two rules
+agree exactly at 256 steps.
+
+The pattern of the era is worth more than the two tables: **both changes
+the ear ever accepted were invisible to the loss, and both changed what the
+model is conditioned on, not how much of it there is.** Every change that
+moved the loss — capacity, depth, context, dropout, weight decay, budget,
+ALiBi four times, head count — was rejected or null. Look for what the
+model is conditioned on, and not for more of it.
+
+The trainer moved to JAX on the host, and an OCaml referee held it honest:
+the two forward functions had to give the same loss on the same batch.
+`Prng`, the xorshift32 of the circuit, made every random number — the
+initial parameters, the dropout masks and the sampler — thus one seed named
+one walk in the software, in the simulation and on the board.
+
+**The circuit.** `Quantized` is the integer twin: int8 weights, power-of-two
+exponents for each tensor, int8 KV rings, and the sampler constants folded
+into integers. The circuit must equal it bit for bit, and it does. The walk
+became data — an `Op` schedule compiled at elaboration into one FSM over
+one multiplier — and `Mac` took the walk behind that multiplier down to one
+term for each cycle, which made the whole step 3.53 times faster than the
+prototype. `Op.cycles` predicts the count of cycles exactly.
+
+On the board, six layers: 127 block RAM tiles of 135 (94.07%), timing met
+at +0.110 ns, 2,999 LUTs and 2 DSPs. The worst step takes 61 ms of a 200 ms
+period. The two-layer model takes 47 tiles and meets timing at +0.300 ns.
+The proof chain ran end to end: the circuit equals the reference in
+Cyclesim, event for event, and the board — captured through the thru port
+of the S-1 — gave 438, then 92, then 64 messages that agree with the
+reference exactly.
+
+Two faults of the era are on the record. The endless walk decayed, and the
+answer that shipped was a mechanism and not music: every 256 steps the
+source releases the sounding pitches, clears its context and feeds START.
+And the QSPI flash holds a bitstream older than that correction. Era four
+takes both of them up.
