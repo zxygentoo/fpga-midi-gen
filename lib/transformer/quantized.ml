@@ -52,30 +52,19 @@ module Tensor = struct
   type t = int array
   type floats = float array
 
-  let same_peak (q : t) (f : floats) =
-    (* the index of the peak; a tie keeps the first *)
-    let argmax n value =
-      let rec go best i =
-        if i = n
-        then best
-        else go (if Float.(value i > value best) then i else best) (i + 1)
-      in
-      go 0 1
-    in
-    argmax (Array.length q) (fun i -> Float.of_int q.(i))
-    = argmax (Array.length f) (fun i -> f.(i))
+  (* the index of the peak; the compare is strict, thus a tie keeps the first *)
+  let peak_index (values : floats) =
+    Array.foldi values ~init:0 ~f:(fun i best v ->
+      if Float.(v > values.(best)) then i else best)
   ;;
 
+  let dot a b = Array.fold2_exn a b ~init:0.0 ~f:(fun acc x y -> Float.(acc + (x * y)))
+  let floats_of (q : t) = Array.map q ~f:Float.of_int
+  let same_peak (q : t) (f : floats) = peak_index (floats_of q) = peak_index f
+
   let cosine (q : t) (f : floats) =
-    let n = Array.length q in
-    let sum g =
-      let rec go acc i = if i = n then acc else go Float.(acc + g i) (i + 1) in
-      go 0.0 0
-    in
-    let dot = sum (fun i -> Float.(of_int q.(i) * f.(i))) in
-    let qq = sum (fun i -> Float.(of_int q.(i) * of_int q.(i))) in
-    let ff = sum (fun i -> Float.(f.(i) * f.(i))) in
-    dot /. Float.sqrt (qq *. ff)
+    let q = floats_of q in
+    Float.(dot q f / sqrt (dot q q * dot f f))
   ;;
 end
 
@@ -120,10 +109,7 @@ module Model = struct
 
   (* the element counts of the tensors in the flat order, from the one definition of the
      shapes *)
-  let sizes config =
-    List.map (Transformer.Params.shapes config) ~f:(fun shape ->
-      Array.fold shape ~init:1 ~f:( * ))
-  ;;
+  let sizes config = List.map (Transformer.Params.shapes config) ~f:Transformer.numel
 
   (* the running sums of the sizes, handed back through the one definition of the order *)
   let rom_bases t =
@@ -144,10 +130,7 @@ module Model = struct
      18-bit signed port, thus the Q of [log2e] would overflow that port under a
      temperature of about 0.36, and this Q holds down to about 0.18. *)
   let policy ~temperature ~min_p =
-    if Float.(temperature <= 0.0)
-    then invalid_arg "Quantized: the temperature is positive";
-    if Float.(min_p < 0.0 || min_p >= 1.0)
-    then invalid_arg "Quantized: min_p is 0 up to 1";
+    Transformer.check_policy ~temperature ~min_p;
     let q = Constants.log2e.q - 1 in
     ( { Constants.q_value =
           Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0 /. temperature) q)
@@ -165,9 +148,9 @@ module Model = struct
      all-zero tensor *)
   let max_exponent v =
     let fits e = Float.iround_nearest_exn (Float.ldexp v e) <= 127 in
-    let rec grow e = if e < 14 && fits (e + 1) then grow (e + 1) else e in
-    let rec shrink e = if fits e then e else shrink (e - 1) in
-    if Float.(v <= 0.0) then 14 else shrink (grow 0)
+    (* [fits] falls monotonically in [e], thus the first [e] that fits is the largest *)
+    let rec largest e = if fits e then e else largest (e - 1) in
+    if Float.(v <= 0.0) then 14 else largest 14
   ;;
 
   (* [e] overrides the exponent of the tensor's own peak — the two tables share one,
@@ -205,13 +188,9 @@ module Model = struct
     }
   ;;
 
-  (* the draw the ear elected on 2026-08-18 *)
-  let default_temperature = 1.0
-  let default_min_p = 0.05
-
   let of_checkpoint
-    ?(temperature = default_temperature)
-    ?(min_p = default_min_p)
+    ?(temperature = Transformer.elected_temperature)
+    ?(min_p = Transformer.elected_min_p)
     (config : Transformer.Config.t)
     path
     =
@@ -219,10 +198,7 @@ module Model = struct
     let tensor name =
       match Stdlib.Hashtbl.find_opt archive name with
       | None -> invalid_arg (Printf.sprintf "%s holds no tensor named %s" path name)
-      | Some packed ->
-        let t = Nx_io.to_typed Nx.float32 packed in
-        let count = Array.fold (Nx.shape t) ~init:1 ~f:( * ) in
-        Nx.to_array (Nx.reshape [| count |] t)
+      | Some packed -> Nx.to_array (Nx_io.to_typed Nx.float32 packed)
     in
     let tensors =
       List.mapi (sizes config) ~f:(fun index size ->
@@ -257,7 +233,11 @@ module Model = struct
              (List.map (sizes config) ~f:(fun count -> Prng.normals ~count ~scale:0.02)))
           (Prng.create_folded ~seed)
       in
-      of_floats config ~temperature:default_temperature ~min_p:default_min_p tensors
+      of_floats
+        config
+        ~temperature:Transformer.elected_temperature
+        ~min_p:Transformer.elected_min_p
+        tensors
     ;;
   end
 end
@@ -608,12 +588,6 @@ module Drift = struct
     ; mean_cosine : float
     }
 
-  (* the flat float array of one checkpoint tensor: what the quantization reads *)
-  let flatten tensor =
-    let count = Array.fold (Nx.shape tensor) ~init:1 ~f:( * ) in
-    Nx.to_array (Nx.reshape [| count |] tensor)
-  ;;
-
   (* One weights source and one policy: the walk quantizes the float tensors itself, under
      the draw of the era, thus the pairing cannot slip. The loop is state at the edge of
      the module, as the float sampler's loop is. *)
@@ -621,9 +595,10 @@ module Drift = struct
     let model =
       Model.of_floats
         config
-        ~temperature:Model.default_temperature
-        ~min_p:Model.default_min_p
-        (List.map (Transformer.Params.to_list params) ~f:flatten)
+        ~temperature:Transformer.elected_temperature
+        ~min_p:Transformer.elected_min_p
+        (* [Nx.to_array] is already row-major and flat: what the quantization reads *)
+        (List.map (Transformer.Params.to_list params) ~f:Nx.to_array)
     in
     let engine = ref (Engine.init model ~seed) in
     (* the history of the quantized walk, newest first: the float pass reads it, thus the
@@ -631,7 +606,7 @@ module Drift = struct
     let frames = ref [] in
     let positions = ref [] in
     let window history =
-      List.take history config.Transformer.Config.context |> List.rev |> Array.of_list
+      Transformer.window history ~context:config.Transformer.Config.context
     in
     let drawn_classes draws =
       let seats = Array.create ~len:Frame.voices 0 in
@@ -663,8 +638,8 @@ module Drift = struct
           let float_class =
             Transformer.draw_class
               float_row
-              ~temperature:Model.default_temperature
-              ~min_p:Model.default_min_p
+              ~temperature:Transformer.elected_temperature
+              ~min_p:Transformer.elected_min_p
               ~uniform:d.uniform
           in
           if float_class = d.drawn then Int.incr same_draw;

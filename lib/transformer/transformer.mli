@@ -23,6 +23,11 @@
 (** every tensor of the float model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
 
+(** [numel shape] is the element count of a shape. It stands beside [Params.shapes],
+    because the quantization of [Quantized] sizes its flat tensors from that table and the
+    product is the step between the two. *)
+val numel : int array -> int
+
 (** The shape of the model: the numbers that size every tensor here and every register in
     the circuit. *)
 module Config : sig
@@ -187,3 +192,25 @@ val logits
     The rules of [sample] on [temperature] and [min_p] hold here; this function does not
     check them. *)
 val draw_class : float array -> temperature:float -> min_p:float -> uniform:float -> int
+
+(** [window history ~context] is the newest [context] steps of a history that holds its
+    newest step first, given back oldest first — the row a forward pass reads. [sample]
+    cuts its history with it, and the drift walk of [Quantized] cuts its own with it, thus
+    the two models are compared over histories cut by one rule. *)
+val window : int list -> context:int -> int array
+
+(** [check_policy ~temperature ~min_p] raises [Invalid_argument] when [temperature] is 0
+    or less, or when [min_p] falls outside 0 up to 1. [sample] and the quantized twin both
+    state these bounds, thus one module owns them and one message answers each. *)
+val check_policy : temperature:float -> min_p:float -> unit
+
+(** The draw the ear elected on 2026-08-18, over a sweep of temperature 0.7 to 1.3 against
+    min-p 0.0039 to 0.15: 1.0 and 0.05.
+
+    Every player takes its flag default from here, and [Quantized.Model] takes the policy
+    it bakes into the bitstream from here, thus the elected numbers stand one time and the
+    ear moves them in one place. The audition tool [jax/transformer/infer.py] states them
+    again, because no constant crosses the language seam. *)
+val elected_temperature : float
+
+val elected_min_p : float

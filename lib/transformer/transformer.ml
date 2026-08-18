@@ -316,10 +316,13 @@ let class_nll raw labels =
   Nx.neg (Nx.sum (Nx.mul (Nx.sub shifted total) hot) ~axes:[ axis ])
 ;;
 
-(* the inputs and the labels of one window: [context] positions state [context] labels,
-   and the last frame of the window is a label alone *)
-let cut rows = Array.map rows ~f:(fun row -> Array.subo row ~len:(Array.length row - 1))
-let shift rows = Array.map rows ~f:(fun row -> Array.subo row ~pos:1)
+(* the inputs and the targets of one window: [context] positions state [context] targets,
+   and the last frame of the window is a target alone *)
+let inputs rows =
+  Array.map rows ~f:(fun row -> Array.subo row ~len:(Array.length row - 1))
+;;
+
+let targets rows = Array.map rows ~f:(fun row -> Array.subo row ~pos:1)
 
 let loss (config : Config.t) params ~windows =
   let frames = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.frames) in
@@ -328,10 +331,10 @@ let loss (config : Config.t) params ~windows =
   (* the bar phase is the low four bits of the rolling coordinate; the high four were the
      window position, which the ear dropped and the corpus still carries *)
   let phases =
-    Array.map (cut positions) ~f:(Array.map ~f:(fun at -> at % Jsb.bar_steps))
+    Array.map (inputs positions) ~f:(Array.map ~f:(fun at -> at % Jsb.bar_steps))
   in
-  let classes = seat_classes (cut frames) in
-  let labels = seat_classes (shift frames) in
+  let classes = seat_classes (inputs frames) in
+  let labels = seat_classes (targets frames) in
   let h = hidden config params ~classes ~phases in
   let nll =
     List.fold (seat_logits params h ~drawn:labels) ~init:None ~f:(fun total (seat, raw) ->
@@ -440,11 +443,25 @@ type walk =
   ; phases : int list
   }
 
-let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
+(* The newest steps of a history, oldest first: the row the forward pass reads. The drift
+   report of [Quantized] cuts its own history by this rule and compares the two models
+   over the result, thus the rule stands here and not inside the sampler. *)
+let window history ~context = List.take history context |> List.rev |> Array.of_list
+
+(* The bounds of the draw. The quantized twin states the same two, thus one module owns
+   them and a reader finds one message for each. *)
+let check_policy ~temperature ~min_p =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
-  if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
-  (* the newest steps of a history, oldest first: the row the forward pass reads *)
-  let window history = List.take history config.context |> List.rev |> Array.of_list in
+  if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1"
+;;
+
+(* The draw the ear elected on 2026-08-18. Every player, the quantized twin and the
+   bitstream start from these two, thus a number the ear moves moves one time. *)
+let elected_temperature = 1.0
+let elected_min_p = 0.05
+
+let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
+  check_policy ~temperature ~min_p;
   let add walk ~frame ~step =
     { walk with
       frames = frame :: walk.frames
@@ -465,8 +482,8 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   in
   let drawn =
     List.fold (List.range lead steps) ~init:booted ~f:(fun walk step ->
-      let frames = window walk.frames in
-      let phases = window walk.phases in
+      let frames = window walk.frames ~context:config.context in
+      let phases = window walk.phases ~context:config.context in
       let h =
         hidden config params ~classes:(seat_classes [| frames |]) ~phases:[| phases |]
       in
@@ -522,7 +539,13 @@ let%expect_test "the loss of drawn weights is the uniform draw" =
 let%expect_test "the seed names the walk" =
   let params = Params.init test_config ~seed:3 in
   let draw seed =
-    sample test_config params ~seed ~steps:20 ~temperature:1.0 ~min_p:0.05
+    sample
+      test_config
+      params
+      ~seed
+      ~steps:20
+      ~temperature:elected_temperature
+      ~min_p:elected_min_p
   in
   let walk = draw 7 in
   (* The lead-in of one bar stands at the head of the walk, thus the first draw is

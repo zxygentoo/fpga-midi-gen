@@ -119,9 +119,9 @@ module Model : sig
   val rom_bases : t -> int Transformer.Params_data.t
 
   (** [of_checkpoint config path] loads the float checkpoint and quantizes it. The
-      temperature and min-p default to the draw the ear elected — 1.0 and 0.05 — and they
-      are part of the model here, because the bitstream carries them: the board commits to
-      the numbers its elaboration was given.
+      temperature and min-p default to [Transformer.elected_temperature] and
+      [Transformer.elected_min_p], and they are part of the model here, because the
+      bitstream carries them: the board commits to the numbers its elaboration was given.
 
       It raises [Invalid_argument] when the file holds no tensor of a name the order
       wants, or when a tensor holds a count of values that the configuration does not fit. *)
