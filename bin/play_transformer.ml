@@ -17,6 +17,7 @@ open Core
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
+module Signal = Mgen_core.Signal
 module Transformer = Mgen_transformer.Transformer
 
 (* the argument check of play_pink: the range of a register is the range of the flag *)
@@ -76,33 +77,14 @@ let play music ~device ~step_ms ~channel ~velocity =
       exit 1
   in
   let sounding = ref (Set.empty (module Int)) in
-  (* Ctrl-C must not leave a chord ringing on the synthesizer, and an exception cannot
-     carry that rule here.
-
-     Measured on 5.2.0+ox, 2026-08-18: a [Sys.Break] raised out of the blocking sleep of a
-     step is NOT caught by an enclosing handler. It reaches the top level with the notes
-     still sounding, thus [Stdlib.Sys.catch_break] with a [try] around the loop drains
-     nothing — and that is the idiom [play_pink] carries today.
-
-     The handler therefore states the exit code and nothing else. It touches no note: a
-     handler must be portable, thus it cannot hold the set of sounding pitches, and it has
-     no business writing to the wire while a step may be halfway through a message. The
-     loop reads the code at its next step and leaves by the ordinary road, where the drain
-     stands. The wait is one step at the most. *)
-  let stopped = Atomic.make 0 in
-  List.iter
-    [ Stdlib.Sys.sigint, 130; Stdlib.Sys.sigterm, 143 ]
-    ~f:(fun (signal, code) ->
-      ignore
-        (Stdlib.Sys.Safe.signal
-           signal
-           (Stdlib.Sys.Signal_handle (fun (_ : int) -> Atomic.set stopped code))
-         : Stdlib.Sys.signal_behavior));
+  (* Ctrl-C must not leave a chord ringing on the synthesizer; [Signal] holds the rule and
+     the measurement behind it. The drain below is the road out. *)
+  let stopped = Signal.watch_stop_play () in
   Exn.protect
     ~f:(fun () ->
       With_return.with_return (fun { return } ->
         List.iteri music ~f:(fun index events ->
-          if Atomic.get stopped <> 0 then return ();
+          if Signal.stop_requested stopped then return ();
           print_step index events;
           List.iter events ~f:(function
             | Frame.Event.On note ->
@@ -116,9 +98,7 @@ let play music ~device ~step_ms ~channel ~velocity =
       (* the drain: the walk ends with its chord still sounding, as a piece does, and the
          sequencer of the board releases the same way at a stop *)
       Set.iter !sounding ~f:(fun note -> Midi.send_note_off fd ~channel ~note));
-  match Atomic.get stopped with
-  | 0 -> ()
-  | code -> exit code
+  Signal.exit_if_stopped stopped
 ;;
 
 let command =
@@ -150,14 +130,14 @@ let command =
      and temperature =
        flag
          "-temperature"
-         (optional_with_default 1.0 float)
+         (optional_with_default Transformer.elected_temperature float)
          ~doc:
            "F the temperature. The default is elected by ear over a sweep of 0.7 to 1.3, \
             against min-p 0.0039 to 0.15"
      and min_p =
        flag
          "-min-p"
-         (optional_with_default 0.05 float)
+         (optional_with_default Transformer.elected_min_p float)
          ~doc:
            "F drop the classes under this share of the peak; 0 turns the filter off. The \
             peak always stays, thus a draw always exists"

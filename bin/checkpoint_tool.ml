@@ -143,8 +143,14 @@ let stream_command =
          "-seed"
          (optional_with_default 1 int)
          ~doc:"N the seed, under the rule of the SEED cell: 1 up to 0xFFFFFFFF"
-     and temperature = flag "-temperature" (optional_with_default 1.0 float) ~doc:"F"
-     and min_p = flag "-min-p" (optional_with_default 0.05 float) ~doc:"F" in
+     and temperature =
+       flag
+         "-temperature"
+         (optional_with_default Transformer.elected_temperature float)
+         ~doc:"F"
+     and min_p =
+       flag "-min-p" (optional_with_default Transformer.elected_min_p float) ~doc:"F"
+     in
      fun () -> stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p)
 ;;
 

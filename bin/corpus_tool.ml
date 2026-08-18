@@ -8,6 +8,7 @@
    walked state; the anchors left with them. *)
 
 open Core
+module Frame = Mgen_core.Frame
 module Jsb = Mgen_corpus.Jsb
 
 (* A frame is one word of four voice codes, and a code with its flag set does not fit the
@@ -23,10 +24,8 @@ let tensors_of_split streams =
   Array.iteri all ~f:(fun row (stream : Jsb.stream) ->
     let length = Array.length stream.frames in
     Array.iteri stream.frames ~f:(fun step frame ->
-      for seat = 0 to Jsb.voices - 1 do
-        frames.(((!offset + step) * Jsb.voices) + seat)
-        <- (frame lsr (8 * seat)) land 0xFF
-      done);
+      List.iteri (Frame.codes frame) ~f:(fun seat code ->
+        frames.(((!offset + step) * Jsb.voices) + seat) <- code));
     Array.blit
       ~src:stream.positions
       ~src_pos:0
@@ -57,12 +56,9 @@ let tensors_of_split streams =
    its observed range, thus a stream cannot widen it. *)
 let pitch_range streams =
   let sounding = List.concat_map streams ~f:(fun s -> Array.to_list s.Jsb.frames) in
-  let pitches =
-    List.concat_map sounding ~f:(fun frame ->
-      List.init Jsb.voices ~f:(fun seat -> (frame lsr (8 * seat)) land 0xFF)
-      |> List.filter ~f:(fun code -> code land 0x80 <> 0)
-      |> List.map ~f:(fun code -> code land 0x7F))
-  in
+  (* [Frame.pitches] holds a pitch one time for each frame, which the range does not feel:
+     a unison moves neither the lowest pitch nor the highest. *)
+  let pitches = List.concat_map sounding ~f:Frame.pitches in
   match List.min_elt pitches ~compare:Int.compare with
   | None -> "silent"
   | Some low ->

@@ -24,7 +24,14 @@
  (modules corpus_tool)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix nx nx.io mgen_corpus))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  nx
+  nx.io
+  mgen_core
+  mgen_corpus))
 
 (executable
  (name checkpoint_tool)

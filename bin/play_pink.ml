@@ -8,6 +8,7 @@ module Control_intf = Mgen_core.Control_intf
 module Midi = Mgen_core.Midi
 module Pink = Mgen_pink.Pink
 module Player = Mgen_pink.Player
+module Signal = Mgen_core.Signal
 
 (* These flags set a control cell, thus [Control_intf.Reg] states their range and this
    tool does not repeat it. A value outside the range either raises out of the library —
@@ -63,27 +64,11 @@ let play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold =
       | Player.Event.On note -> Midi.send_note_on fd ~channel ~note ~velocity
       | Player.Event.Off note -> Midi.send_note_off fd ~channel ~note)
   in
-  (* Ctrl-C must not leave the four voices ringing, and an exception cannot carry that
-     rule. Measured on 5.2.0+ox, 2026-08-18: a [Sys.Break] raised out of the blocking
-     sleep of a step is NOT caught by an enclosing handler — it reaches the top level with
-     the notes still sounding, and the [catch_break] that stood here drained nothing.
-     [play_transformer] states the measurement in full.
-
-     The handler therefore states the exit code and nothing else: a handler must be
-     portable, thus it cannot hold the player, and it has no business writing to the wire
-     while a step may be halfway through a message. The loop reads the code and leaves by
-     the road it takes at its last step, where [Player.stop] stands. *)
-  let stopped = Atomic.make 0 in
-  List.iter
-    [ Stdlib.Sys.sigint, 130; Stdlib.Sys.sigterm, 143 ]
-    ~f:(fun (signal, code) ->
-      ignore
-        (Stdlib.Sys.Safe.signal
-           signal
-           (Stdlib.Sys.Signal_handle (fun (_ : int) -> Atomic.set stopped code))
-         : Stdlib.Sys.signal_behavior));
+  (* Ctrl-C must not leave the four voices ringing; [Signal] holds the rule and the
+     measurement behind it. [Player.stop] below is the road out. *)
+  let stopped = Signal.watch_stop_play () in
   let step = ref 0 in
-  while Atomic.get stopped = 0 && (steps = 0 || !step < steps) do
+  while (not (Signal.stop_requested stopped)) && (steps = 0 || !step < steps) do
     Int.incr step;
     advance Player.step;
     sleep_ms gate;
@@ -93,9 +78,7 @@ let play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold =
     sleep_ms (step_ms - gate)
   done;
   advance Player.stop;
-  match Atomic.get stopped with
-  | 0 -> ()
-  | code -> exit code
+  Signal.exit_if_stopped stopped
 ;;
 
 let command =
