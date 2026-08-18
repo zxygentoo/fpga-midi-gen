@@ -1,16 +1,22 @@
-(* play_transformer: samples the trained transformer, prints the steps, and with -play
-   sends them to the synthesizer. The model states its own Note Offs, thus the player is
-   only a clock and a wire encoder: no gate and no seat logic. The config flags must equal
-   the flags of the training run; the checkpoint holds only tensors.
+(* play_transformer: samples the step-frame model, prints the steps, and with -play sends
+   them to the synthesizer.
 
-   -quantized samples the reference of the circuit instead: the same seed then gives the
-   piece the board plays, note for note — the audition of the quantized model. *)
+   The model states a frame for each step, and [Frame.events_of_frames] states the events
+   of the wire: the releases of a step before its strikes, and no note held that the next
+   frame does not ask for. Therefore the player is a clock and a wire encoder — no
+   grammar, no seats, no gate.
+
+   The line format is the one of jax/transformer/infer.py, thus a walk of this player and
+   a walk of the twin compare with `diff`. That comparison is the walk gate of
+   docs/transformer_model.md.
+
+   The configuration flags must equal the flags of the training run; the checkpoint holds
+   only tensors. The audition of the integer twin returns with the twin. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
-module Quantized = Mgen_transformer.Quantized
+module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
-module Token = Mgen_core.Token
 module Transformer = Mgen_transformer.Transformer
 
 (* the argument check of play_pink: the range of a register is the range of the flag *)
@@ -49,20 +55,18 @@ let default_device = "/dev/snd/midiC2D0"
 (* the STEP_MS power-on value: the board and the audition share one tempo *)
 let default_step_ms = Control_intf.Default.step_ms
 
-let show_sentence sentence =
-  match sentence with
-  | [] -> "-"
-  | events ->
+let show_events events =
+  if List.is_empty events
+  then "-"
+  else
     String.concat
       ~sep:" "
       (List.map events ~f:(function
-        | Token.Start -> "start"
-        | Token.On pitch -> sprintf "on:%d" pitch
-        | Token.Off pitch -> sprintf "off:%d" pitch
-        | Token.End -> "end"))
+        | Frame.Event.On pitch -> sprintf "on:%d" pitch
+        | Frame.Event.Off pitch -> sprintf "off:%d" pitch))
 ;;
 
-let print_step index sentence = printf "step %3d  %s\n%!" index (show_sentence sentence)
+let print_step index events = printf "step %3d  %s\n%!" index (show_events events)
 
 let play music ~device ~step_ms ~channel ~velocity =
   let fd =
@@ -74,20 +78,19 @@ let play music ~device ~step_ms ~channel ~velocity =
   let sounding = ref (Set.empty (module Int)) in
   Exn.protect
     ~f:(fun () ->
-      List.iteri music ~f:(fun index sentence ->
-        print_step index sentence;
-        List.iter sentence ~f:(function
-          | Token.Start -> ()
-          | Token.On note ->
+      List.iteri music ~f:(fun index events ->
+        print_step index events;
+        List.iter events ~f:(function
+          | Frame.Event.On note ->
             Midi.send_note_on fd ~channel ~note ~velocity;
             sounding := Set.add !sounding note
-          | Token.Off note ->
+          | Frame.Event.Off note ->
             Midi.send_note_off fd ~channel ~note;
-            sounding := Set.remove !sounding note
-          | Token.End -> ());
+            sounding := Set.remove !sounding note);
         sleep_ms step_ms))
     ~finally:(fun () ->
-      (* the drain: each open note closes, as the sequencer does at a stop *)
+      (* the drain: the walk ends with its chord still sounding, as a piece does, and the
+         sequencer of the board releases the same way at a stop *)
       Set.iter !sounding ~f:(fun note -> Midi.send_note_off fd ~channel ~note))
 ;;
 
@@ -105,46 +108,32 @@ let command =
        flag
          "-heads"
          (optional_with_default Transformer.Config.(baseline.heads) int)
-         ~doc:"N the heads"
+         ~doc:"N the heads; they must equal the heads of the training run"
      and context =
        flag
          "-context"
          (optional_with_default Transformer.Config.(baseline.context) int)
-         ~doc:"N the window, in tokens"
+         ~doc:"N the window, in steps. A model trained long can sample short"
      and seed = flag "-seed" (optional_with_default 1 int) ~doc:"N the seed"
-     and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
+     and steps =
+       flag
+         "-steps"
+         (optional_with_default 64 int)
+         ~doc:"N the steps to draw, the silent lead-in of one bar inside"
      and temperature =
        flag
          "-temperature"
-         (optional_with_default 0.9 float)
+         (optional_with_default 1.0 float)
          ~doc:
-           "F the temperature. The default holds: 0.6 measured three times the \
-            self-repetition, and the ear of 2026-08-07 heard it as dull — the \
-            restatement of a cold draw is monotony, not melody"
+           "F the temperature. The default is elected by ear over a sweep of 0.7 to 1.3, \
+            against min-p 0.0039 to 0.15"
      and min_p =
        flag
          "-min-p"
-         (optional_with_default 0.00390625 float)
+         (optional_with_default 0.05 float)
          ~doc:
-           "F drop tokens under this share of the peak; 0 turns the filter off. The \
-            default is 1/256: wider filters eat the melody, per the sweep of 2026-08-05"
-     and piece_steps =
-       flag
-         "-piece-steps"
-         (optional_with_default Transformer.piece_steps int)
-         ~doc:
-           "N re-anchor the walk every N steps: release the sounding pitches, clear the \
-            context and feed START, carrying the step count and the PRNG. It applies to \
-            -quantized alone: the float sampler is the improviser of \
-            docs/transformer_model.md, which knows no piece. 0 is the endless walk"
-     and quantized =
-       flag
-         "-quantized"
-         no_arg
-         ~doc:
-           " sample the reference of the circuit: the piece the board plays at this \
-            seed. Every configuration and sampling flag applies as in the float path; \
-            the board commits to the values its bitstream was elaborated with"
+           "F drop the classes under this share of the peak; 0 turns the filter off. The \
+            peak always stays, thus a draw always exists"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
      and device =
        flag
@@ -168,69 +157,26 @@ let command =
          ~doc:"N the Note On velocity"
      in
      fun () ->
-       let config =
-         Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
-       in
-       let music, stats =
-         if quantized
-         then (
-           (* the reference takes the rule of the SEED cell, as the board does *)
-           if seed < 1 || seed > 0xFFFF_FFFF
-           then (
-             Printf.eprintf
-               "-quantized takes the seed of the SEED cell: 1 to 0xFFFFFFFF\n";
-             exit 2);
-           (* the circuit takes the boundary as a bit-slice of its step counter *)
-           if piece_steps > 0 && ((not (Int.is_pow2 piece_steps)) || piece_steps = 1)
-           then (
-             Printf.eprintf
-               "-quantized takes -piece-steps as a power of two above 1, or 0\n";
-             exit 2);
-           let model =
-             Quantized.Model.of_checkpoint
-               ~temperature
-               ~min_p
-               ~piece_steps:(if piece_steps > 0 then Some piece_steps else None)
-               config
-               checkpoint
+       (* The rules of the draw and of the shapes live with the model, thus the player
+          does not restate them; it only says what the model refused, and it says it the
+          way the range flags above do. [Nx_io] states a missing or unreadable checkpoint
+          as a [Failure], and that message names the file the caller named. *)
+       let music =
+         try
+           let config =
+             Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
            in
-           let engine = Quantized.Engine.init model ~seed in
-           let sentence events =
-             List.map events ~f:(fun { Quantized.Engine.voice = (_ : int); pitch; on } ->
-               if on then Token.On pitch else Token.Off pitch)
-           in
-           (* the fold threads the engine through the steps in the drawn order *)
-           let music =
-             let (_ : Quantized.Engine.t), reversed =
-               List.fold
-                 (List.range 0 steps)
-                 ~init:(engine, [])
-                 ~f:(fun (engine, acc) (_ : int) ->
-                   let engine, events = Quantized.Engine.next_step engine in
-                   engine, sentence events :: acc)
-             in
-             List.rev reversed
-           in
-           music, None)
-         else (
            let params = Transformer.Params.load config ~path:checkpoint in
-           let ~music, ~stats =
-             Transformer.sample config params ~seed ~steps ~temperature ~min_p
-           in
-           music, Some stats)
+           Transformer.sample config params ~seed ~steps ~temperature ~min_p
+           |> Frame.events_of_frames
+         with
+         | Invalid_argument message | Failure message ->
+           Printf.eprintf "%s\n" message;
+           exit 2
        in
        if send
        then play music ~device ~step_ms ~channel ~velocity
-       else List.iteri music ~f:print_step;
-       Option.iter stats ~f:(fun (stats : Transformer.sample_stats) ->
-         printf
-           "min-p refused %.4f of the legal mass; guard held %.4f of the raw mass, %.4f \
-            of the raw top choices, over %d draws\n\
-            %!"
-           stats.Transformer.refused
-           stats.illegal_mass
-           stats.illegal_top
-           stats.draws))
+       else List.iteri music ~f:print_step)
 ;;
 
 let () = Command_unix.run command
