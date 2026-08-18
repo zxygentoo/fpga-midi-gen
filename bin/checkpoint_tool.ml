@@ -6,6 +6,7 @@
 
 open Core
 module Frame = Mgen_core.Frame
+module Jsb = Mgen_corpus.Jsb
 module Quantized = Mgen_transformer.Quantized
 module Transformer = Mgen_transformer.Transformer
 
@@ -88,6 +89,50 @@ let stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p =
       (if List.is_empty text then "-" else String.concat ~sep:" " text))
 ;;
 
+(* Gate A of the JAX seam: the loss of the float model over the canonical valid windows.
+
+   A referee reads the canonical stream alone — every piece at shift zero, in the order
+   given — thus this number is deterministic and two referees that read one checkpoint
+   must agree. [Jsb.windows] cuts the windows and [jax/data.py] states the same cut, thus
+   the trainer and the reference measure one thing. [jax/tests/test_parity.py] demands the
+   same number from the JAX forward, because a training run on the other side of that seam
+   only means something if the two forwards agree everywhere the loss can see.
+
+   The shape travels in the output and this side states no number of its own: held apart,
+   the heads and the span would go on matching a default while one side moved, and the
+   gate would pass two different models. *)
+let loss ~checkpoint ~config ~corpus =
+  let params = Transformer.Params.load config ~path:checkpoint in
+  let data = Jsb.load ~path:corpus in
+  (* the first stream of a split is the canonical one, whatever the lane *)
+  let random_state = Random.State.make [| 0 |] in
+  let stream = List.hd_exn (Jsb.streams data.valid ~count:1 ~random_state) in
+  let { Transformer.Config.context; heads; slope_span; _ } = config in
+  let windows = Jsb.windows stream ~context in
+  printf
+    "windows %d  context %d  heads %d  span %d  loss %.6f\n"
+    (List.length windows)
+    context
+    heads
+    slope_span
+    (Transformer.loss config params ~windows)
+;;
+
+let loss_command =
+  Command.basic
+    ~summary:
+      "the loss over the canonical valid windows: Gate A of the JAX seam, which the \
+       parity test demands of the JAX forward"
+    (let%map_open.Command checkpoint, config = config_flags
+     and corpus =
+       flag
+         "-corpus"
+         (optional_with_default Jsb.default_path string)
+         ~doc:"PATH the corpus that states the windows"
+     in
+     fun () -> loss ~checkpoint ~config ~corpus)
+;;
+
 let stream_command =
   Command.basic
     ~summary:"the reference event stream: what the board must send, event for event"
@@ -106,7 +151,7 @@ let stream_command =
 let command =
   Command.group
     ~summary:"the integer twin of one checkpoint"
-    [ "drift", drift_command; "stream", stream_command ]
+    [ "drift", drift_command; "loss", loss_command; "stream", stream_command ]
 ;;
 
 let () = Command_unix.run command

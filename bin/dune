@@ -31,4 +31,10 @@
  (modules checkpoint_tool)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_transformer))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  mgen_core
+  mgen_corpus
+  mgen_transformer))

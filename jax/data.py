@@ -38,7 +38,11 @@ def classes_of_codes(codes):
     for the circuit, and the class index makes the table small for the model. A code
     outside the corpus is a fault of the export and not a case to handle -- the table has
     no row for it."""
-    sounds = codes != 0
+    # bit 7 is the flag and bits 6:0 are the pitch, thus a code that sounds is not
+    # merely a code that is not zero: the codes 0x01 to 0x7F are silence with a pitch
+    # that no writer sets, and `Frame.pitch_of_code` reads the flag on the other side
+    # of the seam. A test on zero would call one of those spare codes a pitch.
+    sounds = (codes & 0x80) != 0
     pitches = codes & 0x7F
     inside = ~sounds | ((pitches >= PITCH_LOW) & (pitches < PITCH_LOW + CLASSES - 1))
     if not inside.all():

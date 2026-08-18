@@ -134,7 +134,10 @@ def sample(
         phases = np.concatenate(
             [phases, np.full((batch, 1), step % model.PHASE_BUCKETS, np.int32)], axis=1
         )
-    return classes
+    # [steps] frames and not [max(lead, steps)]. The lead-in counts inside [steps], thus a
+    # walk shorter than one bar is that many silent frames and not a whole bar of them --
+    # the loop adds nothing there, and the integer twin gives exactly [steps] in any case.
+    return classes[:, :steps]
 
 
 def step_line(step, events):
