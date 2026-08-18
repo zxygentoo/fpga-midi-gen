@@ -67,14 +67,35 @@ let windows music ~span =
     })
 ;;
 
-let steps_of_codes codes =
-  let (_ : Token.t list), steps =
-    Array.fold codes ~init:([], []) ~f:(fun (current, steps) code ->
-      match Token.of_code code with
-      | Token.End -> [], List.rev current :: steps
-      | token -> token :: current, steps)
+(* the pitches a frame asks to sound: the seats whose flag is set, as a set — a unison is
+   two seats on one pitch and one pitch on the wire *)
+let wanted frame =
+  List.init Jsb.voices ~f:(fun seat -> (frame lsr (8 * seat)) land 0xFF)
+  |> List.filter ~f:(fun code -> code land 0x80 <> 0)
+  |> List.map ~f:(fun code -> code land 0x7F)
+  |> Set.of_list (module Int)
+;;
+
+(* The decode of docs/transformer_model.md: the sequencer holds the set of pitches that
+   sound, and a frame states the set that must sound. The releases are the first set minus
+   the second, the strikes are the second minus the first, and every release goes before
+   every strike.
+
+   The rule is over sets and not over seats. A seat walk breaks on two cases of this
+   corpus. Two voices that exchange pitches would send the Note On of a pitch before its
+   Note Off, and the synth would stop the new note, because the four voices share one
+   channel and a Note Off releases by pitch. Two voices on one pitch would send two of
+   each, and the second of each does the wrong thing. *)
+let steps_of_frames frames =
+  let step sounding frame =
+    let wanted = wanted frame in
+    let off pitch = Token.Off pitch in
+    let on pitch = Token.On pitch in
+    ( wanted
+    , List.map (Set.to_list (Set.diff sounding wanted)) ~f:off
+      @ List.map (Set.to_list (Set.diff wanted sounding)) ~f:on )
   in
-  List.rev steps
+  Array.to_list frames |> List.folding_map ~init:(Set.empty (module Int)) ~f:step
 ;;
 
 let%expect_test "the texture of a walk it knows" =
@@ -114,12 +135,40 @@ let%expect_test "the texture of a walk it knows" =
     {| window 0  onsets/step 0.750  single-ON 0%  median duration nan  under a quarter 0.00 |}]
 ;;
 
-let%expect_test "the codes of a stream become its steps" =
-  let codes =
-    Array.of_list_map
-      [ Token.On 60; Token.End; Token.End; Token.Off 60; Token.End ]
-      ~f:Token.to_code
+let%expect_test "the frames of a stream become its steps" =
+  (* one frame from its four seats, seat 0 first: seat 0 is the bass and seat 3 the
+     soprano, thus this list reads low to high *)
+  let frame seats =
+    List.foldi seats ~init:0 ~f:(fun seat word pitch ->
+      let code = if pitch < 0 then 0x00 else 0x80 lor pitch in
+      word lor (code lsl (8 * seat)))
   in
-  print_s ([%sexp_of: Token.t list list] (steps_of_codes codes));
-  [%expect {| (((On 60)) () ((Off 60))) |}]
+  let decode name frames =
+    printf
+      "%-14s %s\n"
+      name
+      (Sexp.to_string
+         ([%sexp_of: Token.t list list] (steps_of_frames (Array.of_list frames))))
+  in
+  let silent = frame [ -1; -1; -1; -1 ] in
+  (* the eight cases of the decode table of docs/transformer_model.md *)
+  decode "hold" [ frame [ 60; -1; -1; -1 ]; frame [ 60; -1; -1; -1 ] ];
+  decode "strike" [ silent; frame [ 60; -1; -1; -1 ] ];
+  decode "release" [ frame [ 60; -1; -1; -1 ]; silent ];
+  decode "move" [ frame [ 60; -1; -1; -1 ]; frame [ 62; -1; -1; -1 ] ];
+  decode "exchange" [ frame [ -1; 60; 64; -1 ]; frame [ -1; 64; 60; -1 ] ];
+  decode "unison in" [ frame [ -1; 60; 64; -1 ]; frame [ -1; 60; 60; -1 ] ];
+  decode "unison out" [ frame [ -1; 60; 60; -1 ]; frame [ -1; 60; 64; -1 ] ];
+  decode "seam" [ frame [ 48; 55; 60; 64 ]; silent ];
+  [%expect
+    {|
+    hold           (((On 60))())
+    strike         (()((On 60)))
+    release        (((On 60))((Off 60)))
+    move           (((On 60))((Off 60)(On 62)))
+    exchange       (((On 60)(On 64))())
+    unison in      (((On 60)(On 64))((Off 64)))
+    unison out     (((On 60))((On 64)))
+    seam           (((On 48)(On 55)(On 60)(On 64))((Off 48)(Off 55)(Off 60)(Off 64)))
+    |}]
 ;;

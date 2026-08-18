@@ -1,10 +1,11 @@
 (** The transformer model on the host: the network, the loss and the sampler.
 
-    The network follows [docs/transformer_model.md]: decoder-only, no bias terms, RMSNorm
-    with no scale, ALiBi for the position, a bar-phase table, and the embedding table tied
-    with the output head. The host model is float32; the integer ladder comes after the
-    audition. Raven carries the work: Nx computes, Rune differentiates, and Kaun gives
-    AdamW, the loss and the checkpoint format.
+    The network is the one of era three, in the 2026-08-14 entry of [build-log.md]:
+    decoder-only, no bias terms, RMSNorm with no scale, ALiBi for the position, a
+    bar-phase table, and the embedding table tied with the output head. The host model is
+    float32; the integer ladder comes after the audition. Raven carries the work: Nx
+    computes, Rune differentiates, and Kaun gives AdamW, the loss and the checkpoint
+    format.
 
     Every draw — the parameters, the dropout masks and the sampler — comes from [Prng],
     the xorshift32 of the circuit. Thus one seed names one walk in the software, in the
@@ -21,8 +22,8 @@ val phase_buckets : int
 val progress_buckets : int
 
 (** the steps of one bucket at the draw. The product with [progress_buckets] is the period
-    of the table — 256 steps, about one chorale. [docs/transformer_model.md] holds the
-    reasoning of all three. *)
+    of the table — 256 steps, about one chorale. The 2026-08-14 entry of [build-log.md]
+    holds the reasoning of all three. *)
 val progress_stride : int
 
 (** the steps of one synthetic piece at the draw: [progress_stride * progress_buckets],
@@ -202,8 +203,8 @@ val loss
   -> tensor
 
 (** [sample config params ~seed ~steps ~temperature ~min_p] draws one endless walk of
-    [steps] steps — the improviser of docs/improviser.md, which knows no piece and takes
-    no boundary.
+    [steps] steps — the improviser of docs/transformer_model.md, which knows no piece and
+    takes no boundary.
 
     The boot is the silent lead-in: the walk opens with one bar of silent steps, each one
     [End] alone, and the model opens the music itself. Attention needs one token, and the

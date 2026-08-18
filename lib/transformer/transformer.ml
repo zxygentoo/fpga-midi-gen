@@ -463,10 +463,10 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   let current = ref [] in
   let out = ref [] in
   let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
-  (* The boot of docs/improviser.md: a silent lead-in. Attention needs one token, and the
-     packed corpus holds a run of silent steps at every seam, thus this condition is one
-     the model trained on and the model opens the music itself. One bar is the longest
-     seam of that corpus, and it leaves the first draw on a downbeat. *)
+  (* The boot of docs/transformer_model.md: a silent lead-in. Attention needs one token,
+     and the packed corpus holds a run of silent steps at every seam, thus this condition
+     is one the model trained on and the model opens the music itself. One bar is the
+     longest seam of that corpus, and it leaves the first draw on a downbeat. *)
   for _ = 1 to phase_buckets do
     codes := Token.to_code Token.End :: !codes;
     phases := (!step_index mod phase_buckets) :: !phases;

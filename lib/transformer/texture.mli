@@ -1,4 +1,5 @@
-(** The texture of a walk over time: the instrument of step 4 of docs/improviser.md.
+(** The texture of a walk over time: the instrument of step 2 of the plan of
+    docs/transformer_model.md.
 
     The endless walk of the era before the packing decayed. The texture left the corpus in
     minutes and settled at a quarter of the onset rate, with no note shorter than a
@@ -34,8 +35,10 @@ type window =
     the walk, and its shares still divide by its own step count. *)
 val windows : Token.t list list -> span:int -> window list
 
-(** [steps_of_codes codes] is the walk a flat code stream holds: the tokens of each step,
-    without its [End]. It reads a packed stream of [Jsb] into the shape this instrument
-    and [Transformer.sample] both use, thus the corpus measures with the same code as the
-    model. *)
-val steps_of_codes : int array -> Token.t list list
+(** [steps_of_frames frames] is the walk a packed frame stream holds: the events of each
+    step, released before struck. It reads a stream of [Jsb] into the shape this
+    instrument uses, thus the corpus measures with the same code as a drawn walk.
+
+    This is the decode of docs/transformer_model.md, and the sequencer takes it at the
+    step that builds the circuit. It lives here while this instrument is its one reader. *)
+val steps_of_frames : int array -> Token.t list list

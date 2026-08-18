@@ -13,21 +13,6 @@
  (libraries core core_unix core_unix.command_unix mgen_core mgen_pink))
 
 (executable
- (name train_transformer)
- (modules train_transformer)
- (preprocess
-  (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  nx
-  rune
-  kaun
-  mgen_corpus
-  mgen_transformer))
-
-(executable
  (name play_transformer)
  (modules play_transformer)
  (preprocess
@@ -45,14 +30,7 @@
  (modules corpus_tool)
  (preprocess
   (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  nx
-  nx.io
-  mgen_corpus
-  mgen_transformer))
+ (libraries core core_unix core_unix.command_unix nx nx.io mgen_corpus))
 
 (executable
  (name checkpoint_tool)

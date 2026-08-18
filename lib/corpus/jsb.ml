@@ -2,7 +2,7 @@ open Core
 module Json = Yojson.Safe
 
 type chorale =
-  { steps : int list array
+  { cells : int list array
   ; legal_shifts : int list
   }
 
@@ -13,9 +13,8 @@ type t =
   }
 
 type stream =
-  { codes : int array
+  { frames : int array
   ; positions : int array
-  ; anchors : int array
   }
 
 let bar_steps = 16
@@ -35,22 +34,23 @@ let default_path = "corpus/JSB-Chorales-dataset/Jsb16thSeparated.json"
    these bounds. *)
 let voice_ranges = [| 60, 81; 52, 74; 46, 69; 36, 66 |]
 
-(* the reserved-code rules of the design document; the JSB corpus never takes these paths.
-   A rest cell (-1) passes through. *)
-let escape_reserved pitch = if pitch = 0 then 1 else if pitch = 127 then 126 else pitch
+(* the table holds one row for each voice, thus it counts them *)
+let voices = Array.length voice_ranges
 
 (* One step of the separated file: four cells indexed by voice, the soprano first. A cell
-   holds the pitch that its voice sings, or -1 for a rest. *)
+   holds the pitch that its voice sings, or -1 for a rest.
+
+   No cell is escaped. The voice code of the step frame holds all of 0 to 127 in its pitch
+   field and reserves nothing, thus the reader moves no note and the MIDI range is the
+   MIDI range. *)
 let cells_of_json json =
   let cell_of_json = function
-    | `Int pitch -> if pitch < 0 then pitch else escape_reserved pitch
-    | `Float pitch ->
-      let pitch = Int.of_float pitch in
-      if pitch < 0 then pitch else escape_reserved pitch
+    | `Int pitch -> pitch
+    | `Float pitch -> Int.of_float pitch
     | json -> invalid_argf "a cell is not a number: %s" (Json.to_string json) ()
   in
   let cells = json |> Json.Util.to_list |> List.map ~f:cell_of_json in
-  if List.length cells <> Array.length voice_ranges
+  if List.length cells <> voices
   then invalid_argf "a step holds %d cells, not four" (List.length cells) ();
   cells
 ;;
@@ -61,7 +61,7 @@ let cells_of_json json =
 let legal_shifts_of_cells cells =
   let widen ranges step =
     List.iteri step ~f:(fun voice pitch ->
-      if pitch > 0
+      if pitch >= 0
       then (
         let range =
           match ranges.(voice) with
@@ -70,7 +70,7 @@ let legal_shifts_of_cells cells =
         in
         ranges.(voice) <- Some range))
   in
-  let ranges = Array.create ~len:(Array.length voice_ranges) None in
+  let ranges = Array.create ~len:voices None in
   List.iter cells ~f:(widen ranges);
   if Array.for_all ranges ~f:Option.is_none
   then [ 0 ]
@@ -86,18 +86,9 @@ let legal_shifts_of_cells cells =
     if low > high then [ 0 ] else List.range ~stop:`inclusive low high)
 ;;
 
-(* the flat view of one step: the sounding set, ascending, unisons merged *)
-let flatten_cells cells =
-  cells
-  |> List.filter ~f:(fun pitch -> pitch > 0)
-  |> List.dedup_and_sort ~compare:Int.compare
-;;
-
 let chorale_of_json json =
   let cells = json |> Json.Util.to_list |> List.map ~f:cells_of_json in
-  { steps = Array.of_list_map cells ~f:flatten_cells
-  ; legal_shifts = legal_shifts_of_cells cells
-  }
+  { cells = Array.of_list cells; legal_shifts = legal_shifts_of_cells cells }
 ;;
 
 let load ~path =
@@ -108,49 +99,49 @@ let load ~path =
   { train = chorales "train"; valid = chorales "valid"; test = chorales "test" }
 ;;
 
-let transpose ~by { steps; legal_shifts } =
-  let transpose_pitch pitch =
-    match pitch + by with
-    | moved when moved < 1 || moved > 126 ->
-      invalid_argf "pitch %d moved by %d leaves 1 to 126" pitch by ()
-    | transposed -> transposed
+let transpose ~by { cells; legal_shifts } =
+  let transpose_cell pitch =
+    if pitch < 0
+    then pitch
+    else (
+      match pitch + by with
+      | moved when moved < 0 || moved > 127 ->
+        invalid_argf "pitch %d moved by %d leaves 0 to 127" pitch by ()
+      | moved -> moved)
   in
-  let transpose_step step = List.map step ~f:transpose_pitch in
-  { steps = Array.map steps ~f:transpose_step
+  { cells = Array.map cells ~f:(List.map ~f:transpose_cell)
   ; legal_shifts = List.map legal_shifts ~f:(fun shift -> shift - by)
   }
 ;;
 
-(* One step, one sentence: the OFFs of the pitches that stop, the ONs of the pitches that
-   start, then [End]. A pitch in both neighbour steps is a held note and takes no token.
+(* One voice code: bit 7 says the voice sounds and bits 6:0 hold the MIDI pitch, thus a
+   rest is [0x00] and the circuit reads the flag as a bit and not as a compare. *)
+let voice_code pitch = if pitch < 0 then 0x00 else 0x80 lor pitch
 
-   The OFFs climb and the ONs fall, thus one chord has one sentence and not a permutation
-   family. [Sounding_state] holds both directions, thus they are rules of the instrument
-   and this tokenizer only obeys them. The fall is the melody leading: the top voice is
-   chosen first and conditions on no voice below it. The climb then makes the two runs
-   meet in the middle, so the release of the top moving voice sits beside its attack.
-
-   The sentences stay apart, because the packer counts the tokens of each step. *)
-let sentences steps =
-  let sentence ~previous ~current =
-    let on pitch = Token.On pitch in
-    let off pitch = Token.Off pitch in
-    let to_set data = Set.of_list (module Int) data in
-    let ascending from ~minus = Set.diff (to_set from) (to_set minus) |> Set.to_list in
-    let descending from ~minus = List.rev (ascending from ~minus) in
-    List.map (ascending previous ~minus:current) ~f:off
-    @ List.map (descending current ~minus:previous) ~f:on
-    @ [ Token.End ]
-  in
-  let aux previous current = current, sentence ~previous ~current in
-  List.folding_map steps ~init:[] ~f:aux
+(* The frame of one step: the four voice codes in one word, seat 0 in the low byte. The
+   file gives the soprano first and the fold shifts each code up, thus the soprano lands
+   in the high byte — seat 3 — and the bass takes seat 0. *)
+let frame_of_cells cells =
+  List.fold cells ~init:0 ~f:(fun frame pitch -> (frame lsl 8) lor voice_code pitch)
 ;;
+
+(* a cleared frame is silence, which is what makes the seam and the boot cost no code *)
+let silent_frame = 0
+
+(* the pitches that sound in one step, as a set: a unison is one pitch, as it is on the
+   wire, and a rest is no pitch. The metre reads this and nothing else does — the frame
+   keeps the voices apart. *)
+let sonority cells = Set.of_list (module Int) (List.filter cells ~f:(fun p -> p >= 0))
 
 (* The cadential holds of one chorale, from the corpus study of 2026-08-06: a sonority
    that rings six steps or more marks a cadence, and the cadences sit on the downbeats.
-   The result is the start step of each hold, ascending. *)
-let cadential_holds steps =
-  let sonorities = Array.to_list (Array.map steps ~f:(Set.of_list (module Int))) in
+   The result is the start step of each hold, ascending.
+
+   A hold is a run of one sonority and not a run of one frame. An exchange of two voices
+   keeps the sonority and breaks the frame, thus the frame would cut a hold that the ear
+   hears whole and move the vote. *)
+let cadential_holds cells =
+  let sonorities = Array.to_list (Array.map cells ~f:sonority) in
   let runs = List.group sonorities ~break:(fun a b -> not (Set.equal a b)) in
   let (_ : int), holds =
     List.fold_map runs ~init:0 ~f:(fun start run ->
@@ -170,12 +161,12 @@ let vote holds rotation =
    gives no signal, and the piece opens on the downbeat.
 
    The clock has one length, thus a piece has no bar length of its own. The corpus study
-   of 2026-08-14 in docs/improviser.md settles this: 27 of the 382 pieces vote for a
-   12-step bar, they hold 8.1 percent of the steps, and a rolling clock of 16 steps still
-   puts 44.6 percent of their cadences on a downbeat. To remove them buys 1.9 points of
-   alignment over the whole corpus and costs those steps. *)
-let rotation steps =
-  let holds = cadential_holds steps in
+   of 2026-08-14 in docs/transformer_model.md settles this: 27 of the 382 pieces vote for
+   a 12-step bar, they hold 8.1 percent of the steps, and a rolling clock of 16 steps
+   still puts 44.6 percent of their cadences on a downbeat. To remove them buys 1.9 points
+   of alignment over the whole corpus and costs those steps. *)
+let rotation cells =
+  let holds = cadential_holds cells in
   if List.length holds < 3
   then 0
   else
@@ -184,39 +175,37 @@ let rotation steps =
     |> Option.value_exn
 ;;
 
-(* The state of the placement: the count of steps laid down, those steps with the newest
-   first, and the first step of each piece with the newest first. The steps do not take
-   the name [steps]: the field of a chorale holds that name, and one of the two would then
-   need a type to read it. *)
+(* The state of the placement: the count of steps laid down, and those steps with the
+   newest first. *)
 type placement =
   { at : int
-  ; behind : int list list
-  ; starts : int list
+  ; behind : int list
   }
 
-let empty_steps count steps = List.init count ~f:(fun (_ : int) -> []) @ steps
+let empty_steps count frames = List.init count ~f:(fun (_ : int) -> silent_frame) @ frames
 
 (* One piece and the seam before it. The gap is the smallest count of empty steps that
    puts the downbeats of the piece on the clock. It is never zero after another piece,
-   because the release needs one step; the stream itself may open with no silence.
+   because the release of the piece before it needs one step; the stream itself may open
+   with no silence.
 
    Every piece is a whole number of quarter notes and every rotation is one, thus the gap
    is 4, 8, 12 or 16 steps. The quiet of a seam is never shorter than a quarter note and
    never longer than a bar, and no rule states this. *)
 let place state chorale =
-  let lead = (-rotation chorale.steps - state.at) % bar_steps in
+  let lead = (-rotation chorale.cells - state.at) % bar_steps in
   let gap = if state.at = 0 then lead else if lead = 0 then bar_steps else lead in
-  let start = state.at + gap in
-  { at = start + Array.length chorale.steps
+  { at = state.at + gap + Array.length chorale.cells
   ; behind =
-      Array.fold chorale.steps ~init:(empty_steps gap state.behind) ~f:(fun behind step ->
-        step :: behind)
-  ; starts = start :: state.starts
+      Array.fold
+        chorale.cells
+        ~init:(empty_steps gap state.behind)
+        ~f:(fun behind cells -> frame_of_cells cells :: behind)
   }
 ;;
 
 let pack chorales =
-  let placed = List.fold chorales ~init:{ at = 0; behind = []; starts = [] } ~f:place in
+  let placed = List.fold chorales ~init:{ at = 0; behind = [] } ~f:place in
   (* the stream closes as a seam does: it leaves no chord sounding, and it ends on a bar
      boundary *)
   let tail =
@@ -224,23 +213,15 @@ let pack chorales =
     | 0 -> bar_steps
     | gap -> gap
   in
-  let sentences = sentences (List.rev (empty_steps tail placed.behind)) in
-  let of_each ~f = Array.of_list (List.concat_mapi sentences ~f) in
-  let first_token =
-    List.folding_map sentences ~init:0 ~f:(fun at tokens -> at + List.length tokens, at)
-    |> Array.of_list
-  in
-  { codes = of_each ~f:(fun (_ : int) tokens -> List.map tokens ~f:Token.to_code)
-  ; positions =
-      of_each ~f:(fun step tokens ->
-        List.map tokens ~f:(fun (_ : Token.t) -> step % window_steps))
-  ; anchors = Array.of_list_map (List.rev placed.starts) ~f:(Array.get first_token)
+  let frames = Array.of_list (List.rev (empty_steps tail placed.behind)) in
+  { frames
+  ; positions = Array.init (Array.length frames) ~f:(fun step -> step % window_steps)
   }
 ;;
 
 (* One stream is one draw of the transpositions, thus a split needs more than one. The
-   first is the canonical stream, and both trainers make it the same way: the referee
-   reads it alone, thus Gate A and Gate B stay deterministic. *)
+   first is the canonical stream, and every referee reads it alone, thus a measurement
+   over it stays deterministic. *)
 let streams chorales ~count ~random_state =
   let drawn_shift chorale =
     let shifts = Array.of_list chorale.legal_shifts in
@@ -261,9 +242,9 @@ let%expect_test "the cells of one step" =
   (* a rest in the alto; a float parses as its pitch *)
   print_s ([%sexp_of: int list] (cells "[74.0, -1, 65, 58]"));
   [%expect {| (74 -1 65 58) |}];
-  (* the reserved codes escape: pitch 127 falls, pitch 0 rises *)
+  (* no code is reserved: the ends of the MIDI range pass through unmoved *)
   print_s ([%sexp_of: int list] (cells "[127, 64, 55, 0]"));
-  [%expect {| (126 64 55 1) |}];
+  [%expect {| (127 64 55 0) |}];
   (* a step without its four voices refuses *)
   (match cells "[74, 70, 65]" with
    | (_ : int list) -> ()
@@ -284,27 +265,26 @@ let%expect_test "the shifts of the range-limited policy" =
   [%expect {| (0) |}]
 ;;
 
-let%expect_test "the chorale of the separated json" =
-  (* two chords with a hold; a bass rest and a tenor-alto unison in the second. The flat
-     steps drop the rests, merge the unisons and sort ascending; the shifts come from the
-     voices — the tenor at 69 touches its ceiling, thus no shift up *)
-  let json =
-    {|[[74, 70, 65, 58], [74, 70, 65, 58], [76, 70, 69, -1], [76, 70, 69, -1]]|}
+let%expect_test "the frame of one step" =
+  let frame json =
+    printf "%08x\n" (frame_of_cells (cells_of_json (Json.from_string json)))
   in
-  let { steps; legal_shifts } = chorale_of_json (Json.from_string json) in
-  print_s ([%sexp_of: int list array] steps);
-  print_s ([%sexp_of: int list] legal_shifts);
-  [%expect
-    {|
-    ((58 65 70 74) (58 65 70 74) (69 70 76) (69 70 76))
-    (-14 -13 -12 -11 -10 -9 -8 -7 -6 -5 -4 -3 -2 -1 0)
-    |}]
+  (* the soprano takes the high byte and the bass the low one: the file order turns around *)
+  frame "[74, 70, 65, 58]";
+  [%expect {| cac6c1ba |}];
+  (* a rest is 0x00, thus the silent voice carries no pitch *)
+  frame "[74, -1, 65, 58]";
+  [%expect {| ca00c1ba |}];
+  (* a silent step is the word zero, thus a cleared context reads as silence *)
+  frame "[-1, -1, -1, -1]";
+  [%expect {| 00000000 |}]
 ;;
 
 let%expect_test "the rotation from the cadential holds" =
   (* a bar = a six-step hold on the downbeat, then moving single notes *)
-  let hold = Array.create ~len:6 [ 60; 64; 67 ] in
-  let motion count = Array.init count ~f:(fun i -> [ 40 + i ]) in
+  let chord = [ 67; 64; 60; -1 ] in
+  let hold = Array.create ~len:6 chord in
+  let motion count = Array.init count ~f:(fun i -> [ 40 + i; -1; -1; -1 ]) in
   let bar_44 = Array.append hold (motion 10) in
   let bar_34 = Array.append hold (motion 6) in
   (* three 16-step bars: common time, downbeats at 0, 16, 32 *)
@@ -327,40 +307,25 @@ let%expect_test "the rotation from the cadential holds" =
   [%expect {| 0 |}]
 ;;
 
-let%expect_test "the walk of a small chorale" =
-  (* a chord, a hold, a move of two voices, a rest, then a unison *)
-  let steps = [ [ 67; 64; 60 ]; [ 67; 64; 60 ]; [ 67; 65; 62 ]; []; [ 60; 60 ] ] in
-  print_s ([%sexp_of: Token.t list] (List.concat (sentences steps)));
-  [%expect
-    {|
-    ((On 67) (On 64) (On 60) End End (Off 60) (Off 64) (On 65) (On 62) End
-     (Off 62) (Off 65) (Off 67) End (On 60) End)
-    |}]
-;;
-
 let%expect_test "the packed stream of two pieces" =
   (* Two pieces of four steps, each one chord held. Neither holds three cadences, thus
      both take rotation zero and both must open on a downbeat of the clock. *)
-  let chorale pitches = { steps = Array.create ~len:4 pitches; legal_shifts = [ 0 ] } in
-  let { codes; positions; anchors } =
-    pack [ chorale [ 60; 64; 67 ]; chorale [ 62; 65; 69 ] ]
+  let chorale cells = { cells = Array.create ~len:4 cells; legal_shifts = [ 0 ] } in
+  let { frames; positions } =
+    pack [ chorale [ 67; 64; 60; -1 ]; chorale [ 69; 65; 62; -1 ] ]
   in
   (* The first piece opens the stream and takes no seam. The seam between the pieces is
-     twelve steps: the release at step 4, then eleven silent steps, and the second piece
-     at step 16. *)
-  print_s ([%sexp_of: int array] anchors);
-  [%expect {| (0 22) |}];
-  print_s ([%sexp_of: int array] codes);
+     twelve steps of silence: the release needs no step of its own, because the decode
+     makes it from the first silent frame. *)
+  print_endline
+    (String.concat ~sep:" " (List.map (Array.to_list frames) ~f:(sprintf "%08x")));
   [%expect
-    {|
-    (195 192 188 0 0 0 0 60 64 67 0 0 0 0 0 0 0 0 0 0 0 0 197 193 190 0 0 0 0 62
-     65 69 0 0 0 0 0 0 0 0 0 0 0 0)
-    |}];
+    {| c3c0bc00 c3c0bc00 c3c0bc00 c3c0bc00 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 c5c1be00 c5c1be00 c5c1be00 c5c1be00 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 |}];
   (* the coordinate rolls with the stream and never restarts at a piece *)
   print_s ([%sexp_of: int array] positions);
   [%expect
     {|
-    (0 0 0 0 1 2 3 4 4 4 4 5 6 7 8 9 10 11 12 13 14 15 16 16 16 16 17 18 19 20 20
-     20 20 21 22 23 24 25 26 27 28 29 30 31)
+    (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28
+     29 30 31)
     |}]
 ;;
