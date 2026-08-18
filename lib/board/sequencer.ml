@@ -170,7 +170,17 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
             [ prescaler <-- prescaler.value +:. 1 ]
         ]
     ; sm.switch
-        [ Idle, [ when_ run_bit [ source_rewind <-- vdd; sm.set_next WaitRewind ] ]
+        [ ( Idle
+          , (* The source takes a command only at rest, and this state does not imply that
+               it is: the stop does not wait for the source, because it takes no frame,
+               and a source draws the frame of the next step behind the one it stated. A
+               run that starts again inside that draw would strobe a rewind the source
+               cannot honour, and the walk would go on with the generator where it stood —
+               the seed silently unread, and one seed no longer naming one walk. *)
+            [ when_
+                (run_bit &: i.source.idle)
+                [ source_rewind <-- vdd; sm.set_next WaitRewind ]
+            ] )
         ; ( WaitRewind
           , [ when_
                 i.source.idle
@@ -269,9 +279,12 @@ type stub =
   (** the frames to serve, as pitches; the walk cycles them *)
   ; served : int list ref (** the frames the stub gave, newest first *)
   ; messages : (int * int * int) list ref (** the messages that crossed, newest first *)
+  ; rewinds : int ref (** the rewinds the stub took *)
+  ; rewinds_while_busy : int ref
+  (** the rewinds that arrived while the stub was drawing, which a source cannot honour *)
   }
 
-let harness ?(log = true) () =
+let harness ?(log = true) ?(busy_cycles = 4) () =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~clocks_per_ms) in
   let inp = Cyclesim.inputs sim in
@@ -283,6 +296,8 @@ let harness ?(log = true) () =
   let program = ref [ [ 0x24; 0x30; 0x3c; 0x48 ] ] in
   let served = ref [] in
   let messages = ref [] in
+  let rewinds = ref 0 in
+  let rewinds_while_busy = ref 0 in
   let frame = ref Frame.silent in
   let answering = ref false in
   let busy = ref 0 in
@@ -303,9 +318,11 @@ let harness ?(log = true) () =
       served := !frame :: !served;
       Int.incr step_index;
       answering := true;
-      busy := 4);
+      busy := busy_cycles);
     if Bits.to_bool !(out.source_rewind)
     then (
+      Int.incr rewinds;
+      if !busy > 0 then Int.incr rewinds_while_busy;
       if log then Stdio.printf "t=%03d rewind\n" !time;
       step_index := 0;
       served := []);
@@ -320,7 +337,7 @@ let harness ?(log = true) () =
     Int.incr time
   in
   let set field value = field := Bits.of_unsigned_int ~width:(Bits.width !field) value in
-  { inp; cycle; set; program; served; messages }
+  { inp; cycle; set; program; served; messages; rewinds; rewinds_while_busy }
 ;;
 
 let%expect_test "a chord opens, and a new frame releases before it strikes" =
@@ -527,4 +544,33 @@ let%expect_test "the messages of the circuit are the events of the frames" =
   in
   Stdio.printf "24 runs of 6 drawn frames, %d disagree\n" disagree;
   [%expect {| 24 runs of 6 drawn frames, 0 disagree |}]
+;;
+
+(* The socket takes a command only while the source is at rest, and the run start is a
+   command. This states it against the one walk that can break it: the stop does not wait
+   for the source, thus a run that starts again inside a draw finds the source busy. A
+   rewind that arrives there is not honoured — the source holds it in no register — and
+   the walk would go on with the generator where it stood, which is the one property the
+   whole design rests on: one seed names one walk. *)
+let%expect_test "no rewind crosses while the source is drawing" =
+  let stub = harness ~log:false ~busy_cycles:60 () in
+  stub.set stub.inp.params.step_ms 8;
+  stub.set stub.inp.params.velocity 100;
+  stub.set stub.inp.params.channel 2;
+  stub.program := [ [ 0x30; 0x3c; -1; -1 ] ];
+  let run bit n =
+    stub.set stub.inp.params.run bit;
+    for _ = 1 to n do
+      stub.cycle ()
+    done
+  in
+  (* a run, a stop at the boundary, and a restart while the draw of the next frame stands *)
+  run 1 70;
+  run 0 40;
+  run 1 200;
+  Stdio.printf
+    "%d rewinds, %d of them while the source was drawing\n"
+    !(stub.rewinds)
+    !(stub.rewinds_while_busy);
+  [%expect {| 2 rewinds, 0 of them while the source was drawing |}]
 ;;
