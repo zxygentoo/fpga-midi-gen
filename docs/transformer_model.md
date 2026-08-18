@@ -153,7 +153,9 @@ model and it stays. The decode no longer needs it.
 
 ## The socket
 
-Not built.
+Not built. It lands with the circuit of era four — step 5 of the plan —
+because one interface serves every model and the source of era three
+sits on this one today.
 
 ```ocaml
 (** the number of voices of the synthesizer *)
@@ -755,13 +757,49 @@ not the other way around.
    twin when a uniform lands near a boundary of the cumulative sum. It
    detects well and it diagnoses badly; the loss gate beside it is what
    says whether a mismatch is a fault or that straddle.
-5. **The socket, the sequencer and `Pink`.** This part stands alone and
-   carries no risk to the model. It can happen at any time, and the
-   Cyclesim comparison tests it.
-6. **The circuit and the board.** The block design comes in its own
-   document, as before.
+5. **The circuit, the board and the socket.** The block design comes in
+   its own document, as before, and **the socket changes here and not
+   before it**. The new source gives a frame, thus `Source_intf` takes
+   the frame word and loses `Note` and `ready`, and the sequencer takes
+   the decode in the place of its note handshake.
 
-What steps 4 and 5 remove from the machine:
+   **The socket cannot move first, and an earlier draft of this plan was
+   wrong to say that it stands alone.** One interface serves every
+   model: the source of era three sits on it, and that source is 1,485
+   lines of RTL which plays on the board today. To move the socket
+   before this step would mean teaching a token source to gather a
+   sentence into a frame, or deleting the one bitstream that works. The
+   source of era three is therefore **deleted here and never ported**,
+   because the source of era four takes its seat.
+
+6. **`Pink` on the frame socket.** Last, and it is the only step that
+   touches music the ear has already elected.
+
+   `Pink.Source` becomes smaller, and `Player` becomes smaller still:
+   the report state, the owed flags and the lowest-voice fold exist only
+   to give one note at a time, and the rule of the player — a voice
+   speaks when it is due and it holds no note, or its pitch moved, or
+   its policy re-strikes a held pitch — becomes "each voice holds its
+   pitch", with `Frame.events_of_frames` making the events.
+
+   **One decision is owed, and it is musical.** The soprano and the alto
+   of `Pink.default` take `restrike`: they articulate the same pitch
+   again at every due step, and that is where the rhythm of the model
+   comes from — the partition of the rows is the rhythm. A frame states
+   which pitch a voice holds and cannot state that the voice strikes it
+   again, thus those articulations have no encoding. Measured over 512
+   steps at seed 1: the player strikes 667 notes and the frame strikes
+   546, thus **the frame loses 18 percent of them**.
+
+   Three answers, and the ear picks one. Accept the smoothing, for which
+   there is a precedent — the gate left the design and the melody of the
+   pink model already sustains to its next articulation. Or spend one of
+   the spare codes on "strike the pitch of the step before", which is
+   the door the vocabulary keeps open. Or leave `Pink` on an interface
+   of its own, which makes the sequencer carry two and gives up what the
+   socket is for.
+
+What steps 4 to 6 remove from the machine:
 
 - `Token` becomes a pair of small maps: the class index of a wire code,
   and the wire code of a class index. `Token.Start`, the START rule and
@@ -773,6 +811,8 @@ What steps 4 and 5 remove from the machine:
   `Engine.reanchor` and the boundary of `Engine.next_step`.
 - `Transformer.piece_steps`, the `piece_steps` argument of
   `Transformer.sample`, and the boundary of the sampler loop.
-- `State.Release` of the source, `at_boundary`, the release scan over
-  the seats, the extra term of `valid` and `Op.boundary_cycles`.
+- The source of era three, whole: its `State.Release`, its
+  `at_boundary`, its release scan over the seats, the extra term of its
+  `valid` and its `Op.boundary_cycles` go with the file, and none of
+  them is ported.
 - `-piece-steps` of `play_transformer`.
