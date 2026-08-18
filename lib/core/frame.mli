@@ -34,6 +34,10 @@ end
     the hardware and not a parameter of a model. *)
 val voices : int
 
+(** the bits of one voice code: 8. The frame is [code_bits * voices] wide on the socket,
+    and a circuit that states a code sizes on this and not on a literal. *)
+val code_bits : int
+
 (** the frame of a step in which no voice sounds: the word zero *)
 val silent : int
 

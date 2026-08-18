@@ -38,6 +38,49 @@ let code_of_class index =
 let classes_of_frame frame = List.map (Frame.codes frame) ~f:class_of_code
 let frame_of_classes indices = indices |> List.map ~f:code_of_class |> Frame.of_codes
 
+module Rtl = struct
+  (* The map the circuit states, over any combinational type: [Bits] evaluates it in the
+     test below and [Signal] elaborates it. It stands here and not in the source of a
+     model, because the rule is the vocabulary's and one rule wants one definition — the
+     expect test holds the two halves together over every class. *)
+  module Make (Comb : Hardcaml.Comb.S) = struct
+    open Comb
+
+    (* [code_of_class index] is the voice code of a drawn class: the silent code for class
+       0, and the pitch of the class with the sounding flag set for the others. One add
+       and one bit, thus the circuit needs no table. *)
+    let code_of_class index =
+      let width = Frame.code_bits in
+      let pitch = uresize index ~width +:. (pitch_low - 1) in
+      mux2
+        (index ==:. silence)
+        (of_unsigned_int ~width Frame.silent_code)
+        (pitch |: of_unsigned_int ~width 0x80)
+    ;;
+  end
+
+  include Make (Hardcaml.Signal)
+end
+
+let%expect_test "the circuit states the code the software states" =
+  (* One rule and two halves: the software maps a class at the seam of the corpus, and the
+     circuit maps it at the seam of the wire. Every class of the vocabulary is checked,
+     because the set is small enough that a sample would be the weaker test. *)
+  let module Bits = Hardcaml.Bits in
+  let module Map = Rtl.Make (Bits) in
+  let index_bits = Int.ceil_log2 classes in
+  let disagree =
+    List.filter (List.range 0 classes) ~f:(fun index ->
+      let circuit =
+        Bits.to_unsigned_int
+          (Map.code_of_class (Bits.of_unsigned_int ~width:index_bits index))
+      in
+      circuit <> code_of_class index)
+  in
+  printf "%d classes, %d disagree\n" classes (List.length disagree);
+  [%expect {| 48 classes, 0 disagree |}]
+;;
+
 let%expect_test "the class of a voice code" =
   let show code = printf "0x%02x -> %d\n" code (class_of_code code) in
   (* the silent code, then the two ends of the corpus and the spare class above them *)

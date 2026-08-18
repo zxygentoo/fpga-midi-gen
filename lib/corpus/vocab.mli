@@ -56,3 +56,21 @@ val classes_of_frame : int -> int list
 (** [frame_of_classes indices] is the frame of one drawn step, and the inverse of
     [classes_of_frame]. A list that is not [Frame.voices] long raises [Invalid_argument]. *)
 val frame_of_classes : int list -> int
+
+(** The circuit's half of the map: the class the chain draws becomes the voice code the
+    frame carries.
+
+    It states one rule with the software above it, and the expect test of the module holds
+    the two over every class of the vocabulary. The circuit needs no table for it — the
+    silent class gives the silent code, and any other gives its pitch with the sounding
+    flag set, which is one add and one bit. *)
+module Rtl : sig
+  (** [Make] over [Hardcaml.Bits] evaluates the map, and over [Hardcaml.Signal] it
+      elaborates; the module below is the second one. *)
+  module Make (Comb : Hardcaml.Comb.S) : sig
+    (** [code_of_class index] is the voice code of a drawn class, [Frame.code_bits] wide *)
+    val code_of_class : Comb.t -> Comb.t
+  end
+
+  include module type of Make (Hardcaml.Signal)
+end

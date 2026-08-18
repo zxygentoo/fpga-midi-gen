@@ -1,6 +1,9 @@
 (library
  (name mgen_corpus)
- (libraries base core stdio yojson mgen_core)
+ ; [Vocab.Rtl] states the class-to-code map for the circuit, thus the corpus library
+ ; elaborates. It is the one rule of the vocabulary the RTL needs, and one rule wants one
+ ; definition.
+ (libraries base core stdio yojson hardcaml mgen_core)
  (flags
   (:standard -open Mgen_core))
  (inline_tests
