@@ -98,6 +98,8 @@ module Params = struct
   type t = tensor Params_data.t
   type layer = tensor Params_data.layer
 
+  let to_list = Params_data.to_list
+
   let of_list (config : Config.t) tensors =
     Params_data.of_list ~layers:config.layers tensors
   ;;
@@ -386,6 +388,13 @@ let pick weights ~uniform =
   walk 0
 ;;
 
+(* The draw of one seat as one function: the tempered weights, the min-p floor, and the
+   class whose running total passes the draw. The sampler below and the drift report of
+   [Quantized] both take it, thus the two pipelines are comparable pick for pick. *)
+let draw_class raw ~temperature ~min_p ~uniform =
+  pick (above_min_p (tempered raw ~temperature) ~min_p) ~uniform
+;;
+
 (* the row of a table as a stream of one position, thus the chain can add it *)
 let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
 
@@ -397,9 +406,8 @@ let draw_frame (config : Config.t) params ~temperature ~min_p ~rng stream =
     List.fold_map chain_seats ~init:(rng, stream) ~f:(fun (rng, stream) seat ->
       let table = seat_table params seat in
       let raw = Nx.to_array (Nx.matmul (rms_norm stream) (Nx.transpose table)) in
-      let weights = above_min_p (tempered raw ~temperature) ~min_p in
       let rng, uniform = Prng.run Prng.uniform rng in
-      let index = pick weights ~uniform in
+      let index = draw_class raw ~temperature ~min_p ~uniform in
       let stream =
         if seat = 0 then stream else Nx.add stream (table_row table index ~d:config.d)
       in
@@ -407,6 +415,22 @@ let draw_frame (config : Config.t) params ~temperature ~min_p ~rng stream =
   in
   (* the chain runs from the soprano down, and a frame reads from seat 0 up *)
   rng, List.rev classes
+;;
+
+(* The logits of every seat at the last position of one window, over the classes the chain
+   conditions on. The drift report of [Quantized] walks the quantized engine and reads
+   this for each of its four draws, thus the two models are compared on one history and
+   one chain, and what is left between them is the quantization. *)
+let logits (config : Config.t) params ~frames ~positions ~drawn =
+  let phases = [| Array.map positions ~f:(fun at -> at % Jsb.bar_steps) |] in
+  let h = hidden config params ~classes:(seat_classes [| frames |]) ~phases in
+  let last = Array.length frames - 1 in
+  let stream = Nx.reshape [| 1; 1; config.d |] (Nx.get [ 0; last ] h) in
+  let rows =
+    seat_logits params stream ~drawn:(Array.map drawn ~f:(fun index -> [| [| index |] |]))
+  in
+  Array.init Frame.voices ~f:(fun seat ->
+    List.Assoc.find_exn rows seat ~equal:Int.equal |> Nx.to_array)
 ;;
 
 (* the state of one walk: the generator, and the history with the newest step first *)

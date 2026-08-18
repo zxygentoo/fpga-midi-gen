@@ -1,7 +1,5 @@
 (tests
- (names test_txn test_socket)
- ; [test_quantized_drift] gates the integer twin of era three and leaves the build with it
- (modules test_txn test_socket)
+ (names test_txn test_quantized_drift test_socket)
  (libraries
   base
   stdio
@@ -10,4 +8,5 @@
   mgen_core
   mgen_board
   mgen_pink
+  mgen_transformer
   mgen_nexys4))

@@ -1,27 +1,51 @@
-(* checkpoint_tool: operations on one checkpoint — the drift of the quantized reference
-   against the float model and the reference event stream. The config flags must equal the
-   flags of the training run; the checkpoint holds only tensors. *)
+(* checkpoint_tool: what the integer twin of a checkpoint does — the drift of the twin
+   against the float model, and the event stream the board must send.
+
+   The configuration flags must equal the flags of the training run; the checkpoint holds
+   only tensors. *)
 
 open Core
+module Frame = Mgen_core.Frame
 module Quantized = Mgen_transformer.Quantized
 module Transformer = Mgen_transformer.Transformer
 
-(* The drift of the reference against the float model: the top-1 agreement, the cosine of
-   the logits and the same-draw share at every draw, on the quantized walk. *)
-let drift ~checkpoint ~steps ~seed =
-  let config =
-    Transformer.Config.of_checkpoint
-      checkpoint
-      ~heads:Transformer.Config.baseline.heads
-      ~context:Transformer.Config.baseline.context
-      ~slope_span:Transformer.Config.baseline.slope_span
+let config_of checkpoint ~heads ~context ~slope_span =
+  Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
+;;
+
+(* the flags that must equal the training run, in one place: three commands would
+   otherwise state them three times *)
+let config_flags =
+  let%map_open.Command checkpoint =
+    flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
+  and heads =
+    flag
+      "-heads"
+      (optional_with_default Transformer.Config.(baseline.heads) int)
+      ~doc:"N the heads; they must equal the heads of the training run"
+  and context =
+    flag
+      "-context"
+      (optional_with_default Transformer.Config.(baseline.context) int)
+      ~doc:"N the window, in steps"
+  and slope_span =
+    flag
+      "-alibi-span"
+      (optional_with_default Transformer.Config.(baseline.slope_span) int)
+      ~doc:"N the ALiBi exponent span; it must equal the span of the training run"
   in
+  checkpoint, config_of checkpoint ~heads ~context ~slope_span
+;;
+
+(* The drift of the twin against the float model: the top-1 agreement, the cosine of the
+   logits and the same-draw share, over every draw of the chain. *)
+let drift ~checkpoint ~config ~steps ~seed =
   let params = Transformer.Params.load config ~path:checkpoint in
-  let { Quantized.Drift.draws; events; same_peak; same_draw; mean_cosine } =
+  let { Quantized.Drift.steps = (_ : int); draws; same_peak; same_draw; mean_cosine } =
     Quantized.Drift.walk config params ~steps ~seed
   in
-  let share count = 100.0 *. Float.of_int count /. Float.of_int draws in
-  printf "%d steps  %d events  %d draws\n" steps events draws;
+  let share count = 100.0 *. Float.of_int count /. Float.of_int (max 1 draws) in
+  printf "%d steps  %d draws of the chain\n" steps draws;
   printf
     "against the float model: top-1 %.1f%%  cosine %.4f  same draw %.1f%%\n"
     (share same_peak)
@@ -32,52 +56,56 @@ let drift ~checkpoint ~steps ~seed =
 let drift_command =
   Command.basic
     ~summary:
-      "the drift of the reference against the float model: top-1, cosine and the \
+      "the drift of the integer twin against the float model: top-1, cosine and the \
        same-draw share"
-    (let%map_open.Command checkpoint =
-       flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
-     and steps = flag "-steps" (optional_with_default 96 int) ~doc:"N the steps to draw"
+    (let%map_open.Command checkpoint, config = config_flags
+     and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
      and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
-     fun () -> drift ~checkpoint ~steps ~seed)
+     fun () -> drift ~checkpoint ~config ~steps ~seed)
 ;;
 
-(* The reference socket stream: what the board must send, event for event. The comparison
-   script reads these lines against the amidi capture of the S-1 thru. *)
-let stream ~checkpoint ~steps ~seed =
-  let config =
-    Transformer.Config.of_checkpoint
-      checkpoint
-      ~heads:Transformer.Config.baseline.heads
-      ~context:Transformer.Config.baseline.context
-      ~slope_span:Transformer.Config.baseline.slope_span
-  in
-  let model = Quantized.Model.of_checkpoint config checkpoint in
+(* The reference stream: what the board must send, event for event. The line format is the
+   one of play_transformer and of the JAX twin, thus the three compare with `diff` — and
+   the difference between this stream and the float player's is the quantization. *)
+let stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p =
+  let model = Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint in
   let engine = ref (Quantized.Engine.init model ~seed) in
-  for step = 1 to steps do
-    let engine', events = Quantized.Engine.next_step !engine in
-    engine := engine';
+  let frames =
+    Array.init steps ~f:(fun (_ : int) ->
+      let next, (step : Quantized.Engine.step) = Quantized.Engine.next_step !engine in
+      engine := next;
+      step.frame)
+  in
+  List.iteri (Frame.events_of_frames frames) ~f:(fun index events ->
+    let text =
+      List.map events ~f:(function
+        | Frame.Event.On pitch -> sprintf "on:%d" pitch
+        | Frame.Event.Off pitch -> sprintf "off:%d" pitch)
+    in
     printf
-      "step %d:%s\n"
-      step
-      (String.concat
-         (List.map events ~f:(fun { Quantized.Engine.voice; pitch; on } ->
-            sprintf " %s:%d@%d" (if on then "on" else "off") pitch voice)))
-  done
+      "step %3d  %s\n"
+      index
+      (if List.is_empty text then "-" else String.concat ~sep:" " text))
 ;;
 
 let stream_command =
   Command.basic
     ~summary:"the reference event stream: what the board must send, event for event"
-    (let%map_open.Command checkpoint =
-       flag "-ckpt" (required string) ~doc:"PATH the checkpoint"
+    (let%map_open.Command checkpoint, config = config_flags
      and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
-     and seed = flag "-seed" (optional_with_default 42 int) ~doc:"N the seed" in
-     fun () -> stream ~checkpoint ~steps ~seed)
+     and seed =
+       flag
+         "-seed"
+         (optional_with_default 1 int)
+         ~doc:"N the seed, under the rule of the SEED cell: 1 up to 0xFFFFFFFF"
+     and temperature = flag "-temperature" (optional_with_default 1.0 float) ~doc:"F"
+     and min_p = flag "-min-p" (optional_with_default 0.05 float) ~doc:"F" in
+     fun () -> stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p)
 ;;
 
 let command =
   Command.group
-    ~summary:"operations on one checkpoint"
+    ~summary:"the integer twin of one checkpoint"
     [ "drift", drift_command; "stream", stream_command ]
 ;;
 

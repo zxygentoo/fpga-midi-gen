@@ -20,6 +20,9 @@
     simulation and on the board. A seed is any integer: it folds into the 32 bits of the
     state, and a seed already inside that range names itself. *)
 
+(** every tensor of the float model is float32 *)
+type tensor = (float, Nx.float32_elt) Nx.t
+
 (** The shape of the model: the numbers that size every tensor here and every register in
     the circuit. *)
 module Config : sig
@@ -51,10 +54,55 @@ module Config : sig
   val of_checkpoint : string -> heads:int -> context:int -> slope_span:int -> t
 end
 
+(** The parameter structure over any tensor type, and the flat order of the checkpoint
+    with it: the two tables, then six tensors for each layer. One definition holds the
+    shape and the order — [Params] instantiates it with the float tensor and keeps its own
+    type opaque, and [Quantized.Model] instantiates it with the integer one. *)
+module Params_data : sig
+  type 'a t =
+    { seats : 'a (** the four tied tables in one tensor, seat 0 first *)
+    ; phase : 'a (** the bar-phase table *)
+    ; layers : 'a layer array
+    }
+
+  and 'a layer =
+    { wq : 'a
+    ; wk : 'a
+    ; wv : 'a
+    ; wo : 'a
+    ; w1 : 'a
+    ; w2 : 'a
+    }
+
+  (** the flat order of the tensors — the order of the checkpoint; [of_list] reads the
+      same order *)
+  val to_list : 'a t -> 'a list
+
+  (** [of_list ~layers items] reads the order of [to_list]. It raises [Invalid_argument]
+      when the count of items is not two tables and six for each of [layers]. *)
+  val of_list : layers:int -> 'a list -> 'a t
+end
+
 (** The weights of the float model: the two tables — the four tied seat tables in one
     tensor, and the bar phase — and six tensors for each layer. *)
 module Params : sig
   type t
+
+  (** the shapes of the tensors in the flat order of [Params_data.to_list], from the
+      configuration. The quantization of [Quantized] reads the same table, thus the two
+      models cannot disagree about what a checkpoint holds. *)
+  val shapes : Config.t -> int array list
+
+  (** [init config ~seed] draws the initial parameters: normal, scale 0.02. [Prng] and
+      Box-Muller make the draw, thus a test needs no checkpoint file and the same seed
+      gives the same weights — which is how the drift gate of [Quantized] reads no file
+      that git ignores. It does not give the weights that [jax/transformer/train.py] draws
+      from the same number: the two generators are different, and only a trained
+      checkpoint crosses the seam. *)
+  val init : Config.t -> seed:int -> t
+
+  (** the tensors in the flat order of [Params_data.to_list] *)
+  val to_list : t -> tensor list
 
   (** [load config ~path] is the parameters of the checkpoint at [path], which is the
       safetensors file that the JAX trainer writes: the tensors named "0" upward, in the
@@ -113,3 +161,29 @@ val sample
   -> temperature:float
   -> min_p:float
   -> int array
+
+(** [logits config params ~frames ~positions ~drawn] is the raw logits of every seat at
+    the last position of the window, indexed by seat and each one over the classes of
+    [Vocab].
+
+    [drawn] holds the classes the chain conditions on — seats 3, 2 and 1 are read, as the
+    chain reads them. The drift report of [Quantized] walks the quantized engine and reads
+    this at each of its four draws, thus the two models are compared over one history and
+    one chain, and what stands between them is the quantization alone. *)
+val logits
+  :  Config.t
+  -> Params.t
+  -> frames:int array
+  -> positions:int array
+  -> drawn:int array
+  -> float array array
+
+(** [draw_class raw ~temperature ~min_p ~uniform] is the draw of one seat as one function:
+    the tempered weights over the classes, the min-p floor, and the class whose running
+    total passes [uniform] times the total. [sample] draws through it, and the drift walk
+    of [Quantized] draws through it with the same uniform as the quantized engine, thus
+    the two pipelines are comparable pick for pick.
+
+    The rules of [sample] on [temperature] and [min_p] hold here; this function does not
+    check them. *)
+val draw_class : float array -> temperature:float -> min_p:float -> uniform:float -> int

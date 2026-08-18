@@ -1,24 +1,21 @@
-(** The quantized transformer: the reference of the circuit, in exact integer arithmetic.
+(** The integer twin of the step-frame model: the reference the circuit must equal.
 
-    The circuit of [Source] must match this module bit for bit, as the pink source matches
-    [Pink]. The float model of [Transformer] is not: post-training quantization separates
-    them, and the audition judges that distance. [docs/transformer_rtl.md] holds the
-    design: the formats, the operations and their order.
+    The float model of [Transformer] is what the ear elected. This module is the same
+    network in the arithmetic the board can hold — int8 weights with a power-of-two
+    exponent for each tensor, int8 KV rings, and the sampler folded into integers — and
+    the circuit of era four must equal it operation for operation, not approximately.
 
-    The reference is generic over [Transformer.Config], within the shift rules of the
-    circuit's arithmetic: the width and the context are powers of two, and the head width
-    is a power of four. The circuit alone fixes one shape — its address packing — and
-    [Source] states that check; the king of the era elaborates at
-    [Transformer.Config.baseline].
+    Nothing here approximates on purpose. Every shift, every floor and every table is a
+    rule that the RTL reads from this module rather than restating, thus a change of the
+    arithmetic changes both sides at one time.
 
-    The engine is a value: each operation gives the engine after it, thus a state can be
-    kept, compared and replayed. *)
+    What the quantization costs is a measurement and not a promise: [Drift] states it, on
+    the walk the board really takes.
 
-(** The design constants of the fixed-point scheme: the formats, and the values derived
-    from them and from the mathematics. The circuit elaboration reads these, thus the
-    reference and the circuit share one definition. The model dimensions are not here —
-    [Transformer.Config] carries them — and neither is the sampling policy, which the
-    model carries. *)
+    The design is [docs/transformer_model.md]. *)
+
+(** The fixed-point formats of the machine, and the constants that cross between the
+    reference and the circuit. A Q number holds [value * 2^-q]. *)
 module Constants : sig
   (** the residual stream: Q16 in int32 *)
   val h_q : int
@@ -26,10 +23,9 @@ module Constants : sig
   (** the normed vector, and the score of attention: Q12 in int16 *)
   val y_q : int
 
-  (** the query, the keys, the values and the context: Q12 in int16. This is a name of its
-      own beside [y_q], because the score shift folds the two roles apart: a dot product
-      of two attention vectors is Q(2 [kv_q]), and [2 * kv_q - y_q] carries it back to the
-      format of the stream. *)
+  (** the query, the keys, the values and the context: Q12 in int16. It is a name of its
+      own because the rings store these rows and the ring is where the format is a design
+      choice, not an accident of the datapath. *)
   val kv_q : int
 
   (** the feed-forward hidden vector: Q10 in int16 *)
@@ -40,9 +36,7 @@ module Constants : sig
 
   (** A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
       the value because the two are one fact — a multiply that takes the wrong shift is
-      silently wrong, and both the reference and the circuit apply these scales. The
-      circuit reads [q_value] onto its 18-bit signed multiplier port and [q] as the shift
-      that follows the product. *)
+      silently wrong, and both the reference and the circuit apply these scales. *)
   type scale =
     { q_value : int
     ; q : int
@@ -56,51 +50,45 @@ module Constants : sig
   val log2e : scale
 
   (** the exp2 table of the softmax and the sampler as the circuit's ROM: 256 entries of
-      [round(2^15 * 2^-(j/256))], 16 bits each — the quantized exponential, the same
-      species as the weights *)
+      16 bits, exp2 of -j/256 in Q15 *)
   val exp2_bits : Hardcaml.Bits.t array
 
   (** [score_shift ~head_d] carries a score walk's sum from Q(2 [kv_q]) to Q[y_q] and
-      applies the 1/sqrt([head_d]) of the reference in the same shift. This is why
-      [head_d] must be a power of four. *)
+      applies the 1/sqrt([head_d]) of the reference in the same shift, thus [head_d] is a
+      power of four. *)
   val score_shift : head_d:int -> int
 
   (** [slope_exponent ~span ~heads ~head] is the ALiBi exponent of one head: its slope is
-      2^-(this), thus the distance penalty is a shift of the age. *)
+      2^-(this), thus the penalty of an age is a shift and never a multiply. *)
   val slope_exponent : span:int -> heads:int -> head:int -> int
 end
 
-(** The vectors of the file, flat. [t] is the machine's integer vector — the value side of
-    a weight and every signal of the engine, each in its own Q format. [floats] is the
-    checkpoint side. The drift measures compare the two over one pair of logit vectors;
-    [Drift.walk] measures them over a walk. *)
+(** A vector of the integer model, and the two measures that compare one against the float
+    vector of the same place. *)
 module Tensor : sig
   type t = int array
   type floats = float array
 
   (** [same_peak q f] is true when the two vectors elect the same index — the top-1
-      agreement; a tie keeps the first. *)
+      agreement of the drift report. A tie keeps the first index on both sides. *)
   val same_peak : t -> floats -> bool
 
   (** [cosine q f] is the cosine between the two vectors. *)
   val cosine : t -> floats -> float
 end
 
-(** The quantized model: the configuration and the tensors quantized under it, one value —
-    the unit the engine and the circuit consume. The pairing invariant lives in the
-    constructors: after them, no caller can mispair a configuration with another model's
-    tensors. The three tables share one exponent, because their rows add. *)
+(** The weights in the form the bitstream carries, and the sampling policy in integers. *)
 module Model : sig
   (** one quantized weight tensor: the int8 values, flat in the row-major order of the
-      checkpoint, and the exponent of the power-of-two scale — [w ~ q * 2^-e]. The
-      arithmetic that makes one is private: the constructors apply it. *)
+      float checkpoint, and the exponent [e] that reads them — the value of an element is
+      [q * 2^-e] *)
   type quantized =
     { q : Tensor.t
     ; e : int
     }
 
-  (** the structure of [Transformer.Params_data], over the quantized tensor: one
-      definition holds the shape and the flat order of the checkpoint *)
+  (** the structure of [Transformer.Params_data] over the quantized tensor: one definition
+      of the shape and of the checkpoint order serves the float model and this one *)
   type params = quantized Transformer.Params_data.t
 
   type layer = quantized Transformer.Params_data.layer
@@ -109,156 +97,116 @@ module Model : sig
     { config : Transformer.Config.t
     ; params : params
     ; temper : Constants.scale
-    (** the sampling temper, log2(e) / T — folded with the exp2 form. Its Q is one below
-        the Q of [Constants.log2e], as headroom for a low temperature. *)
+    (** the sampling temper, log2(e) / T — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
-    ; piece_steps : int option
-    (** the steps of one piece, or [None] for one endless walk. See [Engine.next_step] for
-        what a boundary does. *)
     }
 
   (** [check_shape t] raises when the model breaks a rule that its consumers assume: [d]
-      and the context a power of two, [d / heads] a power of four, the layer count
-      matching the tensors, and one exponent over the three tables. The arithmetic of both
-      the reference and the circuit is shifts, thus both check this — the engine at
-      [Engine.init], the circuit at elaboration. The constructors here hold every rule; a
-      model built by hand from the open record does not. *)
+      and the context are powers of two, the head width is a power of four, the layer
+      count agrees with the tensors, the seat table holds one row for each seat and class,
+      and the seat and phase tables share one exponent. The record is open, thus a model
+      that no constructor here made can break a rule; the circuit calls this at
+      elaboration, where a bad shape must fail loudly. *)
   val check_shape : t -> unit
 
   (** the ROM image of the circuit: every tensor in the checkpoint order, one byte for
-      each weight, two's complement. The depth is exact — block RAM is paid for every row,
-      and the circuit never reads past the last tensor *)
+      each weight, two's complement *)
   val rom_bits : t -> Hardcaml.Bits.t array
 
   (** the base of each tensor inside the ROM, in the shape of the parameters — the address
-      book of the circuit elaboration *)
+      the circuit adds its own offsets to. The four seat tables stand inside one tensor,
+      thus seat [s] begins at [seats + s * classes * d], which is a shift and an add. *)
   val rom_bases : t -> int Transformer.Params_data.t
 
-  (** [of_checkpoint config path] loads the float checkpoint and quantizes it. It raises
-      when the file does not hold the tensors of the shapes of [config]. [temperature] and
-      [min_p] set the sampling policy — the machine commits to them, as it commits to the
-      weights — and their defaults are the settled values of the era; the rules of the
-      float sampler apply to both. [piece_steps] sets the walk policy: the steps of one
-      piece, or [None] for one endless walk. Its default is one arc of the piece-position
-      table, thus a boundary falls where the table already taught the model to close. *)
+  (** [of_checkpoint config path] loads the float checkpoint and quantizes it. The
+      temperature and min-p default to the draw the ear elected — 1.0 and 0.05 — and they
+      are part of the model here, because the bitstream carries them: the board commits to
+      the numbers its elaboration was given.
+
+      It raises [Invalid_argument] when the file holds no tensor of a name the order
+      wants, or when a tensor holds a count of values that the configuration does not fit. *)
   val of_checkpoint
     :  ?temperature:float
     -> ?min_p:float
-    -> ?piece_steps:int option
     -> Transformer.Config.t
     -> string
     -> t
-
-  module For_test : sig
-    (** [init config ~seed] is a model of drawn weights in the shapes of [config] — the
-        initial parameters of [Transformer.Params.init], quantized: the elaboration and
-        the engine need no checkpoint file. *)
-    val init
-      :  ?temperature:float
-      -> ?min_p:float
-      -> ?piece_steps:int option
-      -> Transformer.Config.t
-      -> seed:int
-      -> t
-  end
 end
 
-(** The inference engine: the state of one seeded run, and the operations that advance it
-    one token at a time. [Model] is what the circuit keeps in ROM; the engine is what it
-    keeps in registers and BRAM — the KV ring, the residual stream, the PRNG, the sounding
-    state and the seats. One seed names one walk: the same model and the same seed give
-    the same events here, in the circuit and on the board. *)
+(** One running inference, as a value: an operation gives the engine after it. *)
 module Engine : sig
-  (** one running inference, as a value: an operation gives the engine after it *)
   type t
 
-  (** one socket event of a drawn sentence *)
-  type event =
-    { voice : int (** the voice that sounds it, 0 to [Token.seats - 1] *)
-    ; pitch : int (** the MIDI pitch *)
-    ; on : bool (** [true] is Note On, [false] is Note Off *)
+  (** one draw of the chain: the seat it drew, the logits it read, the uniform it took,
+      and the class it chose. The drift report reads all four; the walk itself needs only
+      the class. *)
+  type draw =
+    { seat : int
+    ; logits : Tensor.t
+    ; uniform : float
+    ; drawn : int
     }
-  [@@deriving sexp_of]
 
-  (** [init model ~seed] is the engine at its origin: the PRNG at [seed] — the rule of the
-      SEED cell, thus 0 raises — the ring empty, the sounding state silent, and START
-      forwarded at phase 0, bucket 0. The shape obeys the shift rules of the module
-      header, and [init] checks them. *)
+  (** what one step of the walk states: the frame of the step, and the draws the chain
+      took to reach it. The draws come in the order they happened — the soprano first —
+      and they are empty through the silent lead-in, which draws nothing. *)
+  type step =
+    { frame : int
+    ; draws : draw list
+    }
+
+  (** [init model ~seed] is the engine at its origin: an empty ring, no residual, and the
+      PRNG at [seed] — the rule of the SEED cell, thus the seed is 1 up to 0xFFFFFFFF and
+      a seed of the board names the walk of the board.
+
+      The lead-in is not here. It is the first steps of the walk itself, thus a caller
+      that counts steps counts the steps [Transformer.sample] counts, and the two walks
+      compare index for index. *)
   val init : Model.t -> seed:int -> t
 
-  (** [next_step t] draws one sentence: the engine after it, and its socket events in the
-      drawn order. An On takes the highest free seat; an Off names the seat that holds its
-      pitch. The END that closes the sentence is forwarded and not reported.
+  (** [next_step t] takes one step: the engine after it, and what the step states.
 
-      When the model carries a [piece_steps] policy, the step whose index is a positive
-      multiple of it opens with a piece boundary, and its release leads the events of the
-      sentence. A boundary releases every sounding pitch, climbing, and returns the
-      context to the boot state — an empty ring and START — thus the model draws from the
-      condition the corpus trained it on. The step index and the PRNG carry across, thus
-      each piece is a new draw and the walk stays one function of the seed. This is the
-      whole difference from a rewind, which reloads both.
+      Through the lead-in of one bar the step is a silent frame and no draw at all — the
+      generator does not move, exactly as it does not move in the float sampler. After it,
+      one pass of the network gives the stream, and the chain draws the four seats from
+      the soprano down, each one reading the stream the seats above it have written.
 
-      The boundary reads the step index and never the music. Therefore the software model,
-      this reference and the circuit all take it at the same step, however far their
-      content has parted. *)
-  val next_step : t -> t * event list
-
-  (** The block-level interface below: the tests and the drift report drive the engine one
-      operation at a time; [next_step] is the interface of the players. *)
-
-  (** [logits t] is the Q12 logits of the position after the last forwarded token. *)
-  val logits : t -> Tensor.t
-
-  (** [next_code t] draws the next token code — the mask of the sounding state, the temper
-      and min-p of the model, then three PRNG bytes pick from the weights — and gives the
-      engine after the draw. *)
-  val next_code : t -> t * int
-
-  (** [forward t ~code ~phase ~bucket] runs the engine over one token — the forward pass —
-      and gives the engine after it. The sounding state steps with the token, thus the
-      mask of the next draw can never run ahead of or behind the engine. [code] is the
-      token; [phase] and [bucket] are the rows of the bar-phase and the piece-position
-      tables. *)
-  val forward : t -> code:int -> phase:int -> bucket:int -> t
+      No mask stands before a draw, because no frame is illegal. The pick needs no
+      fallback either: the threshold is a floor of [u * total] over 2^24 with [u] below
+      2^24, thus it is below the total, thus some running total passes it and the class it
+      names always holds the weight the floor left standing. *)
+  val next_step : t -> t * step
 
   (** The scalar rules of the engine that a circuit unit must reproduce exactly. The gate
-      test of each unit reads its oracle from here, thus the unit is measured against the
-      reference and not against a second hand-written formula. *)
+      tests of [Isqrt] and [Exp2] read them here rather than restate them, thus the unit
+      and the reference cannot drift apart in a definition. *)
   module For_test : sig
-    (** [isqrt n] is the floor of the square root, and 0 at or below zero — the rule of
-        [Isqrt]. *)
     val isqrt : int -> int
-
-    (** [exp2_q u] is exp2 of the Q12 value [u], which is 0 or less, in Q15: the integer
-        part shifts and the top eight bits of the fraction index the table. The peak —
-        input 0 — is 2^15, and 16 or more integer steps down give 0. This is the rule of
-        [Exp2], whose input is [-u]. *)
     val exp2_q : int -> int
   end
 end
 
-(** The drift of the reference against the float model, on one teacher-forced walk: the
-    quantized engine draws every code, and the float model — the same tensors before
-    quantization — is evaluated on the same window. The walks cannot split, thus every
-    draw gives one comparable pair of logits and one comparable pick.
-    [checkpoint_tool drift] reports the walk of a checkpoint; the integration test pins
-    the walk of drawn weights, where any move of the numbers is a move of the integer
-    scheme. *)
+(** What the quantization costs, measured on the walk the board takes. *)
 module Drift : sig
   type stats =
-    { draws : int (** the tokens drawn; each is one comparison *)
-    ; events : int (** the On and Off tokens among them *)
-    ; same_peak : int (** the draws where the two logit vectors elect one peak *)
-    ; same_draw : int
-    (** the draws where the two samplers pick one code, on the same uniform — the whole
-        pipeline agrees, the sampler stage included *)
-    ; mean_cosine : float (** the mean cosine over the logit pairs *)
+    { steps : int (** the steps of the walk, the silent lead-in inside *)
+    ; draws : int (** four for each drawn step: one for each seat of the chain *)
+    ; same_peak : int (** the draws where both models elect the same class *)
+    ; same_draw : int (** the draws where both models pick the same class *)
+    ; mean_cosine : float
     }
 
-  (** [walk config params ~steps ~seed] quantizes [params] under the sampling defaults of
-      the era, walks the engine for [steps] steps from [seed], and compares against the
-      float model of the same tensors at every draw. One weights source and one policy:
-      the pairing cannot slip. *)
+  (** [walk config params ~steps ~seed] draws the quantized walk and scores the float
+      model against it, draw for draw.
+
+      The walk quantizes [params] itself, under the draw of the era, thus the pair cannot
+      slip: one weights source and one policy. The float pass is teacher-forced on the
+      quantized history and on the quantized chain — it reads the frames the engine drew
+      and conditions each seat on the classes the engine chose — thus what the report
+      measures is the quantization and never a walk that parted for another reason.
+
+      The same-draw share reads the float draw on the very uniform the engine took, thus a
+      difference there is the arithmetic and not the generator. *)
   val walk
     :  Transformer.Config.t
     -> Transformer.Params.t

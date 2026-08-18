@@ -94,8 +94,6 @@ module Model = struct
     ; temper : Constants.scale
     (** the sampling temper, log2(e) / T — folded with the exp2 form *)
     ; min_weight : int (** the min-p share of the peak weight 2^15 *)
-    ; piece_steps : int option
-    (** the steps of one piece, or [None] for one endless walk *)
     }
 
   (* The arithmetic of the circuit is shifts, thus the shape obeys the shift rules. The
@@ -107,20 +105,17 @@ module Model = struct
     let { Transformer.Config.d; heads; context = slots; layers; slope_span = (_ : int) } =
       t.config
     in
-    let { Params_data.embed; phase; progress; layers = tensors } = t.params in
+    let { Params_data.seats; phase; layers = tensors } = t.params in
     assert (Int.is_pow2 d);
     assert (Int.is_pow2 slots);
     assert (Int.floor_log2 (d / heads) % 2 = 0);
     assert (layers = Array.length tensors);
-    (* the three tables add row for row — [Engine.embed] adds them, and the Embed op of
-       the circuit walks them as one tensor — thus one exponent must cover all three *)
-    assert (phase.e = embed.e);
-    assert (progress.e = embed.e);
-    (* the circuit takes the piece boundary as a bit-slice of its step counter, as it
-       takes every other period of the walk *)
-    Option.iter t.piece_steps ~f:(fun steps ->
-      assert (Int.is_pow2 steps);
-      assert (steps > 1))
+    (* the seat rows and the phase row add row for row — [Engine.embed] adds them, and the
+       Embed op of the circuit walks them as one tensor — thus one exponent covers both.
+       The four seat tables share it for the same reason: they stand in one tensor, and a
+       drift report is the instrument that would ask for four. *)
+    assert (phase.e = seats.e);
+    assert (Array.length seats.q = Frame.voices * Vocab.classes * d)
   ;;
 
   (* the element counts of the tensors in the flat order, from the one definition of the
@@ -175,8 +170,8 @@ module Model = struct
     if Float.(v <= 0.0) then 14 else shrink (grow 0)
   ;;
 
-  (* [e] overrides the exponent of the tensor's own peak — the tables share one, because
-     their rows add *)
+  (* [e] overrides the exponent of the tensor's own peak — the two tables share one,
+     because their rows add *)
   let quantize ?e (floats : Tensor.floats) =
     let e = Option.value e ~default:(max_exponent (max_abs floats)) in
     let clamp ft =
@@ -185,24 +180,18 @@ module Model = struct
     { q = Array.map floats ~f:clamp; e }
   ;;
 
-  (* the three tables add row for row, thus they share one exponent *)
-  let of_floats (config : Transformer.Config.t) ~temperature ~min_p ~piece_steps tensors =
+  let of_floats (config : Transformer.Config.t) ~temperature ~min_p tensors =
     let temper, min_weight = policy ~temperature ~min_p in
-    let { embed; phase; progress; layers } : Tensor.floats Params_data.t =
+    let { seats; phase; layers } : Tensor.floats Params_data.t =
       Params_data.of_list ~layers:config.layers tensors
     in
-    let e =
-      max_exponent
-        (Float.max (max_abs embed) (Float.max (max_abs phase) (max_abs progress)))
-    in
+    let e = max_exponent (Float.max (max_abs seats) (max_abs phase)) in
     { config
     ; temper
     ; min_weight
-    ; piece_steps
     ; params =
-        { Params_data.embed = quantize ~e embed
+        { Params_data.seats = quantize ~e seats
         ; phase = quantize ~e phase
-        ; progress = quantize ~e progress
         ; layers =
             Array.map layers ~f:(fun (l : Tensor.floats Params_data.layer) ->
               { Params_data.wq = quantize l.wq
@@ -216,20 +205,13 @@ module Model = struct
     }
   ;;
 
-  (* the settled sampling defaults of the era *)
-  let default_temperature = 0.9
-  let default_min_p = 1.0 /. 256.0
-
-  (* The walk plays a sequence of pieces, one arc of the piece-position table each. The
-     boundary and bucket zero then fall on the same step, thus every re-anchor lands where
-     the table already taught the model to close: the corpus put bucket 15 at the final
-     fermata, and the draw winds down there. *)
-  let default_piece_steps = Some Transformer.piece_steps
+  (* the draw the ear elected on 2026-08-18 *)
+  let default_temperature = 1.0
+  let default_min_p = 0.05
 
   let of_checkpoint
     ?(temperature = default_temperature)
     ?(min_p = default_min_p)
-    ?(piece_steps = default_piece_steps)
     (config : Transformer.Config.t)
     path
     =
@@ -256,26 +238,8 @@ module Model = struct
                size);
         values)
     in
-    of_floats config ~temperature ~min_p ~piece_steps tensors
+    of_floats config ~temperature ~min_p tensors
   ;;
-
-  module For_test = struct
-    let init
-      ?(temperature = default_temperature)
-      ?(min_p = default_min_p)
-      ?(piece_steps = default_piece_steps)
-      (config : Transformer.Config.t)
-      ~seed
-      =
-      let (_ : Prng.state), tensors =
-        Prng.run
-          (Prng.all
-             (List.map (sizes config) ~f:(fun count -> Prng.normals ~count ~scale:0.02)))
-          (Prng.create_folded ~seed)
-      in
-      of_floats config ~temperature ~min_p ~piece_steps tensors
-    ;;
-  end
 end
 
 module Engine = struct
@@ -285,26 +249,30 @@ module Engine = struct
     ; p : Model.params
     ; temper : Constants.scale
     ; min_weight : int
-    ; piece_steps : int option
     ; kc : Tensor.t array (* the K ring: [layer * slots + slot] rows of [d], Q12 int16 *)
     ; vc : Tensor.t array
-    ; h : Tensor.t (* the residual stream after the last forwarded token, Q16 *)
-    ; position : int
+    ; h : Tensor.t (* the residual stream after the last forwarded step, Q16 *)
+    ; position : int (* one forward for each step, thus this counts the steps as well *)
     ; prng : Prng.state
-    ; sounding : Sounding_state.t
-    ; seats : int option array
-    ; step_index : int
     }
 
-  (* one socket event of a drawn sentence: the voice, the pitch, and On or Off *)
-  type event =
-    { voice : int
-    ; pitch : int
-    ; on : bool
+  type draw =
+    { seat : int
+    ; logits : Tensor.t
+    ; uniform : float
+    ; drawn : int
     }
-  [@@deriving sexp_of]
 
-  let vocab = Token.vocab
+  type step =
+    { frame : int
+    ; draws : draw list
+    }
+
+  let classes = Vocab.classes
+  let voices = Frame.voices
+
+  (* the silent lead-in of the boot, in steps: one bar, as the float sampler plays it *)
+  let lead = Jsb.bar_steps
 
   (* value * 2^-from as value * 2^-target; the arithmetic shift floors *)
   let rescale ~from ~target v =
@@ -355,19 +323,26 @@ module Engine = struct
     Array.map h ~f:(fun x -> clamp16 (x * 256 / g))
   ;;
 
-  (* the embedding: the three rows add in the shared exponent, then shift to Q16 *)
-  let embed t ~code ~phase ~bucket : Tensor.t =
+  (* The row of one seat inside the seat tensor, which holds the four tables in one, seat
+     0 first: the circuit reaches it with a shift and an add from the base of the tensor. *)
+  let seat_row ~d ~seat ~index = ((seat * classes) + index) * d
+
+  (* the embedding: the four seat rows and the phase row add in the shared exponent, then
+     shift to Q16 *)
+  let embed t ~frame ~phase : Tensor.t =
     let d = t.config.Transformer.Config.d in
+    let drawn = Array.of_list (Vocab.classes_of_frame frame) in
     Array.init d ~f:(fun i ->
       let v =
-        t.p.embed.q.((code * d) + i)
-        + t.p.phase.q.((phase * d) + i)
-        + t.p.progress.q.((bucket * d) + i)
+        Array.foldi
+          drawn
+          ~init:t.p.phase.q.((phase * d) + i)
+          ~f:(fun seat acc index -> acc + t.p.seats.q.(seat_row ~d ~seat ~index + i))
       in
-      rescale ~from:t.p.embed.e ~target:Constants.h_q v)
+      rescale ~from:t.p.seats.e ~target:Constants.h_q v)
   ;;
 
-  (* The projections of one token: the query, the key row and the value row. One matvec
+  (* The projections of one step: the query, the key row and the value row. One matvec
      column each; the circuit runs the three separately, on one MAC path. *)
   let projections t (lay : Model.layer) (y : Tensor.t) : Tensor.t * Tensor.t * Tensor.t =
     let d = t.config.Transformer.Config.d in
@@ -380,9 +355,9 @@ module Engine = struct
     , Array.init d ~f:(project lay.wv) )
   ;;
 
-  (* Attention of layer [l] over the newest [n] tokens of the rings: the merged context of
-     the query [q], head by head. Age [a] reads slot [(cur - a) & 255], thus the ALiBi
-     distance is the age itself and the causal wall is the walk. *)
+  (* Attention of layer [l] over the newest [n] steps of the rings: the merged context of
+     the query [q], head by head. Age [a] reads slot [(cur - a) & (slots - 1)], thus the
+     ALiBi distance is the age itself and the causal wall is the walk. *)
   let attend t (kc : Tensor.t array) (vc : Tensor.t array) ~l ~cur ~n (q : Tensor.t)
     : Tensor.t
     =
@@ -456,8 +431,8 @@ module Engine = struct
     Array.map row ~f:(fun v -> (v asr 8) lsl 8)
   ;;
 
-  (* one token through the engine: the next engine *)
-  let forward t ~code ~phase ~bucket =
+  (* one step through the engine: the next engine *)
+  let forward t ~frame ~phase =
     let d = t.config.Transformer.Config.d in
     let slots = t.config.Transformer.Config.context in
     let cur = t.position land (slots - 1) in
@@ -475,23 +450,16 @@ module Engine = struct
       let hid = hidden t lay y in
       join t h lay.w2 ~values:hid ~len:(4 * d) ~from:Constants.hid_q
     in
-    let h = Array.foldi t.p.layers ~init:(embed t ~code ~phase ~bucket) ~f:layer in
-    { t with
-      h
-    ; kc
-    ; vc
-    ; position = t.position + 1
-    ; (* the model state of the token lands with the token: the mask of the next draw can
-         never run ahead of or behind the engine *)
-      sounding = Sounding_state.step t.sounding (Token.of_code code)
-    }
+    let h = Array.foldi t.p.layers ~init:(embed t ~frame ~phase) ~f:layer in
+    { t with h; kc; vc; position = t.position + 1 }
   ;;
 
-  (* The boot context: an empty ring, no residual, nothing sounding and no seat taken.
-     [init] starts here and a piece boundary returns here, thus the two states are one
-     definition. What the caller carries across a boundary — the PRNG and the step index —
-     is the whole difference between a rewind and a re-anchor. *)
-  let boot_context t =
+  (* The origin of a walk: an empty ring and no residual. The lead-in is not here — it is
+     the first sixteen steps of the walk itself, thus [next_step] states it and a caller
+     that counts steps counts the same steps the float sampler counts. *)
+  let init (model : Model.t) ~seed =
+    let { Model.config; params = p; temper; min_weight } = model in
+    Model.check_shape model;
     let { Transformer.Config.d
         ; heads = (_ : int)
         ; context = slots
@@ -499,51 +467,36 @@ module Engine = struct
         ; slope_span = (_ : int)
         }
       =
-      t.config
+      config
     in
-    { t with
-      (* a walk never reads an unwritten slot, thus one zero row serves them all *)
+    { config
+    ; p
+    ; temper
+    ; min_weight
+    ; (* a walk never reads an unwritten slot, thus one zero row serves them all *)
       kc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
     ; vc = Array.create ~len:(layers * slots) (Array.create ~len:d 0)
     ; h = Array.create ~len:d 0
     ; position = 0
-    ; sounding = Sounding_state.silence
-    ; seats = Array.create ~len:Token.seats None
+    ; prng = Prng.create ~seed
     }
   ;;
 
-  let init (model : Model.t) ~seed =
-    let { Model.config; params = p; temper; min_weight; piece_steps } = model in
-    Model.check_shape model;
-    let engine =
-      (* [boot_context] writes every field of the context; these stand for the shapes it
-         does not need to read *)
-      boot_context
-        { config
-        ; p
-        ; temper
-        ; min_weight
-        ; piece_steps
-        ; kc = [||]
-        ; vc = [||]
-        ; h = [||]
-        ; position = 0
-        ; prng = Prng.create ~seed
-        ; sounding = Sounding_state.silence
-        ; seats = [||]
-        ; step_index = 0
-        }
-    in
-    forward engine ~code:(Token.to_code Token.Start) ~phase:0 ~bucket:0
+  (* the tied head of one seat: rms_norm of the stream the chain has written so far, then
+     that seat's table read backward; Q12 logits over the classes *)
+  let seat_logits t (stream : Tensor.t) ~seat =
+    let y = rms_norm t stream in
+    let d = t.config.Transformer.Config.d in
+    Array.init classes ~f:(fun index ->
+      sum d (fun i -> y.(i) * t.p.seats.q.(seat_row ~d ~seat ~index + i)) asr t.p.seats.e)
   ;;
 
-  (* the tied head: rms_norm, then the token table read backward; Q12 logits *)
-  let logits t =
-    let y = rms_norm t t.h in
+  (* what the chain adds after a seat draws: the drawn row, in the format of the stream *)
+  let add_row t (stream : Tensor.t) ~seat ~index =
     let d = t.config.Transformer.Config.d in
-    let e = t.p.embed.e in
-    Array.init vocab ~f:(fun c ->
-      sum d (fun i -> y.(i) * t.p.embed.q.((c * d) + i)) asr e)
+    let base = seat_row ~d ~seat ~index in
+    Array.mapi stream ~f:(fun i above ->
+      above + rescale ~from:t.p.seats.e ~target:Constants.h_q t.p.seats.q.(base + i))
   ;;
 
   (* three PRNG bytes, high first: the walk of [Prng.uniform] *)
@@ -557,112 +510,65 @@ module Engine = struct
       prng
   ;;
 
-  (* the draw, over logits and a mask the caller already holds: a walk that compares
-     against the float model has both in hand, and neither is cheap to build twice *)
-  let next_code_of_logits t ~logits ~mask =
-    let peak = max_over vocab (fun c -> if mask.(c) then logits.(c) else Int.min_value) in
-    (* the tempered weight of one code: masked, exp2, and refused under min-p *)
+  (* The draw over the logits of one seat. No mask stands before it, because no frame is
+     illegal.
+
+     The arithmetic decides the tie the float twin has to argue about: [u] is below 2^24,
+     thus the threshold is below the total, thus some running total passes it and the
+     class the walk names always holds weight. The walk needs no fallback and states none. *)
+  let draw_of_logits t ~logits =
+    let peak = max_over classes (fun c -> logits.(c)) in
+    (* the tempered weight of one class: exp2, and refused under min-p *)
     let weight c =
-      if mask.(c)
-      then (
-        let u = Constants.apply t.temper (logits.(c) - peak) in
-        let e = exp2_q u in
-        if e >= t.min_weight then e else 0)
-      else 0
+      let e = exp2_q (Constants.apply t.temper (logits.(c) - peak)) in
+      if e >= t.min_weight then e else 0
     in
-    let weights = Array.init vocab ~f:weight in
-    let total = sum vocab (fun c -> weights.(c)) in
+    let weights = Array.init classes ~f:weight in
+    let total = sum classes (fun c -> weights.(c)) in
     let prng, u = u24 t.prng in
     let threshold = (u * total) asr 24 in
-    (* the code whose running total passes the threshold; the fallback of the float
-       sampler when no weight remains on the walk *)
-    let rec walk c total =
-      if c = vocab - 1
+    let rec walk c running =
+      if c = classes - 1
       then c
       else (
-        let total = total + weights.(c) in
-        if total > threshold then c else walk (c + 1) total)
+        let running = running + weights.(c) in
+        if running > threshold then c else walk (c + 1) running)
     in
-    let chosen = walk 0 0 in
-    { t with prng }, if weights.(chosen) > 0 then chosen else 0
+    { t with prng }, Float.of_int u *. 0x1p-24, walk 0 0
   ;;
 
-  let next_code t =
-    next_code_of_logits t ~logits:(logits t) ~mask:(Sounding_state.legal_mask t.sounding)
-  ;;
-
-  (* an On takes the highest free seat — the melody sits high; an Off names the seat that
-     holds its pitch. The mask guarantees both exist. *)
-  let highest_free seats =
-    let rec go s =
-      assert (s >= 0);
-      if Option.is_none seats.(s) then s else go (s - 1)
+  (* One frame, drawn in a chain from the soprano down: each seat reads the stream that
+     the seats above it have written. The draws come back in the order they happened. *)
+  let chain t =
+    let rec walk t stream seat drawn =
+      if seat < 0
+      then t, List.rev drawn
+      else (
+        let logits = seat_logits t stream ~seat in
+        let t, uniform, index = draw_of_logits t ~logits in
+        let stream = if seat = 0 then stream else add_row t stream ~seat ~index in
+        walk t stream (seat - 1) ({ seat; logits; uniform; drawn = index } :: drawn))
     in
-    go (Token.seats - 1)
-  ;;
-
-  let seat_of seats pitch =
-    let rec go s =
-      assert (s >= 0);
-      match seats.(s) with
-      | Some held when held = pitch -> s
-      | _ -> go (s - 1)
-    in
-    go (Token.seats - 1)
-  ;;
-
-  (* The piece boundary. The release states the OFFs the grammar would state — the
-     sounding pitches, climbing — and they are events and not drawn tokens, because the
-     context they would enter is cleared on the next line. Then the walk returns to the
-     boot context and forwards START, thus the model draws from the condition the corpus
-     trained it on. The boundary reads the step index alone and never the music, thus the
-     software model, this reference and the circuit all take it at the same step however
-     far their content has parted. *)
-  let reanchor t ~phase ~bucket =
-    let release =
-      List.map (Sounding_state.sounding t.sounding) ~f:(fun pitch ->
-        { voice = seat_of t.seats pitch; pitch; on = false })
-    in
-    release, forward (boot_context t) ~code:(Token.to_code Token.Start) ~phase ~bucket
+    walk t t.h (voices - 1) []
   ;;
 
   let next_step t =
-    let phase = t.step_index % Transformer.phase_buckets in
-    let bucket =
-      t.step_index / Transformer.progress_stride % Transformer.progress_buckets
+    let phase = t.position % Jsb.bar_steps in
+    (* The boot of docs/transformer_model.md: a lead-in of silence, one bar of it, drawing
+       nothing and taking no number from the generator. The model opens the music itself
+       after it, thus the walk needs no pitch and no table to begin. *)
+    let t, step =
+      if t.position < lead
+      then t, { frame = Frame.silent; draws = [] }
+      else (
+        let t, draws = chain t in
+        ( t
+        , { frame =
+              Vocab.frame_of_classes (List.rev_map draws ~f:(fun (d : draw) -> d.drawn))
+          ; draws
+          } ))
     in
-    (* the boundary falls where the bucket returns to zero *)
-    let release, t =
-      match t.piece_steps with
-      | Some steps when t.step_index > 0 && t.step_index % steps = 0 ->
-        reanchor t ~phase ~bucket
-      | Some (_ : int) | None -> [], t
-    in
-    let sit t seat holds =
-      let seats = Array.copy t.seats in
-      seats.(seat) <- holds;
-      { t with seats }
-    in
-    let rec go t events count =
-      (* the mask bounds a sentence at four Offs, four Ons and the End *)
-      assert (count < 16);
-      let t, code = next_code t in
-      let token = Token.of_code code in
-      let t = forward t ~code ~phase ~bucket in
-      match token with
-      | Start -> assert false
-      | End -> { t with step_index = t.step_index + 1 }, List.rev events
-      | On pitch ->
-        let seat = highest_free t.seats in
-        go
-          (sit t seat (Some pitch))
-          ({ voice = seat; pitch; on = true } :: events)
-          (count + 1)
-      | Off pitch ->
-        let seat = seat_of t.seats pitch in
-        go (sit t seat None) ({ voice = seat; pitch; on = false } :: events) (count + 1)
-    in
-    go t (List.rev release) 0
+    forward t ~frame:step.frame ~phase, step
   ;;
 
   (* the scalar rules the L0 circuit units must reproduce; their gate tests read them here
@@ -675,8 +581,8 @@ end
 
 module Drift = struct
   type stats =
-    { draws : int
-    ; events : int
+    { steps : int
+    ; draws : int
     ; same_peak : int
     ; same_draw : int
     ; mean_cosine : float
@@ -689,114 +595,93 @@ module Drift = struct
   ;;
 
   (* One weights source and one policy: the walk quantizes the float tensors itself, under
-     the defaults of the era, thus the pairing cannot slip. The loop is state at the edge
-     of the module, as the float sampler's loop is. *)
+     the draw of the era, thus the pairing cannot slip. The loop is state at the edge of
+     the module, as the float sampler's loop is. *)
   let walk (config : Transformer.Config.t) params ~steps ~seed =
     let model =
       Model.of_floats
         config
         ~temperature:Model.default_temperature
         ~min_p:Model.default_min_p
-          (* the walk of the machine, boundaries and all: the report says how far
-             quantization moves the model on the walk the board takes, thus it takes the
-             same one *)
-        ~piece_steps:Model.default_piece_steps
         (List.map (Transformer.Params.to_list params) ~f:flatten)
     in
     let engine = ref (Engine.init model ~seed) in
-    (* the histories of the float pass, newest first, as the float sampler keeps them *)
-    let codes = ref [ Token.to_code Token.Start ] in
-    let phases = ref [ 0 ] in
-    let progress = ref [ 0 ] in
+    (* the history of the quantized walk, newest first: the float pass reads it, thus the
+       two models are compared over one history and never over two *)
+    let frames = ref [] in
+    let positions = ref [] in
     let window history =
       List.take history config.Transformer.Config.context |> List.rev |> Array.of_list
     in
-    let float_logits () =
-      let codes = window !codes in
-      Transformer.logits
-        config
-        params
-        ~codes:[| codes |]
-        ~phases:[| window !phases |]
-        ~progress:[| window !progress |]
-        ~dropout:Transformer.Dropout.none
-      |> Nx.get [ 0; Array.length codes - 1 ]
-      |> Nx.to_array
-    in
-    (* The piece boundary of [Engine.next_step]. This walk teacher-forces the float pass
-       on the quantized walk, thus both sides return to the boot context together — the
-       same START row, at the carried phase and bucket — and the report keeps measuring
-       like against like: a boundary on one side alone, or a row conditioned differently
-       across the pair, would read as a drift the quantization never caused. The release
-       is a socket event and not a draw, thus this walk, which counts draws, does not
-       state it. *)
-    let reanchor ~phase ~bucket =
-      engine
-      := Engine.forward
-           (Engine.boot_context !engine)
-           ~code:(Token.to_code Token.Start)
-           ~phase
-           ~bucket;
-      codes := [ Token.to_code Token.Start ];
-      phases := [ phase ];
-      progress := [ bucket ]
+    let drawn_classes draws =
+      let seats = Array.create ~len:Frame.voices 0 in
+      List.iter draws ~f:(fun (d : Engine.draw) -> seats.(d.seat) <- d.drawn);
+      seats
     in
     let draws = ref 0 in
-    let events = ref 0 in
     let same_peak = ref 0 in
     let same_draw = ref 0 in
     let cosine_sum = ref 0.0 in
-    let step_index = ref 0 in
-    while !step_index < steps do
-      let t = !engine in
-      let quantized = Engine.logits t in
-      let mask = Sounding_state.legal_mask t.Engine.sounding in
-      let floated = float_logits () in
-      if Tensor.same_peak quantized floated then Int.incr same_peak;
-      cosine_sum := !cosine_sum +. Tensor.cosine quantized floated;
-      (* the float pick, on the uniform the engine is about to take: [Prng.uniform] is the
-         same three bytes as the engine's u24, high first *)
-      let (_ : Prng.state), uniform = Prng.run Prng.uniform t.Engine.prng in
-      let float_code =
-        Transformer.draw_code
-          floated
-          ~mask
-          ~temperature:Model.default_temperature
-          ~min_p:Model.default_min_p
-          ~uniform
-      in
-      let t, code = Engine.next_code_of_logits t ~logits:quantized ~mask in
-      if code = float_code then Int.incr same_draw;
-      Int.incr draws;
-      let phase = !step_index % Transformer.phase_buckets in
-      let bucket =
-        !step_index / Transformer.progress_stride % Transformer.progress_buckets
-      in
-      engine := Engine.forward t ~code ~phase ~bucket;
-      codes := code :: !codes;
-      phases := phase :: !phases;
-      progress := bucket :: !progress;
-      match Token.of_code code with
-      | Start -> assert false
-      | On (_ : int) | Off (_ : int) -> Int.incr events
-      | End ->
-        Int.incr step_index;
-        (match model.Model.piece_steps with
-         | Some steps when !step_index % steps = 0 ->
-           reanchor
-             ~phase:(!step_index % Transformer.phase_buckets)
-             ~bucket:
-               (!step_index / Transformer.progress_stride % Transformer.progress_buckets)
-         | Some (_ : int) | None -> ())
+    for step = 0 to steps - 1 do
+      let next, { Engine.frame; draws = chain } = Engine.next_step !engine in
+      (* the float logits of the same position, over the same chain: teacher-forcing
+         inside the step, thus what the report measures is the quantization alone *)
+      if not (List.is_empty chain)
+      then (
+        let floated =
+          Transformer.logits
+            config
+            params
+            ~frames:(window !frames)
+            ~positions:(window !positions)
+            ~drawn:(drawn_classes chain)
+        in
+        List.iter chain ~f:(fun (d : Engine.draw) ->
+          let float_row = floated.(d.seat) in
+          if Tensor.same_peak d.logits float_row then Int.incr same_peak;
+          cosine_sum := !cosine_sum +. Tensor.cosine d.logits float_row;
+          let float_class =
+            Transformer.draw_class
+              float_row
+              ~temperature:Model.default_temperature
+              ~min_p:Model.default_min_p
+              ~uniform:d.uniform
+          in
+          if float_class = d.drawn then Int.incr same_draw;
+          Int.incr draws));
+      engine := next;
+      frames := frame :: !frames;
+      positions := step :: !positions
     done;
-    { draws = !draws
-    ; events = !events
+    { steps
+    ; draws = !draws
     ; same_peak = !same_peak
     ; same_draw = !same_draw
-    ; mean_cosine = !cosine_sum /. Float.of_int !draws
+    ; mean_cosine = !cosine_sum /. Float.of_int (max 1 !draws)
     }
   ;;
 end
+
+(* the shapes of a test model: small enough to run in a test, and the same structure *)
+let test_config =
+  { Transformer.Config.baseline with d = 32; layers = 1; heads = 2; context = 16 }
+;;
+
+(* a model of drawn weights: the tests read no file that git ignores *)
+let test_model ~seed =
+  let (_ : Prng.state), tensors =
+    Prng.run
+      (Prng.all
+         (List.map (Model.sizes test_config) ~f:(fun count ->
+            Prng.normals ~count ~scale:0.02)))
+      (Prng.create_folded ~seed)
+  in
+  Model.of_floats
+    test_config
+    ~temperature:Model.default_temperature
+    ~min_p:Model.default_min_p
+    tensors
+;;
 
 let%expect_test "the exp2 table: the peak, the floor and the halving" =
   (* entry 0 is the peak 2^15; a full fractional step halves; the last entry sits one
@@ -811,71 +696,86 @@ let%expect_test "the exp2 table: the peak, the floor and the halving" =
 ;;
 
 let%expect_test "isqrt floors" =
-  Stdio.printf
-    "%d %d %d %d %d\n"
-    (Engine.isqrt 0)
-    (Engine.isqrt 15)
-    (Engine.isqrt 16)
-    (Engine.isqrt 4295)
-    (Engine.isqrt (1 lsl 50));
-  [%expect {| 0 3 4 65 33554432 |}]
+  List.iter [ 0; 1; 2; 3; 4; 15; 16; 17; 1_000_000 ] ~f:(fun n ->
+    Stdio.printf "%d " (Engine.For_test.isqrt n));
+  Stdio.printf "\n";
+  [%expect {| 0 1 1 1 2 3 4 4 1000 |}]
 ;;
 
-(* The walk with drawn weights: the music is noise, but the grammar and the seats must
-   hold, and the same seed must repeat. The replay walks the events back through
-   [Sounding_state], as the sampler test of [Transformer] does. *)
-(* the fold threads the engine through the steps in the drawn order *)
-let collect_steps n engine =
-  let (_ : Engine.t), steps =
-    List.fold (List.range 0 n) ~init:(engine, []) ~f:(fun (engine, acc) (_ : int) ->
-      let engine, events = Engine.next_step engine in
-      engine, events :: acc)
+let%expect_test "the lead-in draws nothing, and the seed names the walk" =
+  let walk ~seed ~steps =
+    let engine = ref (Engine.init (test_model ~seed:1) ~seed) in
+    List.map (List.range 0 steps) ~f:(fun (_ : int) ->
+      let next, step = Engine.next_step !engine in
+      engine := next;
+      step)
   in
-  List.rev steps
-;;
-
-let%expect_test "a drawn walk keeps the grammar, the seats and the seed" =
-  let model = Model.For_test.init Transformer.Config.baseline ~seed:11 in
-  let engine = Engine.init model ~seed:42 in
-  let steps = collect_steps 12 engine in
-  let replay (state, violations) { Engine.voice = (_ : int); pitch; on } =
-    let token = if on then Token.On pitch else Token.Off pitch in
-    let legal = Sounding_state.legal_mask state in
-    let violations = violations + Bool.to_int (not legal.(Token.to_code token)) in
-    Sounding_state.step state token, violations
-  in
-  let close state = Sounding_state.step state Token.End in
-  let (_ : Sounding_state.t), violations =
-    List.fold steps ~init:(Sounding_state.silence, 0) ~f:(fun acc events ->
-      let state, violations = List.fold events ~init:acc ~f:replay in
-      close state, violations)
-  in
-  let events = List.length (List.concat steps) in
-  List.iter
-    (List.take (List.filter steps ~f:(Fn.non List.is_empty)) 4)
-    ~f:(fun step -> Stdio.print_s ([%sexp_of: Engine.event list] step));
-  let again =
-    let engine = Engine.init model ~seed:42 in
-    collect_steps 12 engine
-  in
-  Stdio.printf
-    "12 steps  %d events  %d illegal  the seed repeats: %b\n"
-    events
-    violations
-    ([%compare.equal: (int * int * bool) list list]
-       (List.map
-          steps
-          ~f:(List.map ~f:(fun { Engine.voice; pitch; on } -> voice, pitch, on)))
-       (List.map
-          again
-          ~f:(List.map ~f:(fun { Engine.voice; pitch; on } -> voice, pitch, on))));
+  let steps = walk ~seed:7 ~steps:20 in
+  (* the lead-in is silence and takes no draw; every step after it takes four *)
+  List.iteri steps ~f:(fun index (step : Engine.step) ->
+    if index < 3 || index >= 15
+    then
+      Stdio.printf "step %2d  %08x  %d draws\n" index step.frame (List.length step.draws));
   [%expect
     {|
-    (((voice 3) (pitch 18) (on true)) ((voice 2) (pitch 13) (on true))
-     ((voice 1) (pitch 11) (on true)) ((voice 0) (pitch 2) (on true)))
-    (((voice 3) (pitch 18) (on false)) ((voice 3) (pitch 113) (on true)))
-    (((voice 0) (pitch 2) (on false)) ((voice 0) (pitch 101) (on true)))
-    (((voice 3) (pitch 113) (on false)) ((voice 3) (pitch 10) (on true)))
-    12 steps  20 events  0 illegal  the seed repeats: true
+    step  0  00000000  0 draws
+    step  1  00000000  0 draws
+    step  2  00000000  0 draws
+    step 15  00000000  0 draws
+    step 16  ceb0c5a4  4 draws
+    step 17  c3adaeb7  4 draws
+    step 18  c0b3adb7  4 draws
+    step 19  c9bcb0bd  4 draws
+    |}];
+  let frames w = List.map w ~f:(fun (s : Engine.step) -> s.frame) in
+  Stdio.printf
+    "the same seed repeats: %b\n"
+    (List.equal Int.equal (frames steps) (frames (walk ~seed:7 ~steps:20)));
+  Stdio.printf
+    "another seed parts: %b\n"
+    (not (List.equal Int.equal (frames steps) (frames (walk ~seed:8 ~steps:20))));
+  [%expect {|
+    the same seed repeats: true
+    another seed parts: true
+    |}]
+;;
+
+let%expect_test "the chain draws from the soprano down, and each seat lands in its seat" =
+  let engine = ref (Engine.init (test_model ~seed:2) ~seed:3) in
+  let steps = ref [] in
+  for _ = 1 to 20 do
+    let next, (step : Engine.step) = Engine.next_step !engine in
+    engine := next;
+    steps := step :: !steps
+  done;
+  let drawn =
+    List.rev !steps
+    |> List.filter ~f:(fun (s : Engine.step) -> not (List.is_empty s.draws))
+  in
+  (* the order the draws happened in: the soprano first, and every seat one time *)
+  Stdio.printf
+    "%d drawn steps, the order %s\n"
+    (List.length drawn)
+    (Sexp.to_string
+       ([%sexp_of: int list]
+          (List.map (List.hd_exn drawn).draws ~f:(fun (d : Engine.draw) -> d.seat))));
+  (* The class a seat drew is the class that seat holds in the frame. This is the join the
+     chain could silently invert — the chain runs down and a frame reads up — thus the
+     test states it and does not trust it. *)
+  List.iter (List.take drawn 4) ~f:(fun (step : Engine.step) ->
+    let by_seat = Array.create ~len:Frame.voices 0 in
+    List.iter step.draws ~f:(fun (d : Engine.draw) -> by_seat.(d.seat) <- d.drawn);
+    Stdio.printf
+      "  %08x  drawn %s  frame %s\n"
+      step.frame
+      (Sexp.to_string ([%sexp_of: int array] by_seat))
+      (Sexp.to_string ([%sexp_of: int list] (Vocab.classes_of_frame step.frame))));
+  [%expect
+    {|
+    4 drawn steps, the order (3 2 1 0)
+      b5b0aeb2  drawn (15 11 13 18)  frame (15 11 13 18)
+      bbb1c1b2  drawn (15 30 14 24)  frame (15 30 14 24)
+      a6cabfb2  drawn (15 28 39 3)  frame (15 28 39 3)
+      cbccb3ce  drawn (43 16 41 40)  frame (43 16 41 40)
     |}]
 ;;
