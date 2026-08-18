@@ -3,20 +3,6 @@ module Ptree = Kaun.Ptree
 
 type tensor = (float, Nx.float32_elt) Nx.t
 
-(* the rows of the bar-phase table: the steps of one bar *)
-let phase_buckets = 16
-
-(* the rows of the piece-position table: the parts of one piece *)
-let progress_buckets = 16
-
-(* a chorale runs 228 steps at the median, thus a bucket is 14.2 steps there and 16 is the
-   nearest power of two — and a power of two is a bit-slice in the circuit *)
-let progress_stride = 16
-
-(* The steps of one synthetic piece at the draw: the arc of the piece-position table, one
-   time around. A walk that re-anchors takes this as its period, thus the piece boundary
-   and bucket zero are the same instant. *)
-let piece_steps = progress_stride * progress_buckets
 let numel shape = Array.fold shape ~init:1 ~f:( * )
 
 module Config = struct
@@ -28,32 +14,45 @@ module Config = struct
     ; slope_span : int
     }
 
-  let baseline = { d = 64; layers = 2; heads = 4; context = 256; slope_span = 8 }
+  (* the model the ear elected on 2026-08-18, and the defaults of jax/transformer/train.py *)
+  let baseline = { d = 64; layers = 6; heads = 4; context = 256; slope_span = 4 }
 
   let of_checkpoint path ~heads ~context ~slope_span =
     let archive = Nx_io.load_safetensors path in
-    let embed =
+    let seats =
       match Stdlib.Hashtbl.find_opt archive "0" with
       | Some packed -> Nx_io.to_typed Nx.float32 packed
       | None -> invalid_argf "%s holds no tensor named 0: not a checkpoint" path ()
     in
     let tensors = Stdlib.Hashtbl.length archive in
-    if tensors < 9 || (tensors - 3) % 6 <> 0
+    if tensors < 8 || (tensors - 2) % 6 <> 0
     then
       invalid_argf
-        "%s holds %d tensors: not three tables and six for each layer"
+        "%s holds %d tensors: not two tables and six for each layer"
         path
         tensors
         ();
-    { d = (Nx.shape embed).(1); layers = (tensors - 3) / 6; heads; context; slope_span }
+    let shape = Nx.shape seats in
+    if Array.length shape <> 3 || shape.(0) <> Frame.voices || shape.(1) <> Vocab.classes
+    then
+      invalid_argf
+        "the seat table of %s is %s, and not %d seats of %d classes"
+        path
+        (Sexp.to_string ([%sexp_of: int array] shape))
+        Frame.voices
+        Vocab.classes
+        ();
+    { d = shape.(2); layers = (tensors - 2) / 6; heads; context; slope_span }
   ;;
 end
 
+(* The structure of the parameters over any tensor type, and the flat order of the
+   checkpoint with it: the two tables, then six tensors for each layer. The integer twin
+   of a later step instantiates the same structure, thus the order has one definition. *)
 module Params_data = struct
   type 'a t =
-    { embed : 'a
+    { seats : 'a (** the four tied tables in one tensor, seat 0 first *)
     ; phase : 'a
-    ; progress : 'a
     ; layers : 'a layer array
     }
 
@@ -66,17 +65,16 @@ module Params_data = struct
     ; w2 : 'a
     }
 
-  let to_list { embed; phase; progress; layers } =
-    embed
+  let to_list { seats; phase; layers } =
+    seats
     :: phase
-    :: progress
     :: List.concat_map (Array.to_list layers) ~f:(fun { wq; wk; wv; wo; w1; w2 } ->
       [ wq; wk; wv; wo; w1; w2 ])
   ;;
 
   let of_list ~layers items =
     match items with
-    | embed :: phase :: progress :: rest ->
+    | seats :: phase :: rest ->
       let groups =
         List.chunks_of rest ~length:6
         |> List.map ~f:(function
@@ -91,8 +89,8 @@ module Params_data = struct
           (Array.length groups)
           layers
           ();
-      { embed; phase; progress; layers = groups }
-    | _ -> invalid_arg "the parameters start with the three tables"
+      { seats; phase; layers = groups }
+    | _ -> invalid_arg "the parameters start with the two tables"
   ;;
 end
 
@@ -100,22 +98,18 @@ module Params = struct
   type t = tensor Params_data.t
   type layer = tensor Params_data.layer
 
-  let to_list = Params_data.to_list
-
   let of_list (config : Config.t) tensors =
     Params_data.of_list ~layers:config.layers tensors
   ;;
 
-  (* the shapes in the flat order of [to_list], which [of_list] reads back *)
+  (* the shapes in the flat order of [Params_data.to_list], which [of_list] reads back *)
   let shapes (config : Config.t) =
     let d = config.d in
     (* wq, wk, wv and wo, then w1 and w2 of the feed-forward *)
     let layer_shapes =
       [ [| d; d |]; [| d; d |]; [| d; d |]; [| d; d |]; [| d; 4 * d |]; [| 4 * d; d |] ]
     in
-    let tables =
-      [ [| Token.vocab; d |]; [| phase_buckets; d |]; [| progress_buckets; d |] ]
-    in
+    let tables = [ [| Frame.voices; Vocab.classes; d |]; [| Jsb.bar_steps; d |] ] in
     tables @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer_shapes))
   ;;
 
@@ -134,8 +128,6 @@ module Params = struct
     of_list config tensors
   ;;
 
-  let to_ptree t = Ptree.list (List.map (to_list t) ~f:Ptree.tensor)
-
   let of_ptree config ptree =
     let leaves, (_ : Ptree.tensor list -> Ptree.t) = Ptree.flatten ptree in
     of_list
@@ -146,8 +138,6 @@ module Params = struct
          | None -> invalid_arg "a checkpoint tensor is not float32"))
   ;;
 
-  let save t ~path = Kaun.Checkpoint.save path (to_ptree t)
-
   (* [Kaun.Checkpoint.load] reads the structure, the shapes and the dtype of the template
      and never its values, thus zeros serve and the load needs no draw. *)
   let load config ~path =
@@ -157,7 +147,10 @@ module Params = struct
   ;;
 end
 
-(* float32, because the block goes into a matmul and carries a gradient *)
+(* the table of one seat: [Params.seats] holds the four in one tensor, seat 0 first *)
+let seat_table (params : Params.t) seat = Nx.contiguous (Nx.get [ seat ] params.seats)
+
+(* float32, because the block goes into a matmul *)
 let one_hot_rows ~num_classes rows =
   let batch = Array.length rows in
   let length = Array.length rows.(0) in
@@ -168,8 +161,19 @@ let one_hot_rows ~num_classes rows =
   Nx.astype Nx.float32 (Nx.one_hot ~num_classes codes)
 ;;
 
-(* the table lookup as one-hot times table: small, and the gradient flows *)
+(* the table lookup as one-hot times table: small, and one definition serves every table *)
 let embed_rows table ~num_classes rows = Nx.matmul (one_hot_rows ~num_classes rows) table
+
+(* The classes of a batch of frames, apart by seat: the result at [seat] holds one row of
+   classes for each walk. Four tables read four rows, thus the pass wants the seats apart
+   and never the frame whole. *)
+let seat_classes frames =
+  let classes =
+    Array.map frames ~f:(Array.map ~f:(fun frame -> Vocab.classes_of_frame frame))
+  in
+  Array.init Frame.voices ~f:(fun seat ->
+    Array.map classes ~f:(Array.map ~f:(fun row -> List.nth_exn row seat)))
+;;
 
 (* RMSNorm with no scale: the trainer of the design document folds the scale away *)
 let rms_norm x =
@@ -201,51 +205,8 @@ let softmax x =
   Nx.div exp (Nx.sum exp ~axes:[ axis ] ~keepdims:true)
 ;;
 
-module Dropout = struct
-  type t =
-    | Off
-    | On of
-        { rate : float
-        ; rng : Prng.state
-        }
-
-  let none = Off
-
-  let create ~rate ~seed =
-    if Float.(rate >= 1.0) then invalid_arg "the dropout rate is below 1";
-    if Float.(rate <= 0.0) then Off else On { rate; rng = Prng.create_folded ~seed }
-  ;;
-
-  (* each walk is independent of the others, and of how many draws either takes *)
-  let split t ~count =
-    match t with
-    | Off -> Array.create ~len:count Off
-    | On { rate; rng } ->
-      let (_ : Prng.state), rngs =
-        Prng.run (Prng.all (List.init count ~f:(fun (_ : int) -> Prng.split))) rng
-      in
-      List.map rngs ~f:(fun rng -> On { rate; rng }) |> Array.of_list
-  ;;
-
-  (* the shape comes from [h]; the scale is the inverted form, thus the inference pass
-     rescales nothing *)
-  let run t h =
-    match t with
-    | Off -> h
-    | On { rate; rng } ->
-      let keep = 1.0 -. rate in
-      let shape = Nx.shape h in
-      let (_ : Prng.state), coins =
-        Prng.run (Prng.bernoullis ~count:(numel shape) ~probability:keep) rng
-      in
-      Array.map coins ~f:(fun coin -> coin /. keep)
-      |> Nx.create Nx.float32 shape
-      |> Nx.mul h
-  ;;
-end
-
-(* the branch alone, dropped: the residual sum happens in [logits] *)
-let attention (config : Config.t) (layer : Params.layer) ~bias ~dropout h =
+(* the branch alone: the residual sum happens in [hidden] *)
+let attention (config : Config.t) (layer : Params.layer) ~bias h =
   let d = config.d in
   let heads = config.heads in
   let shape = Nx.shape h in
@@ -273,109 +234,118 @@ let attention (config : Config.t) (layer : Params.layer) ~bias ~dropout h =
       [| batch; length; d |]
       (Nx.contiguous (Nx.transpose ~axes:[ 0; 2; 1; 3 ] context))
   in
-  Nx.matmul merged layer.wo |> Dropout.run dropout
+  Nx.matmul merged layer.wo
 ;;
 
-let feed_forward (layer : Params.layer) ~dropout h =
+let feed_forward (layer : Params.layer) h =
   let normed = rms_norm h in
   let hidden = Nx.maximum_s (Nx.matmul normed layer.w1) 0.0 in
-  Nx.matmul hidden layer.w2 |> Dropout.run dropout
+  Nx.matmul hidden layer.w2
 ;;
 
-(* The bar phase says where a step is in the bar; the piece position says where it is in
-   the piece, and nothing in the token stream says either. The two tables are the same
-   shape and they add together. *)
-let embedding (params : Params.t) ~codes ~phases ~progress ~dropout =
-  let tokens = embed_rows params.embed ~num_classes:Token.vocab codes in
-  let bar = embed_rows params.phase ~num_classes:phase_buckets phases in
-  let piece = embed_rows params.progress ~num_classes:progress_buckets progress in
-  Nx.add (Nx.add tokens bar) piece |> Dropout.run dropout
+(* The input of one position: the four seat rows sum, and the bar phase adds to them.
+
+   A shared table with a voice tag cannot work here, and the reason is arithmetic and not
+   capacity. Every step carries all four seats, thus the sum of four tags is the same
+   vector at every position — a bias, which carries nothing — and what remains is
+   symmetric in the four classes. A soprano on 72 over a bass on 48 would give the vector
+   of a soprano on 48 under a bass on 72, and the voices would be thrown away on the way
+   in. *)
+let embedding params ~classes ~phases =
+  let phase = embed_rows params.Params_data.phase ~num_classes:Jsb.bar_steps phases in
+  Array.foldi classes ~init:phase ~f:(fun seat h rows ->
+    Nx.add h (embed_rows (seat_table params seat) ~num_classes:Vocab.classes rows))
 ;;
 
-let logits (config : Config.t) (params : Params.t) ~codes ~phases ~progress ~dropout =
-  let length = Array.length codes.(0) in
+(* the residual stream after the last layer and before any readout *)
+let hidden (config : Config.t) params ~classes ~phases =
+  let length = Array.length phases.(0) in
   let bias = attention_bias ~heads:config.heads ~length ~span:config.slope_span in
-  (* One walk for each block that drops: the embedding sum, then the two branches of each
-     layer. A block draws from its own walk, thus the blocks are plain functions and the
-     order in which the pass reaches them does not reach the masks. *)
-  let walks = Dropout.split dropout ~count:(1 + (2 * config.layers)) in
-  let h = embedding params ~codes ~phases ~progress ~dropout:walks.(0) in
-  let h =
-    Array.foldi params.layers ~init:h ~f:(fun layer h weights ->
-      let dropout = walks.((2 * layer) + 1) in
-      let h = Nx.add h (attention config weights ~bias ~dropout h) in
-      let dropout = walks.((2 * layer) + 2) in
-      Nx.add h (feed_forward weights ~dropout h))
-  in
-  Nx.matmul (rms_norm h) (Nx.transpose params.embed)
+  let h = embedding params ~classes ~phases in
+  Array.fold params.Params_data.layers ~init:h ~f:(fun h weights ->
+    let h = Nx.add h (attention config weights ~bias h) in
+    Nx.add h (feed_forward weights h))
 ;;
 
-let weighted_cross_entropy raw labels ~weights =
+(* The seats of the chain, soprano first: the head draws seat 3 and then walks down.
+
+   The order keeps the one decision the ear accepted in era three — the top voice is
+   chosen first, and it conditions on no voice under it, as the music is written. *)
+let chain_seats = List.rev (List.range 0 Frame.voices)
+
+(* The chained head: the logits of each seat, paired with its seat.
+
+   Each seat reads the stream that the seats above it have written:
+
+   {v
+     h3 = h                   logits(seat 3) = E[3] . rms(h3)
+     h2 = h3 + E[3][c3]       logits(seat 2) = E[2] . rms(h2)
+     h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
+     h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
+   v}
+
+   [drawn] holds the classes the chain conditions on — the true frame in training, where
+   the four heads then run in one pass with no sampling. Only seats 3, 2 and 1 are read.
+
+   Four heads that drew in parallel would make the voices conditionally independent, and a
+   chord is a joint choice: measured on this model, that costs 0.3157 nats for each step.
+   The chain removes the cost for no parameters at all and three adds of a vector. *)
+let seat_logits params h ~drawn =
+  let (_ : tensor), rows =
+    List.fold_map chain_seats ~init:h ~f:(fun stream seat ->
+      let table = seat_table params seat in
+      let raw = Nx.matmul (rms_norm stream) (Nx.transpose table) in
+      let stream =
+        if seat = 0
+        then stream
+        else Nx.add stream (embed_rows table ~num_classes:Vocab.classes drawn.(seat))
+      in
+      stream, (seat, raw))
+  in
+  rows
+;;
+
+(* the negative log likelihood of one seat: [raw] is [batch; length; classes] *)
+let class_nll raw labels =
   let axis = 2 in
-  let peak = Nx.max raw ~axes:[ axis ] ~keepdims:true in
-  let shifted = Nx.sub raw peak in
+  let shifted = Nx.sub raw (Nx.max raw ~axes:[ axis ] ~keepdims:true) in
   let total = Nx.log (Nx.sum (Nx.exp shifted) ~axes:[ axis ] ~keepdims:true) in
-  let log_probability = Nx.sub shifted total in
-  let hot = one_hot_rows ~num_classes:Token.vocab labels in
-  let picked = Nx.sum (Nx.mul log_probability hot) ~axes:[ axis ] in
-  let weights =
-    Nx.init Nx.float32 (Nx.shape picked) (fun index -> weights.(index.(0)).(index.(1)))
+  let hot = one_hot_rows ~num_classes:Vocab.classes labels in
+  Nx.neg (Nx.sum (Nx.mul (Nx.sub shifted total) hot) ~axes:[ axis ])
+;;
+
+(* the inputs and the labels of one window: [context] positions state [context] labels,
+   and the last frame of the window is a label alone *)
+let cut rows = Array.map rows ~f:(fun row -> Array.subo row ~len:(Array.length row - 1))
+let shift rows = Array.map rows ~f:(fun row -> Array.subo row ~pos:1)
+
+let loss (config : Config.t) params ~windows =
+  let frames = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.frames) in
+  let positions = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.positions) in
+  if Array.is_empty frames then invalid_arg "the loss takes one window or more";
+  (* the bar phase is the low four bits of the rolling coordinate; the high four were the
+     window position, which the ear dropped and the corpus still carries *)
+  let phases =
+    Array.map (cut positions) ~f:(Array.map ~f:(fun at -> at % Jsb.bar_steps))
   in
-  Nx.neg (Nx.div (Nx.sum (Nx.mul picked weights)) (Nx.sum weights))
+  let classes = seat_classes (cut frames) in
+  let labels = seat_classes (shift frames) in
+  let h = hidden config params ~classes ~phases in
+  let nll =
+    List.fold (seat_logits params h ~drawn:labels) ~init:None ~f:(fun total (seat, raw) ->
+      let seat_nll = class_nll raw labels.(seat) in
+      Some (Option.value_map total ~default:seat_nll ~f:(Nx.add seat_nll)))
+  in
+  (* the sum over the seats is the loss of one step, and the mean is over the steps: a
+     mean over the predictions would divide by a count that changes with the encoding *)
+  Nx.item [] (Nx.mean (Option.value_exn nll))
 ;;
 
-(* the additive form of the mask: 0 for a legal code, -1e9 else *)
-let mask_bias ~masks =
-  let batch = Array.length masks in
-  let length = Array.length masks.(0) in
-  let open Bigarray in
-  let bias = Genarray.create float32 c_layout [| batch; length; Token.vocab |] in
-  Genarray.fill bias (-1e9);
-  Array.iteri masks ~f:(fun b row ->
-    Array.iteri row ~f:(fun t mask ->
-      Array.iteri mask ~f:(fun code legal ->
-        if legal then Genarray.set bias [| b; t; code |] 0.0)));
-  Nx.of_bigarray bias
-;;
-
-let loss (config : Config.t) params ~codes ~phases ~progress ~masks ~weights ~dropout =
-  let length = Array.length codes.(0) - 1 in
-  let inputs = Array.map codes ~f:(fun row -> Array.subo row ~len:length) in
-  let labels = Array.map codes ~f:(fun row -> Array.sub row ~pos:1 ~len:length) in
-  let input_phases = Array.map phases ~f:(fun row -> Array.subo row ~len:length) in
-  let raw = logits config params ~codes:inputs ~phases:input_phases ~progress ~dropout in
-  weighted_cross_entropy (Nx.add raw (mask_bias ~masks)) labels ~weights
-;;
-
-type sample_stats =
-  { refused : float
-  ; illegal_mass : float
-  ; illegal_top : float
-  ; draws : int
-  }
-
-(* The running telemetry of one sampling run. It holds the sums; [sample_stats] takes the
-   means at the end. *)
-type tally =
-  { mutable refused : float
-  ; mutable illegal_mass : float
-  ; mutable illegal_top : int
-  ; mutable draws : int
-  }
-
-(* The draw stage of the sampler, at module level: one definition serves [sample], which
-   takes its telemetry from the pieces, and [draw_code], which the drift walk of
-   [Quantized] runs against the quantized draw. *)
-
-(* The tempered weight of each code, against the peak of the set that [keep] admits: the
-   peak weighs one, and a code outside the set weighs zero. Therefore the min-p filter is
-   one compare for each code. *)
-let tempered raw ~keep ~temperature =
-  let peak = ref Float.neg_infinity in
-  Array.iteri raw ~f:(fun code value ->
-    if keep code && Float.(value > !peak) then peak := value);
-  Array.mapi raw ~f:(fun code value ->
-    if keep code then Float.exp ((value -. !peak) /. temperature) else 0.0)
+(* The tempered weight of each class against the peak: the peak weighs one, thus [min_p]
+   is a share of the peak and one compare holds the filter. *)
+let tempered raw ~temperature =
+  let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
+  Array.map raw ~f:(fun value -> Float.exp ((value -. peak) /. temperature))
 ;;
 
 let above_min_p weights ~min_p =
@@ -385,259 +355,174 @@ let above_min_p weights ~min_p =
     Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
 ;;
 
-(* the code whose running total passes [draw]; a total that never passes it falls to 0 *)
-let pick weights ~draw =
-  let rec walk code total =
-    if code = Token.vocab - 1
-    then code
-    else (
-      let total = total +. weights.(code) in
-      if Float.(total > draw) then code else walk (code + 1) total)
-  in
-  let chosen = walk 0 0.0 in
-  if Float.(weights.(chosen) > 0.0) then chosen else 0
+(* the running totals of the weights, left to right; the last of them is the total *)
+let running_totals weights =
+  Array.folding_map weights ~init:0.0 ~f:(fun total weight ->
+    let total = total +. weight in
+    total, total)
 ;;
 
-let draw_code raw ~mask ~temperature ~min_p ~uniform =
-  let weights =
-    above_min_p (tempered raw ~keep:(fun code -> mask.(code)) ~temperature) ~min_p
+(* The class whose running total passes the draw.
+
+   It takes the uniform and not a draw, thus one function owns both sums and the total is
+   the last running total — never a second sum of the same weights. Two sums of one array
+   differ in the last bits, and a draw made against the other sum can land above every
+   running total, where no class passes at all. That case is real in the twin, which adds
+   pairwise in [sum] and left to right in [cumsum].
+
+   Against this total the draw is strictly below it: the uniform falls under 1 by 2 ** -24
+   at the least, thus the exact product falls short by about 2 ** 29 units in the last
+   place, where rounding moves a result by half of one. Therefore the walk always ends on
+   a class, and that class always holds weight — to reach the last index is to know that
+   no earlier total passed, thus the weight there is the difference of two totals across
+   the draw. No fallback is necessary, and none is written. *)
+let pick weights ~uniform =
+  let running = running_totals weights in
+  let last = Array.length running - 1 in
+  let draw = uniform *. running.(last) in
+  let rec walk index =
+    if index = last || Float.(running.(index) > draw) then index else walk (index + 1)
   in
-  let total = Array.fold weights ~init:0.0 ~f:( +. ) in
-  pick weights ~draw:(uniform *. total)
+  walk 0
 ;;
 
-(* The sampler is a loop with state at the edge of the module: the histories, the walk of
-   the mask, and the PRNG. The forward pass recomputes the whole window for each token;
-   the host affords that, per the design document. *)
+(* the row of a table as a stream of one position, thus the chain can add it *)
+let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
+
+(* One step of the chained draw, on the host and between two passes of the network: the
+   soprano first, and each seat under it reading the stream the seats above have written.
+   It gives the classes of the frame, seat 0 first. *)
+let draw_frame (config : Config.t) params ~temperature ~min_p ~rng stream =
+  let (rng, (_ : tensor)), classes =
+    List.fold_map chain_seats ~init:(rng, stream) ~f:(fun (rng, stream) seat ->
+      let table = seat_table params seat in
+      let raw = Nx.to_array (Nx.matmul (rms_norm stream) (Nx.transpose table)) in
+      let weights = above_min_p (tempered raw ~temperature) ~min_p in
+      let rng, uniform = Prng.run Prng.uniform rng in
+      let index = pick weights ~uniform in
+      let stream =
+        if seat = 0 then stream else Nx.add stream (table_row table index ~d:config.d)
+      in
+      (rng, stream), index)
+  in
+  (* the chain runs from the soprano down, and a frame reads from seat 0 up *)
+  rng, List.rev classes
+;;
+
+(* the state of one walk: the generator, and the history with the newest step first *)
+type walk =
+  { rng : Prng.state
+  ; frames : int list
+  ; phases : int list
+  }
+
 let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1";
-  (* the newest items of a history, oldest first: the row the forward pass reads *)
+  (* the newest steps of a history, oldest first: the row the forward pass reads *)
   let window history = List.take history config.context |> List.rev |> Array.of_list in
-  (* The logits of the code that follows the window. The forward pass gives one row for
-     each position of the window, and the last row is the draw that comes next. *)
-  let next_code_logits ~codes ~phases ~progress =
-    logits
-      config
-      params
-      ~codes:[| codes |]
-      ~phases:[| phases |]
-      ~progress:[| progress |]
-      ~dropout:Dropout.none
-    |> Nx.get [ 0; Array.length codes - 1 ]
-    |> Nx.to_array
-  in
-  (* The piece position of a step. The corpus divides a piece by its length, but a draw
-     has no length to divide by: the board plays for ever, and a long draw would stretch
-     one arc of sixteen buckets over a span no training piece ever had. Therefore the draw
-     counts instead, and the arc repeats every [progress_stride * progress_buckets] steps
-     — a walk of chorale-shaped arcs, one after another. A draw of exactly that many steps
-     gives the same buckets the old ratio gave. *)
-  let bucket step = step / progress_stride % progress_buckets in
-  (* the code of the largest logit; the first wins when two are equal *)
-  let peak_code raw =
-    let best = ref Float.neg_infinity in
-    let top = ref 0 in
-    Array.iteri raw ~f:(fun code value ->
-      if Float.(value > !best)
-      then (
-        best := value;
-        top := code));
-    !top
-  in
-  let illegal_share raw ~mask =
-    let weights = tempered raw ~keep:(fun (_ : int) -> true) ~temperature in
-    let all = Array.fold weights ~init:0.0 ~f:( +. ) in
-    let legal =
-      Array.foldi weights ~init:0.0 ~f:(fun code total weight ->
-        if mask.(code) then total +. weight else total)
-    in
-    1.0 -. (legal /. all)
-  in
-  let stream = ref (Prng.create_folded ~seed) in
-  let codes = ref [] in
-  let phases = ref [] in
-  let progress = ref [] in
-  let state = ref Sounding_state.silence in
-  let step_index = ref 0 in
-  let current = ref [] in
-  let out = ref [] in
-  let tally = { refused = 0.0; illegal_mass = 0.0; illegal_top = 0; draws = 0 } in
-  (* The boot of docs/transformer_model.md: a silent lead-in. Attention needs one token,
-     and the packed corpus holds a run of silent steps at every seam, thus this condition
-     is one the model trained on and the model opens the music itself. One bar is the
-     longest seam of that corpus, and it leaves the first draw on a downbeat. *)
-  for _ = 1 to phase_buckets do
-    codes := Token.to_code Token.End :: !codes;
-    phases := (!step_index mod phase_buckets) :: !phases;
-    progress := bucket !step_index :: !progress;
-    out := [] :: !out;
-    incr step_index
-  done;
-  while !step_index < steps do
-    let raw =
-      next_code_logits
-        ~codes:(window !codes)
-        ~phases:(window !phases)
-        ~progress:(window !progress)
-    in
-    let mask = Sounding_state.legal_mask !state in
-    tally.illegal_mass <- tally.illegal_mass +. illegal_share raw ~mask;
-    if not mask.(peak_code raw) then tally.illegal_top <- tally.illegal_top + 1;
-    let legal = tempered raw ~keep:(fun code -> mask.(code)) ~temperature in
-    let weights = above_min_p legal ~min_p in
-    (* the refused share is the mass the model wanted and the filter did not give *)
-    let legal_total = Array.fold legal ~init:0.0 ~f:( +. ) in
-    let total = Array.fold weights ~init:0.0 ~f:( +. ) in
-    tally.refused <- tally.refused +. ((legal_total -. total) /. legal_total);
-    tally.draws <- tally.draws + 1;
-    let draw =
-      let next, uniform = Prng.run Prng.uniform !stream in
-      stream := next;
-      uniform *. total
-    in
-    let code = pick weights ~draw in
-    let token = Token.of_code code in
-    codes := code :: !codes;
-    phases := (!step_index mod phase_buckets) :: !phases;
-    progress := bucket !step_index :: !progress;
-    state := Sounding_state.step !state token;
-    match token with
-    | Start ->
-      (* the mask refuses START at every draw *)
-      assert false
-    | On _ | Off _ -> current := token :: !current
-    | End ->
-      out := List.rev !current :: !out;
-      current := [];
-      incr step_index
-  done;
-  let count = Float.of_int (max 1 tally.draws) in
-  (* the annotation picks the means, not the sums of [tally] beside them *)
-  let stats : sample_stats =
-    { refused = tally.refused /. count
-    ; illegal_mass = tally.illegal_mass /. count
-    ; illegal_top = Float.of_int tally.illegal_top /. count
-    ; draws = tally.draws
+  let add walk ~frame ~step =
+    { walk with
+      frames = frame :: walk.frames
+    ; phases = (step % Jsb.bar_steps) :: walk.phases
     }
   in
-  ~music:(List.rev !out), ~stats
-;;
-
-let%expect_test "the seed names the walk" =
-  let config = { Config.baseline with d = 32; layers = 1 } in
-  let embed params = Nx.to_array (List.hd_exn (Params.to_list params)) in
-  let moments draws =
-    let count = Float.of_int (Array.length draws) in
-    let mean = Array.fold draws ~init:0.0 ~f:( +. ) /. count in
-    let square acc draw = acc +. ((draw -. mean) ** 2.0) in
-    mean, Float.sqrt (Array.fold draws ~init:0.0 ~f:square /. count)
+  (* The boot of docs/transformer_model.md: a lead-in of silence. Attention needs one
+     position, and the packed corpus holds a run of silent frames at every seam, thus this
+     is a condition the model trained on and the model opens the music itself. One bar is
+     the longest seam of that corpus, and it leaves the first draw on a downbeat. The
+     lead-in counts inside [steps], because it is silence the walk really plays. *)
+  let lead = min steps Jsb.bar_steps in
+  let booted =
+    List.fold
+      (List.range 0 lead)
+      ~init:{ rng = Prng.create_folded ~seed; frames = []; phases = [] }
+      ~f:(fun walk step -> add walk ~frame:Frame.silent ~step)
   in
-  (* 0 is legal here and no state of the walk: [Prng.create_folded] moves it to the top *)
-  let zero = embed (Params.init config ~seed:0) in
-  let one = embed (Params.init config ~seed:1) in
-  let mean, deviation = moments one in
-  printf
-    "mean %.4f  deviation %.4f  repeats %b  differs %b\n"
-    mean
-    deviation
-    (Array.equal Float.equal one (embed (Params.init config ~seed:1)))
-    (not (Array.equal Float.equal zero one));
-  [%expect {| mean 0.0000  deviation 0.0199  repeats true  differs true |}]
+  let drawn =
+    List.fold (List.range lead steps) ~init:booted ~f:(fun walk step ->
+      let frames = window walk.frames in
+      let phases = window walk.phases in
+      let h =
+        hidden config params ~classes:(seat_classes [| frames |]) ~phases:[| phases |]
+      in
+      let stream =
+        Nx.reshape [| 1; config.d |] (Nx.get [ 0; Array.length frames - 1 ] h)
+      in
+      let rng, classes =
+        draw_frame config params ~temperature ~min_p ~rng:walk.rng stream
+      in
+      add { walk with rng } ~frame:(Vocab.frame_of_classes classes) ~step)
+  in
+  Array.of_list (List.rev drawn.frames)
 ;;
 
-let%expect_test "each block draws from a walk of its own" =
-  let dropout = Dropout.create ~rate:0.5 ~seed:3 in
-  let blocks = Dropout.split dropout ~count:3 in
-  let ones = Nx.ones Nx.float32 [| 1; 1; 32 |] in
-  let mask dropout = Nx.to_array (Dropout.run dropout ones) in
-  let masks = Array.map blocks ~f:mask in
-  let kept mask = Array.count mask ~f:(fun value -> Float.(value > 0.0)) in
-  let agree a b = Array.equal Float.equal a b in
-  printf
-    "a survivor weighs %.1f   kept %d, %d and %d of 32\n"
-    (Option.value_exn (Array.max_elt masks.(0) ~compare:Float.compare))
-    (kept masks.(0))
-    (kept masks.(1))
-    (kept masks.(2));
-  (* the blocks must differ from one another, and each must repeat on its own walk *)
-  printf
-    "0 and 1 agree %b   0 and 2 agree %b   block 0 repeats %b\n"
-    (agree masks.(0) masks.(1))
-    (agree masks.(0) masks.(2))
-    (agree masks.(0) (mask blocks.(0)));
+(* the shapes of a test model: small enough to run in a test, and the same structure *)
+let test_config = { Config.baseline with d = 32; layers = 1; heads = 2; context = 24 }
+
+let%expect_test "the shapes of the forward pass" =
+  let params = Params.init test_config ~seed:1 in
+  let frames = [| [| Frame.silent; 0xcac6c1ba; 0xca00c1ba |] |] in
+  let phases = [| [| 0; 1; 2 |] |] in
+  let classes = seat_classes frames in
+  let h = hidden test_config params ~classes ~phases in
+  print_s ([%sexp_of: int array] (Nx.shape h));
+  [%expect {| (1 3 32) |}];
+  (* one set of logits for each seat, over the classes of the vocabulary *)
+  List.iter (seat_logits params h ~drawn:classes) ~f:(fun (seat, raw) ->
+    printf "seat %d: %s\n" seat (Sexp.to_string ([%sexp_of: int array] (Nx.shape raw))));
   [%expect
     {|
-    a survivor weighs 2.0   kept 19, 16 and 18 of 32
-    0 and 1 agree false   0 and 2 agree false   block 0 repeats true
+    seat 3: (1 3 48)
+    seat 2: (1 3 48)
+    seat 1: (1 3 48)
+    seat 0: (1 3 48)
     |}]
 ;;
 
-let%expect_test "the shapes of the forward pass" =
-  let config = { Config.d = 8; layers = 1; heads = 2; context = 8; slope_span = 8 } in
-  let params = Params.init config ~seed:1 in
-  let out =
-    logits
-      config
-      params
-      ~codes:[| [| 0; 188; 60; 0 |] |]
-      ~phases:[| [| 0; 1; 1; 1 |] |]
-      ~progress:[| [| 0; 0; 0; 0 |] |]
-      ~dropout:Dropout.none
-  in
-  print_s ([%sexp_of: int array] (Nx.shape out));
-  [%expect {| (1 4 256) |}]
+let%expect_test "the loss of drawn weights is the uniform draw" =
+  (* Weights of scale 0.02 put every class near the same logit, thus one seat costs about
+     ln 48 = 3.871 nats and a step costs four of them. The number states the unit: nats
+     for each STEP, and never nats for each prediction. *)
+  let chorale cells = { Jsb.cells = Array.create ~len:8 cells; legal_shifts = [ 0 ] } in
+  let stream = Jsb.pack [ chorale [ 67; 64; 60; 48 ]; chorale [ 69; 65; 62; 50 ] ] in
+  let windows = Jsb.windows stream ~context:8 in
+  let params = Params.init test_config ~seed:2 in
+  printf
+    "%d windows, %.4f nats for each step\n"
+    (List.length windows)
+    (loss test_config params ~windows);
+  [%expect {| 3 windows, 14.8437 nats for each step |}]
 ;;
 
-(* The mask is the model now, not a filter over it: the loss trained inside it, thus the
-   raw mass outside the legal set is untrained and the draw must carry the same mask. This
-   walks the drawn music back through that mask. The weights are a draw of their own, so
-   the test says nothing of the music itself — only that the grammar held at every token,
-   which is the property the sampler owes whatever the weights say. *)
-let%expect_test "the sampler draws only what the mask allows" =
-  let config = { Config.d = 16; layers = 1; heads = 2; context = 64; slope_span = 8 } in
-  let params = Params.init config ~seed:5 in
-  let ~music, ~stats =
-    (* the lead-in holds sixteen of these steps, thus eight are drawn and the walk below
-       also proves the boot legal: the model draws its first ON against one bar of END *)
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
+let%expect_test "the seed names the walk" =
+  let params = Params.init test_config ~seed:3 in
+  let draw seed =
+    sample test_config params ~seed ~steps:20 ~temperature:1.0 ~min_p:0.05
   in
-  (* [sample] drops the [End] that closed each sentence; the walk needs it back *)
-  let sentence step = step @ [ Token.End ] in
-  let walk (state, illegal) token =
-    let mask = Sounding_state.legal_mask state in
-    let illegal = if mask.(Token.to_code token) then illegal else illegal + 1 in
-    Sounding_state.step state token, illegal
+  let walk = draw 7 in
+  (* The lead-in of one bar stands at the head of the walk, thus the first draw is
+     step 16. These weights are drawn and not trained, thus the model opens at once; a
+     trained one opens inside one bar of the end of the lead-in. *)
+  let opens_at, (_ : int) =
+    Option.value_exn (Array.findi walk ~f:(fun (_ : int) frame -> frame <> Frame.silent))
   in
-  let tokens = List.concat_map music ~f:sentence in
-  let (_ : Sounding_state.t), illegal =
-    List.fold tokens ~init:(Sounding_state.silence, 0) ~f:walk
-  in
-  printf
-    "%d steps  %d tokens  %d illegal   the mask held %.4f of the raw mass over %d draws\n"
-    (List.length music)
-    (List.length tokens)
-    illegal
-    stats.illegal_mass
-    stats.draws;
-  (* the first steps that carry an event, so the record shows what a sentence looks like *)
-  List.filter music ~f:(fun step -> not (List.is_empty step))
-  |> (fun steps -> List.take steps 3)
-  |> List.iter ~f:(fun step -> print_s ([%sexp_of: Token.t list] step));
-  (* the same seed draws the same music; Token.t carries no compare, thus the codes do *)
-  let ~music:again, ~stats:_ =
-    sample config params ~seed:7 ~steps:24 ~temperature:0.9 ~min_p:(1.0 /. 256.0)
-  in
-  let codes steps = List.map steps ~f:(List.map ~f:Token.to_code) in
-  printf
-    "the seed repeats: %b\n"
-    (List.equal (List.equal Int.equal) (codes music) (codes again));
+  printf "%d steps, and the walk opens at step %d\n" (Array.length walk) opens_at;
+  Array.iteri walk ~f:(fun step frame ->
+    if step >= opens_at then printf "  step %d  %08x\n" step frame);
   [%expect
     {|
-    24 steps  40 tokens  0 illegal   the mask held 0.8019 of the raw mass over 24 draws
-    ((On 114) (On 30) (On 22))
-    ((On 82))
-    ((Off 22) (On 52))
-    the seed repeats: true
+    20 steps, and the walk opens at step 16
+      step 16  ceafc5a4
+      step 17  c2acaeb8
+      step 18  c0b3acb8
+      step 19  c8bcb1bd
+    |}];
+  let same = Array.equal Int.equal in
+  printf "the same seed repeats: %b\n" (same (draw 7) (draw 7));
+  printf "another seed parts: %b\n" (not (same (draw 7) (draw 8)));
+  [%expect {|
+    the same seed repeats: true
+    another seed parts: true
     |}]
 ;;
