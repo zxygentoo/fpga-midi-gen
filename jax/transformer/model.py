@@ -1,59 +1,57 @@
-"""The JAX port of the forward pass of lib/transformer/transformer.ml.
+"""The step-frame transformer of docs/transformer_model.md.
 
-The OCaml network is the spec -- decoder-only, ALiBi, a bar-phase table, scale-free
-RMSNorm (eps 1e-6 on the mean square), no biases, tied embedding -- and this file must
-compute the same function: tests/test_parity.py proves it against the OCaml referee's
-numbers. Matmul precision is pinned to true float32, no TF32, so the two sides agree
-tightly.
+One step of music is one position. Four voice classes enter through four tables that sum,
+and they leave through the same four tables in a chain from the soprano down.
 
-Checkpoints are Kaun safetensors: tensors named "0".."N" in construction order --
-embed [vocab, d], phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d],
-w2 [4d, d].
+The network under the head is a decoder with no bias terms, RMSNorm before each sublayer,
+ALiBi for the position, and d_ff = 4 d. Matmul precision is pinned to true float32, no
+TF32.
+
+Checkpoints are safetensors: tensors "0".."N" in construction order -- seats [4, 48, d],
+phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d], w2 [4d, d].
 """
 
 import jax
 import jax.numpy as jnp
 from safetensors.numpy import load_file
 
+from data import SEATS
+
 jax.config.update("jax_default_matmul_precision", "float32")
 
-VOCAB = 256
-SLOPE_SPAN = 8  # the ALiBi paper's exponent span; wider slopes see further
+# The slope of head k is 2^-(SLOPE_SPAN (k+1) / heads). Elected 2026-08-18 over spans 4,
+# 8, 16, 24 and 64: the means of 4 and 8 are a dead heat, and the VARIANCE is the finding
+# -- 5 to 7 times tighter over six seeds, replicated at two step budgets. Every head is
+# then local, and seeds stop latching onto whatever distant structure their init favours.
+SLOPE_SPAN = 4
 PHASE_BUCKETS = 16
-PROGRESS_BUCKETS = 16
-# the steps of one bucket at the draw: a chorale runs 228 steps at the median, so a
-# bucket of the corpus is 14.2 steps and 16 is the nearest power of two -- a bit-slice in
-# the circuit, and a period of 16 x 16 = 256 steps, about one chorale
-PROGRESS_STRIDE = 16
+TABLES = ("seats", "phase")
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
 
 
 def load_params(path):
-    """The layer count comes from the tensor count, as Config.of_checkpoint reads it:
-    three tables and six tensors for each layer. No caller then states a number the file
-    already answers. A checkpoint from before the piece-position table holds two tables
-    and does not load."""
+    """The two tables, then six tensors for each layer."""
     tensors = load_file(path)
     count = len(tensors)
-    if count < 9 or (count - 3) % 6:
+    if count < len(TABLES) + 6 or (count - len(TABLES)) % 6:
         raise ValueError(
-            f"{path} holds {count} tensors: not three tables and six for each layer"
+            f"{path}: {count} tensors is not {TABLES} and six for each layer"
         )
-    layers = (count - 3) // 6
-    return {
-        "embed": jnp.asarray(tensors["0"]),
-        "phase": jnp.asarray(tensors["1"]),
-        "layers": [
-            dict(
-                zip(
-                    LAYER_TENSORS,
-                    (jnp.asarray(tensors[str(3 + 6 * layer + i)]) for i in range(6)),
-                )
+    layers = (count - len(TABLES)) // 6
+    params = {name: jnp.asarray(tensors[str(at)]) for at, name in enumerate(TABLES)}
+    params["layers"] = [
+        dict(
+            zip(
+                LAYER_TENSORS,
+                (
+                    jnp.asarray(tensors[str(len(TABLES) + 6 * layer + i)])
+                    for i in range(6)
+                ),
             )
-            for layer in range(layers)
-        ],
-        "progress": jnp.asarray(tensors["2"]),
-    }
+        )
+        for layer in range(layers)
+    ]
+    return params
 
 
 def rms_norm(x):
@@ -61,14 +59,7 @@ def rms_norm(x):
 
 
 def attention_bias(heads, length, span=SLOPE_SPAN):
-    """ALiBi plus the causal wall, [1, heads, length, length].
-
-    A head subtracts slope x distance from its logits, so the slope is a recency prior
-    and [span] sets how far the gentlest head can see: the slope of head k is
-    2^-(span (k+1) / heads), and the penalty at distance D is slope x D. At the paper's
-    span of 8 the gentlest slope is 1/256 whatever the head count -- -4 logits at 1024
-    tokens, -8 at 2048, which is blind for a chorale phrase. A wider span reaches
-    further and stays a power of two, thus a shift in the circuit."""
+    """ALiBi plus the causal wall, [1, heads, length, length]."""
     pos = jnp.arange(length, dtype=jnp.float32)
     distance = pos[:, None] - pos[None, :]
     slopes = -(2.0 ** (-span * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
@@ -82,23 +73,25 @@ def _dropout(x, rate, key):
     return jnp.where(jax.random.bernoulli(key, keep, x.shape), x / keep, 0.0)
 
 
-def logits(
-    params,
-    codes,
-    phases,
-    progress,
-    *,
-    heads,
-    dropout=0.0,
-    key=None,
-    span=SLOPE_SPAN,
-):
-    """codes, phases, progress: [batch, length] int32 -> [batch, length, vocab] float32.
+def embed(params, classes):
+    """The input of one position: the four seat rows sum, then the bar phase.
 
-    dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual
-    branch. The default is the exact forward of the OCaml model."""
-    batch, length = codes.shape
-    d = params["embed"].shape[1]
+    A shared table with a voice tag cannot work here, and the reason is arithmetic and not
+    capacity. Every step carries all four seats, thus the sum of the four tags is the same
+    vector at every position -- a bias, which carries nothing -- and what remains is
+    symmetric in the four codes. A soprano on 72 over a bass on 48 would give the vector of
+    a soprano on 48 under a bass on 72, and the voices would be thrown away on the way in.
+    Four tables break the symmetry, and no voice tag is then necessary anywhere."""
+    return sum(params["seats"][seat][classes[..., seat]] for seat in range(SEATS))
+
+
+def hidden(params, classes, phases, *, heads, dropout=0.0, key=None, span=SLOPE_SPAN):
+    """classes [batch, length, SEATS] -> [batch, length, d], the residual stream after the
+    last layer and before any readout.
+
+    dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual branch."""
+    batch, length = classes.shape[0], classes.shape[1]
+    d = params["seats"].shape[-1]
     head_d = d // heads
     bias = attention_bias(heads, length, span)
 
@@ -109,9 +102,7 @@ def logits(
         key, sub = jax.random.split(key)
         return _dropout(x, dropout, sub)
 
-    h = drop(
-        params["embed"][codes] + params["phase"][phases] + params["progress"][progress]
-    )
+    h = drop(embed(params, classes) + params["phase"][phases])
     for layer in params["layers"]:
         normed = rms_norm(h)
 
@@ -126,46 +117,61 @@ def logits(
         merged = context.transpose(0, 2, 1, 3).reshape(batch, length, d)
         h = h + drop(merged @ layer["wo"])
         h = h + drop(jnp.maximum(rms_norm(h) @ layer["w1"], 0.0) @ layer["w2"])
-    return rms_norm(h) @ params["embed"].T
+    return h
 
 
-def _cross_entropy(raw, labels, weights):
-    """weights [batch, length] excludes the padding of a short piece from the mean; a
-    padded position would teach the walk to hold the last chord and emit END for ever"""
-    logp = jax.nn.log_softmax(raw, axis=-1)
-    picked = jnp.take_along_axis(logp, labels[..., None], axis=-1)[..., 0]
-    if weights is None:
-        return -jnp.mean(picked)
-    return -jnp.sum(picked * weights) / jnp.maximum(jnp.sum(weights), 1.0)
+def seat_logits(params, h, drawn):
+    """The chained head: [batch, length, d] -> [batch, length, SEATS, CLASSES].
+
+    Each seat reads the stream that the seats above it have already written:
+
+        h3 = h                   logits(seat 3) = E[3] . rms(h3)
+        h2 = h3 + E[3][c3]       logits(seat 2) = E[2] . rms(h2)
+        h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
+        h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
+
+    [drawn] holds the classes the chain conditions on -- the true frame in training, where
+    all four heads then run in one pass with no sampling, and the drawn seats at the draw.
+    Only seats 3, 2 and 1 are read.
+
+    The chain runs from the soprano down, which keeps the one decision the ear accepted:
+    the top voice is chosen first and conditions on no voice under it, as the music is
+    written. Four heads that drew in parallel would make the voices conditionally
+    independent, and a chord is a joint choice: measured on this model, that costs 0.3157
+    nats for each step -- 0.456 bits, sixteen times the seed spread. The chain removes the
+    cost for no parameters at all -- parallel heads need the same four tables -- and three
+    adds of a vector.
+
+    The table that reads a voice is the table that writes it, which is the tied embedding
+    of the era, one time for each seat. Untying the readout was measured and is null: it
+    buys nothing and costs three block RAM tiles. What the chain adds is also what the next
+    position reads: the input embedding of step t+1 is a3 + a2 + a1 + a0, and the chain
+    assembles it one voice at a time."""
+    seats = params["seats"]
+    stream = h
+    logits = [None] * SEATS
+    for seat in reversed(range(SEATS)):
+        logits[seat] = rms_norm(stream) @ seats[seat].T
+        if seat:
+            stream = stream + seats[seat][drawn[..., seat]]
+    return jnp.stack(logits, axis=-2)
 
 
-def loss(
-    params,
-    codes,
-    phases,
-    progress,
-    masks,
-    *,
-    heads,
-    dropout=0.0,
-    key=None,
-    weights=None,
-    span=SLOPE_SPAN,
-):
-    """Cross entropy with the grammar inside the softmax: codes [batch, length + 1].
+def seat_nll(params, classes, phases, *, heads, dropout=0.0, key=None, span=SLOPE_SPAN):
+    """The negative log likelihood of every voice of every step: classes
+    [batch, length + 1, SEATS] -> [batch, length, SEATS].
 
-    The model spends no mass on a code the sampler would refuse, thus its raw mass
-    outside the legal set stays untrained and the same mask must guard every draw.
-
-    masks: [batch, length, vocab] bool -- the legal set of each label draw."""
-    raw = logits(
+    The caller reduces. The loss does not carry across the encoding and neither does a
+    per-prediction mean: report nats for each step, which is the sum over the seats."""
+    labels = classes[:, 1:]
+    h = hidden(
         params,
-        codes[:, :-1],
+        classes[:, :-1],
         phases,
-        progress,
         heads=heads,
         dropout=dropout,
         key=key,
         span=span,
     )
-    return _cross_entropy(raw + jnp.where(masks, 0.0, -1e9), codes[:, 1:], weights)
+    logp = jax.nn.log_softmax(seat_logits(params, h, labels), axis=-1)
+    return -jnp.take_along_axis(logp, labels[..., None], axis=-1)[..., 0]

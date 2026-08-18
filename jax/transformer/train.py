@@ -1,18 +1,22 @@
-"""The JAX twin of bin/train_transformer.ml -- the sweep vehicle.
+"""The trainer of the step-frame model of docs/transformer_model.md.
 
-Run it from the jax directory as a module, so that data.py stays on the path:
+Run it from the jax directory as a module:
 
     uv run python -m transformer.train --steps 200
 
-Same walk, same referee rows, same schedule shape; the recipe knobs -- dropout, weight
-decay -- are the reason this trainer exists. Checkpoints are Kaun safetensors, tensors
-"0".."N" in the OCaml Params order, so checkpoint_tool and play_transformer consume
-them directly. The final board model still comes from the OCaml trainer of record; this
-side only finds the recipe.
+The optimizer is a hand-rolled AdamW with a decoupled decay and a global-norm clip.
 
-The optimizer is a hand-rolled AdamW with the decoupled decay of Kaun's, and the
-gradient clip is the same global-norm rule. Optimizer parity with OCaml is not required
--- Gate B pins the eval, not the trajectory.
+Two numbers come out of every evaluation, and the traps of the design document are the
+reason for both. The loss is reported as NATS FOR EACH STEP -- the sum over the four seats
+-- because a per-prediction mean divides against a different count in each encoding and
+compares nothing. And a second number covers the steps where two or more voices move: 77.91
+percent of the voice slots repeat the step before, they dominate the mean, and a model that
+holds its chord for ever would score well on the mean and play a drone.
+
+The gradient takes the mean over the predictions and not the sum over the seats. Adam is
+blind to the scale, but the global-norm clip is not: a loss four times larger would make
+the clip bite four times harder, and the peak rate and the clip of the recipe would stop
+meaning what they meant.
 """
 
 import time
@@ -34,10 +38,15 @@ def draw_params(key, d, layers):
     def normal(k, shape):
         return jax.random.normal(k, shape, dtype=jnp.float32) * 0.02
 
-    keys = iter(jax.random.split(key, 2 + 6 * layers))
-    return {
-        "embed": normal(next(keys), (model.VOCAB, d)),
+    keys = iter(jax.random.split(key, 3 + 6 * layers))
+    params = {
+        "seats": normal(next(keys), (data.SEATS, data.CLASSES, d)),
         "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
+    }
+    # The window-position table stood here and the ear dropped it. Its key stays skipped,
+    # thus a seed draws the same layers it drew for the runs that elected this model.
+    next(keys)
+    return params | {
         "layers": [
             {
                 "wq": normal(next(keys), (d, d)),
@@ -49,14 +58,12 @@ def draw_params(key, d, layers):
             }
             for _ in range(layers)
         ],
-        # a folded key, so that the split above keeps the draw it had before this table
-        "progress": normal(jax.random.fold_in(key, 1), (model.PROGRESS_BUCKETS, d)),
     }
 
 
 def save_checkpoint(path, params):
-    """Kaun order: embed, phase, progress, then wq wk wv wo w1 w2 for each layer."""
-    tensors = [params["embed"], params["phase"], params["progress"]] + [
+    """the tables in construction order, then the layers"""
+    tensors = [params[name] for name in model.TABLES] + [
         layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS
     ]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -64,8 +71,7 @@ def save_checkpoint(path, params):
 
 
 def schedule(step, peak, warmup, total):
-    """the OCaml schedule: linear warmup to the peak, cosine decay to zero; a warmup of
-    zero is the constant peak"""
+    """linear warmup to the peak, cosine decay to zero; a warmup of zero is a constant"""
     if warmup == 0:
         return peak
     if step <= warmup:
@@ -75,20 +81,12 @@ def schedule(step, peak, warmup, total):
 
 
 def make_step(heads, dropout, clip, weight_decay, span):
-    def step_fn(params, m, v, t, codes, phases, buckets, masks, weights, lr, key):
+    def step_fn(params, m, v, t, classes, phases, lr, key):
         def loss_fn(p):
-            return model.loss(
-                p,
-                codes,
-                phases,
-                buckets,
-                masks,
-                heads=heads,
-                dropout=dropout,
-                key=key,
-                weights=weights,
-                span=span,
+            nll = model.seat_nll(
+                p, classes, phases, heads=heads, dropout=dropout, key=key, span=span
             )
+            return jnp.mean(nll)
 
         value, grads = jax.value_and_grad(loss_fn)(params)
         if clip > 0.0:
@@ -112,62 +110,61 @@ def make_step(heads, dropout, clip, weight_decay, span):
 
 
 def make_eval(heads, span):
-    def eval_fn(params, codes, phases, buckets, masks):
-        return model.loss(params, codes, phases, buckets, masks, heads=heads, span=span)
+    def eval_fn(params, classes, phases):
+        nll = model.seat_nll(params, classes, phases, heads=heads, span=span)
+        steps = jnp.sum(nll, axis=-1)
+        moving = data.moving(classes) >= 2
+        return (
+            jnp.sum(steps),
+            jnp.sum(jnp.where(moving, steps, 0.0)),
+            jnp.sum(moving),
+            jnp.size(steps),
+        )
 
     return jax.jit(eval_fn)
 
 
 def eval_loss(eval_fn, params, batches):
-    total, count = 0.0, 0
-    for codes, phases, buckets, masks, rows in batches:
-        value = float(
-            eval_fn(
-                params,
-                jnp.asarray(codes),
-                jnp.asarray(phases),
-                jnp.asarray(buckets),
-                jnp.asarray(masks),
-            )
-        )
-        total += value * rows
-        count += rows
-    return total / count
+    """nats for each step, over every step and over the moving steps alone"""
+    total = moved = 0.0
+    steps = moves = 0
+    for classes, phases in batches:
+        sums = eval_fn(params, jnp.asarray(classes), jnp.asarray(phases))
+        total += float(sums[0])
+        moved += float(sums[1])
+        moves += int(sums[2])
+        steps += int(sums[3])
+    return total / max(steps, 1), moved / max(moves, 1)
 
 
 @click.command(help=__doc__)
 @click.option(
-    "--corpus", "corpus_path", default=str(JAX_ROOT / "_data" / "corpus.safetensors")
+    "--corpus", "corpus_path", default=str(JAX_ROOT / "_data" / "frames.safetensors")
 )
 @click.option("--d", default=64)
-@click.option("--layers", default=2)
+@click.option("--layers", default=6)
 @click.option("--heads", default=4)
-@click.option("--context", default=256)
+@click.option("--context", default=256, help="the window, in steps")
 @click.option("--batch", default=16)
-@click.option("--steps", default=200)
-@click.option("--lr", default=3e-4)
-@click.option("--seed", default=1)
-@click.option("--warmup", default=0)
+@click.option("--steps", default=96000)
+@click.option("--lr", default=1e-3)
+@click.option("--seed", default=6)
+@click.option("--warmup", default=300)
 @click.option("--wd", default=0.01)
 @click.option("--clip", default=1.0)
-@click.option("--dropout", default=0.0)
+@click.option("--dropout", default=0.3)
 @click.option(
     "--alibi-span",
     default=model.SLOPE_SPAN,
-    help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). The paper's 8 leaves the gentlest head at -4 logits by 1024 tokens; a wider span sees further and stays a power of two. The draw must state the same span.",
+    help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). The "
+    "draw must state the same.",
 )
 @click.option(
     "--train-on", type=click.Choice(("train", "train+test", "all")), default="train"
 )
-@click.option("--log-every", default=10)
-@click.option("--eval-every", default=100)
+@click.option("--log-every", default=100)
+@click.option("--eval-every", default=1600)
 @click.option("--eval-limit", default=128)
-@click.option(
-    "--eval-context",
-    "eval_context_flag",
-    type=int,
-    help="evaluate at this context instead of the training one. The windows come from whole pieces, so a long training context leaves almost none: 149 valid rows at 256, 56 at 512, 6 at 1024, and none at 2048. ALiBi has no position table, so a model trained long evaluates short; 256 also makes every run comparable, as checkpoint_tool does.",
-)
 @click.option("--ckpt", default=None)
 @click.option(
     "--average-top",
@@ -193,16 +190,13 @@ def main(
     log_every,
     eval_every,
     eval_limit,
-    eval_context_flag,
     ckpt,
     average_top,
 ):
-
     corpus = data.load_corpus(corpus_path)
     pool = data.train_pool(corpus, train_on)
-    eval_context = eval_context_flag or context
-    train_eval = data.eval_batches(corpus["train"], eval_context, eval_limit, batch)
-    valid_eval = data.eval_batches(corpus["valid"], eval_context, eval_limit, batch)
+    train_eval = data.eval_batches(corpus["train"], context, eval_limit, batch)
+    valid_eval = data.eval_batches(corpus["valid"], context, eval_limit, batch)
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     key, draw_key = jax.random.split(key)
@@ -211,11 +205,11 @@ def main(
     step_fn = make_step(heads, dropout, clip, wd, alibi_span)
     eval_fn = make_eval(heads, alibi_span)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
-    tokens = sum(int(split.index[row, 1]) for split, row in pool)
+    corpus_steps = sum(int(split.index[row, 1]) for split, row in pool)
     print(
-        f"corpus: {len(pool)} pool streams, {tokens} tokens; eval rows: "
-        f"{sum(b[4] for b in train_eval)} train, {sum(b[4] for b in valid_eval)} valid; "
-        f"parameters: {count}",
+        f"corpus: {len(pool)} pool streams, {corpus_steps} steps; eval rows: "
+        f"{sum(len(b[0]) for b in train_eval)} train, "
+        f"{sum(len(b[0]) for b in valid_eval)} valid; parameters: {count}",
         flush=True,
     )
 
@@ -226,27 +220,26 @@ def main(
 
     def evaluate(step, params):
         nonlocal best
-        train_loss = eval_loss(eval_fn, params, train_eval)
-        valid_loss = eval_loss(eval_fn, params, valid_eval)
+        train_all, train_moving = eval_loss(eval_fn, params, train_eval)
+        valid_all, valid_moving = eval_loss(eval_fn, params, valid_eval)
         mark = ""
-        if valid_loss < best:
-            best = valid_loss
+        if valid_all < best:
+            best = valid_all
             mark = "  *"
             if ckpt and train_on != "all":
                 save_checkpoint(ckpt, params)
         if average_top > 0:
-            top.append((valid_loss, step, jax.tree.map(np.asarray, params)))
+            top.append((valid_all, step, jax.tree.map(np.asarray, params)))
             top.sort(key=lambda entry: entry[0])
             del top[average_top:]
         print(
-            f"step {step:4d}  eval  train {train_loss:.4f}  valid {valid_loss:.4f}{mark}",
+            f"step {step:5d}  eval  train {train_all:.4f} (moving {train_moving:.4f})"
+            f"  valid {valid_all:.4f} (moving {valid_moving:.4f}){mark}",
             flush=True,
         )
 
     for step in range(1, steps + 1):
-        codes, phases, buckets, masks, weights = data.train_batch(
-            rng, pool, batch, context
-        )
+        classes, phases = data.train_batch(rng, pool, batch, context)
         # a name of its own: [lr] is the peak the schedule reads, and a loop that writes
         # its own peak decays the rate geometrically to zero and trains nothing
         rate = schedule(step, lr, warmup, steps)
@@ -256,17 +249,19 @@ def main(
             m,
             v,
             jnp.float32(step),
-            jnp.asarray(codes),
+            jnp.asarray(classes),
             jnp.asarray(phases),
-            jnp.asarray(buckets),
-            jnp.asarray(masks),
-            jnp.asarray(weights),
             jnp.float32(rate),
             step_key,
         )
         losses.append(float(value))
         if step % log_every == 0 or step == 1:
-            print(f"step {step:4d}  loss {np.mean(losses):.4f}", flush=True)
+            # the training number is nats for each step too: the mean over the predictions
+            # times the four seats
+            print(
+                f"step {step:5d}  loss {data.SEATS * np.mean(losses):.4f}",
+                flush=True,
+            )
             losses = []
         if step % eval_every == 0 or step == steps:
             evaluate(step, params)
@@ -291,9 +286,9 @@ def main(
             )
             path = ckpt.replace(".ckpt", "-avg.ckpt")
             save_checkpoint(path, averaged)
-            steps = [entry[1] for entry in top]
             print(
-                f"average of {len(top)} best snapshots (steps {steps}): {path}",
+                f"average of {len(top)} best snapshots "
+                f"(steps {[entry[1] for entry in top]}): {path}",
                 flush=True,
             )
 

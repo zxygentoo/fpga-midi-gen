@@ -4,9 +4,8 @@ This file exists because of a bug that every other check passed. Converting the 
 click renamed `args.lr` to `lr`, and the loop already wrote its rate back into a name of
 its own -- so `lr = schedule(step, lr, ...)` fed the schedule its own output and the rate
 collapsed geometrically to zero. The model initialised correctly, the shapes were right,
-the parity gate passed, and a one-step run reported the exact baseline loss, because a
-step-1 loss is measured before the first update. Nothing was wrong except that no
-learning happened.
+and a one-step run reported the exact baseline loss, because a step-1 loss is measured
+before the first update. Nothing was wrong except that no learning happened.
 
 Therefore: run the loop and watch the loss fall. A smoke test at d 8 costs seconds.
 """
@@ -20,7 +19,7 @@ from click.testing import CliRunner
 from transformer import train
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
-CORPUS = JAX_ROOT / "_data" / "corpus.safetensors"
+CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
 
 
 def test_the_schedule_holds_its_peak():
@@ -31,6 +30,21 @@ def test_the_schedule_holds_its_peak():
     assert max(rates) == pytest.approx(peak)
     assert rates[299] == pytest.approx(peak)  # the warmup ends exactly on the peak
     assert rates[-1] > peak * 0.9  # and the cosine has barely begun to fall
+
+
+def test_the_skipped_key_keeps_the_layers_of_the_elected_runs():
+    """The window-position table left the design and its key stays skipped. Without the
+    skip a seed draws different layers, and the runs that elected this model stop
+    reproducing from their seeds."""
+    import jax
+
+    key = jax.random.PRNGKey(6)
+    params = train.draw_params(key, 8, 1)
+    keys = iter(jax.random.split(key, 3 + 6))
+    for _ in range(3):  # seats, phase, and the skipped row of the dropped table
+        next(keys)
+    first = jax.random.normal(next(keys), (8, 8), dtype="float32") * 0.02
+    assert (params["layers"][0]["wq"] == first).all()
 
 
 @pytest.mark.skipif(not CORPUS.exists(), reason="needs corpus_tool export")

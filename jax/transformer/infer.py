@@ -1,23 +1,18 @@
-"""The batched twin of the OCaml sampler in lib/transformer/transformer.ml.
+"""The sampler and the player of the step-frame model.
 
-The OCaml sampler is the reference: it is what the board must agree with. This file
-exists for the sweeps -- a diagnostic wants twenty-four seeds, the seeds are independent,
-and they belong in one batch. Measured at d 64, context 256, 192 steps: Nx 15.8 s for one
-seed, this file 2.9 s for one and 10.8 s for twenty-four.
+One step is one forward pass, always: the four seats are drawn in a chain from the soprano
+down, on the host, between two passes of the network. No mask guards the draw, because no
+frame is illegal.
 
-It is a TWIN, not a second semantics. The draw is [prng], the circuit's xorshift32, and
-the grammar is [data.Sounding], so seed 7 here is seed 7 there token for token -- which
-is what lets a sweep nominate a seed and an audition then play it. `--gate` proves that
-against the OCaml sampler; run it after any change to either side.
+CPU only, and deliberately: every step needs the drawn frame back on the host before the
+next forward, so the loop is latency-bound and a GPU would take the device from the
+trainer.
 
-CPU only, and deliberately: every token needs the drawn code back on the host to walk the
-sounding state before the next forward, so the loop is latency-bound and a GPU would buy
-little while taking the device from the trainer.
+The decode is a rule of the frame and lives in data.py; the player sends what it makes:
+raw channel voice bytes on the rawmidi device, with no backend library in the way.
 """
 
 import os
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -30,129 +25,119 @@ import mido
 import numpy as np
 
 import data
+import measure
 import prng
 from transformer import model
 
 NOTE_ON, NOTE_OFF = 0x90, 0x80
 RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
 DEVICE = "/dev/snd/midiC2D0"
+JAX_ROOT = Path(__file__).resolve().parent.parent
 
 
-def pick(weights, draw):
-    """The choice of the OCaml sampler: the first code whose running total passes [draw],
-    code 255 when no total does, and code 0 when the chosen weight is not positive."""
-    running = np.cumsum(weights, axis=1)
-    passed = running[:, : data.VOCAB - 1] > draw[:, None]
-    chosen = np.where(passed.any(axis=1), passed.argmax(axis=1), data.VOCAB - 1)
-    rows = np.arange(len(chosen))
-    return np.where(weights[rows, chosen] > 0.0, chosen, 0)
+def rms_norm(x):
+    return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-6)
 
 
-def temper(raw, legal, temperature, min_p):
-    """the tempered weight of each legal code against the legal peak, then the min-p
-    floor; the peak weighs one, thus min_p is a share of the peak"""
-    peak = np.where(legal, raw, -np.inf).max(axis=1, keepdims=True)
-    weights = np.where(legal, np.exp((raw - peak) / temperature), 0.0)
+def temper(raw, temperature, min_p):
+    """the tempered weight of each class against the peak, then the min-p floor; the peak
+    weighs one, thus min_p is a share of the peak"""
+    weights = np.exp((raw - raw.max(axis=1, keepdims=True)) / temperature)
     if min_p > 0.0:
         weights = np.where(weights >= min_p, weights, 0.0)
     return weights
 
 
-def sample(params, *, seeds, steps, context, heads, span, temperature, min_p):
-    """One batched run: [len(seeds)] independent walks, each drawing [steps] steps.
+def pick(weights, draw):
+    """the first class whose running total passes [draw]; the heaviest class when rounding
+    leaves no total that does"""
+    running = np.cumsum(weights, axis=1)
+    passed = running > draw[:, None]
+    return np.where(passed.any(axis=1), passed.argmax(axis=1), weights.argmax(axis=1))
 
-    Every element draws one token an iteration, so the histories stay the same length and
-    one array holds the window. A finished element appends END and consumes no draw, thus
-    its music equals the music of a run of its own."""
+
+def draw_frame(params, h, state, temperature, min_p, support=None):
+    """One step of the chained head, on the host: the soprano first, and each seat under it
+    reading the stream the seats above have written.
+
+    The chain is the reason a frame is a joint choice and not four independent ones. Seat 0
+    is the bass and seat 3 the soprano, thus the loop runs down.
+
+    Every walk of the batch draws. A step is one frame and never a sentence of its own
+    length, thus no walk of the batch finishes before another and none has to sit out a
+    draw while the rest go on."""
+    seats = np.asarray(params["seats"])
+    stream = h
+    frame = np.zeros((len(h), data.SEATS), dtype=np.int32)
+    for seat in reversed(range(data.SEATS)):
+        raw = (rms_norm(stream) @ seats[seat].T).astype(np.float64)
+        weights = temper(raw, temperature, min_p)
+        # the classes the floor leaves standing: what the knob really does to the draw,
+        # and the quantity that trades against a dull one
+        if support is not None:
+            support.append(float((weights > 0.0).sum(axis=1).mean()))
+        state, uniform = prng.uniform(state, True)
+        frame[:, seat] = pick(weights, uniform * weights.sum(axis=1))
+        if seat:
+            stream = stream + seats[seat][frame[:, seat]]
+    return state, frame
+
+
+def sample(
+    params, *, seeds, steps, context, heads, span, temperature, min_p, support=None
+):
+    """One batched run: [len(seeds)] independent walks of [steps] steps each.
+
+    The boot is a lead-in of silence: one bar of silent frames, then the draw. It is
+    measured and settled -- over 12 seeds the model opened the music itself inside one bar
+    of the end of the lead-in, always on a multiple of four steps -- thus the boot needs no
+    pitch, no range and no table. The lead-in counts inside [steps] and stands at the head
+    of the music, because it is silence the walk really plays."""
     batch = len(seeds)
     forward = jax.jit(
-        lambda codes, phases, buckets: model.logits(
-            params, codes, phases, buckets, heads=heads, span=span
+        lambda classes, phases: model.hidden(
+            params, classes, phases, heads=heads, span=span
         )
     )
     state = prng.states(seeds)
-    # The boot of docs/improviser.md: a silent lead-in of one bar, each step one END
-    # alone. Attention needs one token, and the packed corpus holds a run of silent steps
-    # at every seam, thus the model opens the music itself. The lead-in counts inside
-    # [steps] and stands at the head of the music, as it does in Transformer.sample.
     lead = model.PHASE_BUCKETS
-    ahead = np.arange(lead, dtype=np.int64)
-    codes = np.zeros((batch, lead), dtype=np.int32)  # END
-    phases = np.tile(ahead % model.PHASE_BUCKETS, (batch, 1)).astype(np.int32)
-    buckets = np.tile(
-        ahead // model.PROGRESS_STRIDE % model.PROGRESS_BUCKETS, (batch, 1)
-    ).astype(np.int32)
-    sounding = data.Sounding(batch)
-    step_index = np.full(batch, lead, dtype=np.int64)
-    music = [[[] for _ in range(steps)] for _ in range(batch)]
-    sentence = [[] for _ in range(batch)]
+    classes = np.zeros((batch, lead, data.SEATS), dtype=np.int32)
+    phases = np.tile(np.arange(lead) % model.PHASE_BUCKETS, (batch, 1)).astype(np.int32)
 
-    while True:
-        active = step_index < steps
-        if not active.any():
-            break
+    for step in range(lead, steps):
         # ONE shape for the whole run, or every window length compiles its own kernel --
         # the history is right-padded to [batch, context] and read at its last real
-        # position. The causal wall keeps a real token from seeing the padding, thus the
-        # row is the row the OCaml sampler computes from the bare window.
-        held = codes.shape[1]
+        # position. The causal wall keeps a real position from seeing the padding.
+        held = classes.shape[1]
         low = max(0, held - context)
         length = held - low
-        window = np.zeros((3, batch, context), dtype=np.int32)
-        window[0, :, :length] = codes[:, low:held]
-        window[1, :, :length] = phases[:, low:held]
-        window[2, :, :length] = buckets[:, low:held]
-        raw = np.asarray(
-            forward(
-                jnp.asarray(window[0]), jnp.asarray(window[1]), jnp.asarray(window[2])
-            )
-        )[:, length - 1, :].astype(np.float64)
+        window = np.zeros((batch, context, data.SEATS), dtype=np.int32)
+        window[:, :length] = classes[:, low:held]
+        table = np.zeros((batch, context), dtype=np.int32)
+        table[:, :length] = phases[:, low:held]
+        h = np.asarray(forward(jnp.asarray(window), jnp.asarray(table)))[
+            :, length - 1, :
+        ].astype(np.float64)
 
-        weights = temper(raw, sounding.legal(), temperature, min_p)
-        state, draw = prng.uniform(state, active)
-        code = np.where(active, pick(weights, draw * weights.sum(axis=1)), data.END)
-
-        for row in np.nonzero(active)[0]:
-            drawn = int(code[row])
-            if drawn == data.END:
-                music[row][step_index[row]] = sentence[row]
-                sentence[row] = []
-            else:
-                kind = "on" if drawn >= 128 else "off"
-                sentence[row].append((kind, drawn - 128 if kind == "on" else drawn))
-
-        sounding.step(code, active)
-        # the token carries the position of the step it belongs to, thus the END of a
-        # step takes that step's phase and the count rises after it
-        codes = np.concatenate([codes, code[:, None].astype(np.int32)], axis=1)
+        state, frame = draw_frame(params, h, state, temperature, min_p, support)
+        classes = np.concatenate([classes, frame[:, None, :]], axis=1)
         phases = np.concatenate(
-            [phases, (step_index % model.PHASE_BUCKETS)[:, None].astype(np.int32)], axis=1
+            [phases, np.full((batch, 1), step % model.PHASE_BUCKETS, np.int32)], axis=1
         )
-        bucket = step_index // model.PROGRESS_STRIDE % model.PROGRESS_BUCKETS
-        buckets = np.concatenate([buckets, bucket[:, None].astype(np.int32)], axis=1)
-        step_index = np.where(active & (code == data.END), step_index + 1, step_index)
-    return music
+    return classes
 
 
 def step_line(step, events):
-    """the line format of bin/play_transformer.ml, so that a diff is the gate"""
+    """the line format of bin/play_transformer.ml, so that a dump reads back"""
     return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
 
 
-def lines(music):
-    return [step_line(step, events) for step, events in enumerate(music)]
-
-
 def play(music, *, device, step_ms, channel, velocity):
-    """Send one walk to the synthesizer, as bin/play_transformer.ml does: raw channel
-    voice bytes on the rawmidi device. No backend library sits in the way, thus the wire
-    holds exactly what the OCaml player would put there."""
+    """Send one walk to the synthesizer: raw channel voice bytes on the rawmidi device."""
     ringing = set()
     with open(device, "wb", buffering=0) as wire:
         try:
             for step, events in enumerate(music):
-                # the player prints as it sends, as bin/play_transformer.ml does, so that
-                # the ear and the eye follow the same step
                 click.echo(step_line(step, events))
                 for kind, pitch in events:
                     if kind == "on":
@@ -169,8 +154,8 @@ def play(music, *, device, step_ms, channel, velocity):
 
 
 def save(music, path, *, step_ms, channel, velocity):
-    """Write one walk as a standard MIDI file. The step is the grid of the model, thus
-    one step is one tick here and the tempo carries [step_ms]."""
+    """one walk as a standard MIDI file: one step is one tick, and the tempo carries the
+    step period"""
     track = mido.MidiTrack()
     midi = mido.MidiFile(ticks_per_beat=4)
     midi.tracks.append(track)
@@ -192,38 +177,6 @@ def save(music, path, *, step_ms, channel, velocity):
     midi.save(path)
 
 
-def gate(checkpoint, music, seeds, options):
-    """Gate C: the batched draw must equal the OCaml sampler token for token.
-
-    Batched, because that is the mode the sweeps use and the mode that can go wrong -- a
-    finished element must consume no draw, or the walks behind it shift."""
-    root = Path(__file__).resolve().parents[2]
-    player = root / "_build" / "default" / "bin" / "play_transformer.exe"
-    if not player.exists():
-        click.echo(f"no {player}: run dune build")
-        return 1
-    bad = 0
-    for seed, drawn in zip(seeds, music):
-        argv = [str(player), "-ckpt", str(Path(checkpoint).resolve()), "-seed", str(seed)]
-        for flag, value in options.items():
-            argv += [flag, str(value)]
-        out = subprocess.run(
-            argv, capture_output=True, text=True, cwd=root, check=False
-        ).stdout
-        theirs = [line for line in out.splitlines() if line.startswith("step")]
-        ours = lines(drawn)
-        if theirs == ours:
-            click.echo(f"seed {seed:4d}: {len(ours)} steps identical")
-            continue
-        bad += 1
-        first = next((i for i, (a, b) in enumerate(zip(theirs, ours)) if a != b), None)
-        click.echo(f"seed {seed:4d}: DIFFERS first at step {first}")
-        if first is not None:
-            click.echo(f"   ocaml {theirs[first]}\n   jax   {ours[first]}")
-    click.echo("GATE C PASSED" if not bad else f"GATE C FAILED on {bad} of {len(seeds)}")
-    return bad
-
-
 def parse_seeds(ctx, param, value):
     """a list, or LOW-HIGH"""
     del ctx, param
@@ -236,26 +189,39 @@ def parse_seeds(ctx, param, value):
 @click.command(help=__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--seeds", default="1", callback=parse_seeds, help="a list, or LOW-HIGH")
-@click.option(
-    "--steps",
-    default=192,
-    help="steps to draw; with a progress model this is "
-    "also the length of the piece the host asks for",
-)
+@click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 @click.option("--context", default=256, help="must match the training run")
 @click.option("--heads", default=4, help="must match the training run")
 @click.option(
     "--alibi-span", default=model.SLOPE_SPAN, help="must match the training run"
 )
-@click.option("--temperature", default=0.9)
-@click.option("--min-p", default=1.0 / 256.0)
+# Elected by ear 2026-08-17 over a sweep of temperature 0.7 to 1.3 against min_p 0.0039
+# to 0.15, and the numbers agree with the ear at both edges, which is rare here. Hotter
+# draws more from the tail: at 1.2 the onset rate passes the corpus and the chords go
+# strange. A higher floor smooths the arrivals and costs the music: min_p 0.15 leaves
+# about one and a half classes standing at a draw, and it reads as dull and MORE silent --
+# silence 5.83 percent against 4.22, gaps 13.4 steps against 9.8, where the corpus gives
+# 4.19 and 9.9.
+@click.option("--temperature", default=1.0)
+@click.option("--min-p", default=0.05)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=DEVICE)
 @click.option("--step-ms", default=200)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
-@click.option("--gate", "run_gate", is_flag=True, help="check against the OCaml sampler")
+@click.option(
+    "--texture",
+    "texture_span",
+    type=int,
+    help="report the windowed texture at this span instead of the step lines",
+)
+@click.option(
+    "--corpus",
+    "corpus_path",
+    default=str(JAX_ROOT / "_data" / "frames.safetensors"),
+    help="the packed corpus that --texture measures against",
+)
 def main(
     ckpt,
     seeds,
@@ -271,10 +237,11 @@ def main(
     step_ms,
     channel,
     velocity,
-    run_gate,
+    texture_span,
+    corpus_path,
 ):
     params = model.load_params(ckpt)
-    music = sample(
+    walks = sample(
         params,
         seeds=seeds,
         steps=steps,
@@ -284,16 +251,32 @@ def main(
         temperature=temperature,
         min_p=min_p,
     )
-    if run_gate:
-        options = {
-            "-steps": steps,
-            "-heads": heads,
-            "-context": context,
-            "-alibi-span": alibi_span,
-            "-temperature": temperature,
-            "-min-p": min_p,
-        }
-        sys.exit(1 if gate(ckpt, music, seeds, options) else 0)
+    music = [data.decode(walk) for walk in walks]
+
+    if texture_span:
+        # both questions of measure.py, and the corpus row above each: does the texture
+        # hold over the windows, and does the walk arrive before it goes quiet?
+        split, corpus = measure.of_canonical_stream(corpus_path)
+        length = int(split.index[0, 1])
+        canonical = data.decode(split.classes[:length])
+        for index, row in enumerate(measure.windows(canonical, length)):
+            click.echo(measure.window_line("the packed corpus", index, row))
+        for seed, walk in zip(seeds, music):
+            for index, row in enumerate(measure.windows(walk, texture_span)):
+                click.echo(measure.window_line(f"seed {seed:4d} window", index, row))
+        click.echo("")
+        click.echo(measure.walk_line("the packed corpus", corpus))
+        rows = [measure.of_walk(walk) for walk in walks]
+        for seed, row in zip(seeds, rows):
+            click.echo(measure.walk_line(f"seed {seed:4d}", row))
+        if len(seeds) > 1:
+            click.echo(
+                measure.walk_line(
+                    "the mean",
+                    {name: measure.mean_of(rows, name) for name in rows[0]},
+                )
+            )
+        return
     if to_synth or to_file:
         if len(seeds) > 1:
             raise click.UsageError("--play and --save take one seed")
@@ -309,10 +292,10 @@ def main(
                 velocity=velocity,
             )
         return
-    for seed, drawn in zip(seeds, music):
+    for seed, walk in zip(seeds, music):
         if len(seeds) > 1:
             click.echo(f"# seed {seed}")
-        click.echo("\n".join(lines(drawn)))
+        click.echo("\n".join(step_line(step, events) for step, events in enumerate(walk)))
 
 
 if __name__ == "__main__":
