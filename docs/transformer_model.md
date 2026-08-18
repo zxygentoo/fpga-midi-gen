@@ -772,6 +772,28 @@ not the other way around.
    twin when a uniform lands near a boundary of the cumulative sum. It
    detects well and it diagnoses badly; the loss gate beside it is what
    says whether a mismatch is a fault or that straddle.
+
+   **Measured 2026-08-18: the first two links hold exactly.** The OCaml
+   model gives **1.6282 nats for each step** over the 75 canonical valid
+   windows, which is the `best valid 1.6282` of the training log over the
+   same windows. The two samplers draw **identical walks** at seeds 1 and
+   7, 256 steps each: 480 drawn steps, 1,920 draws, and every event of
+   the decode agrees, line for line. The straddle above is a real risk
+   and it did not happen — `Nx` and XLA hold the same float32 pass
+   closely enough that no uniform found a boundary.
+
+   One rule of the draw earned a part of that, and it belongs in this
+   document because both samplers must state it. **The draw takes the
+   uniform, and never a number the caller multiplied**: the total is the
+   last running total, and never a second sum of the same weights. Two
+   sums of one array differ in the last bits — the twin adds pairwise in
+   `sum` and left to right in `cumsum` — thus a draw made against the
+   other sum can land above every running total, where no class passes at
+   all. Against this total the draw is strictly below it, because the
+   uniform falls under 1 by 2 ** -24 at the least. Therefore a class
+   always passes, that class always holds the weight the floor left it,
+   and the fallback that each sampler carried for the case is gone. The
+   integer twin never had the case: its arithmetic is exact.
 5. **The circuit, the board and the socket.** The block design comes in
    its own document, as before, and **the socket changes here and not
    before it**. The new source gives a frame, thus `Source_intf` takes

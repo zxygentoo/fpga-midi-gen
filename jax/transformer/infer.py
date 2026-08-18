@@ -48,12 +48,22 @@ def temper(raw, temperature, min_p):
     return weights
 
 
-def pick(weights, draw):
-    """the first class whose running total passes [draw]; the heaviest class when rounding
-    leaves no total that does"""
+def pick(weights, uniform):
+    """The class whose running total passes the draw.
+
+    It takes the uniform and not a draw, thus one function owns both sums and the total is
+    the last running total -- never a second sum of the same weights. numpy adds pairwise in
+    sum() and left to right in cumsum(), thus two sums of one array differ in the last bits,
+    and a draw made against the other sum can land above every running total, where no class
+    passes at all.
+
+    Against this total the draw is strictly below it, because the uniform falls under 1 by
+    2**-24 at the least. Therefore the walk always ends on a class, and that class always
+    holds weight the floor left standing: to reach the last index is to know that no earlier
+    total passed, thus the weight there is the difference of two totals across the draw. No
+    fallback is necessary, and none is written."""
     running = np.cumsum(weights, axis=1)
-    passed = running > draw[:, None]
-    return np.where(passed.any(axis=1), passed.argmax(axis=1), weights.argmax(axis=1))
+    return (running > (uniform * running[:, -1])[:, None]).argmax(axis=1)
 
 
 def draw_frame(params, h, state, temperature, min_p, support=None):
@@ -77,7 +87,7 @@ def draw_frame(params, h, state, temperature, min_p, support=None):
         if support is not None:
             support.append(float((weights > 0.0).sum(axis=1).mean()))
         state, uniform = prng.uniform(state, True)
-        frame[:, seat] = pick(weights, uniform * weights.sum(axis=1))
+        frame[:, seat] = pick(weights, uniform)
         if seat:
             stream = stream + seats[seat][frame[:, seat]]
     return state, frame

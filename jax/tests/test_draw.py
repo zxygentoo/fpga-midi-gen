@@ -49,12 +49,16 @@ def test_pick_takes_the_first_class_whose_total_passes_the_draw():
     assert infer.pick(weights, np.array([0.75]))[0] == 9
 
 
-def test_pick_falls_to_the_heaviest_class_when_no_total_passes():
-    """a draw past every total is rounding, not a choice; it lands on the class that holds
-    the mass and never on one the floor cut away"""
+def test_pick_holds_the_top_of_the_uniform_range():
+    """The draw is the uniform times the LAST RUNNING TOTAL, thus it is strictly under that
+    total and a class always passes. A draw made against a second sum of the same weights --
+    numpy adds pairwise in sum() and left to right in cumsum() -- could land above every
+    running total, and then no class would pass and the pick would need a rule for it. The
+    classes above the mass weigh zero, thus a pick that fell off the end would state a class
+    the floor cut away."""
     weights = np.zeros((1, data.CLASSES))
     weights[0, 3] = 1.0
-    assert infer.pick(weights, np.array([2.0]))[0] == 3
+    assert infer.pick(weights, np.array([1.0 - 2.0**-24]))[0] == 3
 
 
 def test_pick_runs_each_row_of_the_batch_on_its_own():
