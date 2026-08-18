@@ -8,10 +8,9 @@
   hardcaml
   hardcaml_waveterm
   qcheck-core
-  mgen_core
-  mgen_pink)
+  mgen_core)
  (flags
-  (:standard -open Mgen_core -open Mgen_pink))
+  (:standard -open Mgen_core))
  (inline_tests
   (flags
    (:standard -source-tree-root .)))

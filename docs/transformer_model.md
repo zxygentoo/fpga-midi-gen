@@ -657,7 +657,8 @@ the loss to rank inside one encoding. The ear ranks across.
 easy, they dominate the mean, and they invite a second failure: a model
 that holds its chord for ever scores well on a mean and plays a drone.
 Report a second number over the steps where two or more voices move, and
-read `Texture` for the movement, not the loss.
+read the windowed texture of `jax/measure.py` for the movement, not the
+loss.
 
 **Numbers nominate; the ear elects.** Ten times in this project a metric
 has ranked a model against the ear. Two of the levers of this era — the
@@ -693,8 +694,9 @@ them:
 The corpus reader needs an expect test of a small chorale: the frames,
 the seam and the coordinate over the seam into the downbeat.
 
-`Texture` measures events and not frames, thus the frame walk reaches it
-through the decode. The instrument does not change.
+The decode has two implementations and they must agree: `Core.Frame` in
+OCaml and `data.decode` in JAX. The eight cases above are the expect
+test of the first and the unit test of the second.
 
 The stream comparison stays. The reference and the Cyclesim sequencer
 must give the same messages, byte for byte, from one seed.
@@ -730,14 +732,29 @@ bar whose reason is vestigial under the frame.
 The ear decides, and it decides on the host. The RTL follows the ear and
 not the other way around.
 
-1. **The JAX prototype.** DONE. `jax/transformer` holds the reader, the
-   model, the trainer, the sampler and the sweep.
-2. **The measurement.** DONE. `Texture` over long walks, twelve seeds,
-   against the canonical packed stream.
+1. **The JAX prototype.** DONE. `jax/transformer` holds the model, the
+   trainer and the sampler; `jax/data.py` holds the corpus and the
+   decode, and `jax/measure.py` the instruments.
+2. **The measurement.** DONE. The windowed texture over long walks,
+   twelve seeds, against the canonical packed stream.
 3. **The ear.** DONE, 2026-08-18. The frame wins.
-4. **The reference.** The reader, the decode and the model in OCaml,
-   with the gates of the project: the expect tests, the drift report and
-   the stream comparison.
+4. **The reference.** The decode is DONE: `Core.Frame` holds the wire
+   word and the rule, with the eight cases as its expect test. The
+   reader and the model in OCaml follow, with the gates of the project.
+
+   The gates are a chain, and each link is an equivalence and not a
+   judgement of the music: the OCaml float model against the JAX one, by
+   the drawn walk compared line for line and by the loss on a fixed batch
+   inside a tolerance; the quantized model against the OCaml float one,
+   by the drift report; and the circuit against the quantized model, by
+   the stream comparison, event for event. The ear elected the model
+   already, thus what these steps owe is that they did not change it.
+
+   The walk comparison is not exact by construction — two float
+   implementations differ in the last bits, and a draw parts from its
+   twin when a uniform lands near a boundary of the cumulative sum. It
+   detects well and it diagnoses badly; the loss gate beside it is what
+   says whether a mismatch is a fault or that straddle.
 5. **The socket, the sequencer and `Pink`.** This part stands alone and
    carries no risk to the model. It can happen at any time, and the
    Cyclesim comparison tests it.

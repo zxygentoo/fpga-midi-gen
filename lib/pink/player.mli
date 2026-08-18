@@ -13,13 +13,10 @@
     The player holds no time and no MIDI: the caller decides when a step and a gate come,
     and it gives each event a channel and a velocity. *)
 
-(** A note event of the performance. *)
-module Event : sig
-  type t =
-    | On of int (** the MIDI note *)
-    | Off of int (** the MIDI note *)
-  [@@deriving sexp_of]
-end
+(** A note event of the performance: [Frame.Event], which every source of this project
+    shares. An event names a pitch and whether the pitch starts or stops, and it is the
+    one thing a step can do to the synthesizer. *)
+module Event = Frame.Event
 
 type t
 

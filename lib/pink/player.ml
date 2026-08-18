@@ -1,11 +1,5 @@
 open Base
-
-module Event = struct
-  type t =
-    | On of int
-    | Off of int
-  [@@deriving sexp_of]
-end
+module Event = Frame.Event
 
 (* one voice of the performance: its re-strike policy, and the note that it holds *)
 module Voice = struct

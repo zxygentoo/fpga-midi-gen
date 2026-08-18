@@ -1,5 +1,5 @@
 (tests
- (names test_txn test_quantized_drift)
+ (names test_txn test_quantized_drift test_socket)
  (libraries
   base
   stdio
@@ -7,5 +7,6 @@
   qcheck-core
   mgen_core
   mgen_board
+  mgen_pink
   mgen_transformer
   mgen_nexys4))

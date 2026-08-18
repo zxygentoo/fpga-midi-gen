@@ -37,11 +37,4 @@
  (modules checkpoint_tool)
  (preprocess
   (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  nx
-  nx.io
-  mgen_corpus
-  mgen_transformer))
+ (libraries core core_unix core_unix.command_unix nx nx.io mgen_transformer))

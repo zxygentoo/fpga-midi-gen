@@ -45,7 +45,9 @@ type stream =
 (** the committed place of the corpus in this repository *)
 val default_path : string
 
-(** the voices of one step, which is the rows of the range table and the seats of a frame *)
+(** the voices of one step of this corpus: the rows of the range table. It equals
+    [Frame.voices] because a four-part chorale fills the four seats of the synthesizer,
+    and the two are different facts that happen to agree. *)
 val voices : int
 
 (** the steps of one bar on the sixteenth grid: the rows of the bar-phase table of the

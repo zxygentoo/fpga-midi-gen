@@ -114,19 +114,15 @@ let transpose ~by { cells; legal_shifts } =
   }
 ;;
 
-(* One voice code: bit 7 says the voice sounds and bits 6:0 hold the MIDI pitch, thus a
-   rest is [0x00] and the circuit reads the flag as a bit and not as a compare. *)
-let voice_code pitch = if pitch < 0 then 0x00 else 0x80 lor pitch
-
-(* The frame of one step: the four voice codes in one word, seat 0 in the low byte. The
-   file gives the soprano first and the fold shifts each code up, thus the soprano lands
-   in the high byte — seat 3 — and the bass takes seat 0. *)
+(* The frame of one step. [Frame] owns the word — the voice code, the seat order and the
+   decode — and this reader only turns the order around: the file gives the soprano first
+   and seat 0 is the lowest voice, thus the reversed cells land the bass in the low byte
+   and the soprano in seat 3. *)
 let frame_of_cells cells =
-  List.fold cells ~init:0 ~f:(fun frame pitch -> (frame lsl 8) lor voice_code pitch)
+  List.rev cells |> List.map ~f:Frame.code_of_pitch |> Frame.of_codes
 ;;
 
-(* a cleared frame is silence, which is what makes the seam and the boot cost no code *)
-let silent_frame = 0
+let silent_frame = Frame.silent
 
 (* the pitches that sound in one step, as a set: a unison is one pitch, as it is on the
    wire, and a rest is no pitch. The metre reads this and nothing else does — the frame

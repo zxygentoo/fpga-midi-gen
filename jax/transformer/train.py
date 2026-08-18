@@ -206,11 +206,10 @@ def main(
     eval_fn = make_eval(heads, alibi_span)
     count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
     corpus_steps = sum(int(split.index[row, 1]) for split, row in pool)
-    print(
+    click.echo(
         f"corpus: {len(pool)} pool streams, {corpus_steps} steps; eval rows: "
         f"{sum(len(b[0]) for b in train_eval)} train, "
-        f"{sum(len(b[0]) for b in valid_eval)} valid; parameters: {count}",
-        flush=True,
+        f"{sum(len(b[0]) for b in valid_eval)} valid; parameters: {count}"
     )
 
     best = float("inf")
@@ -232,10 +231,9 @@ def main(
             top.append((valid_all, step, jax.tree.map(np.asarray, params)))
             top.sort(key=lambda entry: entry[0])
             del top[average_top:]
-        print(
+        click.echo(
             f"step {step:5d}  eval  train {train_all:.4f} (moving {train_moving:.4f})"
-            f"  valid {valid_all:.4f} (moving {valid_moving:.4f}){mark}",
-            flush=True,
+            f"  valid {valid_all:.4f} (moving {valid_moving:.4f}){mark}"
         )
 
     for step in range(1, steps + 1):
@@ -258,27 +256,23 @@ def main(
         if step % log_every == 0 or step == 1:
             # the training number is nats for each step too: the mean over the predictions
             # times the four seats
-            print(
-                f"step {step:5d}  loss {data.SEATS * np.mean(losses):.4f}",
-                flush=True,
-            )
+            click.echo(f"step {step:5d}  loss {data.SEATS * np.mean(losses):.4f}")
             losses = []
         if step % eval_every == 0 or step == steps:
             evaluate(step, params)
 
     seconds = time.perf_counter() - started
-    print(
+    click.echo(
         f"time: {seconds:.0f} s, {seconds / steps * 1000:.0f} ms each step, "
-        f"the evaluations inside",
-        flush=True,
+        f"the evaluations inside"
     )
-    print(f"best valid {best:.4f}", flush=True)
+    click.echo(f"best valid {best:.4f}")
     if ckpt:
         if train_on == "all":
             save_checkpoint(ckpt, params)
-            print(f"checkpoint of the last step: {ckpt}", flush=True)
+            click.echo(f"checkpoint of the last step: {ckpt}")
         else:
-            print(f"checkpoint of the best: {ckpt}", flush=True)
+            click.echo(f"checkpoint of the best: {ckpt}")
         if average_top > 0 and top:
             averaged = jax.tree.map(
                 lambda *tensors: np.mean(np.stack(tensors), axis=0),
@@ -286,10 +280,9 @@ def main(
             )
             path = ckpt.replace(".ckpt", "-avg.ckpt")
             save_checkpoint(path, averaged)
-            print(
+            click.echo(
                 f"average of {len(top)} best snapshots "
-                f"(steps {[entry[1] for entry in top]}): {path}",
-                flush=True,
+                f"(steps {[entry[1] for entry in top]}): {path}"
             )
 
 
