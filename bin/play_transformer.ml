@@ -76,22 +76,49 @@ let play music ~device ~step_ms ~channel ~velocity =
       exit 1
   in
   let sounding = ref (Set.empty (module Int)) in
+  (* Ctrl-C must not leave a chord ringing on the synthesizer, and an exception cannot
+     carry that rule here.
+
+     Measured on 5.2.0+ox, 2026-08-18: a [Sys.Break] raised out of the blocking sleep of a
+     step is NOT caught by an enclosing handler. It reaches the top level with the notes
+     still sounding, thus [Stdlib.Sys.catch_break] with a [try] around the loop drains
+     nothing — and that is the idiom [play_pink] carries today.
+
+     The handler therefore states the exit code and nothing else. It touches no note: a
+     handler must be portable, thus it cannot hold the set of sounding pitches, and it has
+     no business writing to the wire while a step may be halfway through a message. The
+     loop reads the code at its next step and leaves by the ordinary road, where the drain
+     stands. The wait is one step at the most. *)
+  let stopped = Atomic.make 0 in
+  List.iter
+    [ Stdlib.Sys.sigint, 130; Stdlib.Sys.sigterm, 143 ]
+    ~f:(fun (signal, code) ->
+      ignore
+        (Stdlib.Sys.Safe.signal
+           signal
+           (Stdlib.Sys.Signal_handle (fun (_ : int) -> Atomic.set stopped code))
+         : Stdlib.Sys.signal_behavior));
   Exn.protect
     ~f:(fun () ->
-      List.iteri music ~f:(fun index events ->
-        print_step index events;
-        List.iter events ~f:(function
-          | Frame.Event.On note ->
-            Midi.send_note_on fd ~channel ~note ~velocity;
-            sounding := Set.add !sounding note
-          | Frame.Event.Off note ->
-            Midi.send_note_off fd ~channel ~note;
-            sounding := Set.remove !sounding note);
-        sleep_ms step_ms))
+      With_return.with_return (fun { return } ->
+        List.iteri music ~f:(fun index events ->
+          if Atomic.get stopped <> 0 then return ();
+          print_step index events;
+          List.iter events ~f:(function
+            | Frame.Event.On note ->
+              Midi.send_note_on fd ~channel ~note ~velocity;
+              sounding := Set.add !sounding note
+            | Frame.Event.Off note ->
+              Midi.send_note_off fd ~channel ~note;
+              sounding := Set.remove !sounding note);
+          sleep_ms step_ms)))
     ~finally:(fun () ->
       (* the drain: the walk ends with its chord still sounding, as a piece does, and the
          sequencer of the board releases the same way at a stop *)
-      Set.iter !sounding ~f:(fun note -> Midi.send_note_off fd ~channel ~note))
+      Set.iter !sounding ~f:(fun note -> Midi.send_note_off fd ~channel ~note));
+  match Atomic.get stopped with
+  | 0 -> ()
+  | code -> exit code
 ;;
 
 let command =
