@@ -211,3 +211,70 @@ answer that shipped was a mechanism and not music: every 256 steps the
 source releases the sounding pitches, clears its context and feeds START.
 And the QSPI flash holds a bitstream older than that correction. Era four
 takes both of them up.
+
+## 2026-08-19 — the frame model (feat/transformer-v2)
+
+One step of music is one 32-bit word. Era three spoke a sentence of note
+events for each step and held a legality mask before the softmax to keep it
+valid; era four states the whole sonority at one time — four voice bytes,
+bit 7 for SOUNDS and bits 6:0 for the pitch, seat 0 in the low byte, and a
+cleared word is silence. The grammar goes with the sentence, because a frame
+cannot name five voices or hold one pitch two times, thus the mask, the END
+token and the ordering rule are all unnecessary. The sequencer holds the set
+of pitches that sound and the frame states the set that must sound: it sends
+the releases and then the strikes, and it composes nothing. The re-anchor of
+era three goes too — this walk does not decay. The model is
+`_train/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt` at valid 1.6282, elected
+by ear and not the lowest number of the sweep, because the finding of the
+era is the variance and not the mean: ALiBi span 4 holds a standard
+deviation of 0.0016 against 0.0108 at span 8, replicated at two step
+budgets, because steep slopes confine every head to the bar while gentle
+ones let each seed latch onto whatever distant structure its init favours.
+The design is `docs/transformer_v2.md`.
+
+On the board, six layers: timing met at +0.059 ns, 3,061 LUTs, 126 block RAM
+tiles of 135, 2 DSPs. Two measurements paid for that margin. A `Switch` in
+the `Always` DSL becomes one parallel case only when each match is a
+constant, and a chain of guards becomes one mux level for each statement
+that writes a target — the slot guards of the sequencer and a serial fold
+cost 1.49 ns together. And a combinational ROM address let synthesis retime
+each bank's data register onto the block RAM address pins and rebuild the
+op-dispatch address cone inside every leaf primitive, which was the whole
+layer scaling of the source; one registered address stage before the bank
+tree took it from 3,466 to 2,352 LUTs at six layers, with the latency
+unchanged. The bitstream is in the QSPI flash. One musical fault stays open:
+only 67 to 73 percent of the silences follow a sonority held six steps or
+more, against 99.2 percent in the corpus, thus the music stops without
+arriving.
+
+## 2026-08-19 — the board simplification (feat/board-simp)
+
+The doorbell goes. It was the bring-up tool of the first entry of this log,
+when the board could not otherwise make a note; a model that plays on one
+push of the button is the better test. `Midi_merge` then holds one source
+and no rule to apply, and `Midi_out` then holds one producer and one sink,
+thus the transmitter moves into `Socket`: the seat takes the parameter views
+and gives the line, the message interface stays inside it, and the top level
+wires no handshake for MIDI. The cells MIDI_MSG, MIDI_LEN and MIDI_GO go,
+and the two reserved bytes of era one's GATE_MS go with them; the section
+compacts to nine cells, thus each cell has a view and no cell is a strobe.
+The board shows two things: the run state on led0 and MIDI activity on led1.
+The heartbeat showed only that the clock ran, and the two UART lamps
+answered "is the wire alive", which the host answers better and answers with
+a reason. The run lamp stays beside the MIDI lamp, because the model is
+silent through the lead-in of one bar.
+
+One test lost its subject. `test/test_txn.ml` proved a byte of the host on
+the MIDI line at 31250 baud, and the model cannot replace it, because the
+first note comes a lead-in and a draw after the run start, which is millions
+of cycles of the board clock. The test now states the inverse: RUN rests at
+0, thus the line carries no byte and JD keeps its no-current level.
+`Midi_out` proves the line format, and `test_socket` proves the message
+stream — it decodes the true transmitter now, and its expect file did not
+change. On the board: timing met at +0.113 ns from +0.059, 2,991 LUTs from
+3,061, 1,501 flip-flops from 1,646, block RAM unchanged at 126, and 262
+setup endpoints fewer. Both `phys_opt_design` passes now find no setup
+violation and change no netlist, thus the pass that era four needed is
+insurance; `build.tcl` keeps it and carries both measurements. The bitstream
+is in the QSPI flash, and a dump from the flash-booted image is the nine
+bytes of the simulation.
