@@ -37,7 +37,7 @@ module I : sig
     ; clear : 'a
     ; params : 'a Control_regs.Params.t (** the named views; each one is stable *)
     ; source : 'a Source_intf.O.t (** the outputs of the note source *)
-    ; midi_ready : 'a (** from [Midi_merge]: 1 when the MIDI path takes the message *)
+    ; midi_ready : 'a (** from [Midi_out]: 1 when the line takes the message *)
     }
   [@@deriving hardcaml]
 end

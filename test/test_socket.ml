@@ -10,11 +10,15 @@
    board would then depend on every model it carries. The socket is the abstraction that
    keeps it from having to.
 
-   The gate: the circuit sends the messages that [Frame.events_of_frames] states over the
-   frames of [Quantized.Engine], byte for byte and in order, and a second run from the
-   same seed repeats the first. The two halves of the model path are proved separately —
-   [Source] gives the same frames as the engine, and this gives the same messages as the
-   frames — thus a failure here names the sequencer and not the network.
+   The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
+   states over the frames of [Quantized.Engine], byte for byte and in order, and a second
+   run from the same seed repeats the first. The two halves of the model path are proved
+   separately — [Source] gives the same frames as the engine, and this gives the same
+   messages as the frames — thus a failure here names the sequencer and not the network.
+
+   The seat holds the transmitter, thus the test reads the line and not a message wire: it
+   decodes the waveform with the software receiver, at a baud divisor short enough that a
+   step carries its messages.
 
    **The run stop is a silent frame.** The reference states it by playing one more frame,
    which is the whole rule the sequencer keeps. *)
@@ -36,31 +40,42 @@ let model = Quantized.Model.For_test.(init config ~seed:11)
 let clocks_per_ms = 4
 let step_ms = 9000
 
-(* The harness drives the parameter views directly and takes every message. [play] runs
-   one whole run of [steps] steps: run to 1, then run to 0 in the middle of the last step,
-   then the drain. *)
+(* One step sends at most eight messages, which is 240 bit times; the step period below is
+   36 000 cycles, thus the line is never the thing that holds a step. *)
+let clocks_per_bit = 4
+
+(* The harness drives the parameter views directly and samples the line in each cycle.
+   [play] runs one whole run of [steps] steps: run to 1, then run to 0 in the middle of
+   the last step, then the drain; it gives the messages that the line carried. *)
 let harness () =
   let open Hardcaml in
   let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
   let sim =
     Sim.create (fun (i : _ Socket.I.t) ->
-      Socket.create ~clocks_per_ms ~source:(Source.create ~model ~seed:i.params.seed) i)
+      Socket.create
+        ~clocks_per_ms
+        ~clocks_per_bit
+        ~source:(Source.create ~model ~seed:i.params.seed)
+        i)
   in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  inp.midi_ready := Bits.vdd;
   let set field value = field := Bits.of_unsigned_int ~width:(Bits.width !field) value in
-  let messages = ref [] in
+  let wave = Buffer.create (1024 * 1024) in
   let cycle () =
     Cyclesim.cycle sim;
-    if Bits.to_bool !(out.midi.valid)
-    then (
-      let data = Bits.to_int_trunc !(out.midi.data) in
-      messages
-      := [ data land 0xff; (data lsr 8) land 0xff; (data lsr 16) land 0xff ] :: !messages)
+    Buffer.add_char wave (if Bits.to_bool !(out.serial) then '1' else '0')
+  in
+  (* every message of the sequencer is three bytes, thus the byte stream of the line
+     divides into messages with no ambiguity *)
+  let messages () =
+    Mgen_board.Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit
+    |> Bytes.to_list
+    |> List.map ~f:Char.to_int
+    |> List.chunks_of ~length:Midi.max_message_bytes
   in
   let play ~steps =
-    messages := [];
+    Buffer.clear wave;
     let period = clocks_per_ms * Bits.to_int_trunc !(inp.params.step_ms) in
     set inp.params.run 1;
     for _ = 1 to ((steps - 1) * period) + (period / 2) do
@@ -70,7 +85,7 @@ let harness () =
     for _ = 1 to 2 * period do
       cycle ()
     done;
-    List.rev !messages
+    messages ()
   in
   inp, set, play
 ;;

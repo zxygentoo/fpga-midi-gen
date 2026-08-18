@@ -155,7 +155,7 @@ let%expect_test "a read, with the wire vectors of the hardware session" =
   [%expect {|
     response frame 02 81 02 64 00
     ok 64
-    sent 04 01 09 01 00
+    sent 04 01 04 01 00
     |}]
 ;;
 

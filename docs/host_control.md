@@ -12,28 +12,24 @@ two things:
 ## The control registers
 
 The control registers are the local storage of the control unit in the
-FPGA. There are 16 of them, each one 8 bits. They are not a window into a
+FPGA. There are 9 of them, each one 8 bits. They are not a window into a
 larger memory: they are the complete state that the host can touch.
 
 The wire protocol gives one byte of address to each register, from `00` to
-`0F`. An access that touches an address outside this range gets STATUS
+`08`. An access that touches an address outside this range gets STATUS
 `02`, and the FPGA changes no register.
 
-One read at `00` with length 16 gets each register in one transaction.
+One read at `00` with length 9 gets each register in one transaction.
 
 The registers:
 
 | Address | Name | Content | Default |
 |---|---|---|---|
-| `0F` | RUN | the run state, bit 0 | 0 |
-| `0E` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
-| `0C`–`0D` | STEP_MS | step period in ms, minimum 1 | 200 |
-| `0A`–`0B` | — | reserved (era one: GATE_MS) | 0 |
-| `09` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `05`–`08` | SEED | PRNG seed, 32 bits, not 0 | 42 |
-| `04` | MIDI_GO | write: bit 0 = 1 sends the test message. Read: 1 while a message waits | 0 |
-| `03` | MIDI_LEN | length of the test message, 1 to 3 | 0 |
-| `00`–`02` | MIDI_MSG | the test message bytes | 0 |
+| `08` | RUN | the run state, bit 0 | 0 |
+| `07` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
+| `05`–`06` | STEP_MS | step period in ms, minimum 1 | 200 |
+| `04` | VELOCITY | note velocity, 1 to 127 | 100 |
+| `00`–`03` | SEED | PRNG seed, 32 bits, not 0 | 42 |
 
 Semantics:
 
@@ -48,17 +44,10 @@ Semantics:
   CHANNEL and VELOCITY apply to all four, and their note registers are
   disjoint: a Note Off releases a voice by pitch, thus two voices must
   never hold one pitch.
-- The default CHANNEL is 2, because the S-1 receives on channel 3. CHANNEL
-  applies to the model messages only. A test message is raw bytes, and the
-  driver sets its channel.
+- The default CHANNEL is 2, because the S-1 receives on channel 3.
 - A Note Off uses the channel of its Note On, and not the current CHANNEL.
   Therefore a CHANNEL write during an open note cannot leave the note hang
   on the old channel.
-- Addresses `0A`–`0B` are reserved. Era one used them for GATE_MS, the
-  gate time of the highest voice; era three removed the gate, because
-  the sequencer sends a Note Off only to keep its state true and does
-  not shape the music. A write stores bytes that nothing reads, and the
-  power-on value is 0.
 - One step sends at most two messages for each voice, which is about 7.7 ms
   of line time. A step that is shorter than its messages stretches to fit
   them. Therefore STEP_MS below about 8 does not make the step faster.
@@ -69,29 +58,16 @@ Semantics:
   reads SEED one time. A write to SEED during a run applies at the next run
   start. Therefore one run plays one sequence, and the same seed replays
   it.
-- The MIDI_MSG cells are the test-message doorbell. The host writes
-  MIDI_MSG and MIDI_LEN, then writes a value with bit 0 = 1 to MIDI_GO.
-  The FPGA sends the message to the MIDI output. A write with bit 0 = 0
-  does not send. Because a write applies at one time, one write of 5 bytes
-  at `00` does the complete operation: the payload, the length, and the
-  send.
-- The FPGA ignores the send bit while a message waits, and also when
-  MIDI_LEN is not 1 to 3. MIDI_GO reads 1 from the ring until the MIDI
-  transmitter takes the message, and not until the last byte is on the
-  line. The driver reads MIDI_GO as 0 to know that the FPGA accepts the
-  subsequent ring.
-- The FPGA takes a copy of MIDI_MSG and MIDI_LEN at the ring. Therefore a
-  write to those cells after MIDI_GO reads 0 cannot damage a message that
-  is on the line.
-
 The MIDI output:
 
-- The FPGA merges the model output and the test messages at message
-  boundaries only.
+- The model is the only source of MIDI. The host cannot put a byte on the
+  line: it starts a run, and the run states the music. Era one to era three
+  had a test-message doorbell at cells `00`–`04`, because the board could
+  not otherwise make a note; a model that plays on one button push is the
+  better test, thus the doorbell went away with era four.
 - The FPGA does not use running status.
-- The MIDI output is 31250 baud. The model and the doorbell together stay
-  far below this rate, thus the output queue cannot overflow in correct
-  operation.
+- The MIDI output is 31250 baud. The model stays far below this rate, thus
+  the line cannot overflow in correct operation.
 
 ## The wire protocol
 
@@ -137,9 +113,7 @@ Rules:
   frame that does not decode. It sends no response for these frames.
 - A driver decides how long it waits for a response, and it can send the
   request again. This is safe, because each read and each write is
-  idempotent. The one exception is a write that covers MIDI_GO: it sends the
-  test message again. A duplicate test message is acceptable, because test
-  messages are a debug tool.
+  idempotent: no cell is a strobe.
 - A write reply comes after the write is complete. Therefore a read-back
   after a write shows the true state. The driver can verify each write with
   a read-back.

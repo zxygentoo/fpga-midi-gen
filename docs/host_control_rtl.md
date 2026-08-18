@@ -9,6 +9,15 @@ each block.
 This design changes three rules of the host control. The section "Changes to
 the host control" lists them. Correct that document with the code.
 
+**Era four removed the doorbell.** The host cannot put a byte on the MIDI
+line: the model is the only source, and one button push plays it. Therefore
+`Midi_merge` went away, `Midi_out` moved into the model seat, and the cells
+MIDI_MSG, MIDI_LEN and MIDI_GO went away with them. The sections below state
+the board as it is. The sections "The problem", "The cost", "What this
+design does not do", "Changes to the host control" and "The steps" are the
+record of the era-one redesign: they name the doorbell, because it was
+there, and their numbers are the numbers of that build.
+
 ## The problem
 
 The wire protocol gives an address to each control cell, thus the first
@@ -47,33 +56,24 @@ second source of MIDI messages.
              │ Control_port │   read_address     │ Control_regs │◀── run_toggle
   RsTx ◀─────│  (protocol)  │───────────────────▶│   (state)    │
              │              │◀── read_data ──────│              │
-             └──────────────┘                    └──┬────────┬──┘
-                                                    │        │
-                                             params │        │ doorbell
-                                                    ▼        │
-                                             ┌──────────┐    │
-                                             │  Model   │    │
-                                             │ (later)  │    │
-                                             └────┬─────┘    │
-                                                  │ model    │
-                                                  ▼          ▼
-                                               ┌────────────────┐
-                                               │   Midi_merge   │
-                                               │   (priority)   │
-                                               └───────┬────────┘
-                                                       │ out
-                                                       ▼
-                                               ┌────────────────┐
-                                               │    Midi_out    │──▶ JD[0]
-                                               │ message to line│
-                                               └────────────────┘
+             └──────────────┘                    └──────┬───────┘
+                                                        │
+                                                 params │
+                                                        ▼
+                                             ┌────────────────────┐
+                                             │       Socket       │
+                                             │ ┌────────┐         │
+                                             │ │ Source │◀──▶ Seq │
+                                             │ └────────┘      │  │
+                                             │            Midi_out│──▶ JD[0]
+                                             └────────────────────┘
 ```
 
 | Block | It owns |
 |---|---|
 | `Control_port` | the wire protocol: the COBS decode, the frame buffer, the header checks, and the response |
-| `Control_regs` | the control cells: the storage, the write decode, the named views, the value that each cell reads as, and the doorbell source |
-| `Midi_merge` | which source gives the next message |
+| `Control_regs` | the control cells: the storage, the write decode, the named views, and the value that each cell reads as |
+| `Socket` | the model seat: a source, the sequencer that drives it, and the line that carries its messages |
 | `Midi_out` | one message to the MIDI line, and the transmitter |
 
 `Regfile` goes away. No other block needs it, because a control cell is not
@@ -106,17 +106,16 @@ cycle in which `valid` and the `ready` of the sink are both 1. After that
 cycle the source is free. When `valid` is 0, `data` and `len` have no
 meaning, and a waveform can show any value in them.
 
-The simulation names the ports of a nested message `doorbell$data`,
-`model$valid`, `out$len`, and so on.
+The simulation names the ports of a nested message `message$data`,
+`midi$valid`, and so on.
 
 A message and not a byte stream: therefore a source cannot put its bytes
-between the bytes of another source. The merge at message boundaries is the
-shape of the interface, and not a rule that a source must obey.
+between the bytes of another source. One source states one whole message,
+and that is the shape of the interface.
 
 The limit of 3 bytes covers each channel voice message and each real-time
-message. A System Exclusive message does not fit. A later design can add a
-byte-stream source for it, and the merge rule then applies to that source
-alone.
+message. A System Exclusive message does not fit. A later design that needs
+one adds a byte-stream source beside this interface.
 
 `Midi` is also the home of the MIDI status bytes that the model needs, and
 it makes the bytes of a channel voice message. Therefore no other block
@@ -132,7 +131,6 @@ module Params = struct
     { run : 'a [@bits 1] (** the run state *)
     ; channel : 'a [@bits 4] (** the MIDI channel of the model, 0 to 15 *)
     ; step_ms : 'a [@bits 16] (** the step period in ms *)
-    ; gate_ms : 'a [@bits 16] (** the gate time in ms *)
     ; velocity : 'a [@bits 8] (** the note velocity *)
     ; seed : 'a [@bits 32] (** the PRNG seed *)
     }
@@ -151,8 +149,6 @@ module I = struct
     (** the cell index that [read_data] answers *)
     ; run_toggle : 'a
     (** a strobe from the board button: invert bit 0 of RUN *)
-    ; doorbell_ready : 'a
-    (** from [Midi_merge]: 1 when the MIDI path takes the doorbell message *)
     }
   [@@deriving hardcaml]
 end
@@ -161,22 +157,20 @@ module O = struct
   type 'a t =
     { params : 'a Params.t (** the named views; each one is stable *)
     ; read_data : 'a [@bits 8] (** the byte at [read_address] *)
-    ; doorbell : 'a Midi.Rtl.Message.t (** the test message, as a message source *)
     }
   [@@deriving hardcaml]
 end
 ```
 
-The storage is 16 8-bit cells, and the write decode is uniform. The output
+The storage is 9 8-bit cells, and the write decode is uniform. The output
 is a set of named views with the natural width of each value.
 
 A consumer reads a view. A consumer never sees a byte, and no consumer
 needs an address. The uniform byte array keeps the write decode simple, and
 the views keep the consumers simple.
 
-`Params` holds the parameters of the model, and nothing else. MIDI_MSG,
-MIDI_LEN and MIDI_GO have no view: no block outside `Control_regs` reads
-them, because the block gives the doorbell as a message source.
+`Params` holds the parameters of the model, and each cell is in it: the
+section carries the model state and nothing else.
 
 `Params` is a nested interface. Thus the simulation names its ports
 `params$run`, `params$step_ms`, and so on. Only the top level becomes a
@@ -191,25 +185,6 @@ The strobe that tells a PRNG to load the seed is not here. Its behavior is
 not settled — a load at each write and a load at the start of a run are both
 reasonable — and it comes with the model that consumes it.
 
-### The doorbell
-
-The doorbell is a cell behavior, thus it stays with the cells. The block
-holds the message latch and the pending flag, and it gives an ordinary
-message source. Nothing in the MIDI path knows that the doorbell is
-special.
-
-- At a commit that covers MIDI_GO with bit 0 set, and with MIDI_LEN in 1 to
-  3, and with no message pending: the block copies MIDI_MSG and MIDI_LEN
-  into the latch and sets pending.
-- `doorbell.valid` is the pending flag, and `doorbell.data` and
-  `doorbell.len` are the latch.
-- At the transfer, which is `doorbell.valid` and `doorbell_ready` together,
-  the block clears pending.
-- A read of MIDI_GO gives the pending flag.
-
-The latch is the reason a write to MIDI_MSG cannot damage a message that
-waits. The block reads the cells one time, at the ring.
-
 ### The defaults
 
 Each live cell register takes `~initialize_to` and `~clear_to` with its
@@ -223,7 +198,7 @@ makes this the INIT attribute of the flip-flop.
 ### The atomic commit
 
 `Control_port` writes one byte in each cycle into a shadow copy. At the end
-of the burst it strobes `commit`, and the block copies all 16 shadow bytes
+of the burst it strobes `commit`, and the block copies all 9 shadow bytes
 into the live cells in one cycle.
 
 The shadow follows the live cells when `write_enable` and `commit` are both
@@ -234,8 +209,8 @@ Therefore a view never shows a part of one write and a part of the next. A
 16-bit or 32-bit value has no torn state, and a consumer does not have to
 know when the port is idle.
 
-The block clears the stored MIDI_GO after each commit. Thus the stored
-value is 1 only in the commit cycle of a burst that rang the doorbell.
+Each cell holds a value, thus no cell is a strobe and each write is
+idempotent.
 
 ### The cost
 
@@ -290,7 +265,6 @@ module O = struct
     ; write_data : 'a [@bits 8] (** the byte to write *)
     ; commit : 'a (** a strobe at the end of the burst *)
     ; read_address : 'a [@bits cell_bits] (** the cell index to read *)
-    ; busy : 'a (** 1 while a transaction is in progress *)
     }
   [@@deriving hardcaml]
 end
@@ -305,11 +279,9 @@ end
 - the `midi_data` and `midi_valid` outputs
 - the `Init` state, `init_index` and the defaults mux
 - the assertion `max_midi_len = 3`
-
-`busy` replaces the `state` output. The `Init` state goes away with the
-defaults, thus only `Ready` and `Busy` are left, and one bit gives them.
-`busy` no longer tells a consumer when to sample a cell, because the atomic
-commit makes each view stable. It is a diagnostic.
+- the `state` output, and the `busy` bit that replaced it: the atomic
+  commit makes each view stable, thus no consumer waits for the port, and
+  era four took the LED that showed it
 
 The response path is the only user of `read_address` and `read_data`,
 therefore no other block waits for it.
@@ -318,57 +290,6 @@ The names have no prefix, because the cells are the one thing that this
 block reads and writes. The stream side is `in_data` and `out_data`.
 Therefore `Control_port.O` and `Control_regs.I` agree field for field, and
 a wrong connection is easy to see.
-
-## Midi_merge
-
-### The interface
-
-```ocaml
-module I = struct
-  type 'a t =
-    { doorbell : 'a Midi.Rtl.Message.t (** the test-message source *)
-    ; model : 'a Midi.Rtl.Message.t (** the model source *)
-    ; out_ready : 'a (** from [Midi_out]: 1 when it can take a message *)
-    }
-  [@@deriving hardcaml]
-end
-
-module O = struct
-  type 'a t =
-    { out : 'a Midi.Rtl.Message.t (** the message of the source that has the grant *)
-    ; doorbell_ready : 'a (** 1 when [Midi_out] takes the doorbell message *)
-    ; model_ready : 'a (** 1 when [Midi_out] takes the model message *)
-    }
-  [@@deriving hardcaml]
-end
-```
-
-The block has no state, therefore it has no clock and no clear. It is a
-priority mux, and the `ready` of `Midi_out` goes back to the source that
-has the grant:
-
-```
-granted_doorbell = doorbell.valid
-granted_model    = model.valid &: ~:(doorbell.valid)
-
-out.data  = mux2 granted_doorbell doorbell.data model.data
-out.len   = mux2 granted_doorbell doorbell.len  model.len
-out.valid = doorbell.valid |: model.valid
-
-doorbell_ready = out_ready &: granted_doorbell
-model_ready    = out_ready &: granted_model
-```
-
-The doorbell has the priority. The host waits in a poll loop, and the model
-accepts a delay of one millisecond. A manual debug action is too rare to
-stop the model.
-
-`Midi_out` holds `ready` at 0 for the full length of a send. Therefore no
-other source can put a message between the bytes of the message that goes
-out, and the merge needs no state to make this true.
-
-A later fairness rule, or a third source, gives this block state, and then
-it takes a clock.
 
 ## Midi_out
 
@@ -404,6 +325,10 @@ The block holds the transmitter, at 31250 baud, and it drives the MIDI line
 directly. `clocks_per_bit` is an elaboration parameter, as it is for
 `Uart_tx` today.
 
+`Socket` holds this block, because the sequencer is the one source of MIDI
+and the line is where its messages go. Therefore the message interface
+stays inside the seat, and the top level wires no handshake for it.
+
 ## The top level
 
 The pins do not change: `clk`, `btnCpuReset` and `RsRx` are the inputs, and
@@ -413,29 +338,29 @@ The LEDs:
 
 | LED | Content |
 |---|---|
-| 0 | the heartbeat |
-| 1 | RsRx activity |
-| 2 | RsTx activity |
-| 3 | MIDI activity |
-| 4 | `busy` of `Control_port` |
-| 5 to 15 | 0 |
+| 0 | the run state |
+| 1 | MIDI activity |
+| 2 to 15 | 0 |
 
-The top level ties `run_toggle` to 0, and it ties `model.valid` to 0.
+Era one to era three showed six things: a heartbeat, the two UART lines,
+the MIDI line, the `busy` bit of the port and the run state. Era four keeps
+two. The heartbeat showed only that the clock ran, and the three activity
+lamps answered "is the wire alive", which the host answers better and
+answers with a reason. The run state stays beside the MIDI lamp, because
+the two are not one fact: the model is silent through the lead-in of one
+bar, thus `led 0` answers "did the push take" while `led 1` is dark.
 
 ## The connections
 
-Three paths go in both directions between the blocks:
+One path goes in both directions between the blocks: `Control_port` gives
+`read_address` and takes `read_data`. It is a chain and not a loop, because
+`read_address` comes from a register in `Control_port`. Make the connection
+with a `wire` and an `assign`, as `top.ml` does for `tx_busy` today.
 
-- `Control_port` gives `read_address` and takes `read_data`.
-- `Control_regs` gives `doorbell` and takes `doorbell_ready`.
-- `Midi_merge` gives `out` and takes `out_ready`.
-
-Each path is a chain and not a loop. `read_address` comes from a register
-in `Control_port`. `doorbell.valid` is the pending flag, a register in
-`Control_regs`. `out_ready` comes from a register in `Midi_out`.
-`Midi_merge` is combinational between two registered ends. Make each
-connection with a `wire` and an `assign`, as `top.ml` does for `tx_busy`
-today.
+The MIDI path is a chain to the pin, thus the top level makes no wire for
+it: `Socket` gives the line and `JD[0]` takes it. The two handshakes inside
+the seat — the source strobes and the `ready` of `Midi_out` — are wires of
+`Socket`, and each far end is a register.
 
 An interface field name must not be in `I` and in `O` of the same block. A
 collision fails only when the block becomes a circuit, in a

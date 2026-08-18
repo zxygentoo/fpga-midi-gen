@@ -40,7 +40,6 @@ module O = struct
     ; write_data : 'a [@bits 8]
     ; commit : 'a
     ; read_address : 'a [@bits cell_bits]
-    ; busy : 'a
     }
   [@@deriving hardcaml]
 end
@@ -234,14 +233,11 @@ let create (i : _ I.t) : _ O.t =
   ; write_data = payload_byte
   ; commit = sm.is Commit
   ; read_address
-  ; busy = ~:(sm.is Receive)
   }
 ;;
 
 (* The test harness: the port with the cells that answer it, as the top level wires them.
-   The port needs a cell array to talk to, and the real block cannot drift from itself.
-   The doorbell is a behavior of the cells, thus [Control_regs] tests the ring and this
-   harness only holds its sink ready. *)
+   The port needs a cell array to talk to, and the real block cannot drift from itself. *)
 
 module Harness_i = struct
   type 'a t =
@@ -258,7 +254,6 @@ module Harness_o = struct
   type 'a t =
     { out_data : 'a [@bits 8]
     ; out_valid : 'a
-    ; busy : 'a
         (* the cell port, so that a waveform test can show the walk and the commit *)
     ; write_enable : 'a
     ; write_address : 'a [@bits cell_bits]
@@ -290,13 +285,11 @@ let harness (h : _ Harness_i.t) : _ Harness_o.t =
       ; commit = port.commit
       ; read_address = port.read_address
       ; run_toggle = gnd
-      ; doorbell_ready = vdd
       }
   in
   assign read_data regs.read_data;
   { Harness_o.out_data = port.out_data
   ; out_valid = port.out_valid
-  ; busy = port.busy
   ; write_enable = port.write_enable
   ; write_address = port.write_address
   ; write_data = port.write_data
@@ -366,7 +359,7 @@ let%expect_test "transactions against the cells" =
   transact
     (Control_frame.encode_request
        (Read { addr = Control_intf.Reg.base; len = Control_intf.Reg.size }));
-  [%expect {| op 1 status ok data 00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00 |}];
+  [%expect {| op 1 status ok data 2a 00 00 00 64 c8 00 02 00 |}];
   (* write, then read back *)
   transact
     (Control_frame.encode_request
@@ -459,9 +452,9 @@ let%expect_test "the payload bound" =
 
 let%expect_test "the waveform of a write and its commit" =
   (* a two-byte write to STEP_MS. [Apply] fills the shadow copy one byte in each cycle,
-     and the [Commit] state moves the whole burst at one time. [busy] is the envelope of
-     the transaction. The window opens at the tail of the request frame. The fsm tags
-     follow [Fsm.t]: Recv Parse Apply Cmit Rspnd Send. *)
+     and the [Commit] state moves the whole burst at one time. The window opens at the
+     tail of the request frame, and the fsm row is the envelope of the transaction. The
+     tags follow [Fsm.t]: Recv Parse Apply Cmit Rspnd Send. *)
   let module Sim = Cyclesim.With_interface (Harness_i) (Harness_o) in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all harness in
   let waves, sim = Cyclesim.Waveform.create sim in
@@ -487,7 +480,7 @@ let%expect_test "the waveform of a write and its commit" =
         "fsm"
         ~wave_format:
           (Wave_format.Index [ "Recv"; "Parse"; "Apply"; "Cmit"; "Rspnd"; "Send" ])
-    ; signals [ "write_enable"; "write_address"; "write_data"; "commit"; "busy" ]
+    ; signals [ "write_enable"; "write_address"; "write_data"; "commit" ]
     ]
   in
   Hardcaml_waveterm.Waveform.expect
@@ -512,15 +505,13 @@ let%expect_test "the waveform of a write and its commit" =
     │write_enable   ││            ┌───────────┐                          │
     │               ││────────────┘           └──────────────────────────│
     │               ││──────────────────┬─────┬──────────────────────────│
-    │write_address  ││ C                │D    │E                         │
+    │write_address  ││ 5                │6    │7                         │
     │               ││──────────────────┴─────┴──────────────────────────│
     │               ││──────────────────┬─────┬──────────────────────────│
     │write_data     ││ 11               │22   │00                        │
     │               ││──────────────────┴─────┴──────────────────────────│
     │commit         ││                        ┌─────┐                    │
     │               ││────────────────────────┘     └────────────────────│
-    │busy           ││      ┌────────────────────────────────────────────│
-    │               ││──────┘                                            │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]
 ;;

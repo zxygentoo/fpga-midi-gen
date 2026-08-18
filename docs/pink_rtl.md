@@ -14,7 +14,10 @@ the rule that makes note events from the steps of the model, and `Sequencer`
 does the same on the wire. Therefore the same seed gives the same notes and
 the same messages in the reference, in the simulation and on the board.
 
-**Era four supersedes the socket and the sequencer of this document.**
+**Era four supersedes the socket and the sequencer of this document**, and
+it removed `Midi_merge`: the model is the one source of MIDI, thus the seat
+holds `Midi_out` and ends at the pin. Read `Midi_merge` and `midi_ready`
+below as the era-one board.
 `docs/transformer_rtl.md` states them: a source gives one frame for each
 step, `Source_intf` carries no note and no `ready`, and the sequencer holds
 the set of pitches that sound and decodes the frame with the rule of

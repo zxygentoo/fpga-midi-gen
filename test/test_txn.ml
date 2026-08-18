@@ -2,8 +2,14 @@
    UART divisors. The test drives the RsRx waveform bit by bit with frames from
    [Control_frame.encode_request], samples RsTx and the MIDI line JD[0] on every cycle,
    decodes the waveforms with a software receiver, and parses the responses with
-   [Control_frame.decode_response]. The doorbell write must put the test message on the
-   MIDI line at 31250 baud. *)
+   [Control_frame.decode_response].
+
+   The MIDI line is here as the silence it must keep: RUN rests at 0 through the whole
+   test, thus JD must stay at its no-current level and carry no byte. The bytes of a run
+   are not observable at this level for a useful price — the model draws its first note a
+   bar and a step after the run starts, which is millions of cycles of the real board
+   clock — thus [Midi_out] proves the line format and [test_socket] proves the message
+   stream. *)
 
 open Base
 
@@ -67,10 +73,14 @@ let () =
     (Mgen_board.Control_frame.encode_request
        (Read { addr = Mgen_core.Control_intf.Reg.velocity; len = 1 }));
   level true (80 * cpb);
-  (* the one-shot doorbell write: the message must appear on the MIDI line *)
-  let addr, data = Mgen_core.Control_intf.build_doorbell [ 0x92; 0x3C; 0x64 ] in
-  send_frame (Mgen_board.Control_frame.encode_request (Write { addr; data }));
-  level true (40 * midi_cpb);
+  (* one read of the whole section, which is what [board_tool dump] sends *)
+  send_frame
+    (Mgen_board.Control_frame.encode_request
+       (Read
+          { addr = Mgen_core.Control_intf.Reg.base
+          ; len = Mgen_core.Control_intf.Reg.size
+          }));
+  level true (200 * cpb);
   (* split the response byte stream at the frame delimiters and parse *)
   let frames =
     String.split (decode_uart (Buffer.contents tx_wave) cpb) ~on:'\000'
@@ -91,8 +101,15 @@ let () =
   in
   List.iter ~f:show frames;
   assert (List.length frames = 3);
+  (* RUN rests at 0, thus the line must carry nothing and rest at its no-current level *)
   let midi = decode_uart (Buffer.contents jd_wave) midi_cpb in
   Stdio.printf "midi %s\n" (hex midi);
-  assert (String.equal midi "\x92\x3C\x64");
+  assert (String.is_empty midi);
+  (* the first sample is the port before the simulator has computed it one time, thus the
+     idle level starts at the sample behind it *)
+  assert (
+    String.for_all (String.drop_prefix (Buffer.contents jd_wave) 1) ~f:(Char.equal '1'));
+  (* the seven pins with no connection stay at 1 beside it *)
+  assert (Bits.to_int_trunc !jd = 0xFF);
   Stdio.print_endline "txn ok"
 ;;

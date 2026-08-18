@@ -39,7 +39,6 @@ module O : sig
     ; write_data : 'a (** the byte to write *)
     ; commit : 'a (** a strobe at the end of the burst *)
     ; read_address : 'a (** the cell index that the response reads *)
-    ; busy : 'a (** 1 while a transaction is in progress; a diagnostic *)
     }
   [@@deriving hardcaml]
 end

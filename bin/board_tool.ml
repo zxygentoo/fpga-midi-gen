@@ -7,7 +7,6 @@ open Core
 module Bytes_util = Mgen_core.Bytes_util
 module Control_intf = Mgen_core.Control_intf
 module Control_transport = Mgen_board.Control_transport
-module Midi = Mgen_core.Midi
 
 let default_device = "/dev/ttyUSB1"
 let baud = 115200
@@ -119,35 +118,6 @@ let dump t =
     Printf.printf "%04x  %-8s  %d (0x%x)\n" f.address f.name value value)
 ;;
 
-(* the doorbell: poll MIDI_GO to 0, ring with one ascending burst, poll to 0 again as the
-   confirmation that the send ran. The poll before the ring is the host-control rule; the
-   poll after it bounds the exit at "the message went out". *)
-let doorbell t message =
-  let midi_go_clear () =
-    let b =
-      check (Control_transport.read t ~address:Control_intf.Reg.midi_go ~length:1)
-    in
-    Bytes_util.byte b 0 = 0
-  in
-  let wait_clear () =
-    (* one poll is about 1 ms of wire time, and a message takes at most 1 ms *)
-    let rec wait tries =
-      if not (midi_go_clear ())
-      then
-        if tries = 0
-        then (
-          prerr_endline "a message waits and does not go out";
-          exit 1)
-        else wait (tries - 1)
-    in
-    wait 100
-  in
-  wait_clear ();
-  let address, data = Control_intf.build_doorbell message in
-  check (Control_transport.write t ~address ~data);
-  wait_clear ()
-;;
-
 let read_command =
   Command.basic
     ~summary:"read LEN cells at ADDR"
@@ -177,20 +147,6 @@ let write_command =
        check (Control_transport.write t ~address ~data))
 ;;
 
-let doorbell_command =
-  Command.basic
-    ~summary:"send the BYTEs to the MIDI output as one test message"
-    (let%map_open.Command device = device_param
-     and bytes = anon (sequence ("BYTE" %: byte_arg)) in
-     fun () ->
-       ensure
-         "the number of BYTEs"
-         ~lower:1
-         ~upper:Midi.max_message_bytes
-         (List.length bytes);
-       doorbell (transport device) bytes)
-;;
-
 let dump_command =
   Command.basic
     ~summary:"read every cell and name each register"
@@ -201,11 +157,7 @@ let dump_command =
 let command =
   Command.group
     ~summary:"the control cells of the FPGA, over the console UART"
-    [ "read", read_command
-    ; "write", write_command
-    ; "doorbell", doorbell_command
-    ; "dump", dump_command
-    ]
+    [ "read", read_command; "write", write_command; "dump", dump_command ]
 ;;
 
 let () = Command_unix.run command

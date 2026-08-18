@@ -10,7 +10,6 @@
     definitions are their own signature. *)
 
 open Base
-open Bytes_util
 
 (** The sizes of the host control, in bytes. A wire payload is a header and then DATA. *)
 module Constants = struct
@@ -78,19 +77,12 @@ end
     of address names each one. *)
 module Reg = struct
   let base = 0x00
-  let size = 16
-  let run = 0x0F (* bit 0; the board button also toggles it *)
-  let channel = 0x0E
-  let step_ms = 0x0C
-
-  (* Reserved: era one used these bytes for GATE_MS, and era three removed the gate. A
-     write stores bytes that nothing reads. *)
-  let reserved = 0x0A
-  let velocity = 0x09
-  let seed = 0x05 (* the PRNG loads it at the run start *)
-  let midi_go = 0x04 (* write: send; read: 1 while a message waits *)
-  let midi_len = 0x03
-  let midi_msg = 0x00
+  let size = 9
+  let run = 0x08 (* bit 0; the board button also toggles it *)
+  let channel = 0x07
+  let step_ms = 0x05
+  let velocity = 0x04
+  let seed = 0x00 (* the PRNG loads it at the run start *)
 
   (** The range of the values that a register accepts. *)
   type bounds =
@@ -102,10 +94,8 @@ module Reg = struct
       power-on value, and its range when it has one. A value of more than one byte is
       little-endian.
 
-      [bounds] is [None] for a cell that holds no scalar: RUN and MIDI_GO are bit fields
-      and the circuit reads bit 0 alone; MIDI_MSG takes any bytes; STEP_MS takes any
-      value, and 0 counts as 1; MIDI_LEN rings for 1 to 3 but rests at 0, thus a range
-      would not agree with its own power-on value. *)
+      [bounds] is [None] for a cell that holds no scalar: RUN is a bit field and the
+      circuit reads bit 0 alone, and STEP_MS takes any value, because 0 counts as 1. *)
   type field =
     { name : string
     ; address : int
@@ -117,15 +107,7 @@ module Reg = struct
   (* Each register, from the first address upward. The RTL cells, their power-on values
      and the driver dump all read this one table. *)
   let fields =
-    [ { name = "midi_msg"
-      ; address = midi_msg
-      ; width = Midi.max_message_bytes
-      ; default = 0
-      ; bounds = None
-      }
-    ; { name = "midi_len"; address = midi_len; width = 1; default = 0; bounds = None }
-    ; { name = "midi_go"; address = midi_go; width = 1; default = 0; bounds = None }
-    ; { name = "seed"
+    [ { name = "seed"
       ; address = seed
       ; width = 4
       ; default = Default.seed
@@ -137,7 +119,6 @@ module Reg = struct
       ; default = Default.velocity
       ; bounds = Some { lower = 1; upper = 127 }
       }
-    ; { name = "reserved"; address = reserved; width = 2; default = 0; bounds = None }
     ; { name = "step_ms"
       ; address = step_ms
       ; width = 2
@@ -181,22 +162,3 @@ module Reg = struct
   (* the range of the register at [address], when it has one *)
   let bounds_of address = (field_at address).bounds
 end
-
-(** [build_doorbell message] is the address and the bytes of the one ascending write that
-    sends [message] to the MIDI output: MIDI_MSG, then MIDI_LEN, then MIDI_GO with bit 0
-    at 1. A write applies at one time, thus this one burst does the whole operation, and
-    the layout of the burst has one definition — here, beside the addresses that make it.
-    It raises [Invalid_argument] when [message] is not 1 to [Midi.max_message_bytes]
-    bytes. *)
-let build_doorbell message =
-  let n = List.length message in
-  if n < 1 || n > Midi.max_message_bytes
-  then
-    invalid_arg
-      (Printf.sprintf "a test message has 1 to %d bytes, not %d" Midi.max_message_bytes n);
-  let data = Bytes.make (Reg.midi_go - Reg.midi_msg + 1) '\x00' in
-  List.iteri message ~f:(fun k b -> set_byte data k b);
-  set_byte data (Reg.midi_len - Reg.midi_msg) n;
-  set_byte data (Reg.midi_go - Reg.midi_msg) 1;
-  Reg.midi_msg, data
-;;

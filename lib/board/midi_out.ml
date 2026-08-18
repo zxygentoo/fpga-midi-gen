@@ -141,7 +141,7 @@ let%expect_test "the messages on the line" =
 let%expect_test "a length outside the range cannot hold the block" =
   let _sim, _inp, out, wave, cycle, offer, idle = harness () in
   idle 4;
-  (* MIDI_LEN is 0: the walk still ends at the last byte *)
+  (* the message states a length of 0: the walk still ends at the last byte *)
   offer [];
   cycle ();
   idle (14 * clocks_per_bit * Midi.max_message_bytes);

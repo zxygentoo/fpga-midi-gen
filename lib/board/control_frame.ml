@@ -115,11 +115,13 @@ let%expect_test "response round trips" =
     |}]
 ;;
 
-let%expect_test "the one-shot doorbell frame on the wire" =
-  (* Note On, channel 3, C4, velocity 100 *)
-  let addr, data = build_doorbell [ 0x92; 0x3C; 0x64 ] in
-  encode_request (Write { addr; data }) |> hex |> Stdio.print_endline;
-  [%expect {| 02 02 07 05 92 3c 64 03 01 00 |}]
+let%expect_test "a write of the default seed on the wire" =
+  (* the register with the most bytes, and the value that carries the most zeros: COBS
+     stuffs each one, thus the frame body holds no zero byte until its delimiter *)
+  encode_request (Write { addr = Reg.seed; data = Bytes.of_string "\x2a\x00\x00\x00" })
+  |> hex
+  |> Stdio.print_endline;
+  [%expect {| 02 02 03 04 2a 01 01 01 00 |}]
 ;;
 
 let%expect_test "the encoder rejects values that do not fit" =

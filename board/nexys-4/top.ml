@@ -1,21 +1,22 @@
 (** The top level of the Nexys 4 board.
 
-    The control port serves the wire protocol on the host UART, [Control_regs] holds the
-    cells, and the MIDI path is [Midi_merge] and [Midi_out]. The structure is the one of
-    [docs/host_control_rtl.md]. The model seat takes any source of [Source_intf], and it
-    holds the transformer of [docs/transformer_rtl.md]: one step of music is one pass of
-    the network and one frame, and the sequencer decodes the frame into the messages of
-    the wire. The model arrives as [model] at elaboration — the bitstream carries the
-    weights, thus [create] takes the quantized model whole and [gen_verilog] names the
-    checkpoint.
+    The control port serves the wire protocol on the host UART and [Control_regs] holds
+    the cells; the structure is the one of [docs/host_control_rtl.md]. The MIDI path is
+    the model seat and nothing else: [Socket] takes any source of [Source_intf] and gives
+    the line, and it holds the transformer of [docs/transformer_rtl.md] — one step of
+    music is one pass of the network and one frame, and the sequencer decodes the frame
+    into the messages of the wire. The model arrives as [model] at elaboration — the
+    bitstream carries the weights, thus [create] takes the quantized model whole and
+    [gen_verilog] names the checkpoint.
 
-    The board shows: heartbeat on [led 0], RsRx activity on [led 1], RsTx activity on
-    [led 2], MIDI activity on [led 3], the busy state of the port on [led 4], and the run
-    state on [led 5]. The MIDI line idles at 1, the no-current level of the current loop;
-    the other JD pins stay at 1.
+    The board shows two things: the run state on [led 0] and MIDI activity on [led 1]. The
+    two are not the same lamp, because the model is silent through the lead-in of one bar
+    — about 3.2 s at the default tempo — thus [led 0] answers "did the push take" while
+    [led 1] is still dark. The MIDI line idles at 1, the no-current level of the current
+    loop; the other JD pins stay at 1.
 
     The model plays while RUN is 1: a host write sets the run state, and a push of the
-    center button [btnC] toggles it. [led 5] shows it. *)
+    center button [btnC] toggles it. *)
 
 open Hardcaml
 open Signal
@@ -36,10 +37,6 @@ let create ~model () =
   let rx_pin = input "RsRx" 1 in
   let run_pin = input "btnC" 1 in
   let clear = ~:rstn in
-  let spec = Reg_spec.create ~clock:clk ~clear () in
-  (* bit 26 of a 100 MHz counter toggles with a period of 1.34 s *)
-  let counter = reg_fb spec ~width:27 ~f:(fun d -> d +:. 1) in
-  let heartbeat = select counter ~high:26 ~low:26 in
   let uart_rx =
     Uart_rx.create
       ~clocks_per_bit:host_clocks_per_bit
@@ -49,9 +46,6 @@ let create ~model () =
      a loop, because the far end of each one comes from a register *)
   let tx_busy = wire 1 in
   let read_data = wire 8 in
-  let doorbell_ready = wire 1 in
-  let model_ready = wire 1 in
-  let out_ready = wire 1 in
   let button =
     Button.create
       ~debounce_clocks:(button_debounce_ms * clocks_per_ms)
@@ -77,7 +71,6 @@ let create ~model () =
       ; commit = control_port.commit
       ; read_address = control_port.read_address
       ; run_toggle = button.toggle
-      ; doorbell_ready
       }
   in
   assign read_data control_regs.read_data;
@@ -85,25 +78,10 @@ let create ~model () =
     (* the one line that names the model of the era *)
     Socket.create
       ~clocks_per_ms
-      ~source:(Source.create ~model ~seed:control_regs.params.seed)
-      { Socket.I.clock = clk
-      ; clear
-      ; params = control_regs.params
-      ; midi_ready = model_ready
-      }
-  in
-  let midi_merge =
-    Midi_merge.create
-      { Midi_merge.I.doorbell = control_regs.doorbell; model = model.midi; out_ready }
-  in
-  assign doorbell_ready midi_merge.doorbell_ready;
-  assign model_ready midi_merge.model_ready;
-  let midi_out =
-    Midi_out.create
       ~clocks_per_bit:midi_clocks_per_bit
-      { Midi_out.I.clock = clk; clear; message = midi_merge.out }
+      ~source:(Source.create ~model ~seed:control_regs.params.seed)
+      { Socket.I.clock = clk; clear; params = control_regs.params }
   in
-  assign out_ready midi_out.ready;
   let uart_tx =
     Uart_tx.create
       ~clocks_per_bit:host_clocks_per_bit
@@ -114,21 +92,12 @@ let create ~model () =
       }
   in
   assign tx_busy uart_tx.busy;
-  let led =
-    concat_msb
-      [ zero 10
-      ; control_regs.params.run
-      ; control_port.busy
-      ; ~:(midi_out.serial)
-      ; ~:(uart_tx.serial)
-      ; ~:rx_pin
-      ; heartbeat
-      ]
-  in
+  (* the line idles at 1, thus the LED shows the bytes and not the rest *)
+  let led = concat_msb [ zero 14; ~:(model.serial); control_regs.params.run ] in
   Circuit.create_exn
     ~name:"top"
     [ output "led" led
     ; output "RsTx" uart_tx.serial
-    ; output "JD" (concat_msb [ ones 7; midi_out.serial ])
+    ; output "JD" (concat_msb [ ones 7; model.serial ])
     ]
 ;;

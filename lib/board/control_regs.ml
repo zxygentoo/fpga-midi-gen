@@ -26,7 +26,6 @@ module I = struct
     ; commit : 'a
     ; read_address : 'a [@bits cell_bits]
     ; run_toggle : 'a
-    ; doorbell_ready : 'a
     }
   [@@deriving hardcaml]
 end
@@ -35,7 +34,6 @@ module O = struct
   type 'a t =
     { params : 'a Params.t
     ; read_data : 'a [@bits 8]
-    ; doorbell : 'a Midi.Rtl.Message.t
     }
   [@@deriving hardcaml]
 end
@@ -55,9 +53,6 @@ let defaults =
   List.init size ~f:(fun k -> List.Assoc.find_exn bytes k ~equal:Int.equal)
 ;;
 
-let msg_cell = cell Control_intf.Reg.midi_msg
-let len_cell = cell Control_intf.Reg.midi_len
-let go_cell = cell Control_intf.Reg.midi_go
 let run_cell = cell Control_intf.Reg.run
 
 let create (i : _ I.t) : _ O.t =
@@ -76,11 +71,6 @@ let create (i : _ I.t) : _ O.t =
   in
   let live = cells () in
   let shadow = cells () in
-  let doorbell_data = Variable.reg spec ~width:(Midi.max_message_bytes * 8) in
-  let doorbell_len = Variable.reg spec ~width:8 in
-  let pending = Variable.reg spec ~width:1 in
-  (* the names put the doorbell state into the waveform tests *)
-  let _ = pending.value -- "pending" in
   (* The shadow follows the live cells, except while a burst fills it and in the commit
      cycle. A rule that looks only at [write_enable] leaves the shadow stale for one cycle
      after the commit. *)
@@ -88,18 +78,6 @@ let create (i : _ I.t) : _ O.t =
   (* RUN has two writers: the host burst and the board button. A commit and a push in the
      same cycle both apply. *)
   let run_next = mux2 i.commit shadow.(run_cell).value live.(run_cell).value in
-  (* The ring: a commit that covers MIDI_GO with bit 0 set, with MIDI_LEN in range, and
-     with no message pending. The whole burst commits at one time, thus MIDI_MSG and
-     MIDI_LEN of the same burst are already in the shadow. *)
-  let shadow_len = shadow.(len_cell).value in
-  let ring =
-    i.commit
-    &: lsb shadow.(go_cell).value
-    &: (shadow_len >=:. 1)
-    &: (shadow_len <=:. Midi.max_message_bytes)
-    &: ~:(pending.value)
-  in
-  let taken = pending.value &: i.doorbell_ready in
   compile
     [ proc
         (List.init size ~f:(fun k ->
@@ -108,26 +86,9 @@ let create (i : _ I.t) : _ O.t =
              ; when_
                  (i.write_enable &: (i.write_address ==:. k))
                  [ shadow.(k) <-- i.write_data ]
-             ; when_
-                 i.commit
-                 (if k = go_cell
-                  then
-                    (* MIDI_GO holds no value: it is a write strobe and a read status,
-                       thus each copy goes back to 0 at the commit *)
-                    [ live.(k) <-- zero 8; shadow.(k) <-- zero 8 ]
-                  else [ live.(k) <-- shadow.(k).value ])
+             ; when_ i.commit [ live.(k) <-- shadow.(k).value ]
              ]))
     ; when_ i.run_toggle [ live.(run_cell) <-- run_next ^: of_unsigned_int ~width:8 1 ]
-    ; when_
-        ring
-        [ doorbell_data
-          <-- concat_lsb
-                (List.init Midi.max_message_bytes ~f:(fun k ->
-                   shadow.(msg_cell + k).value))
-        ; doorbell_len <-- shadow_len
-        ; pending <-- vdd
-        ]
-    ; when_ taken [ pending <-- gnd ]
     ];
   let view address =
     concat_lsb
@@ -143,17 +104,7 @@ let create (i : _ I.t) : _ O.t =
       ; velocity = view Control_intf.Reg.velocity
       ; seed = view Control_intf.Reg.seed
       }
-      (* MIDI_GO gives the pending flag; each other cell gives its stored byte *)
-  ; read_data =
-      mux
-        i.read_address
-        (List.init size ~f:(fun k ->
-           if k = go_cell then uresize pending.value ~width:8 else live.(k).value))
-  ; doorbell =
-      { Midi.Rtl.Message.data = doorbell_data.value
-      ; len = doorbell_len.value
-      ; valid = pending.value
-      }
+  ; read_data = mux i.read_address (List.init size ~f:(fun k -> live.(k).value))
   }
 ;;
 
@@ -199,9 +150,9 @@ let%expect_test "the defaults need no init walk" =
   Stdio.printf "after clear %s\n" (Bytes_util.hex (dump ()));
   [%expect
     {|
-    power-on   00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00
-    after write 00 00 00 00 00 2a 00 00 00 30 00 00 c8 00 02 00
-    after clear 00 00 00 00 00 2a 00 00 00 64 00 00 c8 00 02 00
+    power-on   2a 00 00 00 64 c8 00 02 00
+    after write 2a 00 00 00 30 c8 00 02 00
+    after clear 2a 00 00 00 64 c8 00 02 00
     |}]
 ;;
 
@@ -272,63 +223,6 @@ let%expect_test "the RUN toggle" =
     |}]
 ;;
 
-let%expect_test "the doorbell" =
-  let sim, inp, out, _dump, burst = harness () in
-  let show tag =
-    inp.read_address
-    := Bits.of_unsigned_int ~width:cell_bits (cell Control_intf.Reg.midi_go);
-    Cyclesim.cycle sim;
-    Stdio.printf
-      "%-22s MIDI_GO %d | valid %b data %06x len %d\n"
-      tag
-      (Bits.to_int_trunc !(out.read_data))
-      (Bits.to_bool !(out.doorbell.valid))
-      (Bits.to_int_trunc !(out.doorbell.data))
-      (Bits.to_int_trunc !(out.doorbell.len))
-  in
-  let take () =
-    inp.doorbell_ready := Bits.vdd;
-    Cyclesim.cycle sim;
-    inp.doorbell_ready := Bits.gnd;
-    Cyclesim.cycle sim
-  in
-  (* one ascending burst does the whole operation: MIDI_MSG, MIDI_LEN, MIDI_GO *)
-  let address, data = Control_intf.build_doorbell [ 0x92; 0x3C; 0x64 ] in
-  burst address (List.map (Bytes.to_list data) ~f:Char.to_int);
-  show "after the ring";
-  take ();
-  show "after the transfer";
-  (* the send bit is bit 0 alone *)
-  burst Control_intf.Reg.midi_go [ 0x00 ];
-  show "go byte 00";
-  burst Control_intf.Reg.midi_go [ 0x02 ];
-  show "go byte 02";
-  (* MIDI_LEN outside 1 to 3 *)
-  burst Control_intf.Reg.midi_len [ 0x00; 0x01 ];
-  show "len 0";
-  burst Control_intf.Reg.midi_len [ 0x04; 0x01 ];
-  show "len 4";
-  (* a ring while a message waits is ignored, and the first message holds *)
-  burst Control_intf.Reg.midi_msg [ 0xB2; 0x4A; 0x00; 0x02; 0x01 ];
-  show "a good ring";
-  burst Control_intf.Reg.midi_msg [ 0xF8; 0x00; 0x00; 0x01; 0x01 ];
-  show "a ring while pending";
-  take ();
-  show "after the transfer";
-  [%expect
-    {|
-    after the ring         MIDI_GO 1 | valid true data 643c92 len 3
-    after the transfer     MIDI_GO 0 | valid false data 643c92 len 3
-    go byte 00             MIDI_GO 0 | valid false data 643c92 len 3
-    go byte 02             MIDI_GO 0 | valid false data 643c92 len 3
-    len 0                  MIDI_GO 0 | valid false data 643c92 len 3
-    len 4                  MIDI_GO 0 | valid false data 643c92 len 3
-    a good ring            MIDI_GO 1 | valid true data 004ab2 len 2
-    a ring while pending   MIDI_GO 1 | valid true data 004ab2 len 2
-    after the transfer     MIDI_GO 0 | valid false data 004ab2 len 2
-    |}]
-;;
-
 let%expect_test "the waveform of the atomic commit" =
   (* a two-byte write to STEP_MS. The port fills the shadow one byte in each cycle, and
      [commit] moves both bytes at one time: [params$step_ms] holds 250 for the whole burst
@@ -366,7 +260,7 @@ let%expect_test "the waveform of the atomic commit" =
     │write_enable   ││      ┌───────────┐                                │
     │               ││──────┘           └───────────────────────         │
     │               ││──────┬─────┬─────────────────────────────         │
-    │write_address  ││ 0    │C    │D                                     │
+    │write_address  ││ 0    │5    │6                                     │
     │               ││──────┴─────┴─────────────────────────────         │
     │               ││──────┬─────┬─────────────────────────────         │
     │write_data     ││ 00   │11   │22                                    │

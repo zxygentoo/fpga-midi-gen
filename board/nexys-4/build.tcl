@@ -17,12 +17,18 @@ opt_design
 place_design
 phys_opt_design
 route_design
-# The design needs this pass and does not merely gain from it. At six layers it stands at
+# The pass was load-bearing, and it is now insurance. At six layers the design stands at
 # 126 block RAM tiles of 135, thus routing is three quarters of every long path, and the
-# route gives back the whole slack that placement won: measured at -0.233 ns here and
+# route gave back the whole slack that placement won: measured at -0.233 ns here and
 # +0.059 ns after this pass (2026-08-19, with the registered ROM address; -0.252 and
 # +0.031 before it). Post-route physical synthesis replicates the drivers that the
-# congestion stretched. Remove it and the bitstream misses the period.
+# congestion stretched.
+#
+# The board simplification took the design out of that regime. Both passes now find no
+# setup violation and change no netlist: +0.046 ns after the placement and +0.113 ns after
+# the route, with 262 endpoints fewer (2026-08-19). Keep them. Each one costs about one
+# second, each one is silent while the design has slack, and the margin here is one
+# Vivado run wide.
 phys_opt_design
 report_timing_summary -file $build_dir/timing.rpt
 report_utilization -file $build_dir/utilization.rpt
