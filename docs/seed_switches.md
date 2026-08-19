@@ -187,7 +187,7 @@ state to get wrong:
 index   = counter[18:16]                  the digit, and it moves each 655 µs
 nibble  = seed[4 * index + 3 : 4 * index] an 8 to 1 mux over the four-bit slices
 segment = decode nibble                   a table of the sixteen digits, 0 to F
-anode   = ~(1 << index)                   one hot, and inverted for the active low
+digit   = ~(1 << index)                   one hot, and inverted for the active low
 ```
 
 `decode` is a named function and not a module: it is one table.
@@ -247,7 +247,7 @@ loop.
 ```
                  ┌──────────────────────────┐
   sw[15:0] ─────▶│      Seed_switches       │──▶ seed_write ─┐
-                 │  sync · Δ · scan · decode │──▶ seed_value ─┤
+                 │  sync · Δ · scan · decode│──▶ seed_value ─┤
               ┌─▶│                          │──▶ an, seg, dp │
               │  └──────────────────────────┘                │
               │                                              ▼
@@ -300,7 +300,9 @@ module O = struct
     ; seed_value : 'a [@bits 32]
     (** the seed the panel states: the switches in the low 16 bits and zero
         above them *)
-    ; anode : 'a [@bits 8] (** the digit that is lit; active low *)
+    ; digit : 'a [@bits 8]
+    (** the digit that is lit; one hot and active low. The board calls this wire
+        the anode; the interface states what it selects. *)
     ; segment : 'a [@bits 7] (** the segments a to g of that digit; active low *)
     }
   [@@deriving hardcaml]
@@ -349,7 +351,7 @@ elaboration constant to get wrong.
    switches read zero and nothing fires.
 2. `Seed_switches`, the display half, with tests: the nibble decode against
    a table of the sixteen digits, and a waveform of one full scan that shows
-   each anode low in its turn.
+   each digit low in its turn.
 3. `Control_regs`: the second writer of SEED, and the power-on value of the
    SEED cells goes to 0 with the range of the row. Two tests move with it —
    a host burst and a switch move in one cycle must both apply, as the RUN

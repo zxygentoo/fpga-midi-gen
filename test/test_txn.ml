@@ -32,6 +32,7 @@ let () =
   let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
+  let sw = Cyclesim.in_port sim "sw" in
   let txd = Cyclesim.out_port sim "RsTx" in
   let jd = Cyclesim.out_port sim "JD" in
   let tx_wave = Buffer.create (1024 * 1024) in
@@ -58,6 +59,10 @@ let () =
         level true cpb)
       (Bytes.to_string frame)
   in
+  (* The slide switches are the second writer of SEED, and this is the top-level statement
+     of that rule: the panel holds a value, thus the section read answers with the
+     switches and not with a stored default. *)
+  sw := Bits.of_unsigned_int ~width:16 0xBEEF;
   (* reset, then idle *)
   rstn := Bits.gnd;
   level true 4;
@@ -74,12 +79,21 @@ let () =
        (Read { addr = Mgen_core.Control_intf.Reg.velocity; len = 1 }));
   level true (80 * cpb);
   (* one read of the whole section, which is what [board_tool dump] sends *)
-  send_frame
-    (Mgen_board.Control_frame.encode_request
-       (Read
-          { addr = Mgen_core.Control_intf.Reg.base
-          ; len = Mgen_core.Control_intf.Reg.size
-          }));
+  let read_section () =
+    send_frame
+      (Mgen_board.Control_frame.encode_request
+         (Read
+            { addr = Mgen_core.Control_intf.Reg.base
+            ; len = Mgen_core.Control_intf.Reg.size
+            }))
+  in
+  read_section ();
+  level true (200 * cpb);
+  (* a switch moves: the panel writes the cell again, thus the read that follows states
+     the new value and the rule holds while the board stands *)
+  sw := Bits.of_unsigned_int ~width:16 0xBEE0;
+  level true (2 * cpb);
+  read_section ();
   level true (200 * cpb);
   (* split the response byte stream at the frame delimiters and parse *)
   let frames =
@@ -100,7 +114,18 @@ let () =
         (hex (Bytes.to_string data))
   in
   List.iter ~f:show frames;
-  assert (List.length frames = 3);
+  assert (List.length frames = 4);
+  (* The two section reads carry the seed of the panel in their first four bytes, in the
+     little-endian order of the cells: the switches at the power-on, and the switches
+     after the move. No frame carries a stored default, because the panel writes SEED a
+     few cycles after the power-on and the fastest transaction is thousands of cycles. *)
+  let seed_bytes frame =
+    match Mgen_board.Control_frame.decode_response frame with
+    | Ok { data; _ } -> String.prefix (Bytes.to_string data) 4
+    | Error e -> failwith e
+  in
+  assert (String.equal (seed_bytes (List.nth_exn frames 2)) "\xef\xbe\x00\x00");
+  assert (String.equal (seed_bytes (List.nth_exn frames 3)) "\xe0\xbe\x00\x00");
   (* RUN rests at 0, thus the line must carry nothing and rest at its no-current level *)
   let midi = decode_uart (Buffer.contents jd_wave) midi_cpb in
   Stdio.printf "midi %s\n" (hex midi);
