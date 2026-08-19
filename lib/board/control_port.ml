@@ -276,6 +276,7 @@ let harness (h : _ Harness_i.t) : _ Harness_o.t =
       }
   in
   let regs =
+    (* the harness proves the wire protocol, thus the writers on the board rest *)
     Control_regs.create
       { Control_regs.I.clock = h.clock
       ; clear = h.clear
@@ -285,6 +286,8 @@ let harness (h : _ Harness_i.t) : _ Harness_o.t =
       ; commit = port.commit
       ; read_address = port.read_address
       ; run_toggle = gnd
+      ; seed_write = gnd
+      ; seed_value = zero 32
       }
   in
   assign read_data regs.read_data;

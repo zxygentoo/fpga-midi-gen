@@ -10,7 +10,11 @@
 
     A write fills a shadow copy one byte in each cycle, and one [commit] strobe moves all
     the bytes into the live cells. Therefore a view never shows a part of one write and a
-    part of the next, and a value of more than one byte does not tear. *)
+    part of the next, and a value of more than one byte does not tear.
+
+    Two cells have a writer on the board beside the host: the button toggles RUN and the
+    slide switches write SEED. The last writer wins, thus a host write of either one
+    stands until the board writes it again. *)
 
 open Hardcaml
 
@@ -37,6 +41,9 @@ module I : sig
     ; commit : 'a (** a strobe: copy the shadow into the live cells *)
     ; read_address : 'a (** the cell index that [read_data] answers *)
     ; run_toggle : 'a (** a strobe from the board button: invert bit 0 of RUN *)
+    ; seed_write : 'a
+    (** a strobe from the slide switches: write [seed_value] into SEED *)
+    ; seed_value : 'a (** the seed the panel states, 32 bits *)
     }
   [@@deriving hardcaml]
 end

@@ -16,7 +16,10 @@
     loop; the other JD pins stay at 1.
 
     The model plays while RUN is 1: a host write sets the run state, and a push of the
-    center button [btnC] toggles it. *)
+    center button [btnC] toggles it. The seed comes from the slide switches in the same
+    way — [Seed_switches] writes SEED and shows the cell on the eight digits, thus the
+    board alone states which piece it plays. The decimal point is a pin of that group and
+    this design does not use it, thus the top level holds it at 1 as it holds [JD[7:1]]. *)
 
 open Hardcaml
 open Signal
@@ -36,6 +39,7 @@ let create ~model () =
   let rstn = input "btnCpuReset" 1 in
   let rx_pin = input "RsRx" 1 in
   let run_pin = input "btnC" 1 in
+  let switch_pins = input "sw" 16 in
   let clear = ~:rstn in
   let uart_rx =
     Uart_rx.create
@@ -46,6 +50,11 @@ let create ~model () =
      a loop, because the far end of each one comes from a register *)
   let tx_busy = wire 1 in
   let read_data = wire 8 in
+  let seed = wire 32 in
+  let panel =
+    Seed_switches.create
+      { Seed_switches.I.clock = clk; clear; switches = switch_pins; seed }
+  in
   let button =
     Button.create
       ~debounce_clocks:(button_debounce_ms * clocks_per_ms)
@@ -71,9 +80,12 @@ let create ~model () =
       ; commit = control_port.commit
       ; read_address = control_port.read_address
       ; run_toggle = button.toggle
+      ; seed_write = panel.seed_write
+      ; seed_value = panel.seed_value
       }
   in
   assign read_data control_regs.read_data;
+  assign seed control_regs.params.seed;
   let model =
     (* the one line that names the model of the era *)
     Socket.create
@@ -99,5 +111,8 @@ let create ~model () =
     [ output "led" led
     ; output "RsTx" uart_tx.serial
     ; output "JD" (concat_msb [ ones 7; model.serial ])
+    ; output "an" panel.digit
+    ; output "seg" panel.segment
+    ; output "dp" vdd
     ]
 ;;
