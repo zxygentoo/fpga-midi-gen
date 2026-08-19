@@ -28,7 +28,7 @@ let () =
   (* The model seat takes a model of drawn weights in the test shape: the control path
      does not read the weights, and a test must not read a checkpoint that git ignores.
      The shape only sizes the counters and the ROM, thus a small one elaborates in a test. *)
-  let model = Mgen_transformer.Quantized.Model.For_test.(init config ~seed:11) in
+  let model = Mgen_mamba.Quantized.Model.For_test.(init config ~seed:11) in
   let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in

@@ -224,8 +224,9 @@ token and the ordering rule are all unnecessary. The sequencer holds the set
 of pitches that sound and the frame states the set that must sound: it sends
 the releases and then the strikes, and it composes nothing. The re-anchor of
 era three goes too — this walk does not decay. The model is
-`_train/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt` at valid 1.6282, elected
-by ear and not the lowest number of the sweep, because the finding of the
+`_train/transformer/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt` at valid
+1.6282, elected by ear and not the lowest number of the sweep, because the
+finding of the
 era is the variance and not the mean: ALiBi span 4 holds a standard
 deviation of 0.0016 against 0.0108 at span 8, replicated at two step
 budgets, because steep slopes confine every head to the bar while gentle
@@ -345,3 +346,59 @@ them would promote the next, and a directive is not free margin. The signed
 build is +0.041 and it stands. `build.tcl` keeps the routed checkpoint now,
 thus the next question of this kind costs an `open_checkpoint` and not a
 build.
+
+## 2026-08-20 — the state-space model (feat/mamba-proto)
+
+Era five, and the whole chain in one branch: the trainer, the reference, the
+integer twin, the circuit and the bitstream, each one gated against the one
+before it. Nothing is auditioned and nothing is flashed; the board and the ear
+wait for a person, and era four stays where it is.
+
+The elected checkpoint is `_train/mamba/d64-mamba-n16-l6-do03-96k-s6.ckpt`:
+d 64, inner 128, 4 heads, state 16, 6 layers, **178,504 parameters against era
+four's 308,224**. Valid loss **1.6482** against era four's **1.6282** — the
+first number that compares across two eras of this project, because both speak
+the frame and cut the windows the same way. A state of 24 KB carries most of
+what a window of 192 KB carried, for 0.020 nats.
+
+The six-layer build meets at **+0.202 ns** with **3,043 LUTs** and **57.5
+block RAM tiles of 135 — 42.6 percent**, where era four stands at +0.059,
+3,061 and 126 tiles of 135. The design document estimated 55 tiles and 41
+percent. The block RAM the era set out to buy back is bought back, and the
+timing margin that comes with it is three times era four's on a design of the
+same fabric size; both `phys_opt_design` passes are in the script and the
+build meets without needing what they give. A drawn step costs 292,684 cycles
+— 2.93 ms at 100 MHz, against era four's 7 — and it costs the same at every
+step of the walk, because nothing here fills.
+
+**The frame gate is blunt, and this era measured how blunt.** Weights of scale
+0.02 put the classes so near each other that a pick is almost the quantile of
+its uniform alone, thus a datapath can be wrong by tens of percent and still
+draw the same frames for a dozen steps. Four faults were found by comparing
+the residual stream write for write instead, and none of them moved a frame at
+first: a weight addressed by a concatenation whose stride was not the tensor's
+width, a convolution channel block read at the gate's offset, an operand
+selected on the address side of a two-cycle read, and a tap ring whose layer
+stride ran the top layer off the end of its memory. The last of those needs
+three layers to appear — one hides the field and two round in its favour —
+thus the gates run at three. `streams_agree` is in the tree and it is the
+lesson.
+
+The drift is measured and the trap of the era did not fire: over the gate
+shape the cosine reads 0.9993 at 64 steps, 0.9994 at 256 and 0.9993 at 1,024,
+flat to four decimals over many decay lifetimes. On the elected checkpoint at
+the shape of the board, 512 steps read top-1 90.3 percent and cosine 0.9836.
+One format decision was wrong and the drift report found it: truncating the
+gate product back to the working class before the gated norm cost 0.10 of the
+cosine on its own, and it threw away twelve bits immediately before the one
+operation that would have used them. Of the clamps, `dt` and the state never
+fire; `beta` fires on 0.0092 percent of the draws.
+
+Two expectations of the design document are contradicted, and both are
+findings. The dropout optimum is 0.3 — the same as era four's — where a model
+42 percent smaller was expected to want less: 0.1 reads 1.7697, 0.2 reads
+1.6711, 0.3 reads 1.6502 and a fourth run at 0.4 reads 1.7159, thus 0.3 is an
+optimum and not the edge of a sweep. And the silence-arrival share, which the
+state was a new lever on, went the **wrong way**: 47.2 percent against era
+four's 67 to 73 and the corpus's 99.2. The walks are more silent and their
+gaps are longer. That is the open musical question of the era, unimproved.

@@ -1,5 +1,8 @@
 """The parity gates of the JAX seam: the two places the trainer meets the reference.
 
+Era five runs the same two gates over its own tools; the classes at the foot of the file
+carry the paths and the shape flags that differ, and the bodies are shared.
+
 The trainer lives here and the reference lives in OCaml. A GPU run only means something
 if the two forwards agree, and a seed only names one walk if the two draws agree. Nothing
 else in this tree pins them together -- the unit tests hold each side against itself.
@@ -36,7 +39,7 @@ from transformer import model
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
 ROOT = JAX_ROOT.parent
-CHECKPOINT = ROOT / "_train" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
+CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
 CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
 # the tool's default corpus path is relative to the repository root, and pytest runs in [jax]
 CORPUS_JSON = ROOT / "corpus" / "JSB-Chorales-dataset" / "Jsb16thSeparated.json"
@@ -120,6 +123,67 @@ def test_gate_c_the_two_walks_are_the_same_stream(seed):
         str(seed),
         "--steps",
         str(steps),
+    )
+    lines = lambda text: [l for l in text.splitlines() if l.startswith("step")]
+    here, there = lines(ours), lines(theirs)
+    assert here, "the JAX walk printed no step lines"
+    assert len(here) == len(there) == steps, (
+        f"{len(here)} JAX steps against {len(there)} OCaml steps, wanted {steps}"
+    )
+    first = next((i for i, (a, b) in enumerate(zip(here, there)) if a != b), None)
+    assert first is None, (
+        f"the walks part at step {first}:\n  jax   {here[first]}\n  ocaml {there[first]}"
+    )
+
+
+# ==================================================================== #
+# Era five: the same two gates, over the state-space model             #
+# ==================================================================== #
+
+MAMBA_CHECKPOINT = ROOT / "_train" / "mamba" / "d64-mamba-n16-l6-do03-96k-s6.ckpt"
+MAMBA_TOOL = BUILT / "mamba_tool.exe"
+MAMBA_PLAYER = BUILT / "play_mamba.exe"
+
+
+def test_gate_a_the_mamba_forwards_agree():
+    """The recurrence states no shape of its own: the tool prints every width out of the
+    file, and this side reads the same file, thus the two cannot drift apart in a flag.
+    The context travels in the output because it is a choice of the REFEREE here — a window
+    of the recurrence opens on a zero state and the model has no context length at all."""
+    need(MAMBA_CHECKPOINT, CORPUS, CORPUS_JSON, MAMBA_TOOL)
+    from mamba import model as mamba_model
+
+    stated = run(
+        str(MAMBA_TOOL), "loss", "-ckpt", str(MAMBA_CHECKPOINT), "-corpus", str(CORPUS_JSON)
+    )
+    said = dict(re.findall(r"(\w+) (-?[\d.]+)", stated))
+    windows, context = int(said["windows"]), int(said["context"])
+
+    params = mamba_model.load_params(str(MAMBA_CHECKPOINT))
+    corpus = data.load_corpus(CORPUS)
+    rows = data.eval_rows(corpus["valid"], context, windows)
+    assert len(rows) == windows, "the two sides cut a different count of windows"
+    classes, phases = data.stack_rows(rows)
+
+    nll = mamba_model.seat_nll(params, jnp.asarray(classes), jnp.asarray(phases))
+    here = float(jnp.mean(jnp.sum(nll, axis=-1)))
+    there = float(said["loss"])
+    assert here == pytest.approx(there, abs=TOLERANCE), (
+        f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
+    )
+
+
+@pytest.mark.parametrize("seed", [1, 7])
+def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
+    need(MAMBA_CHECKPOINT, MAMBA_PLAYER)
+    steps = 64
+    theirs = run(
+        str(MAMBA_PLAYER), "-ckpt", str(MAMBA_CHECKPOINT), "-seed", str(seed),
+        "-steps", str(steps),
+    )
+    ours = run(
+        "uv", "run", "python", "-m", "mamba.infer", "--ckpt", str(MAMBA_CHECKPOINT),
+        "--seeds", str(seed), "--steps", str(steps),
     )
     lines = lambda text: [l for l in text.splitlines() if l.startswith("step")]
     here, there = lines(ours), lines(theirs)

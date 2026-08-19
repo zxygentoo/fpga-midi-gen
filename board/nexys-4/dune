@@ -1,11 +1,15 @@
+; The one line that names the era of the seat. [Top] speaks of [Source] and of
+; [Quantized.Model] and of nothing narrower, thus the library it opens decides which model
+; the bitstream carries; the transformer stays in the tree untouched.
+
 (library
  (name mgen_nexys4)
  (modules top)
- (libraries hardcaml mgen_board mgen_transformer)
+ (libraries hardcaml mgen_board mgen_mamba)
  (flags
-  (:standard -open Mgen_board -open Mgen_transformer)))
+  (:standard -open Mgen_board -open Mgen_mamba)))
 
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries core core_unix hardcaml jane_rope mgen_transformer mgen_nexys4))
+ (libraries core core_unix hardcaml jane_rope mgen_mamba mgen_nexys4))

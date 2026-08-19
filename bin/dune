@@ -45,3 +45,23 @@
   mgen_core
   mgen_corpus
   mgen_transformer))
+
+(executable
+ (name play_mamba)
+ (modules play_mamba)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen_core mgen_mamba))
+
+(executable
+ (name mamba_tool)
+ (modules mamba_tool)
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  mgen_core
+  mgen_corpus
+  mgen_mamba))
