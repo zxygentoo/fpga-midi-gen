@@ -97,7 +97,7 @@ let%expect_test "the frames of a stream become its events" =
       (Sexp.to_string
          ([%sexp_of: Event.t list list] (events_of_frames (Array.of_list frames))))
   in
-  (* the eight cases of the decode table of docs/transformer_model.md *)
+  (* the eight cases of the decode table of docs/transformer.md *)
   show "hold" [ frame [ 60; -1; -1; -1 ]; frame [ 60; -1; -1; -1 ] ];
   show "strike" [ silent; frame [ 60; -1; -1; -1 ] ];
   show "release" [ frame [ 60; -1; -1; -1 ]; silent ];

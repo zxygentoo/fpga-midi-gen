@@ -12,7 +12,7 @@
     What the quantization costs is a measurement and not a promise: [Drift] states it, on
     the walk the board really takes.
 
-    The design is [docs/transformer_model.md]. *)
+    The design is [docs/transformer.md]. *)
 
 (** The fixed-point formats of the machine, and the constants that cross between the
     reference and the circuit. A Q number holds [value * 2^-q]. *)

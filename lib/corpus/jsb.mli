@@ -3,10 +3,10 @@
     The file is [Jsb16thSeparated.json], the Boulanger-Lewandowski split on the sixteenth
     grid with the voices apart: each step holds four cells indexed by voice, the soprano
     first, and a cell holds the pitch its voice sings, or -1 for a rest. The reader keeps
-    that shape — the step frame of docs/transformer_model.md is the same four voices, and
-    voice leading is the craft of a chorale. The dataset does not mark a repeated note: a
-    pitch in two neighbour steps is one held note. A unison doubling is two voices on one
-    pitch, and the decode of the sequencer sends one Note On for it. *)
+    that shape — the step frame of docs/transformer.md is the same four voices, and voice
+    leading is the craft of a chorale. The dataset does not mark a repeated note: a pitch
+    in two neighbour steps is one held note. A unison doubling is two voices on one pitch,
+    and the decode of the sequencer sends one Note On for it. *)
 
 type chorale =
   { cells : int list array
@@ -28,11 +28,11 @@ type t =
     [positions] per step *)
 type stream =
   { frames : int array
-  (** the step frame of docs/transformer_model.md: four voice codes in one word, seat 0 in
-      the low byte. A voice code holds the MIDI pitch in bits 6:0 and the sounding flag in
-      bit 7, thus a silent voice is [0x00] and a silent step is the word zero. Seat 0 is
-      the bass and seat 3 is the soprano — the file gives the soprano first, thus the
-      packer turns the order around.
+  (** the step frame of docs/transformer.md: four voice codes in one word, seat 0 in the
+      low byte. A voice code holds the MIDI pitch in bits 6:0 and the sounding flag in bit
+      7, thus a silent voice is [0x00] and a silent step is the word zero. Seat 0 is the
+      bass and seat 3 is the soprano — the file gives the soprano first, thus the packer
+      turns the order around.
 
       A frame is a wire word and not a class index. The vocabulary of the model is sized
       to the corpus and the two are different questions; the model maps one to the other. *)
@@ -65,10 +65,9 @@ val load : path:string -> t
     of a voice code bounds it — and a member of [legal_shifts] never raises. *)
 val transpose : by:int -> chorale -> chorale
 
-(** [pack chorales] is the packed stream of docs/transformer_model.md: piece, seam, piece,
-    seam. The caller states the order of the pieces and the transposition each one takes,
-    thus one call is one stream and a split needs more than one to carry its
-    transpositions.
+(** [pack chorales] is the packed stream of docs/transformer.md: piece, seam, piece, seam.
+    The caller states the order of the pieces and the transposition each one takes, thus
+    one call is one stream and a split needs more than one to carry its transpositions.
 
     Each step gives one frame, thus one step is one position of the model and the work of
     a step is constant. The walk opens with no code of its own: there is no start and

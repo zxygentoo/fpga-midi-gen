@@ -26,7 +26,7 @@ report walk, and it answers a step with one strobe: the states are `Idle`,
 events is `Frame.events_of_frames` in the core, and `Pink.next_frame` is
 the whole software interface. A frame cannot state a re-strike, thus
 `Pink.Voice.restrike` and the soprano gate are gone too, and the ear
-accepted the smoothing; `docs/transformer_model.md`, step 6, holds what it
+accepted the smoothing; `docs/transformer.md`, step 6, holds what it
 costs. Read the `Source` and `Player` sections below as the era-one design.
 `docs/transformer_rtl.md` states them: a source gives one frame for each
 step, `Source_intf` carries no note and no `ready`, and the sequencer holds
@@ -35,7 +35,7 @@ the set of pitches that sound and decodes the frame with the rule of
 era three and are kept for the history. `Pink` and `Player` stand as they
 are; `Pink.Source` left the build until it answers the frame socket, and
 that version owes a musical decision, because a frame cannot state a
-re-strike — `docs/transformer_model.md`, step 6, holds the three answers.
+re-strike — `docs/transformer.md`, step 6, holds the three answers.
 
 ## The constants
 

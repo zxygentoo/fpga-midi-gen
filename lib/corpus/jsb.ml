@@ -157,10 +157,10 @@ let vote holds rotation =
    gives no signal, and the piece opens on the downbeat.
 
    The clock has one length, thus a piece has no bar length of its own. The corpus study
-   of 2026-08-14 in docs/transformer_model.md settles this: 27 of the 382 pieces vote for
-   a 12-step bar, they hold 8.1 percent of the steps, and a rolling clock of 16 steps
-   still puts 44.6 percent of their cadences on a downbeat. To remove them buys 1.9 points
-   of alignment over the whole corpus and costs those steps. *)
+   of 2026-08-14 in docs/transformer.md settles this: 27 of the 382 pieces vote for a
+   12-step bar, they hold 8.1 percent of the steps, and a rolling clock of 16 steps still
+   puts 44.6 percent of their cadences on a downbeat. To remove them buys 1.9 points of
+   alignment over the whole corpus and costs those steps. *)
 let rotation cells =
   let holds = cadential_holds cells in
   if List.length holds < 3

@@ -16,7 +16,7 @@
     questions: the class index lives with the corpus that sizes it — [Vocab] — and this
     module never sees one.
 
-    The design is [docs/transformer_model.md]. *)
+    The design is [docs/transformer.md]. *)
 
 (** What a step does to the synthesizer: the messages the sequencer sends.
 

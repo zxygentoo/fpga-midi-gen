@@ -230,7 +230,7 @@ era is the variance and not the mean: ALiBi span 4 holds a standard
 deviation of 0.0016 against 0.0108 at span 8, replicated at two step
 budgets, because steep slopes confine every head to the bar while gentle
 ones let each seed latch onto whatever distant structure its init favours.
-The design is `docs/transformer_v2.md`.
+The design is `docs/transformer.md`.
 
 On the board, six layers: timing met at +0.059 ns, 3,061 LUTs, 126 block RAM
 tiles of 135, 2 DSPs. Two measurements paid for that margin. A `Switch` in
@@ -278,3 +278,70 @@ violation and change no netlist, thus the pass that era four needed is
 insurance; `build.tcl` keeps it and carries both measurements. The bitstream
 is in the QSPI flash, and a dump from the flash-booted image is the nine
 bytes of the simulation.
+
+## 2026-08-19 — the seed panel (feat/seed-switches)
+
+The seed decides the piece, and only the host could set it, thus the board
+alone played one piece for ever. The 16 slide switches now write SEED and the
+eight seven-segment digits show the cell. SEED takes the rule that RUN already
+keeps: two writers, and the last one wins. A host write stands until a switch
+moves, and a switch move applies at once, running or stopped. The panel wins a
+cycle that carries a host commit and a switch move together, because the panel
+is the writer a person can see and the host tool is mostly a method to debug.
+The cell keeps its one home — the block gives a strobe and a value and holds
+no seed of its own. The design is `docs/seed_switches_rtl.md`.
+
+Nothing in the panel has a power-on value, and that is the whole of the
+power-on rule. The synchroniser and the register of the value read last are 0,
+thus a panel that is not at zero disagrees with 0 and writes the cell three
+cycles after the power-on; a panel at zero writes nothing and the cell keeps
+0, which is the value of that panel. There is no first-time flag, no counter
+and no init walk, and a clear behaves as a power-on. SEED therefore lost its
+power-on value of 42 and its range: the panel can set 0 and the design accepts
+it, because a seed of 0 holds the PRNG at 0 and the piece is one chord that
+does not move. That is a loud failure and not silence, and all the switches
+down is the rest position of the panel.
+
+The digits show the cell and never the switches, because a person who sets 16
+switches and cannot see what the board took is setting it blind. All eight
+digits show the 32 bits: the host writes the same cell, thus four digits could
+report a value that is not the seed. The display is a scan of 5.24 ms, one
+digit each 655 us, and a slice of the free counter makes the sequence, thus
+there is no divisor and no state machine.
+
+Two rules the design document did not state, and the circuit needs both. The
+panel writes the synchronised value and not the pins, because the strobe says
+that the synchroniser moved, thus the cell must take what it moved to. And a
+bounce needs no debounce, which is not the rule of the run button: each edge
+writes a whole seed and the last one stands, thus the cell ends at the value a
+person set.
+
+On the board: the cell answers the switches at the power-on, a host write of
+DEADBEEF stands on the digits — the high half, which is the reason there are
+eight of them — and the image booted from the flash comes back holding the
+switches and not the host value. The bitstream is in the QSPI flash.
+
+The entry before this one states that both `phys_opt_design` passes find no
+setup violation. That is not true today, and the panel is not the cause. Three
+builds of one day and one toolchain: the design before the panel meets at
++0.018 ns with 2,975 LUTs, the design with the panel at +0.041 with 3,028, and
+the same netlist with `place -directive Explore` at +0.030 with 3,039. The
+panel is 0.023 better than its absence, and it adds no timed path worth the
+name: its pins carry no delay constraint at either end, and its own paths are
+the synchroniser, the counter and the write into the cells. The +0.113 of the
+board simplification does not reproduce, and this measurement does not say
+why; the one difference of the netlist is the power-on value of SEED, but the
+utilization of a build is the count after physical synthesis, which replicates
+registers by the congestion it finds, thus that constant is a candidate and
+not a cause. The route ends negative in each of the three builds — -0.260,
+-0.660 and -0.467 — and the pass after it recovers all of them, thus the
+post-route pass is load-bearing and not insurance.
+
+The three builds give three different worst paths, at 6, 12 and 15 logic
+levels. Therefore this design has no critical path to correct: it has a group
+of paths that the congestion of 126 block RAM tiles of 135 holds inside about
+0.05 ns, and the placement decides which one wins. A pipeline stage on one of
+them would promote the next, and a directive is not free margin. The signed
+build is +0.041 and it stands. `build.tcl` keeps the routed checkpoint now,
+thus the next question of this kind costs an `open_checkpoint` and not a
+build.

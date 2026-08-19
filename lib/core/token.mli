@@ -1,6 +1,6 @@
 (** The token of the transformer model of era three. Its design is the 2026-08-14 entry of
-    [build-log.md]; [docs/transformer_model.md] holds era four, where a step is one frame
-    and there is no token.
+    [build-log.md]; [docs/transformer.md] holds era four, where a step is one frame and
+    there is no token.
 
     One token is one byte. Bit 7 is the type: 1 is Note On and 0 is Note Off. Bits 6:0 are
     the MIDI pitch. Two codes are reserved. The code 0xFF is START: it opens the walk of a

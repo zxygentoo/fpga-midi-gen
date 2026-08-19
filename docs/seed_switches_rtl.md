@@ -298,8 +298,10 @@ module O = struct
     (** a strobe: the synchronised switches moved, thus [seed_value] must go
         into the cell *)
     ; seed_value : 'a [@bits 32]
-    (** the seed the panel states: the switches in the low 16 bits and zero
-        above them *)
+    (** the seed the panel states: the synchronised switches in the low 16
+        bits and zero above them. It is the value the synchroniser settled on
+        and not the pins, because the strobe states that the synchroniser
+        moved. *)
     ; digit : 'a [@bits 8]
     (** the digit that is lit; one hot and active low. The board calls this wire
         the anode; the interface states what it selects. *)

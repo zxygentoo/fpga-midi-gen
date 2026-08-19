@@ -4,7 +4,7 @@
 
 The step-frame model of era four on the board: one step of music is one
 pass of the network and one 32-bit frame on the socket. The model is
-`docs/transformer_model.md` and the checkpoint is
+`docs/transformer.md` and the checkpoint is
 `d64-frame-do03-96k-s6-l6-nopos-span4` — d 64, 6 layers, 4 heads, context
 256, ALiBi span 4, no window-position table.
 
@@ -83,7 +83,7 @@ silence on the socket.
 The decode moves into the sequencer, where `Core.Frame` states it: the
 sequencer holds the set of pitches that sound, and it sends all releases
 and then all strikes. The two passes are the rule, and
-`docs/transformer_model.md` states why a seat walk breaks on the
+`docs/transformer.md` states why a seat walk breaks on the
 exchange and the unison.
 
 **The source answers `step` from a frame it has already drawn.** It draws
@@ -276,7 +276,7 @@ initialized memory with one gated-off write port, which the tools infer
 as block RAM at every depth here; a plain write-portless array demotes to
 slice logic.
 
-The budget, from `docs/transformer_model.md`: 126 tiles of 135 at six
+The budget, from `docs/transformer.md`: 126 tiles of 135 at six
 layers, which is one tile under the design that played in era three. The
 six-layer build measures exactly that.
 

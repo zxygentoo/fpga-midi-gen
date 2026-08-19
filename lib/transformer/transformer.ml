@@ -468,11 +468,11 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
     ; phases = (step % Jsb.bar_steps) :: walk.phases
     }
   in
-  (* The boot of docs/transformer_model.md: a lead-in of silence. Attention needs one
-     position, and the packed corpus holds a run of silent frames at every seam, thus this
-     is a condition the model trained on and the model opens the music itself. One bar is
-     the longest seam of that corpus, and it leaves the first draw on a downbeat. The
-     lead-in counts inside [steps], because it is silence the walk really plays. *)
+  (* The boot of docs/transformer.md: a lead-in of silence. Attention needs one position,
+     and the packed corpus holds a run of silent frames at every seam, thus this is a
+     condition the model trained on and the model opens the music itself. One bar is the
+     longest seam of that corpus, and it leaves the first draw on a downbeat. The lead-in
+     counts inside [steps], because it is silence the walk really plays. *)
   let lead = min steps Jsb.bar_steps in
   let booted =
     List.fold

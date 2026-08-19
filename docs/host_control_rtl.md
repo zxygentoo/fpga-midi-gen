@@ -18,6 +18,14 @@ design does not do", "Changes to the host control" and "The steps" are the
 record of the era-one redesign: they name the doorbell, because it was
 there, and their numbers are the numbers of that build.
 
+**The board writes two cells now.** The center button toggles RUN, and the
+slide switches write SEED — `docs/seed_switches_rtl.md` states that design.
+Therefore `Control_regs.I` carries `run_toggle`, `seed_write` and
+`seed_value`, and the pins of the top level are not the three of this
+document alone: `btnC` and `sw[15:0]` come in, and `an`, `seg` and `dp` go
+out. The paragraph below that ties `run_toggle` to 0 is the record of era
+one, when no board writer existed.
+
 ## The problem
 
 The wire protocol gives an address to each control cell, thus the first

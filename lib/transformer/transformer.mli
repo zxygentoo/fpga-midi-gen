@@ -5,7 +5,7 @@
     through four tables that sum, and they leave through the same four tables in a chain
     from the soprano down. The network under that head is a decoder with no bias terms,
     RMSNorm before each sublayer, ALiBi for the position, and [d_ff = 4 d]. The design is
-    [docs/transformer_model.md].
+    [docs/transformer.md].
 
     This module is the reference and not the trainer. The trainer is
     [jax/transformer/train.py], and what stands here is what the gates of the project

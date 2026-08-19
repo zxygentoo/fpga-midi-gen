@@ -20,7 +20,7 @@
     model wrong. The expect test of [Jsb] holds the corpus inside the window, and a corpus
     with a wider range takes a wider window, wider tables and a new bitstream.
 
-    The design is [docs/transformer_model.md]. *)
+    The design is [docs/transformer.md]. *)
 
 (** the rows of one table of a model: 48 *)
 val classes : int

@@ -554,7 +554,7 @@ module Engine = struct
 
   let next_step t =
     let phase = t.position % Jsb.bar_steps in
-    (* The boot of docs/transformer_model.md: a lead-in of silence, one bar of it, drawing
+    (* The boot of docs/transformer.md: a lead-in of silence, one bar of it, drawing
        nothing and taking no number from the generator. The model opens the music itself
        after it, thus the walk needs no pitch and no table to begin. *)
     let t, step =

@@ -8,7 +8,7 @@
 
    The line format is the one of jax/transformer/infer.py, thus a walk of this player and
    a walk of the twin compare with `diff`. That comparison is the walk gate of
-   docs/transformer_model.md.
+   docs/transformer.md.
 
    The configuration flags must equal the flags of the training run; the checkpoint holds
    only tensors. The audition of the integer twin returns with the twin. *)
