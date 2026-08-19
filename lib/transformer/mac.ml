@@ -205,8 +205,11 @@ let%expect_test "the fuzz: every shape sums its rows in order, under holds anywh
     inner, outer, List.filter (List.range 0 span) ~f:held_now
   in
   (* inner 1 is the row that is its own first and last term, thus one tag carries both
-     flags; the widest inner exercises the accumulator over a long row *)
-  let edges = [ 1, 1, []; 1, 8, []; 24, 1, []; 1, 4, [ 0; 1; 2; 3; 4; 5 ] ] in
+     flags. The draw stops at 24; 256 is the widest row the board really walks — the [w2]
+     matvec of the feed-forward, whose inner walk is 4 d at d 64 — thus the accumulator is
+     exercised at the length it runs on the board and not only at the length a draw
+     affords. *)
+  let edges = [ 1, 1, []; 1, 8, []; 24, 1, []; 256, 1, []; 1, 4, [ 0; 1; 2; 3; 4; 5 ] ] in
   let cases = edges @ List.map (List.range 0 60) ~f:drawn in
   let fault (inner, outer, holds) =
     if walk_is_exact (walk ~inner ~outer ~holds) ~inner ~outer
@@ -220,7 +223,7 @@ let%expect_test "the fuzz: every shape sums its rows in order, under holds anywh
        (List.length cases)
    | (inner, outer, held) :: (_ : (int * int * int) list) ->
      Stdio.printf "inner %d outer %d under %d holds went wrong\n" inner outer held);
-  [%expect {| 64 walks back to back: every row in order, every sum the reference sum |}]
+  [%expect {| 65 walks back to back: every row in order, every sum the reference sum |}]
 ;;
 
 let%expect_test "the waveform of a walk: the counters issue, the tags retire" =

@@ -170,8 +170,13 @@ module Engine : sig
     }
 
   (** [init model ~seed] is the engine at its origin: an empty ring, no residual, and the
-      PRNG at [seed] — the rule of the SEED cell, thus the seed is 1 up to 0xFFFFFFFF and
-      a seed of the board names the walk of the board.
+      PRNG at [seed] — [Prng.create] and not the fold, thus a seed of the board names the
+      walk of the board. The seed is any 32-bit value.
+
+      0 is the standing walk. The slide switches can state it, because all of them down is
+      the rest position of the panel, thus the circuit plays it and this reference plays
+      it: the generator never moves, every uniform is 0, and each seat takes the first
+      class that survives min-p.
 
       The lead-in is not here. It is the first steps of the walk itself, thus a caller
       that counts steps counts the steps [Transformer.sample] counts, and the two walks

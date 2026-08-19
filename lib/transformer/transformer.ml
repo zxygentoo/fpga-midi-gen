@@ -498,6 +498,41 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   Array.of_list (List.rev drawn.frames)
 ;;
 
+(* the message of the [Invalid_argument] that a rule raises, and ["no raise"] when the
+   rule accepts: a gate that pins a message needs no exception handler of its own *)
+let refusal f =
+  match f () with
+  | () -> "no raise"
+  | exception Invalid_argument message -> message
+;;
+
+module For_test = struct
+  (* The checkpoint as [jax/transformer/train.py] writes it: the tensors named "0" upward,
+     in the flat order of [Params_data.to_list]. Three readers cross that seam —
+     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] — thus one
+     writer states the naming rule and the gates of both modules read one file.
+
+     The gate makes the file itself, thus it reads no file that git ignores, and [f] holds
+     the whole life of the file: it goes when [f] gives and when [f] raises. *)
+  let with_checkpoint tensors ~f =
+    let path = Stdlib.Filename.temp_file "mgen_checkpoint" ".safetensors" in
+    Exn.protect
+      ~f:(fun () ->
+        Nx_io.save_safetensors
+          path
+          (List.mapi tensors ~f:(fun index tensor -> Int.to_string index, Nx_io.P tensor));
+        f path)
+      ~finally:(fun () -> Stdlib.Sys.remove path)
+  ;;
+
+  (* A reader of the checkpoint names the file in its refusal, and the file of a gate is a
+     temporary one, thus the name must leave the message before an expected block holds
+     it. *)
+  let refusal ~path f =
+    String.substr_replace_all (refusal f) ~pattern:path ~with_:"<file>"
+  ;;
+end
+
 (* the shapes of a test model: small enough to run in a test, and the same structure *)
 let test_config = { Config.baseline with d = 32; layers = 1; heads = 2; context = 24 }
 
@@ -536,6 +571,61 @@ let%expect_test "the loss of drawn weights is the uniform draw" =
   [%expect {| 3 windows, 14.8437 nats for each step |}]
 ;;
 
+(* The one crossing of the JAX-to-OCaml seam, on a file the gate writes itself. What the
+   trainer states in a checkpoint is the shape and the values; a reader that took either
+   of them wrong would be found on the board and not here, thus the seam runs here. *)
+let%expect_test "the checkpoint seam: the readers take what the trainer writes" =
+  let { Config.d = (_ : int); layers = (_ : int); heads; context; slope_span } =
+    test_config
+  in
+  let params = Params.init test_config ~seed:5 in
+  let flat p = Array.concat_map (Array.of_list (Params.to_list p)) ~f:Nx.to_array in
+  For_test.with_checkpoint (Params.to_list params) ~f:(fun path ->
+    (* the width and the layer count come from the shapes in the file, thus a player
+       states neither *)
+    let read = Config.of_checkpoint path ~heads ~context ~slope_span in
+    printf "the file states d %d, layers %d\n" read.d read.layers;
+    printf
+      "%d values, every one the value written: %b\n"
+      (Array.length (flat params))
+      (Array.equal Float.equal (flat (Params.load read ~path)) (flat params)));
+  [%expect
+    {|
+    the file states d 32, layers 1
+    18944 values, every one the value written: true
+    |}]
+;;
+
+let%expect_test "the checkpoint seam: a wrong seat table stops at the door" =
+  let { Config.d; layers = (_ : int); heads; context; slope_span } = test_config in
+  (* one seat short: the table states the seats and the classes, thus both readers can
+     answer for it before any arithmetic reads a row *)
+  let tensors =
+    List.mapi (Params.shapes test_config) ~f:(fun index shape ->
+      Nx.zeros
+        Nx.float32
+        (if index = 0 then [| Frame.voices - 1; Vocab.classes; d |] else shape))
+  in
+  For_test.with_checkpoint tensors ~f:(fun path ->
+    let show f = printf "%s\n" (For_test.refusal ~path f) in
+    show (fun () ->
+      let (_ : Config.t) = Config.of_checkpoint path ~heads ~context ~slope_span in
+      ());
+    (* The load takes the shapes from the configuration it is given, thus it answers for
+       the tensor the file really holds. Its message is Kaun's and not this repository's:
+       an upgrade of the library can move that text and fail this gate for no regression
+       at all. It stays, because it states where the refusal really comes from and a
+       re-promotion costs nothing. *)
+    show (fun () ->
+      let (_ : Params.t) = Params.load test_config ~path in
+      ()));
+  [%expect
+    {|
+    the seat table of <file> is (3 48 32), and not 4 seats of 48 classes
+    Checkpoint.load: shape mismatch for "0": expected [4; 48; 32], got [3; 48; 32]
+    |}]
+;;
+
 let%expect_test "the seed names the walk" =
   let params = Params.init test_config ~seed:3 in
   let draw seed =
@@ -571,5 +661,198 @@ let%expect_test "the seed names the walk" =
   [%expect {|
     the same seed repeats: true
     another seed parts: true
+    |}]
+;;
+
+let%expect_test "a walk shorter than the lead-in is silence, and it is that long" =
+  let params = Params.init test_config ~seed:3 in
+  let walk =
+    sample
+      test_config
+      params
+      ~seed:7
+      ~steps:5
+      ~temperature:elected_temperature
+      ~min_p:elected_min_p
+  in
+  (* the lead-in counts inside [steps], thus a short walk is short and not one bar long *)
+  printf
+    "%d steps, all of them silence: %b\n"
+    (Array.length walk)
+    (Array.for_all walk ~f:(fun frame -> frame = Frame.silent));
+  [%expect {| 5 steps, all of them silence: true |}]
+;;
+
+let%expect_test "the loss takes one window or more" =
+  let params = Params.init test_config ~seed:2 in
+  printf
+    "%s\n"
+    (refusal (fun () ->
+       let (_ : float) = loss test_config params ~windows:[] in
+       ()));
+  [%expect {| the loss takes one window or more |}]
+;;
+
+(* The flat order of the checkpoint. [to_list] states it, [of_list] reads it back, and the
+   quantized twin instantiates the same structure, thus a break here would put a layer's
+   tensors into another layer's seats in both models at one time. *)
+let%expect_test "the flat order of the checkpoint reads back" =
+  (* the order alone, on numbers: two tables, then six for each layer *)
+  let flat layers = List.init (2 + (6 * layers)) ~f:Fn.id in
+  let round layers = Params_data.to_list (Params_data.of_list ~layers (flat layers)) in
+  List.iter [ 1; 2; 6 ] ~f:(fun layers ->
+    printf
+      "layers %d, %d items, the order returns: %b\n"
+      layers
+      (List.length (flat layers))
+      ([%compare.equal: int list] (round layers) (flat layers)));
+  let read ~layers items =
+    refusal (fun () ->
+      let (_ : int Params_data.t) = Params_data.of_list ~layers items in
+      ())
+  in
+  printf "one item: %s\n" (read ~layers:1 [ 0 ]);
+  printf "a layer one tensor short: %s\n" (read ~layers:1 (List.init 7 ~f:Fn.id));
+  printf "two layers of tensors for one layer: %s\n" (read ~layers:1 (flat 2));
+  [%expect
+    {|
+    layers 1, 8 items, the order returns: true
+    layers 2, 14 items, the order returns: true
+    layers 6, 38 items, the order returns: true
+    one item: the parameters start with the two tables
+    a layer one tensor short: a layer takes six tensors
+    two layers of tensors for one layer: 2 layer groups do not fit 1 layers
+    |}]
+;;
+
+(* ==================================================================== *)
+(* The rules both pipelines share *)
+(* ==================================================================== *)
+
+(* The quantized twin draws through these rules and never through a copy of them, thus a
+   rule that moved here would move the circuit's walk with it. The prose of [pick] argues
+   that the walk always ends on a class that holds weight; this fuzz measures it. *)
+let%expect_test "the fuzz: a pick lands on a class that holds weight" =
+  (* The seed is fixed, thus the gate is the same gate on every machine, and the report is
+     a verdict: a case that lands on a zero prints itself.
+
+     [pick] takes the weights a draw gives it, thus one class always holds weight — the
+     tempered peak weighs one and a floor under one keeps it. An array of zeros is not a
+     case of this function, and no floor can make one. *)
+  let state = Random.State.make [| 20260819 |] in
+  let drawn_weights (_ : int) =
+    let classes = Random.State.int_incl state 1 Vocab.classes in
+    let raw =
+      Array.init classes ~f:(fun (_ : int) -> Random.State.float_range state (-20.) 20.)
+    in
+    let temperature = Random.State.float_range state 0.5 1.5 in
+    (* a floor high enough to zero most of a wide row, thus the walk crosses long runs of
+       refused classes *)
+    let min_p = Random.State.float_range state 0.0 0.9 in
+    above_min_p (tempered raw ~temperature) ~min_p
+  in
+  (* the shapes a draw makes rarely: the one class, and the weight at each end of the row *)
+  let edges = [ [| 1.0 |]; [| 1.0; 0.0 |]; [| 0.0; 1.0 |]; [| 0.0; 0.0; 1.0; 0.0 |] ] in
+  let cases = edges @ List.map (List.range 0 200) ~f:drawn_weights in
+  (* the two ends of the grid of [Prng.uniform] and one draw between them: at the top end
+     a total summed a second time would send the walk past every running total *)
+  let uniforms = [ 0.0; 0.5; Float.of_int 0xFFFFFF *. 0x1p-24 ] in
+  let fault weights =
+    List.find_map uniforms ~f:(fun uniform ->
+      let index = pick weights ~uniform in
+      if Float.(weights.(index) > 0.0) then None else Some (Array.length weights, index))
+  in
+  (match List.filter_map cases ~f:fault with
+   | [] ->
+     printf
+       "%d weight rows over %d uniforms: every pick holds weight\n"
+       (List.length cases)
+       (List.length uniforms)
+   | (classes, index) :: (_ : (int * int) list) ->
+     printf "a row of %d classes picked %d, which holds no weight\n" classes index);
+  [%expect {| 204 weight rows over 3 uniforms: every pick holds weight |}]
+;;
+
+let%expect_test "the min-p floor: 0 removes nothing, and the peak stands under any floor" =
+  let state = Random.State.make [| 20260819 |] in
+  let raw (_ : int) =
+    Array.init Vocab.classes ~f:(fun (_ : int) ->
+      Random.State.float_range state (-20.) 20.)
+  in
+  let rows = List.map (List.range 0 100) ~f:raw in
+  let floors = [ 0.0; elected_min_p; 0.5; 0.999 ] in
+  let removes_nothing row =
+    let weights = tempered row ~temperature:1.0 in
+    Array.equal Float.equal (above_min_p weights ~min_p:0.0) weights
+  in
+  (* The tempered peak weighs exactly one, thus every floor under one keeps it. This is
+     why a draw always exists and why one compare holds the whole filter. *)
+  let peak_stands row =
+    let weights = tempered row ~temperature:1.0 in
+    List.for_all floors ~f:(fun min_p ->
+      Array.exists (above_min_p weights ~min_p) ~f:(fun w -> Float.(w = 1.0)))
+  in
+  printf
+    "%d rows: the floor 0 removes nothing: %b, the peak stands under every floor: %b\n"
+    (List.length rows)
+    (List.for_all rows ~f:removes_nothing)
+    (List.for_all rows ~f:peak_stands);
+  (* A class ten nats under the peak weighs 4.5e-5 of it. With no floor the walk reaches
+     it at the top of the grid; the elected floor removes it, and no uniform can name it. *)
+  let far_under = [| 0.0; -10.0 |] in
+  let draw ~min_p ~uniform = draw_class far_under ~temperature:1.0 ~min_p ~uniform in
+  let top = Float.of_int 0xFFFFFF *. 0x1p-24 in
+  printf
+    "no floor: %d at 0.5, %d at the top of the grid\n"
+    (draw ~min_p:0.0 ~uniform:0.5)
+    (draw ~min_p:0.0 ~uniform:top);
+  printf
+    "the elected floor: %d at 0.5, %d at the top of the grid\n"
+    (draw ~min_p:elected_min_p ~uniform:0.5)
+    (draw ~min_p:elected_min_p ~uniform:top);
+  [%expect
+    {|
+    100 rows: the floor 0 removes nothing: true, the peak stands under every floor: true
+    no floor: 0 at 0.5, 1 at the top of the grid
+    the elected floor: 0 at 0.5, 0 at the top of the grid
+    |}]
+;;
+
+let%expect_test "the window is the newest steps of the history, oldest first" =
+  (* the history holds the newest step first, and a forward pass reads them oldest first *)
+  let history = [ 5; 4; 3; 2; 1; 0 ] in
+  let show context =
+    printf
+      "context %d: %s\n"
+      context
+      (Sexp.to_string ([%sexp_of: int array] (window history ~context)))
+  in
+  show 10;
+  show 6;
+  show 3;
+  show 1;
+  [%expect
+    {|
+    context 10: (0 1 2 3 4 5)
+    context 6: (0 1 2 3 4 5)
+    context 3: (3 4 5)
+    context 1: (5)
+    |}]
+;;
+
+let%expect_test "the policy bounds: one message for each" =
+  let policy ~temperature ~min_p = refusal (fun () -> check_policy ~temperature ~min_p) in
+  printf "temperature 0: %s\n" (policy ~temperature:0.0 ~min_p:elected_min_p);
+  printf "min_p 1: %s\n" (policy ~temperature:elected_temperature ~min_p:1.0);
+  printf "min_p below 0: %s\n" (policy ~temperature:elected_temperature ~min_p:(-0.1));
+  printf
+    "the elected policy: %s\n"
+    (policy ~temperature:elected_temperature ~min_p:elected_min_p);
+  [%expect
+    {|
+    temperature 0: the temperature is positive
+    min_p 1: min_p is 0 up to 1
+    min_p below 0: min_p is 0 up to 1
+    the elected policy: no raise
     |}]
 ;;

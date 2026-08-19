@@ -18,7 +18,13 @@
     Every draw — the initial parameters and the sampler — comes from [Prng], the
     xorshift32 of the circuit. Thus one seed names one walk in the software, in the
     simulation and on the board. A seed is any integer: it folds into the 32 bits of the
-    state, and a seed already inside that range names itself. *)
+    state, and a seed already inside that range names itself.
+
+    **0 is the one seed that does not cross to the board.** This module folds, thus 0
+    takes a live walk here: a tool that draws its seed from a flag, a counter or a stream
+    must not get a dead one. The board and [Quantized.Engine] take the seed as it stands,
+    and 0 is the fixed point of the recurrence, thus their walk at 0 stands still and is
+    not this module's. [Prng.create_folded] states the rule. *)
 
 (** every tensor of the float model is float32 *)
 type tensor = (float, Nx.float32_elt) Nx.t
@@ -214,3 +220,23 @@ val check_policy : temperature:float -> min_p:float -> unit
 val elected_temperature : float
 
 val elected_min_p : float
+
+(** The checkpoint seam, for the gates that cross it. It stands here because the naming
+    rule of the file is this module's: the tensors are named "0" upward, in the flat order
+    of [Params_data.to_list]. *)
+module For_test : sig
+  (** [with_checkpoint tensors ~f] writes [tensors] to a temporary safetensors file under
+      that rule — the file the JAX trainer writes — and gives [f] its path. The file goes
+      when [f] gives and when [f] raises.
+
+      [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
+      three readers of the seam, thus one writer serves the gates of both modules and no
+      gate reads a file that git ignores. *)
+  val with_checkpoint : tensor list -> f:(string -> 'a) -> 'a
+
+  (** [refusal ~path f] is the message of the [Invalid_argument] that [f] raises, with
+      [path] taken out of it, and ["no raise"] when [f] raises nothing. A reader of the
+      checkpoint names the file in its refusal, and the file of a gate is a temporary one,
+      thus the name must leave the message before an expected block holds it. *)
+  val refusal : path:string -> (unit -> unit) -> string
+end

@@ -660,6 +660,140 @@ end
 (* the model the expect tests below walk: drawn weights in the test shape *)
 let test_model ~seed = Model.For_test.(init config ~seed)
 
+(* ==================================================================== *)
+(* The image the bitstream carries *)
+(* ==================================================================== *)
+
+(* These four rules decide every byte the board holds. The frame gate reads them only
+   through a walk of tens of thousands of cycles, thus a break there says "the frames
+   disagree" and says nothing about which rule broke. *)
+let%expect_test "the exponent of a tensor, and the clamp of the byte" =
+  (* the largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
+     every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
+     exponent has to step down. *)
+  List.iter [ 0.0; 0.02; 0.08; 127.0; 127.49; 127.5; 1e9 ] ~f:(fun v ->
+    Stdio.printf "%-6g -> %d\n" v (Model.max_exponent v));
+  (* The byte is two's complement and the negative end is not used: the clamp is -127 and
+     not -128, thus the image is symmetric and a negated weight is a negated byte. A tie
+     rounds up and never away from zero, thus -5.5 is -5. *)
+  let { Model.q; e } = Model.quantize ~e:0 [| 200.0; -200.0; 5.4; -5.5; 0.0 |] in
+  Stdio.printf "at e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
+  (* with no exponent given, the tensor's own peak states it *)
+  let { Model.q; e } = Model.quantize [| 0.02; -0.01; 0.0 |] in
+  Stdio.printf "at its own e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
+  [%expect
+    {|
+    0      -> 14
+    0.02   -> 12
+    0.08   -> 10
+    127    -> 0
+    127.49 -> 0
+    127.5  -> -1
+    1e+09  -> -23
+    at e 0: (127 -127 5 -5 0)
+    at its own e 12: (82 -41 0)
+    |}]
+;;
+
+let%expect_test "the seat table and the phase table share one exponent" =
+  let config = Model.For_test.config in
+  (* the seat table peaks ten times higher than the phase table *)
+  let peak index = if index = 0 then 0.5 else 0.05 in
+  let tensors =
+    List.mapi (Model.sizes config) ~f:(fun index size ->
+      Array.init size ~f:(fun i -> if i = 0 then peak index else 0.0))
+  in
+  let model = Model.of_floats config ~temperature:1.0 ~min_p:0.05 tensors in
+  let { Params_data.seats; phase; layers = (_ : Model.layer array) } = model.params in
+  (* Their rows add — [Engine.embed] adds them and the Embed op of the circuit walks them
+     as one tensor — thus one exponent covers both, and the phase table pays for it: alone
+     it would take the exponent printed last. *)
+  Stdio.printf
+    "seats e %d, phase e %d, and the phase table alone would take %d\n"
+    seats.e
+    phase.e
+    (Model.max_exponent (peak 1));
+  [%expect {| seats e 7, phase e 7, and the phase table alone would take 11 |}]
+;;
+
+let%expect_test "the ROM bases walk the tensors in the order of the image" =
+  let config = Model.For_test.config in
+  let model = Model.For_test.init config ~seed:11 in
+  let bases = Params_data.to_list (Model.rom_bases model) in
+  let sizes =
+    List.map (Params_data.to_list model.params) ~f:(fun (t : Model.quantized) ->
+      Array.length t.q)
+  in
+  Stdio.printf "%s\n" (Sexp.to_string ([%sexp_of: int list] bases));
+  (* The bases and the image are one fact: the circuit adds an offset to a base and reads
+     the image, thus each base is where the tensor before it ended and the last tensor
+     ends at the end of the image. *)
+  let ends = List.map2_exn bases sizes ~f:( + ) in
+  Stdio.printf
+    "each base is the end of the one before: %b, and the image ends at the last: %b\n"
+    ([%compare.equal: int list] (List.drop bases 1) (List.drop_last_exn ends))
+    (List.last_exn ends = Array.length (Model.rom_bits model));
+  [%expect
+    {|
+    (0 6144 6656 7680 8704 9728 10752 14848)
+    each base is the end of the one before: true, and the image ends at the last: true
+    |}]
+;;
+
+(* The other half of the checkpoint seam: the file the trainer writes, quantized. The
+   bitstream is made from this path alone, thus a reader that took a tensor out of order
+   or read a count wrong would put the wrong weights into the board and nothing before the
+   ear would say so. *)
+let%expect_test "the checkpoint seam: a file quantizes as its tensors do" =
+  let config = Model.For_test.config in
+  let tensors = Transformer.Params.to_list (Transformer.Params.init config ~seed:5) in
+  let same (a : Model.quantized) (b : Model.quantized) =
+    a.e = b.e && Array.equal Int.equal a.q b.q
+  in
+  Transformer.For_test.with_checkpoint tensors ~f:(fun path ->
+    let read = Model.of_checkpoint config path in
+    let made =
+      Model.of_floats
+        config
+        ~temperature:Transformer.elected_temperature
+        ~min_p:Transformer.elected_min_p
+        (List.map tensors ~f:Nx.to_array)
+    in
+    Stdio.printf
+      "%d tensors, the file and the tensors quantize alike: %b\n"
+      (List.length (Params_data.to_list read.params))
+      (List.for_all2_exn
+         (Params_data.to_list read.params)
+         (Params_data.to_list made.params)
+         ~f:same);
+    (* the bitstream commits to a policy, thus the reader's defaults are part of the seam *)
+    Stdio.printf
+      "the file takes the elected policy: %b\n"
+      (read.temper.q_value = made.temper.q_value && read.min_weight = made.min_weight));
+  [%expect
+    {|
+    8 tensors, the file and the tensors quantize alike: true
+    the file takes the elected policy: true
+    |}]
+;;
+
+let%expect_test "the checkpoint seam: a tensor of the wrong count raises" =
+  let config = Model.For_test.config in
+  (* the second layer tensor, one row short: the configuration states every count, thus
+     the reader answers for the tensor and names it *)
+  let tensors =
+    List.mapi (Transformer.Params.shapes config) ~f:(fun index shape ->
+      Nx.zeros Nx.float32 (if index = 2 then [| shape.(0) - 1; shape.(1) |] else shape))
+  in
+  Transformer.For_test.with_checkpoint tensors ~f:(fun path ->
+    Stdio.printf
+      "%s\n"
+      (Transformer.For_test.refusal ~path (fun () ->
+         let (_ : Model.t) = Model.of_checkpoint config path in
+         ())));
+  [%expect {| <file> tensor 2 holds 992 values, not 1024 |}]
+;;
+
 let%expect_test "the exp2 table: the peak, the floor and the halving" =
   (* entry 0 is the peak 2^15; a full fractional step halves; the last entry sits one
      table step above one half *)
@@ -714,6 +848,50 @@ let%expect_test "the lead-in draws nothing, and the seed names the walk" =
   [%expect {|
     the same seed repeats: true
     another seed parts: true
+    |}]
+;;
+
+(* The seed 0 is the fixed point of xorshift32, and the panel can state it: all the slide
+   switches down is the rest position of the board. The walk therefore stands still —
+   every uniform is 0, thus every threshold is 0, thus each seat takes the first class
+   that min-p left standing. It is degenerate and it is well defined, and it is what the
+   board plays for that seed, thus a gate pins it here as one pinned Pink's one chord.
+
+   The float sampler answers another walk for the same number: [Transformer.sample] folds
+   its seed and 0 is the one seed the fold does not carry to the board. The engine is the
+   twin of the circuit, thus the engine is where this walk belongs. *)
+let%expect_test "the seed 0 stands still, and each seat takes the first class it may" =
+  let engine = ref (Engine.init (test_model ~seed:1) ~seed:0) in
+  let steps = ref [] in
+  for _ = 1 to 20 do
+    let next, (step : Engine.step) = Engine.next_step !engine in
+    engine := next;
+    steps := step :: !steps
+  done;
+  let drawn =
+    List.rev !steps
+    |> List.filter ~f:(fun (s : Engine.step) -> not (List.is_empty s.draws))
+  in
+  let stands_still (s : Engine.step) =
+    List.for_all s.draws ~f:(fun (d : Engine.draw) -> Float.(d.uniform = 0.0))
+  in
+  Stdio.printf
+    "%d drawn steps, every uniform 0: %b\n"
+    (List.length drawn)
+    (List.for_all drawn ~f:stands_still);
+  (* These weights are drawn, thus the logits stand nearly flat, thus class 0 survives
+     min-p at every seat and the frame it makes is silence: this walk plays nothing at
+     all. The trained model in flash answers the same, measured on the board 2026-08-19 —
+     all the slide switches down and no sound — thus the rest position of the panel is a
+     silent board and not a drone. *)
+  List.iter drawn ~f:(fun (s : Engine.step) -> Stdio.printf "  %08x\n" s.frame);
+  [%expect
+    {|
+    4 drawn steps, every uniform 0: true
+      00000000
+      00000000
+      00000000
+      00000000
     |}]
 ;;
 
