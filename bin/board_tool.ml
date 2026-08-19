@@ -69,14 +69,15 @@ let check = function
     exit 1
 ;;
 
-(* The board takes any value that fits a cell: a SEED of 0 holds the PRNG state at 0 and
-   every voice on its root, and a VELOCITY above 127 sets bit 7, which MIDI reads as a
-   status and not as data. [Control_intf.Reg] states the range of each cell that has one,
-   thus the tool refuses the write here.
+(* The board takes any value that fits a cell: a VELOCITY above 127 sets bit 7, which MIDI
+   reads as a status and not as data, and a CHANNEL above 15 does not fit the field.
+   [Control_intf.Reg] states the range of each cell that has one, thus the tool refuses
+   the write here. SEED has no range: the slide switches can set 0 and the board accepts
+   it, thus a table that refused 0 would only disagree with the panel.
 
    A write can cover a part of a cell, thus the check reads the cell and applies the
-   pending bytes before it judges: the default seed is 2a 00 00 00, and `write 0x05 0`
-   alone would make it 0. *)
+   pending bytes before it judges: a two-byte cell takes a write of one byte, and the byte
+   that the write does not name keeps the value the board holds. *)
 let refuse_out_of_range t ~address ~data =
   let n = Bytes.length data in
   List.iter Control_intf.Reg.fields ~f:(fun (f : Control_intf.Reg.field) ->

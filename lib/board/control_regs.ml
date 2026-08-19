@@ -150,9 +150,9 @@ let%expect_test "the defaults need no init walk" =
   Stdio.printf "after clear %s\n" (Bytes_util.hex (dump ()));
   [%expect
     {|
-    power-on   2a 00 00 00 64 c8 00 02 00
-    after write 2a 00 00 00 30 c8 00 02 00
-    after clear 2a 00 00 00 64 c8 00 02 00
+    power-on   00 00 00 00 64 c8 00 02 00
+    after write 00 00 00 00 30 c8 00 02 00
+    after clear 00 00 00 00 64 c8 00 02 00
     |}]
 ;;
 

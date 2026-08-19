@@ -60,8 +60,10 @@ module Status = struct
   ;;
 end
 
-(** The power-on values of the control cells. [Reg.fields] gives the value of each cell,
-    and these are the names that a driver reads. *)
+(** The values a driver takes when a person names none. [Reg.fields] gives the power-on
+    value of each cell, and the two agree for every cell but SEED: the slide switches
+    write SEED at the power-on, thus the board has no seed of its own and [seed] below
+    serves the host tools alone. *)
 module Default = struct
   (* MIDI channel 3, the S-1 factory default. *)
   let channel = 2
@@ -94,8 +96,10 @@ module Reg = struct
       power-on value, and its range when it has one. A value of more than one byte is
       little-endian.
 
-      [bounds] is [None] for a cell that holds no scalar: RUN is a bit field and the
-      circuit reads bit 0 alone, and STEP_MS takes any value, because 0 counts as 1. *)
+      [bounds] is [None] for a cell that holds no scalar and for a cell that takes its
+      whole range: RUN is a bit field and the circuit reads bit 0 alone, STEP_MS takes any
+      value because 0 counts as 1, and SEED takes any value because the slide switches can
+      set 0 and the board accepts it. *)
   type field =
     { name : string
     ; address : int
@@ -107,12 +111,10 @@ module Reg = struct
   (* Each register, from the first address upward. The RTL cells, their power-on values
      and the driver dump all read this one table. *)
   let fields =
-    [ { name = "seed"
-      ; address = seed
-      ; width = 4
-      ; default = Default.seed
-      ; bounds = Some { lower = 1; upper = 0xFFFF_FFFF }
-      }
+    [ (* The slide switches write this cell a few cycles after the power-on, thus its
+         stored default is never the seed of a run and it is 0. [Default.seed] is the seed
+         a host tool takes when a person names none, which is another question. *)
+      { name = "seed"; address = seed; width = 4; default = 0; bounds = None }
     ; { name = "velocity"
       ; address = velocity
       ; width = 1

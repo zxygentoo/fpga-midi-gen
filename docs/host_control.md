@@ -29,13 +29,25 @@ The registers:
 | `07` | CHANNEL | MIDI channel, 0 to 15. 0 is channel 1 | 2 (= channel 3) |
 | `05`–`06` | STEP_MS | step period in ms, minimum 1 | 200 |
 | `04` | VELOCITY | note velocity, 1 to 127 | 100 |
-| `00`–`03` | SEED | PRNG seed, 32 bits, not 0 | 42 |
+| `00`–`03` | SEED | PRNG seed, 32 bits | the slide switches |
 
 Semantics:
 
 - RUN holds the run state. A host write sets it, and a push of the board
   button toggles it. A read returns the current state. Therefore RUN can
   change without a host write.
+- SEED holds the seed of the next run, and it has two writers as RUN has. A
+  host write sets it, and a move of any slide switch sets it to the switch
+  value in the low 16 bits with the high 16 bits at zero. The last writer
+  wins, thus a host write stands only until a switch moves.
+- Therefore SEED has no power-on value that a driver can read. The switches
+  write it a few cycles after the power-on and after a reset, and the
+  fastest transaction is thousands of cycles. A read gives the switches,
+  unless a host wrote the cell after the last switch move.
+- SEED takes any value. A seed of 0 holds the PRNG at 0, thus each voice
+  stays on its root and the piece is one chord that does not move. It is not
+  silence: all the switches down is the rest position of the panel, thus the
+  value is common and the board states it plainly.
 - Power-on is silent. One button push makes the board play, with no host.
 - A change of RUN or STEP_MS applies at the next step. When RUN goes to 0,
   the FPGA sends a Note Off for each open note. The FPGA counts a STEP_MS
@@ -55,9 +67,14 @@ Semantics:
   one byte never shows a part of one write and a part of the next, and a
   block in the FPGA can look at a cell in each cycle.
 - The PRNG loads the seed at the run start: when RUN goes to 1, the model
-  reads SEED one time. A write to SEED during a run applies at the next run
-  start. Therefore one run plays one sequence, and the same seed replays
-  it.
+  reads SEED one time. A change of SEED during a run — by the host or by a
+  switch — applies at the next run start. Therefore one run plays one
+  sequence, and the same seed replays it. A person can set the seed of the
+  next piece on the switches while the piece before it plays.
+- The eight seven-segment digits show SEED in hexadecimal, thus the board
+  states the seed that it holds and not the position of the switches. The
+  two are the same while nothing else writes the cell.
+
 The MIDI output:
 
 - The model is the only source of MIDI. The host cannot put a byte on the
