@@ -1,13 +1,18 @@
 (* play_pink: the pink model plays on the synthesizer over USB MIDI. Four voices from the
    row groups: the bass drifts, the tenor moves, the alto walks, the soprano dances. The
    FPGA is not in this loop, and the defaults of the run come from the control cells, thus
-   the bare tool previews the model at the power-on values. *)
+   the bare tool previews the model at the power-on values.
+
+   One step of music is one frame, and [Frame.events_of_frames] states what a new frame
+   does to the frame before it. Therefore this tool is a clock and a wire encoder, and it
+   plays what the board plays: there is no gate and no re-strike policy, because a frame
+   can state neither. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
+module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
 module Pink = Mgen_pink.Pink
-module Player = Mgen_pink.Player
 module Signal = Mgen_core.Signal
 
 (* These flags set a control cell, thus [Control_intf.Reg] states their range and this
@@ -36,7 +41,13 @@ let velocity_arg = ranged "the velocity" Control_intf.Reg.velocity
 let sleep_ms ms = ignore (Core_unix.nanosleep (Float.of_int ms /. 1000.) : float)
 let default_device = "/dev/snd/midiC2D0"
 
-let play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold =
+(* the events of one step: the rule of [Frame] over the pair. The fold starts from
+   silence, thus the second element is what [frame] does to the frame before it. *)
+let events_after previous frame =
+  List.last_exn (Frame.events_of_frames [| previous; frame |])
+;;
+
+let play ~device ~seed ~steps ~step_ms ~channel ~velocity =
   let fd =
     let path = Option.value device ~default:default_device in
     try Midi.open_device path with
@@ -44,40 +55,27 @@ let play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold =
       Printf.eprintf "cannot open %s: %s\n" path (Core_unix.Error.message error);
       exit 1
   in
-  (* -hold makes every voice speak only when it moves *)
-  let model =
-    if hold
-    then
-      { Pink.default with
-        voices =
-          List.map Pink.default.voices ~f:(fun v ->
-            { v with Pink.Voice.restrike = false })
-      }
-    else Pink.default
-  in
-  let gate = Int.min gate_ms step_ms in
-  let player = ref (Player.create ~model ~seed) in
-  let advance f =
-    let player', events = f !player in
-    player := player';
-    List.iter events ~f:(function
-      | Player.Event.On note -> Midi.send_note_on fd ~channel ~note ~velocity
-      | Player.Event.Off note -> Midi.send_note_off fd ~channel ~note)
+  let walk = ref (Pink.create ~model:Pink.default ~seed) in
+  let sounding = ref Frame.silent in
+  let send frame =
+    List.iter (events_after !sounding frame) ~f:(function
+      | Frame.Event.On note -> Midi.send_note_on fd ~channel ~note ~velocity
+      | Frame.Event.Off note -> Midi.send_note_off fd ~channel ~note);
+    sounding := frame
   in
   (* Ctrl-C must not leave the four voices ringing; [Signal] holds the rule and the
-     measurement behind it. [Player.stop] below is the road out. *)
+     measurement behind it. The silent frame below is the road out, and it is the rule the
+     board keeps at the run stop. *)
   let stopped = Signal.watch_stop_play () in
   let step = ref 0 in
   while (not (Signal.stop_requested stopped)) && (steps = 0 || !step < steps) do
     Int.incr step;
-    advance Player.step;
-    sleep_ms gate;
-    (* the gate closes the highest voice only. When the gate is not less than the step it
-       never comes, and that voice closes at its next articulation. *)
-    if gate_ms < step_ms then advance Player.gate;
-    sleep_ms (step_ms - gate)
+    let w, frame = Pink.next_frame !walk in
+    walk := w;
+    send frame;
+    sleep_ms step_ms
   done;
-  advance Player.stop;
+  send Frame.silent;
   Signal.exit_if_stopped stopped
 ;;
 
@@ -104,10 +102,6 @@ let command =
          "-step-ms"
          (optional_with_default Control_intf.Default.step_ms int)
          ~doc:"MS the step period"
-     and gate_ms =
-       (* the era-one value. The gate is the player's own articulation: the board
-          sequencer has none. *)
-       flag "-gate-ms" (optional_with_default 125 int) ~doc:"MS the soprano gate time"
      and channel =
        flag
          "-channel"
@@ -118,13 +112,8 @@ let command =
          "-velocity"
          (optional_with_default Control_intf.Default.velocity velocity_arg)
          ~doc:"N note velocity 1 to 127"
-     and hold =
-       flag
-         "-hold"
-         no_arg
-         ~doc:" every voice re-strikes only at a pitch change, not only the low ones"
      in
-     fun () -> play ~device ~seed ~steps ~step_ms ~gate_ms ~channel ~velocity ~hold)
+     fun () -> play ~device ~seed ~steps ~step_ms ~channel ~velocity)
 ;;
 
 let () = Command_unix.run command

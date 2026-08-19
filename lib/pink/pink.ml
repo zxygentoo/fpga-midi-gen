@@ -65,10 +65,7 @@ let mapper ~scale (params : Params.t) =
 ;;
 
 module Voice = struct
-  type t =
-    { params : Params.t
-    ; restrike : bool
-    }
+  type t = { params : Params.t }
 end
 
 type t =
@@ -82,14 +79,14 @@ type t =
    disjoint, and each root is a pitch class of the one scale, thus every voice holds the
    pitch classes of C major pentatonic. *)
 let default_voices : Voice.t list =
-  [ (* the soprano: every step, A4 to A6, gated by the player *)
-    { params = { rows = 2; root = 69; degrees = 11; stretch = 2 }; restrike = true }
+  [ (* the soprano: every step, A4 to A6 *)
+    { params = { rows = 2; root = 69; degrees = 11; stretch = 2 } }
   ; (* the alto: every 4th step, C4 to G4 *)
-    { params = { rows = 2; root = 60; degrees = 4; stretch = 2 }; restrike = true }
+    { params = { rows = 2; root = 60; degrees = 4; stretch = 2 } }
   ; (* the tenor: every 16th step, C3 to A3 *)
-    { params = { rows = 2; root = 48; degrees = 5; stretch = 2 }; restrike = false }
-  ; (* the bass: every 64th step, A1 to A2; it speaks only when it moves *)
-    { params = { rows = 2; root = 33; degrees = 6; stretch = 2 }; restrike = false }
+    { params = { rows = 2; root = 48; degrees = 5; stretch = 2 } }
+  ; (* the bass: every 64th step, A1 to A2 *)
+    { params = { rows = 2; root = 33; degrees = 6; stretch = 2 } }
   ]
 ;;
 
@@ -151,6 +148,14 @@ let next_step w =
   { w with prng; rows; step }, states
 ;;
 
+(* Each voice holds its pitch, thus the frame is the four pitches and nothing else. A
+   voice of this model never rests, thus every code carries the sounding flag. [next_step]
+   gives the highest voice first and seat 0 is the lowest, thus the list turns around. *)
+let next_frame w =
+  let w, states = next_step w in
+  w, Frame.of_codes (List.rev_map states ~f:(fun s -> Frame.code_of_pitch s.note))
+;;
+
 (* the note stream of a one-voice model: the tests below use it to show the shape of the
    mapping of one voice *)
 let notes ~model ~seed =
@@ -168,7 +173,7 @@ let%expect_test "the note histogram of the soprano, stretch 1 against stretch 2"
   List.iter [ 1; 2 ] ~f:(fun stretch ->
     Stdio.printf "stretch %d:\n" stretch;
     let params = { soprano with Params.stretch } in
-    let model = { default with voices = [ { Voice.params; restrike = true } ] } in
+    let model = { default with voices = [ { Voice.params } ] } in
     notes ~model ~seed:Control_intf.Default.seed
     |> (fun sequence -> Sequence.take sequence 4096)
     |> Sequence.to_list

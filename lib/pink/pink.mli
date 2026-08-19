@@ -16,9 +16,17 @@
     one pitch. A Note Off on the one MIDI channel releases a voice by pitch, thus a shared
     pitch lets one voice's off silence another.
 
-    [Player] is the interface of the model: it makes the note events that the drivers
-    send. The sequence is a pure function of the seed, thus the same seed gives the same
-    piece in the reference, in the simulation and on the board. *)
+    [next_frame] is the interface of the model: one step of music is one frame, and
+    [Frame.events_of_frames] makes the events of the wire. The sequence is a pure function
+    of the seed, thus the same seed gives the same piece in the reference, in the
+    simulation and on the board.
+
+    **A frame cannot state a re-strike.** A voice that articulates a pitch it already
+    holds states nothing new, thus the note sustains to its next move. Era one had a
+    [restrike] policy on the soprano and the alto and a gate on the soprano; the frame
+    socket can express neither, and the ear accepted the smoothing. It costs the soprano
+    about 16 percent of its articulations and the alto about 34 percent, and the frame
+    codes [0x01] to [0x7F] stay free for a design that wants them back. *)
 
 open Base
 
@@ -37,12 +45,7 @@ module Params : sig
 end
 
 module Voice : sig
-  type t =
-    { params : Params.t
-    ; restrike : bool
-    (** re-strike at every due step, or only at a pitch change — the low voices of
-        [default] speak only when they move *)
-    }
+  type t = { params : Params.t }
 end
 
 (** The model: one scale, and the voices that live on it. A voice takes its offsets from
@@ -93,5 +96,11 @@ type state =
 val create : model:t -> seed:int -> walk
 
 (** [next_step w] is the model after one step and the voice states, in the order of the
-    voices of the model — the highest voice first, the strike order of the wire. *)
+    voices of the model — the highest voice first. *)
 val next_step : walk -> walk * state list
+
+(** [next_frame w] is the model after one step and the frame that the step states: each
+    voice holds its pitch. A voice of this model never rests, thus every voice code
+    carries the sounding flag, and seat 0 takes the lowest voice — the turn-around of the
+    list that [next_step] gives. *)
+val next_frame : walk -> walk * int

@@ -836,6 +836,25 @@ not the other way around.
    of its own, which makes the sequencer carry two and gives up what the
    socket is for.
 
+   **DONE on `feat/pink-v2`: the ear accepted the smoothing.** The
+   measurement of 18 percent is a mean over the voices and it hides where
+   the loss falls. Over 2048 steps at seed 1, with `Pink.default`: the
+   soprano loses 320 of 2048 articulations (15.6 percent) and its longest
+   note becomes 5 steps; the **alto loses 173 of 513 (33.7 percent)** and
+   its longest note becomes 24 steps, which is 4.8 s at the power-on
+   tempo. The tenor and the bass lose nothing, because they never had
+   `restrike`. The alto is the voice to listen to: its register is 4
+   degrees wide, thus two re-rolls land on one degree often.
+
+   `Pink.Voice.restrike` goes, and `Player` goes with it: the rule of the
+   player is `Frame.events_of_frames` in the core, thus `Pink.next_frame`
+   is the whole interface of the model. `Pink.state.due` stays, because it
+   describes the walk and not the player, and its expect test is the proof
+   of the periods. `play_pink` loses `-gate-ms` and `-hold`, thus the
+   audition plays what the board plays. Nothing is spent: the frame codes
+   `0x01` to `0x7F` stay free, and the second answer is still open if the
+   ear changes its mind.
+
 What steps 4 to 6 remove from the machine:
 
 - `Token` goes. Its two maps — the class index of a wire code, and the

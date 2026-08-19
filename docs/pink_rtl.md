@@ -18,6 +18,16 @@ the same messages in the reference, in the simulation and on the board.
 it removed `Midi_merge`: the model is the one source of MIDI, thus the seat
 holds `Midi_out` and ends at the pin. Read `Midi_merge` and `midi_ready`
 below as the era-one board.
+
+**`Pink.Source` is on the frame socket** since `feat/pink-v2`. One step is
+one frame, thus the block keeps no note register, no owed flag and no
+report walk, and it answers a step with one strobe: the states are `Idle`,
+`Draw`, `Grab` and the frame. `Player` is gone — the rule that makes the
+events is `Frame.events_of_frames` in the core, and `Pink.next_frame` is
+the whole software interface. A frame cannot state a re-strike, thus
+`Pink.Voice.restrike` and the soprano gate are gone too, and the ear
+accepted the smoothing; `docs/transformer_model.md`, step 6, holds what it
+costs. Read the `Source` and `Player` sections below as the era-one design.
 `docs/transformer_rtl.md` states them: a source gives one frame for each
 step, `Source_intf` carries no note and no `ready`, and the sequencer holds
 the set of pitches that sound and decodes the frame with the rule of

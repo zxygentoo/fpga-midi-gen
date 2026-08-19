@@ -1,5 +1,5 @@
 (tests
- (names test_txn test_quantized_drift test_socket)
+ (names test_txn test_quantized_drift test_socket test_pink_socket)
  (libraries
   base
   stdio
