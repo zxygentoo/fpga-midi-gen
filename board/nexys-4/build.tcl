@@ -25,4 +25,8 @@ route_design
 phys_opt_design
 report_timing_summary -file $build_dir/timing.rpt
 report_utilization -file $build_dir/utilization.rpt
+# The routed netlist, as it goes into the bitstream. A timing question then costs seconds
+# in open_checkpoint and not a build: report_timing -max_paths, the congestion of
+# report_design_analysis, and the paths that the summary does not name.
+write_checkpoint -force $build_dir/top_routed.dcp
 write_bitstream -force $build_dir/top.bit
