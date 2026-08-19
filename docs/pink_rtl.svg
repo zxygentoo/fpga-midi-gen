@@ -137,7 +137,7 @@
   <line class="wire" x1="870" y1="398" x2="900" y2="398"/>
   <polyline class="wire" points="900,134 900,398"/>
   <line class="wire" x1="900" y1="266" x2="930" y2="266" marker-end="url(#a)"/>
-  <rect class="blk" x="930" y="210" width="130" height="112" rx="5"/>
+  <rect class="blk" x="930" y="210" width="150" height="112" rx="5"/>
   <text class="b" x="944" y="232">frame</text>
   <text class="s" x="944" y="250">four codes in one</text>
   <text class="s" x="944" y="264">word; seat 0 is the</text>
@@ -154,15 +154,15 @@
   <text class="s" x="182" y="606">two bytes here</text>
   <line class="wire" x1="320" y1="595" x2="360" y2="595" marker-end="url(#a)"/>
 
-  <rect class="blk" x="360" y="565" width="170" height="60" rx="4"/>
+  <rect class="blk" x="360" y="565" width="180" height="60" rx="4"/>
   <text class="t" x="372" y="588">clamp to the window</text>
   <text class="s" x="372" y="606">the sum crowds the middle</text>
-  <line class="wire" x1="530" y1="595" x2="570" y2="595" marker-end="url(#a)"/>
+  <line class="wire" x1="540" y1="595" x2="570" y2="595" marker-end="url(#a)"/>
 
-  <rect class="blk" x="570" y="565" width="150" height="60" rx="4"/>
+  <rect class="blk" x="570" y="565" width="160" height="60" rx="4"/>
   <text class="t" x="582" y="588">× degrees</text>
   <text class="s" x="582" y="606">one constant multiply</text>
-  <line class="wire" x1="720" y1="595" x2="760" y2="595" marker-end="url(#a)"/>
+  <line class="wire" x1="730" y1="595" x2="760" y2="595" marker-end="url(#a)"/>
 
   <rect class="blk" x="760" y="565" width="150" height="60" rx="4"/>
   <text class="t" x="772" y="588">the high bits</text>

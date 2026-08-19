@@ -32,6 +32,19 @@ The modules of the era:
 design: no frame is illegal, thus the grammar of the instrument needs no
 registers.
 
+![The transformer source: the five layers of the machine, the memories, and
+one step drawn as the program that the counter runs](transformer_rtl.svg)
+
+The two halves of the picture are the two halves of the design. The machine
+above is small, and it stays small because the mathematics is a program. The
+band below is L2, and no box in it is a block: the list is a value that the
+config builds at elaboration, and L3 folds it into the cases of the counter.
+
+The schedule is not free for being a list. It reaches the die as the decode of
+that counter and as the parallel case on every register that a case writes,
+which is the cone the drawing marks, and "The machine" below measures what that
+cone costs when the fold goes wrong.
+
 ## What the frame changes
 
 Era three carried one note at a time and drew a sentence of tokens for

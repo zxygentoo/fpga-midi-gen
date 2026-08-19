@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="912" viewBox="0 0 1320 912" role="img" aria-label="Block schematic of the transformer source: the layered machine, the memories, and one step drawn as the program the counter runs">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .outacc  { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .brace   { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+    .ghost   { fill: none; stroke: var(--muted); stroke-width: 1.1; stroke-dasharray: 5 4; }
+    .gwire   { stroke: var(--muted); stroke-width: 1.1; fill: none; }
+    .elab    { stroke: var(--accent); stroke-width: 1.3; fill: none; stroke-dasharray: 6 4; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+    <marker id="e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1320" height="912" fill="var(--bg)"/>
+
+  <!-- the block -->
+  <rect class="outacc" x="150" y="55" width="1020" height="405" rx="8"/>
+  <text class="b" x="164" y="77" style="fill:var(--accent)">Transformer.Source<tspan class="s"> — a source on Source_intf. One step is one forward pass and four draws.</tspan></text>
+
+  <!-- the ports -->
+  <text class="t" x="144" y="122" text-anchor="end">rewind</text>
+  <text class="s" x="144" y="138" text-anchor="end">loads SEED</text>
+  <line class="wire" x1="150" y1="117" x2="180" y2="117" marker-end="url(#a)"/>
+  <text class="t" x="144" y="182" text-anchor="end">step</text>
+  <line class="wire" x1="150" y1="177" x2="180" y2="177" marker-end="url(#a)"/>
+  <text class="t" x="144" y="232" text-anchor="end">idle</text>
+  <text class="s" x="144" y="248" text-anchor="end">at rest</text>
+  <polyline class="wire" points="200,195 200,227 150,227" marker-end="url(#a)"/>
+  <text class="t" x="1174" y="155">frame[31:0] · valid</text>
+  <text class="s" x="1174" y="171">four codes, seat 0 low</text>
+  <polyline class="wire" points="390,120 404,120 404,86 1145,86 1145,150 1170,150" marker-end="url(#a)"/>
+
+  <!-- the control -->
+  <rect class="blk" x="180" y="95" width="210" height="100" rx="5"/>
+  <text class="b" x="194" y="117">L4 · the outer machine</text>
+  <text class="s" x="194" y="136">take rewind, run the lead-in,</text>
+  <text class="s" x="194" y="152">hold the drawn frame, and</text>
+  <text class="s" x="194" y="168">answer step</text>
+  <text class="s" x="194" y="186">no return address, no count</text>
+
+  <rect class="blk" x="180" y="225" width="210" height="200" rx="5"/>
+  <text class="b" x="194" y="247">L3 · the counter</text>
+  <text class="s" x="194" y="266">the schedule of L2, folded</text>
+  <text class="s" x="194" y="282">into the cases of a counter</text>
+  <text class="s" x="194" y="304">the cases are the decode of</text>
+  <text class="s" x="194" y="320">this counter and the parallel</text>
+  <text class="s" x="194" y="336">case on every register they</text>
+  <text class="s" x="194" y="352">write: L2 has no block, and</text>
+  <text class="s" x="194" y="368">that is where it lives</text>
+  <text class="s" x="194" y="396">seat: 2 bits, and that is all</text>
+
+  <polyline class="wire thin" points="285,225 285,195" marker-end="url(#a)"/>
+  <line class="wire thin" x1="390" y1="245" x2="430" y2="245" marker-end="url(#a)"/>
+  <line class="wire thin" x1="390" y1="380" x2="430" y2="380" marker-end="url(#a)"/>
+  <text class="s" x="420" y="447">the decode, and the muxes it widens: it reaches every register that a case writes</text>
+
+  <!-- L1: the datapath, and the memories are part of it -->
+  <rect class="outline" x="430" y="95" width="690" height="225" rx="6"/>
+  <text class="b" x="444" y="117">L1 · the datapath<tspan class="s"> — Mac behind the one multiplier, and the memories: 126 tiles of 135</tspan></text>
+
+  <rect class="blk" x="445" y="128" width="215" height="166" rx="5"/>
+  <text class="b" x="457" y="150">Mac</text>
+  <text class="s" x="457" y="169">one DSP48, 25 by 18,</text>
+  <text class="s" x="457" y="185">signed</text>
+  <text class="s" x="457" y="207">one term a cycle, and a</text>
+  <text class="s" x="457" y="223">tag travels beside it</text>
+  <text class="s" x="457" y="239">from the address to the</text>
+  <text class="s" x="457" y="255">retirement</text>
+  <text class="s" x="457" y="281">rows stream back to back</text>
+
+  <line class="wire thin" x1="660" y1="180" x2="680" y2="180" marker-end="url(#a)"/>
+  <line class="wire thin" x1="680" y1="205" x2="660" y2="205" marker-end="url(#a)"/>
+
+  <rect class="blk" x="680" y="128" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="146">weight ROM</text>
+  <text class="s" x="800" y="146">308 224 x 8, in banks of 2^15 rows at most</text>
+  <rect class="blk" x="680" y="155" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="173">h</text>
+  <text class="s" x="800" y="173">64 x 32 · the residual stream, and the chain</text>
+  <rect class="blk" x="680" y="182" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="200">y · q</text>
+  <text class="s" x="800" y="200">64 x 16 each · the normed vector, the query</text>
+  <rect class="blk" x="680" y="209" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="227">K, V rings</text>
+  <text class="s" x="800" y="227">6 x 256 x 64 x 8 · six layers, 256 slots</text>
+  <rect class="blk" x="680" y="236" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="254">shared</text>
+  <text class="s" x="800" y="254">256 x 32 · scores, hidden, logits, weights</text>
+  <rect class="blk" x="680" y="263" width="425" height="27" rx="4"/>
+  <text class="t" x="690" y="281">exp2 ROM</text>
+  <text class="s" x="800" y="281">256 x 16 · the table of the exponent</text>
+
+  <text class="s" x="444" y="311">every read is two cycles from the address to the data, and the ROM spends them on one address register</text>
+
+  <!-- L0 -->
+  <rect class="blk" x="430" y="345" width="690" height="80" rx="5"/>
+  <text class="b" x="444" y="367">L0 · the primitives</text>
+  <text class="s" x="620" y="367">Divider · Isqrt · Exp2 · Prng.Rtl</text>
+  <text class="s" x="444" y="391">every product fits one DSP48, and the timing of the machine rests on that rule:</text>
+  <text class="s" x="444" y="407">the DSP stays a two-register multiply with a fabric adder behind it</text>
+  <polyline class="wire thin" points="700,345 700,320" marker-end="url(#a)"/>
+
+  <!-- the program -->
+  <rect class="outline" x="150" y="490" width="1020" height="400" rx="8"/>
+  <polyline class="elab" points="250,490 250,428" marker-end="url(#e)"/>
+  <text class="s" x="262" y="477" style="fill:var(--accent)">at elaboration, the list folds into the cases</text>
+  <text class="b" x="164" y="514" style="fill:var(--accent)">L2 · the schedule<tspan class="s" style="fill:var(--muted)"> — one step, as the list of operations that the config builds. The mathematics is a program and not a state machine,</tspan></text>
+  <text class="s" x="164" y="530">thus no box below is a block: the list is an OCaml value at elaboration, and the arrow states what it becomes.</text>
+
+  <rect class="ghost" x="180" y="577" width="140" height="70" rx="5"/>
+  <text class="t" x="192" y="599">embed</text>
+  <text class="s" x="192" y="617">four seat rows and</text>
+  <text class="s" x="192" y="633">the bar phase → h</text>
+  <line class="gwire" x1="310" y1="624" x2="350" y2="624" marker-end="url(#g)"/>
+
+  <path class="brace" d="M350,564 v-8 h650 v8"/>
+  <text class="s" x="675" y="550" text-anchor="middle" style="fill:var(--accent)">× 6 layers</text>
+
+  <rect class="ghost" x="350" y="577" width="120" height="70" rx="5"/>
+  <text class="t" x="362" y="599">rms_norm</text>
+  <text class="s" x="362" y="617">to y</text>
+  <line class="gwire" x1="470" y1="624" x2="500" y2="624" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="500" y="577" width="140" height="70" rx="5"/>
+  <text class="t" x="512" y="599">matvec q, k, v</text>
+  <text class="s" x="512" y="617">k and v go to the</text>
+  <text class="s" x="512" y="633">ring of this layer</text>
+  <line class="gwire" x1="640" y1="624" x2="670" y2="624" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="670" y="577" width="180" height="70" rx="5"/>
+  <text class="t" x="682" y="599">attention</text>
+  <text class="s" x="682" y="617">scores · exp2 · divide</text>
+  <text class="s" x="682" y="633">over the slots that exist</text>
+  <line class="gwire" x1="840" y1="624" x2="870" y2="624" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="870" y="577" width="130" height="70" rx="5"/>
+  <text class="t" x="882" y="599">matvec o, ffn</text>
+  <text class="s" x="882" y="617">each one adds</text>
+  <text class="s" x="882" y="633">back onto h</text>
+
+  <!-- after the layers, the chain -->
+  <polyline class="gwire" points="1000,612 1040,612 1040,684 300,684 300,757 350,757" marker-end="url(#g)"/>
+  <text class="s" x="1048" y="616">the six layers end</text>
+
+  <path class="brace" d="M350,744 v-8 h510 v8"/>
+  <text class="s" x="605" y="730" text-anchor="middle" style="fill:var(--accent)">× 4 seats, the soprano first, and the chain accumulates in h itself</text>
+
+  <rect class="ghost" x="350" y="757" width="120" height="70" rx="5"/>
+  <text class="t" x="362" y="779">rms_norm</text>
+  <text class="s" x="362" y="797">of the stream</text>
+  <line class="gwire" x1="470" y1="804" x2="500" y2="804" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="500" y="757" width="150" height="70" rx="5"/>
+  <text class="t" x="512" y="779">matvec</text>
+  <text class="s" x="512" y="797">the 48 rows of</text>
+  <text class="s" x="512" y="813">this seat</text>
+  <line class="gwire" x1="650" y1="804" x2="680" y2="804" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="680" y="757" width="180" height="70" rx="5"/>
+  <text class="t" x="692" y="779">sampler</text>
+  <text class="s" x="692" y="797">temper · exp2 · min-p</text>
+  <text class="s" x="692" y="813">u24 draw, and no fallback</text>
+  <line class="gwire" x1="860" y1="804" x2="900" y2="804" marker-end="url(#g)"/>
+
+  <rect class="ghost" x="900" y="757" width="140" height="70" rx="5"/>
+  <text class="t" x="912" y="779">the frame</text>
+  <text class="s" x="912" y="797">four codes, and L4</text>
+  <text class="s" x="912" y="813">holds it for step</text>
+
+  <!-- the drawn row goes back onto the stream -->
+  <polyline class="gwire thin" points="770,827 770,854 410,854 410,827" marker-end="url(#g)"/>
+  <text class="s" x="590" y="868" text-anchor="middle">the drawn row adds onto the stream, thus the chain needs no memory of its own</text>
+</svg>
