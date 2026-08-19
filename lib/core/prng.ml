@@ -11,8 +11,7 @@ and state = int
 let mask = 0xFFFF_FFFF
 
 let create ~seed =
-  if seed = 0 || seed land mask <> seed
-  then invalid_arg "Prng: the seed must fit 32 bits and must not be 0";
+  if seed land mask <> seed then invalid_arg "Prng: the seed must fit 32 bits";
   seed
 ;;
 

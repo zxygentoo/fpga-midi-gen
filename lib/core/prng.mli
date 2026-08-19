@@ -4,7 +4,10 @@
     computes the same recurrence combinationally, and the vector test in this module
     drives the two side by side. Thus the definition of the walk has one home.
 
-    The state walks all 32-bit values except 0.
+    The state walks all 32-bit values except 0, and 0 is the fixed point: the recurrence
+    carries it to itself for ever. The board can state that seed — the slide switches set
+    it and [docs/seed_switches_rtl.md] states why the design accepts it — thus [create]
+    takes it and the walk stands still, which is what the circuit does with it.
 
     A draw carries the state from one draw to the next, and [run] gives it a state to
     start from. [let*] sequences the draws, and the order of the bindings is the order of
@@ -16,24 +19,27 @@
 
 open Hardcaml
 
-(** the state of the walk: 32 bits, and never 0 *)
+(** the state of the walk: 32 bits *)
 type state
 
 (** a draw, and the state it carries to the draw that follows *)
 type 'a t
 
 (** [create ~seed] is the walk that starts at [seed]. It raises [Invalid_argument] when
-    [seed] is 0 or does not fit 32 bits — the rule of the SEED cell of the board. *)
+    [seed] does not fit 32 bits. A seed of 0 gives the walk that stands still, thus the
+    reference plays what the board plays for that seed. *)
 val create : seed:int -> state
 
 (** [create_folded ~seed] is the walk that [seed] names, for any integer. The fold
-    squeezes the seed into 32 bits, and 0 — no state of the walk — takes the top state. A
-    seed already inside the range names itself, thus [create_folded ~seed:7] is the walk
-    of the board's seed 7. Two seeds can fold together; this is harmless, because a seed
-    only names a walk.
+    squeezes the seed into 32 bits, and 0 takes the top state. A seed already inside the
+    range names itself, thus [create_folded ~seed:7] is the walk of the board's seed 7.
+    Two seeds can fold together; this is harmless, because a seed only names a walk.
 
-    Take [create] where the seed must obey the rule of the SEED cell, and this where the
-    seed comes from a flag or from a stream that obeys no such rule. *)
+    **0 is the one seed that this does not carry to the board.** [create ~seed:0] stands
+    still, which is what the circuit does; the fold gives a walk instead, because a tool
+    that draws its seed from a flag, a counter or a stream must not get a dead walk from
+    the value those give when nobody chose one. Take [create] where the seed is the seed
+    of a piece, and this where the seed only has to name a walk. *)
 val create_folded : seed:int -> state
 
 val return : 'a -> 'a t
@@ -97,7 +103,8 @@ module Rtl : sig
 
   (** [create i] is the block. The state register takes the new value at a [step] strobe
       and holds between the strobes. The clear puts 1 into the state: the state has no use
-      before the first [load], and 1 keeps the no-zero rule. [load] wins over [step] in
-      the same cycle. *)
+      before the first [load], and 1 walks where 0 stands still. A [seed] of 0 is another
+      question — the panel can set it and the walk then stands still by design. [load]
+      wins over [step] in the same cycle. *)
   val create : Signal.t I.t -> Signal.t O.t
 end

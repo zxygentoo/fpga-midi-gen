@@ -72,7 +72,9 @@ module Default = struct
      chorale tempo. The pink era booted at 250; the transformer era's ear asked for this. *)
   let step_ms = 200
   let velocity = 100
-  let seed = 42 (* must not be 0 *)
+
+  (* not 0: that seed holds the walk still and the piece is one chord *)
+  let seed = 42
 end
 
 (** The control registers. They are the local storage of the control unit, thus one byte

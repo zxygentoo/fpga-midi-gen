@@ -92,7 +92,8 @@ type state =
     the model has no scale or no voice, or a voice's parameters are out of range — rows,
     degrees and stretch must be at least 1, the stretch window must not be empty, the root
     must be a degree of the scale, and each degree must give a note in 0 to 127. The seed
-    must fit 32 bits and must not be 0, the rule of the SEED cell. *)
+    must fit 32 bits. A seed of 0 holds the walk still and each voice lands on its root,
+    thus the piece is one chord: the board states that seed and the reference plays it. *)
 val create : model:t -> seed:int -> walk
 
 (** [next_step w] is the model after one step and the voice states, in the order of the
