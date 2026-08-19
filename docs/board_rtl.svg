@@ -1,0 +1,265 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1285" height="1170" viewBox="-45 0 1285 1170" role="img" aria-label="Block schematic of the generic board: the control path, the seed panel, the source socket and the MIDI path">
+    <style>
+    /* One palette, and it is the light one. A drawing goes into a page, a slide and a
+       printer, and a renderer that takes an SVG as an image does not agree with the next
+       one about the colour scheme of the reader; a drawing that follows the reader can
+       land dark inside a light page. This file states its colours and paints its own
+       background, thus it looks the same everywhere. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3; --off: #8a93a0;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .sa { font-size: 10.5px; fill: var(--accent); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.7; }
+    .outacc  { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+    .offbox  { fill: none; stroke: var(--off); stroke-width: 1.2; stroke-dasharray: 6 4; }
+    .slot    { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+    .pin     { fill: var(--bg); stroke: var(--line); stroke-width: 1.3; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .wireacc { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .tap     { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; fill: none; }
+    .dashw   { stroke: var(--off); stroke-width: 1.2; stroke-dasharray: 5 4; fill: none; }
+    .dot     { fill: var(--muted); }
+    .inv     { fill: var(--box); stroke: var(--line); stroke-width: 1.3; }
+  </style>
+  <defs>
+      <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+      </marker>
+      <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+      </marker>
+      <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+      </marker>
+    </defs>
+  <rect x="-45" y="0" width="1285" height="1170" fill="var(--bg)"/>
+
+
+    <!-- FPGA boundary -->
+    <rect class="outline" x="150" y="70" width="860" height="1060" rx="10"/>
+    <text class="b" x="165" y="1116">top<tspan class="s"> — Digilent Nexys 4 · XC7A100T-1CSG324 · one clock: clk 100 MHz · clear = ¬btnCpuReset (both go to every block with state)</tspan></text>
+
+    <!-- left pins -->
+    <rect class="pin" x="145" y="115" width="10" height="10"/>
+    <text class="t" x="138" y="124" text-anchor="end">clk · E3</text>
+    <line class="wire" x1="160" y1="120" x2="196" y2="120"/>
+    <text class="s" x="202" y="124">every block with state</text>
+
+    <rect class="pin" x="145" y="160" width="10" height="10"/>
+    <text class="t" x="138" y="169" text-anchor="end">btnCpuReset · C12</text>
+    <line class="wire" x1="160" y1="165" x2="190" y2="165"/>
+    <path class="inv" d="M190,157 L190,173 L204,165 z"/>
+    <circle class="inv" cx="208" cy="165" r="3.2"/>
+    <line class="wire" x1="212" y1="165" x2="238" y2="165"/>
+    <text class="s" x="244" y="169">clear</text>
+
+    <rect class="pin" x="145" y="315" width="10" height="10"/>
+    <text class="t" x="138" y="324" text-anchor="end">RsRx · C4</text>
+    <text class="s" x="138" y="340" text-anchor="end">host 115200 8N1 · board_tool</text>
+
+    <rect class="pin" x="145" y="551" width="10" height="10"/>
+    <text class="t" x="138" y="560" text-anchor="end">btnC · E16</text>
+    <text class="s" x="138" y="576" text-anchor="end">one push plays, no host</text>
+
+    <rect class="pin" x="145" y="706" width="10" height="10"/>
+    <text class="t" x="138" y="715" text-anchor="end">sw[15:0]</text>
+    <text class="s" x="138" y="731" text-anchor="end">the seed, and no host</text>
+
+    <!-- right pins -->
+    <rect class="pin" x="1005" y="121" width="10" height="10"/>
+    <text class="t" x="1022" y="130">led[15:0]</text>
+
+    <rect class="pin" x="1005" y="427" width="10" height="10"/>
+    <text class="t" x="1022" y="436">RsTx · D4</text>
+    <text class="s" x="1022" y="452">host · the responses</text>
+
+    <rect class="pin" x="1005" y="721" width="10" height="10"/>
+    <text class="t" x="1022" y="730">an · seg · dp</text>
+    <text class="s" x="1022" y="746">8 digits, hex, active low</text>
+    <text class="s" x="1022" y="762">dp = 1: this design</text>
+    <text class="s" x="1022" y="778">does not light it</text>
+
+    <rect class="pin" x="1005" y="1027" width="10" height="10"/>
+    <text class="s" x="1000" y="1050" text-anchor="end">JD[0] · H4 · DRIVE 8</text>
+    <text class="s" x="1000" y="1070" text-anchor="end">JD[7:1] = 1</text>
+
+    <!-- the lamps -->
+    <rect class="blk" x="790" y="110" width="200" height="76" rx="5"/>
+    <text class="s" x="802" y="136">led0 ← run</text>
+    <text class="s" x="802" y="156">led1 ← ¬MIDI</text>
+    <text class="s" x="802" y="176">led[15:2] = 0</text>
+    <line class="wire" x1="990" y1="126" x2="1005" y2="126" marker-end="url(#a)"/>
+
+    <!-- the two taps: the run state, and the line. The lead-in is silent, thus the run
+         lamp answers the button before the MIDI lamp can. -->
+    <circle class="dot" cx="700" cy="662" r="3"/>
+    <polyline class="tap" points="700,662 750,662 750,206 840,206 840,186" marker-end="url(#am)"/>
+    <circle class="dot" cx="978" cy="1032" r="3"/>
+    <polyline class="tap" points="978,1032 978,206 900,206 900,186" marker-end="url(#am)"/>
+
+    <!-- host receive path -->
+    <line class="wire" x1="160" y1="320" x2="200" y2="320" marker-end="url(#a)"/>
+    <rect class="blk" x="200" y="290" width="150" height="64" rx="5"/>
+    <text class="b" x="216" y="315">uart_rx</text>
+    <text class="s" x="216" y="333">868 clk/bit · 115200</text>
+    <line class="wire" x1="350" y1="320" x2="416" y2="320" marker-end="url(#a)"/>
+    <text class="s" x="375" y="304" text-anchor="middle">in_data</text>
+    <text class="s" x="375" y="315" text-anchor="middle">in_valid</text>
+
+    <!-- the button: the pin, the block and run_toggle stand on one line -->
+    <line class="wire" x1="160" y1="556" x2="200" y2="556" marker-end="url(#a)"/>
+    <rect class="blk" x="200" y="522" width="150" height="68" rx="5"/>
+    <text class="b" x="216" y="544">button</text>
+    <text class="s" x="216" y="562">sync 2FF</text>
+    <text class="s" x="216" y="578">debounce 10 ms</text>
+    <line class="wire" x1="350" y1="556" x2="400" y2="556" marker-end="url(#a)"/>
+    <text class="s" x="350" y="514" text-anchor="end">run_toggle</text>
+
+    <!-- the seed panel: the switches write the cell, and the digits show the cell. The
+         two wires between this block and control_regs are a loop on the page and not in
+         the circuit, because each end comes from a register. -->
+    <line class="wire" x1="160" y1="711" x2="200" y2="711" marker-end="url(#a)"/>
+    <rect class="blk" x="200" y="636" width="150" height="148" rx="5"/>
+    <text class="b" x="216" y="658">seed_switches</text>
+    <text class="s" x="216" y="678">sync 2FF · Δ</text>
+    <text class="s" x="216" y="694">no power-on value</text>
+    <text class="s" x="216" y="716">scan 2^16 clk/digit</text>
+    <text class="s" x="216" y="732">5.24 ms · 191 Hz</text>
+    <text class="s" x="216" y="754">decode: one table</text>
+    <text class="s" x="216" y="770">reads the cell only</text>
+
+    <text class="s" x="352" y="640">seed_write</text>
+    <text class="s" x="352" y="651">seed_value</text>
+    <line class="wire" x1="350" y1="656" x2="400" y2="656" marker-end="url(#a)"/>
+    <line class="wire thin" x1="416" y1="690" x2="350" y2="690" marker-end="url(#a)"/>
+    <text class="s" x="356" y="682">seed</text>
+
+    <polyline class="wire" points="350,726 1005,726" marker-end="url(#a)"/>
+    <text class="s" x="712" y="718">an[7:0] · seg[6:0] · dp</text>
+
+    <!-- control_port -->
+    <rect class="outline" x="400" y="250" width="300" height="250" rx="8"/>
+    <text class="b" x="415" y="272">control_port</text>
+    <text class="s" x="415" y="288">the wire protocol, and nothing else</text>
+
+    <rect class="blk" x="416" y="302" width="132" height="36" rx="4"/>
+    <text class="t" x="482" y="325" text-anchor="middle">cobs_decoder</text>
+    <rect class="blk" x="556" y="302" width="128" height="36" rx="4"/>
+    <text class="t" x="620" y="325" text-anchor="middle">buffer 64×8</text>
+    <line class="wire thin" x1="548" y1="320" x2="556" y2="320" marker-end="url(#a)"/>
+
+    <rect class="blk" x="416" y="352" width="268" height="44" rx="4"/>
+    <text class="s" x="550" y="369" text-anchor="middle">fsm — one transaction at a time</text>
+    <text class="s" x="550" y="385" text-anchor="middle">Receive·Parse·Apply·Commit·Respond·Sending</text>
+    <line class="wire thin" x1="482" y1="338" x2="482" y2="352" marker-end="url(#a)"/>
+    <line class="wire thin" x1="620" y1="338" x2="620" y2="352" marker-end="url(#a)"/>
+
+    <rect class="blk" x="416" y="406" width="268" height="44" rx="4"/>
+    <text class="t" x="550" y="427" text-anchor="middle">cobs_encoder</text>
+    <text class="s" x="550" y="443" text-anchor="middle">op · status · the cell bytes</text>
+    <line class="wire thin" x1="550" y1="396" x2="550" y2="406" marker-end="url(#a)"/>
+
+    <!-- host transmit path -->
+    <line class="wire" x1="684" y1="428" x2="790" y2="428" marker-end="url(#a)"/>
+    <text class="s" x="737" y="410" text-anchor="middle">out_data</text>
+    <text class="s" x="737" y="421" text-anchor="middle">out_valid</text>
+    <rect class="blk" x="790" y="400" width="150" height="64" rx="5"/>
+    <text class="b" x="806" y="425">uart_tx</text>
+    <text class="s" x="806" y="443">868 clk/bit · 115200</text>
+    <line class="wire" x1="940" y1="432" x2="1005" y2="432" marker-end="url(#a)"/>
+    <line class="wire thin" x1="790" y1="458" x2="700" y2="458" marker-end="url(#a)"/>
+    <text class="s" x="745" y="472" text-anchor="middle">busy → hold</text>
+
+    <!-- control_port to control_regs -->
+    <polyline class="wire" points="460,500 460,540" marker-end="url(#a)"/>
+    <text class="s" x="470" y="518">write_enable · write_address</text>
+    <text class="s" x="470" y="532">write_data · commit · read_address</text>
+    <polyline class="wire" points="640,540 640,500" marker-end="url(#a)"/>
+    <text class="s" x="650" y="512">read_data</text>
+
+    <!-- control_regs -->
+    <rect class="outline" x="400" y="540" width="300" height="172" rx="8"/>
+    <text class="b" x="415" y="562">control_regs</text>
+    <text class="s" x="415" y="578">the cells, and each one has a view</text>
+
+    <rect class="blk" x="416" y="592" width="132" height="46" rx="4"/>
+    <text class="t" x="482" y="611" text-anchor="middle">live 9×8</text>
+    <text class="s" x="482" y="627" text-anchor="middle">init + clear = defaults</text>
+    <rect class="blk" x="556" y="592" width="128" height="46" rx="4"/>
+    <text class="t" x="620" y="611" text-anchor="middle">shadow 9×8</text>
+    <text class="s" x="620" y="627" text-anchor="middle">commit copies all</text>
+    <line class="wire thin" x1="556" y1="615" x2="548" y2="615" marker-end="url(#a)"/>
+
+    <rect class="blk" x="416" y="652" width="268" height="42" rx="4"/>
+    <text class="s" x="550" y="669" text-anchor="middle">params: run · channel · step_ms</text>
+    <text class="s" x="550" y="685" text-anchor="middle">velocity · seed</text>
+
+    <!-- the params drop straight out of the params row into the seat, and fork there:
+         the seed to the source, the rest to the sequencer -->
+    <polyline class="wire" points="666,694 666,930 640,930" marker-end="url(#a)"/>
+    <text class="s" x="674" y="926">params</text>
+    <circle class="dot" cx="666" cy="810" r="3"/>
+    <polyline class="wire thin" points="666,810 640,810" marker-end="url(#a)"/>
+    <text class="s" x="674" y="806">seed</text>
+
+    <!-- the source seat -->
+    <rect class="outacc" x="400" y="740" width="300" height="336" rx="8"/>
+    <text class="b" x="415" y="762" style="fill:var(--accent)">socket<tspan class="s"> — the source seat</tspan></text>
+
+    <!-- the empty slot -->
+    <rect class="slot" x="416" y="772" width="224" height="78" rx="5"/>
+    <text class="t" x="528" y="798" text-anchor="middle" style="fill:var(--accent)">any source</text>
+    <text class="s" x="528" y="818" text-anchor="middle">one line of top names it</text>
+    <text class="s" x="528" y="836" text-anchor="middle">seed and the rest by closure</text>
+
+    <!-- the Source_intf handshake -->
+    <polyline class="wireacc thin" points="460,888 460,850" marker-end="url(#aa)"/>
+    <text class="s" x="454" y="868" text-anchor="end">rewind</text>
+    <text class="s" x="454" y="882" text-anchor="end">step</text>
+    <polyline class="wireacc thin" points="600,850 600,888" marker-end="url(#aa)"/>
+    <text class="s" x="594" y="868" text-anchor="end">frame[31:0]</text>
+    <text class="s" x="594" y="882" text-anchor="end">valid · idle</text>
+
+    <!-- sequencer -->
+    <rect class="blkacc" x="416" y="888" width="224" height="86" rx="4"/>
+    <text class="t" x="428" y="910">sequencer · run engine</text>
+    <text class="s" x="428" y="930">ms tick · 100 000 clk</text>
+    <text class="s" x="428" y="948">frame → releases, strikes</text>
+    <text class="s" x="428" y="966">a pitch keeps its channel</text>
+
+    <!-- the message, and the ready of the line: both stay inside the seat -->
+    <polyline class="wireacc" points="460,974 460,1000" marker-end="url(#aa)"/>
+    <text class="sa" x="468" y="992">message</text>
+    <polyline class="wireacc thin" points="600,1000 600,974" marker-end="url(#aa)"/>
+    <text class="s" x="594" y="992" text-anchor="end">ready</text>
+
+    <!-- midi_out -->
+    <rect class="blkacc" x="416" y="1000" width="224" height="64" rx="4"/>
+    <text class="t" x="428" y="1021">midi_out</text>
+    <text class="s" x="428" y="1039">message → bytes</text>
+    <text class="s" x="428" y="1056">3200 clk/bit · 31250 Bd</text>
+
+    <!-- the seat ends at the pin: the top level wires no handshake -->
+    <line class="wireacc" x1="640" y1="1032" x2="1005" y2="1032" marker-end="url(#aa)"/>
+    <text class="s" x="700" y="1024">serial · idle 1</text>
+
+    <!-- off board -->
+    <rect class="offbox" x="1030" y="932" width="196" height="176" rx="8"/>
+    <text class="s" x="1042" y="954" style="font-weight:600">off board</text>
+    <text class="s" x="1042" y="976">JD[0] → 33 Ω → TRS tip</text>
+    <text class="s" x="1042" y="994">ring ← 3.3 V (pmod pin 6)</text>
+    <text class="s" x="1042" y="1012">sleeve ← GND (pmod pin 5)</text>
+    <text class="s" x="1042" y="1030">type A cable → S-1 MIDI IN</text>
+    <text class="s" x="1042" y="1048">TLP2368 loop ≈ 5.4 mA</text>
+    <text class="s" x="1042" y="1066">S-1 thru → USB · capture</text>
+    <text class="sa" x="1042" y="1090">⚠ power off before plugging</text>
+    <line class="dashw" x1="1015" y1="1032" x2="1030" y2="1032"/>
+  </svg>
