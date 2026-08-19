@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="740" viewBox="0 0 1320 740" role="img" aria-label="Block schematic of the pink source: the PRNG, the row set on its binary schedule, the four voice lanes and the frame">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .outacc  { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .brace   { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1320" height="740" fill="var(--bg)"/>
+
+  <!-- the socket boundary: the block is a source and nothing else crosses it -->
+  <rect class="outacc" x="150" y="55" width="1000" height="410" rx="8"/>
+  <text class="b" x="164" y="76" style="fill:var(--accent)">Pink.Source<tspan class="s"> — a source on Source_intf; the sequencer drives it and the frame is the whole answer</tspan></text>
+
+  <!-- the ports -->
+  <text class="t" x="144" y="122" text-anchor="end">seed[31:0]</text>
+  <text class="s" x="144" y="138" text-anchor="end">the SEED cell</text>
+  <line class="wire" x1="150" y1="117" x2="200" y2="117" marker-end="url(#a)"/>
+  <text class="t" x="144" y="222" text-anchor="end">rewind</text>
+  <text class="s" x="144" y="238" text-anchor="end">to the origin</text>
+  <line class="wire" x1="150" y1="217" x2="200" y2="217" marker-end="url(#a)"/>
+  <text class="t" x="144" y="272" text-anchor="end">step</text>
+  <line class="wire" x1="150" y1="267" x2="200" y2="267" marker-end="url(#a)"/>
+  <text class="t" x="144" y="322" text-anchor="end">idle</text>
+  <text class="s" x="144" y="338" text-anchor="end">the sequencer waits</text>
+  <polyline class="wire thin" points="230,300 230,317 150,317" marker-end="url(#a)"/>
+
+  <text class="t" x="1160" y="252">frame[31:0]</text>
+  <text class="t" x="1160" y="288">valid</text>
+  <text class="s" x="1160" y="304">one strobe, one step</text>
+  <line class="wire" x1="1060" y1="247" x2="1150" y2="247" marker-end="url(#a)"/>
+  <line class="wire" x1="1060" y1="283" x2="1150" y2="283" marker-end="url(#a)"/>
+
+  <!-- the prng -->
+  <rect class="blk" x="200" y="90" width="160" height="60" rx="5"/>
+  <text class="b" x="214" y="112">prng</text>
+  <text class="s" x="214" y="130">xorshift32, and one</text>
+  <text class="s" x="214" y="144">consumer: this block</text>
+  <line class="wire" x1="360" y1="117" x2="440" y2="117" marker-end="url(#a)"/>
+  <text class="s" x="366" y="110">draw[7:0]</text>
+
+  <!-- the walk -->
+  <rect class="blk" x="200" y="185" width="160" height="115" rx="5"/>
+  <text class="b" x="214" y="207">walk</text>
+  <text class="s" x="214" y="225">Idle · Draw · Grab</text>
+  <text class="s" x="214" y="241">and then Frame</text>
+  <text class="s" x="214" y="261">one draw in two</text>
+  <text class="s" x="214" y="275">cycles; a walk takes</text>
+  <text class="s" x="214" y="289">2·rows+3 at most</text>
+
+  <!-- the schedule -->
+  <rect class="blk" x="200" y="360" width="160" height="90" rx="5"/>
+  <text class="b" x="214" y="382">schedule</text>
+  <text class="s" x="214" y="400">the step count +1;</text>
+  <text class="s" x="214" y="414">its lowest set bit</text>
+  <text class="s" x="214" y="428">names the rows that</text>
+  <text class="s" x="214" y="442">re-roll, and a wrap</text>
+  <line class="wire thin" x1="360" y1="405" x2="410" y2="405"/>
+  <polyline class="wire thin" points="410,405 410,300 440,300" marker-end="url(#a)"/>
+
+  <!-- the row set -->
+  <rect class="blk" x="440" y="90" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="112">row 0</text>
+  <text class="s" x="452" y="127">every step</text>
+  <rect class="blk" x="440" y="134" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="156">row 1</text>
+  <text class="s" x="452" y="171">2 steps</text>
+  <rect class="blk" x="440" y="178" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="200">row 2</text>
+  <text class="s" x="452" y="215">4 steps</text>
+  <rect class="blk" x="440" y="222" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="244">row 3</text>
+  <text class="s" x="452" y="259">8 steps</text>
+  <rect class="blk" x="440" y="266" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="288">row 4</text>
+  <text class="s" x="452" y="303">16 steps</text>
+  <rect class="blk" x="440" y="310" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="332">row 5</text>
+  <text class="s" x="452" y="347">32 steps</text>
+  <rect class="blk" x="440" y="354" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="376">row 6</text>
+  <text class="s" x="452" y="391">64 steps</text>
+  <rect class="blk" x="440" y="398" width="130" height="44" rx="4"/>
+  <text class="t" x="452" y="420">row 7</text>
+  <text class="s" x="452" y="435">128 steps</text>
+
+  <text class="s" x="440" y="459">row set · 8 bytes · one walk, and the voices share it</text>
+
+  <!-- the groups: the partition of the rows is the rhythm -->
+  <path class="brace" d="M582,92 h8 v84 h-8"/>
+  <path class="brace" d="M582,180 h8 v84 h-8"/>
+  <path class="brace" d="M582,268 h8 v84 h-8"/>
+  <path class="brace" d="M582,356 h8 v84 h-8"/>
+  <line class="wire" x1="590" y1="134" x2="640" y2="134" marker-end="url(#a)"/>
+  <line class="wire" x1="590" y1="222" x2="640" y2="222" marker-end="url(#a)"/>
+  <line class="wire" x1="590" y1="310" x2="640" y2="310" marker-end="url(#a)"/>
+  <line class="wire" x1="590" y1="398" x2="640" y2="398" marker-end="url(#a)"/>
+
+  <!-- the voices -->
+  <rect class="blkacc" x="640" y="98" width="230" height="72" rx="5"/>
+  <text class="t" x="654" y="120">soprano · A4 to A6</text>
+  <text class="s" x="654" y="139">rows 0 and 1</text>
+  <text class="s" x="654" y="157">it moves at every step</text>
+  <rect class="blkacc" x="640" y="186" width="230" height="72" rx="5"/>
+  <text class="t" x="654" y="208">alto · C4 to G4</text>
+  <text class="s" x="654" y="227">rows 2 and 3</text>
+  <text class="s" x="654" y="245">it moves each 4 steps</text>
+  <rect class="blkacc" x="640" y="274" width="230" height="72" rx="5"/>
+  <text class="t" x="654" y="296">tenor · C3 to A3</text>
+  <text class="s" x="654" y="315">rows 4 and 5</text>
+  <text class="s" x="654" y="333">it moves each 16 steps</text>
+  <rect class="blkacc" x="640" y="362" width="230" height="72" rx="5"/>
+  <text class="t" x="654" y="384">bass · A1 to A2</text>
+  <text class="s" x="654" y="403">rows 6 and 7</text>
+  <text class="s" x="654" y="421">it moves each 64 steps</text>
+
+  <!-- the frame -->
+  <line class="wire" x1="870" y1="134" x2="900" y2="134"/>
+  <line class="wire" x1="870" y1="222" x2="900" y2="222"/>
+  <line class="wire" x1="870" y1="310" x2="900" y2="310"/>
+  <line class="wire" x1="870" y1="398" x2="900" y2="398"/>
+  <polyline class="wire" points="900,134 900,398"/>
+  <line class="wire" x1="900" y1="266" x2="930" y2="266" marker-end="url(#a)"/>
+  <rect class="blk" x="930" y="210" width="130" height="112" rx="5"/>
+  <text class="b" x="944" y="232">frame</text>
+  <text class="s" x="944" y="250">four codes in one</text>
+  <text class="s" x="944" y="264">word; seat 0 is the</text>
+  <text class="s" x="944" y="278">lowest voice</text>
+  <text class="s" x="944" y="298">no voice rests, thus</text>
+  <text class="s" x="944" y="312">each code sounds</text>
+
+  <!-- one lane, in detail -->
+  <rect class="outline" x="150" y="510" width="1000" height="185" rx="8"/>
+  <text class="b" x="164" y="534">one lane<tspan class="s"> — and the four differ only in their constants. It holds no note register: a frame states which pitch a voice holds, thus the step before decides nothing.</tspan></text>
+
+  <rect class="blk" x="170" y="565" width="150" height="60" rx="4"/>
+  <text class="t" x="182" y="588">Σ its rows</text>
+  <text class="s" x="182" y="606">two bytes here</text>
+  <line class="wire" x1="320" y1="595" x2="360" y2="595" marker-end="url(#a)"/>
+
+  <rect class="blk" x="360" y="565" width="170" height="60" rx="4"/>
+  <text class="t" x="372" y="588">clamp to the window</text>
+  <text class="s" x="372" y="606">the sum crowds the middle</text>
+  <line class="wire" x1="530" y1="595" x2="570" y2="595" marker-end="url(#a)"/>
+
+  <rect class="blk" x="570" y="565" width="150" height="60" rx="4"/>
+  <text class="t" x="582" y="588">× degrees</text>
+  <text class="s" x="582" y="606">one constant multiply</text>
+  <line class="wire" x1="720" y1="595" x2="760" y2="595" marker-end="url(#a)"/>
+
+  <rect class="blk" x="760" y="565" width="150" height="60" rx="4"/>
+  <text class="t" x="772" y="588">the high bits</text>
+  <text class="s" x="772" y="606">= the degree</text>
+  <line class="wire" x1="910" y1="595" x2="950" y2="595" marker-end="url(#a)"/>
+
+  <rect class="blk" x="950" y="565" width="180" height="60" rx="4"/>
+  <text class="t" x="962" y="588">root + offsets[degree]</text>
+  <text class="s" x="962" y="606">the note, on the scale</text>
+
+  <text class="s" x="170" y="655">The window is a power of two by the elaboration, thus the mapping is shifts, adds and one constant multiply, and the block needs no divider.</text>
+  <text class="s" x="170" y="672">Every voice takes its offsets from the one scale rotated to its own root, and the registers are disjoint: a Note Off releases a voice by pitch.</text>
+</svg>

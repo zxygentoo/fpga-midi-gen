@@ -97,7 +97,8 @@ no rule of its own.
 | `docs/seed_switches_rtl.md` | the seed panel: the switches, the change detector, the scan and the digits |
 | `docs/transformer.md` | the model of era four: the step frame, the decode, the corpus, the model itself and what the era measured |
 | `docs/transformer_rtl.md` | that model as a circuit: the engine, the block RAM budget and the timing |
-| `docs/pink_rtl.md` | the pink model, which shares the socket |
+| `docs/pink.md` | the model of era one: the 1/f walk, the register decomposition and the mapping |
+| `docs/pink_rtl.md` | that model as a circuit, and it shares the socket |
 | `build-log.md` | the milestones in time order, and what each one measured |
 
 The cost, the timing and the block RAM of a source belong to that source, thus
