@@ -1,8 +1,11 @@
-"""The sampler and the player of the step-frame model.
+"""The sampler and the player of the state-space model.
 
-One step is one forward pass, always: the four seats are drawn in a chain from the soprano
-down, on the host, between two passes of the network. No mask guards the draw, because no
-frame is illegal.
+One step is one step of the recurrence, always: the state and the convolution taps carry
+forward, the four seats are drawn in a chain from the soprano down, on the host, and the
+frame the chain drew goes back in. No mask guards the draw, because no frame is illegal.
+
+There is no window here and no context flag. The model has no context length at inference:
+what it remembers, it remembers in a state of fixed size.
 
 CPU only, and deliberately: every step needs the drawn frame back on the host before the
 next forward, so the loop is latency-bound and a GPU would take the device from the
@@ -26,7 +29,7 @@ import numpy as np
 
 import data
 import prng
-from transformer import model
+from mamba import model
 
 NOTE_ON, NOTE_OFF = 0x90, 0x80
 RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
@@ -58,9 +61,7 @@ def pick(weights, uniform):
 
     Against this total the draw is strictly below it, because the uniform falls under 1 by
     2**-24 at the least. Therefore the walk always ends on a class, and that class always
-    holds weight the floor left standing: to reach the last index is to know that no earlier
-    total passed, thus the weight there is the difference of two totals across the draw. No
-    fallback is necessary, and none is written."""
+    holds weight the floor left standing."""
     running = np.cumsum(weights, axis=1)
     return (running > (uniform * running[:, -1])[:, None]).argmax(axis=1)
 
@@ -70,11 +71,7 @@ def draw_frame(params, h, state, temperature, min_p):
     reading the stream the seats above have written.
 
     The chain is the reason a frame is a joint choice and not four independent ones. Seat 0
-    is the bass and seat 3 the soprano, thus the loop runs down.
-
-    Every walk of the batch draws. A step is one frame and never a sentence of its own
-    length, thus no walk of the batch finishes before another and none has to sit out a
-    draw while the rest go on."""
+    is the bass and seat 3 the soprano, thus the loop runs down."""
     seats = np.asarray(params["seats"])
     stream = h
     frame = np.zeros((len(h), data.SEATS), dtype=np.int32)
@@ -88,52 +85,47 @@ def draw_frame(params, h, state, temperature, min_p):
     return state, frame
 
 
-def sample(params, *, seeds, steps, context, heads, span, temperature, min_p):
+def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
-    The boot is a lead-in of silence: one bar of silent frames, then the draw. It is
-    measured and settled -- over 12 seeds the model opened the music itself inside one bar
-    of the end of the lead-in, always on a multiple of four steps -- thus the boot needs no
-    pitch, no range and no table. The lead-in counts inside [steps] and stands at the head
-    of the music, because it is silence the walk really plays."""
+    [ring] is the depth of the attention layer's keys and values, and it exists only where
+    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size and
+    has no window at all. Training attends over the WHOLE window, thus a ring shorter than
+    the training window is a truncation, and whether the truncation costs anything depends
+    on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and a ring of
+    256 reads the same as one of 512, measured. At a longer span it would not.
+
+    The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
+    opens at zero, which is where a training window opens, thus the model meets the
+    condition it trained on. The lead-in counts inside [steps] and stands at the head of
+    the music, because it is silence the walk really plays."""
     batch = len(seeds)
+    shape = model.shape_of(params)
     forward = jax.jit(
-        lambda classes, phases: model.hidden(
-            params, classes, phases, heads=heads, span=span
-        )
+        lambda carry, classes, phases: model.forward_step(params, carry, classes, phases)
     )
-    state = prng.states(seeds)
+    rng = prng.states(seeds)
+    carry = model.initial_carry(shape, batch, context=ring)
     lead = data.BAR_STEPS
-    classes = np.zeros((batch, lead, data.SEATS), dtype=np.int32)
-
-    # [classes] carries one column for each step drawn so far and the loop starts at
-    # [lead], thus the width is [step] at the head of every pass.
-    for step in range(lead, steps):
-        # ONE shape for the whole run, or every window length compiles its own kernel --
-        # the history is right-padded to [batch, context] and read at its last real
-        # position. The causal wall keeps a real position from seeing the padding.
-        low = max(0, step - context)
-        length = step - low
-        window = np.zeros((batch, context, data.SEATS), dtype=np.int32)
-        window[:, :length] = classes[:, low:step]
-        # the phase of a position is the position folded into the bar, which is the rule
-        # the corpus export states; nothing has to be carried beside the frames
-        table = np.zeros((batch, context), dtype=np.int32)
-        table[:, :length] = np.arange(low, step) % model.PHASE_BUCKETS
-        h = np.asarray(forward(jnp.asarray(window), jnp.asarray(table)))[
-            :, length - 1, :
-        ].astype(np.float64)
-
-        state, frame = draw_frame(params, h, state, temperature, min_p)
-        classes = np.concatenate([classes, frame[:, None, :]], axis=1)
-    # [steps] frames and not [max(lead, steps)]. The lead-in counts inside [steps], thus a
-    # walk shorter than one bar is that many silent frames and not a whole bar of them --
-    # the loop adds nothing there, and the integer twin gives exactly [steps] in any case.
-    return classes[:, :steps]
+    silence = np.zeros((batch, data.SEATS), dtype=np.int32)
+    frames = []
+    h = None
+    for step in range(steps):
+        # through the lead-in nothing is drawn and the generator does not move, exactly as
+        # the integer twin and the circuit leave it standing
+        if step < lead:
+            frame = silence
+        else:
+            rng, frame = draw_frame(params, h, rng, temperature, min_p)
+        frames.append(frame)
+        phases = np.full(batch, step % model.PHASE_BUCKETS, dtype=np.int32)
+        carry, stream = forward(carry, jnp.asarray(frame), jnp.asarray(phases))
+        h = np.asarray(stream).astype(np.float64)
+    return np.stack(frames, axis=1)
 
 
 def step_line(step, events):
-    """the line format of bin/play_transformer.ml, so that a dump reads back"""
+    """the line format of bin/play_mamba.ml, so that a dump reads back"""
     return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
 
 
@@ -196,23 +188,18 @@ def parse_seeds(ctx, param, value):
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--seeds", default="1", callback=parse_seeds, help="a list, or LOW-HIGH")
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
-@click.option("--context", default=256, help="must match the training run")
-@click.option("--heads", default=4, help="must match the training run")
-@click.option(
-    "--alibi-span", default=model.SLOPE_SPAN, help="must match the training run"
-)
-# Elected by ear 2026-08-17 over a sweep of temperature 0.7 to 1.3 against min_p 0.0039
-# to 0.15, and the numbers agree with the ear at both edges, which is rare here. Hotter
-# draws more from the tail: at 1.2 the onset rate passes the corpus and the chords go
-# strange. A higher floor smooths the arrivals and costs the music: min_p 0.15 leaves
-# about one and a half classes standing at a draw, and it reads as dull and MORE silent --
-# silence 5.83 percent against 4.22, gaps 13.4 steps against 9.8, where the corpus gives
-# 4.19 and 9.9.
-# The OCaml side states these once, as Transformer.elected_temperature and
-# Transformer.elected_min_p; no constant crosses the language seam, thus they stand here
-# again and the two must move together.
+# The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
+# it does the two eras are auditioned on one policy. The OCaml side states these once, as
+# Mamba.elected_temperature and Mamba.elected_min_p; no constant crosses the language
+# seam, thus they stand here again and the two must move together.
 @click.option("--temperature", default=1.0)
 @click.option("--min-p", default=0.05)
+@click.option(
+    "--ring",
+    default=model.ATTN_CONTEXT,
+    help="the depth of the attention layer's key and value ring, in steps. It is the "
+    "one context this model has, and only where the plan attends at all.",
+)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=DEVICE)
@@ -223,11 +210,9 @@ def main(
     ckpt,
     seeds,
     steps,
-    context,
-    heads,
-    alibi_span,
     temperature,
     min_p,
+    ring,
     to_synth,
     to_file,
     device,
@@ -237,14 +222,8 @@ def main(
 ):
     params = model.load_params(ckpt)
     walks = sample(
-        params,
-        seeds=seeds,
-        steps=steps,
-        context=context,
-        heads=heads,
-        span=alibi_span,
-        temperature=temperature,
-        min_p=min_p,
+        params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p,
+        ring=ring,
     )
     music = [data.decode(walk) for walk in walks]
 

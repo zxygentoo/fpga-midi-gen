@@ -1,0 +1,27 @@
+(library
+ (name mgen_mamba)
+ ; The reuse of era four is a DEPENDENCY and not a refactor: [Isqrt] and [Exp2] speak
+ ; widths and strobes, not transformers, thus this library imports them and moves
+ ; nothing. [Mac] and [Divider] could not come the same way — their own files say why.
+ ; Mgen_transformer is not opened — its [Quantized] and [Source] would shadow this
+ ; library's own — thus the two units are named through it.
+ (libraries
+  base
+  core
+  stdio
+  hardcaml
+  hardcaml_waveterm
+  nx
+  nx.io
+  rune
+  kaun
+  mgen_core
+  mgen_corpus
+  mgen_transformer)
+ (flags
+  (:standard -open Mgen_core -open Mgen_corpus))
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (preprocess
+  (pps ppx_hardcaml ppx_expect ppx_compare ppx_enumerate ppx_sexp_conv)))

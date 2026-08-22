@@ -3,11 +3,15 @@
     The control port serves the wire protocol on the host UART and [Control_regs] holds
     the cells; the structure is the one of [docs/host_control_rtl.md]. The MIDI path is
     the model seat and nothing else: [Socket] takes any source of [Source_intf] and gives
-    the line, and it holds the transformer of [docs/transformer_rtl.md] — one step of
-    music is one pass of the network and one frame, and the sequencer decodes the frame
+    the line, and it holds the state-space model of [docs/mamba_rtl.md] — one step of
+    music is one step of the recurrence and one frame, and the sequencer decodes the frame
     into the messages of the wire. The model arrives as [model] at elaboration — the
     bitstream carries the weights, thus [create] takes the quantized model whole and
     [gen_verilog] names the checkpoint.
+
+    NOTHING HERE NAMES AN ERA. [Source] and [Quantized.Model] are whatever the library
+    this module opens provides, thus the seat moves with one line of the dune file and the
+    source of the era before it stays in the tree, buildable and gated.
 
     The board shows two things: the run state on [led 0] and MIDI activity on [led 1]. The
     two are not the same lamp, because the model is silent through the lead-in of one bar

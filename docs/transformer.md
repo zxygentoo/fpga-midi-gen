@@ -608,8 +608,8 @@ parallel head safe.
 ## What the era measured
 
 The model of the board is
-`_train/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt`: **d 64, 6 layers, 4
-heads, `T` 256, ALiBi span 4, dropout 0.3, 96,000 steps, seed 6, the
+`_train/transformer/d64-frame-do03-96k-s6-l6-nopos-span4.ckpt`: **d 64, 6
+layers, 4 heads, `T` 256, ALiBi span 4, dropout 0.3, 96,000 steps, seed 6, the
 tied chain, no window position. 308,224 parameters, valid 1.6282 nats
 for each step.** The ear elected it 2026-08-18. Those are the defaults
 of `jax/transformer/train.py`.

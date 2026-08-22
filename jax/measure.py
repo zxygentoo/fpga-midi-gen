@@ -1,141 +1,215 @@
-"""The instruments over a walk: what it looks like beside the corpus.
+"""What a model does, measured against the corpus.
 
-These are DIAGNOSTICS AGAINST A CORPUS REFERENCE AND NEVER RANKERS. Ten times in this
-project a metric has ranked a model against the ear, and one of them was a draw
-temperature: 0.6 tripled a repetition metric over six pooled seeds and the ear called the
-result dull. Read every number beside the same number over the canonical packed stream,
-use it to catch a pathology, and let the ear elect. None of this belongs in a loss.
+TWO WAYS TO ASK, AND THEY DISAGREE. That is the reason this module has two halves and
+not one bag of numbers:
 
-This sits beside the models, as data.py does. A comparison between two models is only a
-comparison if one instrument made both numbers, and a later model measures with this one.
+- FORCED reads what the model PREDICTS, on the corpus's own windows, with the true frame
+  behind every step. It is the loss, cut where the loss hides things.
+- FREE reads what the model PLAYS, on its own walks, with only what it drew behind it.
 
-Two questions, two groups of numbers:
+Measured 2026-08-21: under forcing, era four and era five were the same instrument -- the
+hold each predicted agreed to a quarter point. On their own walks they part by four
+standard errors. A walk visits the states it made; a forced pass visits the corpus's. Ask
+both, and never read one as the other.
 
-- THE TEXTURE, over windows. The walk holds when the last window reads like the first and
-  like the corpus. A number over a whole draw cannot answer it, because a good opening
-  hides a bad end.
-- THE ARRIVAL, over the whole walk. CADENCED is the share of silences that follow a
-  sonority held CADENCE_HOLD steps or more, and it is the number aimed at the open
-  question of docs/transformer_model.md. The corpus reads 99.2 percent: it never stops
-  without arriving somewhere first. The model reads 67 to 73, and that is what the ear
-  hears as fractured.
+NOTHING HERE RANKS A MODEL. Ten times in this project a metric has ranked a model against
+the ear, and this era added two more: the attention block that reads null on every number
+is the one the ear elected, and the draw the numbers matched to the corpus is the one the
+ear rejected. Read these beside the corpus row to catch a pathology, and let the ear
+elect.
+
+What is here has earned its place; what did not is gone. CADENCED -- the share of
+silences that arrive somewhere -- carried a standard error of 6.5 points over thirty
+walks and never separated two models; the windowed texture never caught a walk that
+degraded; the survivor count of the draw read a median of one for every model ever
+measured. They were removed 2026-08-22 rather than left to be misread.
+
+    uv run python -m measure forced --ckpt ../_train/mamba/NAME.ckpt
+    uv run python -m measure free   --ckpt ../_train/mamba/NAME.ckpt --seeds 1-16
 """
 
-import math
 import statistics as st
+from pathlib import Path
 
+import click
+import jax.numpy as jnp
 import numpy as np
 
 import data
+from mamba import model
 
-CADENCE_HOLD = 6  # the steps a sonority rings before its silence counts as an arrival
-A_QUARTER = 4  # steps; the corpus median duration is a quarter note already
-
-
-def windows(music, span):
-    """[music] cut into blocks of [span] steps, each block measured.
-
-    One element of [music] is one step and its events, as data.decode gives them. A note
-    counts in the window it STARTS in, thus each note counts one time and in one place.
-    The last block is short when [span] does not divide the walk, and its shares still
-    divide by its own step count."""
-    opened, durations = {}, []
-    for step, events in enumerate(music):
-        for kind, pitch in events:
-            if kind == "on":
-                opened[pitch] = step
-            elif pitch in opened:
-                start = opened.pop(pitch)
-                durations.append((start, step - start))
-    rows = []
-    for index in range(0, len(music), span):
-        block = music[index : index + span]
-        ons = [sum(1 for k, _ in step if k == "on") for step in block]
-        sounded = [float(d) for start, d in durations if index <= start < index + span]
-        rows.append(
-            {
-                "onsets": sum(ons) / max(len(block), 1),
-                "single_on": sum(1 for n in ons if n == 1) / max(len(block), 1),
-                "median": float(np.median(sounded)) if sounded else float("nan"),
-                "short": sum(1 for d in sounded if d < A_QUARTER) / max(len(sounded), 1),
-            }
-        )
-    return rows
+JAX_ROOT = Path(__file__).resolve().parent
+CORPUS = str(JAX_ROOT / "_data" / "frames.safetensors")
+CONTEXT = 256  # the training window, thus the window the referee's eval rows cut at
+# seat 0 is the bass and seat 3 the soprano, as the chained head reads them
+VOICES = ("bass", "tenor", "alto", "soprano")
 
 
-def silences(sounding):
-    """every silence of a walk: the steps the sonority before it was held, and its length.
-
-    [sounding] is one set of pitches for each step. A silence at the head of the walk has
-    no sonority before it and gives no pair."""
-    out, at = [], 0
-    while at < len(sounding):
-        if sounding[at]:
-            at += 1
-            continue
-        end = at
-        while end < len(sounding) and not sounding[end]:
-            end += 1
-        if at > 0:
-            held, back = sounding[at - 1], at - 1
-            while back >= 0 and sounding[back] == held:
-                back -= 1
-            out.append((at - 1 - back, end - at))
-        at = end
-    return out
+# ==================================================================== #
+# FORCED — what the model predicts, on the corpus's own windows        #
+# ==================================================================== #
 
 
-def of_walk(classes, music=None):
-    """one walk of frames against the corpus: the silence, its placement, and the texture
+def losses(params, corpus_path=CORPUS, limit=128, batch=16):
+    """The loss cut three ways, and the four seats.
 
-    [music] is the decode of [classes], which a caller that already holds it passes in --
-    the decode walks every step and every voice, and the canonical stream is long."""
-    sounding = [frozenset(int(c) for c in f if c != data.SILENCE) for f in classes]
-    music = data.decode(classes) if music is None else music
-    whole = windows(music, len(music))[0]
-    gaps = silences(sounding)
+    77.91 percent of the voice slots repeat the step before. They are easy, they dominate
+    the mean, and a model that holds its chord for ever scores well on them and plays a
+    drone -- thus the mean can hide a model's whole deficit in the quarter of the steps
+    that carry the music. MOVING is the steps where two voices or more move; STILL is the
+    rest, and it is the complement and not a third measurement.
+
+    Era five's whole story is in the pair: it matched era four on the still steps to the
+    fourth decimal and lost 0.075 nats on the moving ones.
+
+    Everything is a sum over a count, never a mean of means -- the last batch of the eval
+    rows is short and would otherwise weigh its rows above the rest."""
+    corpus = data.load_corpus(corpus_path)
+    total = moved = 0.0
+    steps = moves = 0
+    seats = np.zeros(data.SEATS)
+    for classes, phases in data.eval_batches(corpus["valid"], CONTEXT, limit, batch):
+        classes, phases = jnp.asarray(classes), jnp.asarray(phases)
+        nll = model.seat_nll(params, classes, phases)
+        by_step = jnp.sum(nll, axis=-1)
+        moving = data.moving(classes) >= 2
+        total += float(jnp.sum(by_step))
+        moved += float(jnp.sum(jnp.where(moving, by_step, 0.0)))
+        moves += int(jnp.sum(moving))
+        steps += int(jnp.size(by_step))
+        seats += np.asarray(jnp.sum(nll, axis=(0, 1)))
     return {
-        "silence": 100.0 * sum(1 for s in sounding if not s) / len(sounding),
-        "cadenced": (
-            100.0 * sum(1 for held, _ in gaps if held >= CADENCE_HOLD) / len(gaps)
-            if gaps
-            else float("nan")
-        ),
-        "gap": st.mean([length for _, length in gaps]) if gaps else float("nan"),
-        "onsets": whole["onsets"],
-        "median": whole["median"],
-        "short": whole["short"],
-        "four": 100.0 * sum(1 for s in sounding if len(s) == data.SEATS) / len(sounding),
+        "loss": total / steps,
+        "moving": moved / max(moves, 1),
+        "still": (total - moved) / max(steps - moves, 1),
+        "seats": seats / steps,
+        "moves": moves,
+        "steps": steps,
     }
 
 
-def of_canonical_stream(corpus_path):
-    """the same numbers over stream zero of the train split: the row every other row is
-    read against, and the decode it was measured from"""
-    split = data.load_corpus(corpus_path)["train"]
-    classes = split.classes[: int(split.index[0, 1])]
-    music = data.decode(classes)
-    return music, of_walk(classes, music)
+def loss_lines(label, row):
+    return [
+        f"{label:<22} loss {row['loss']:.4f}   moving {row['moving']:.4f}   "
+        f"still {row['still']:.4f}   "
+        f"({row['moves']} of {row['steps']} steps move two voices or more)",
+        f"{'':<22} "
+        + "   ".join(f"{n} {row['seats'][at]:.4f}" for at, n in enumerate(VOICES)),
+    ]
 
 
-def mean_of(rows, name):
-    """the mean of one measure over several walks, skipping a walk that has none"""
-    kept = [row[name] for row in rows if not math.isnan(row[name])]
-    return st.mean(kept) if kept else float("nan")
+# ==================================================================== #
+# FREE — what the model plays, on its own walks                        #
+# ==================================================================== #
 
 
-def window_line(label, index, row):
-    return (
-        f"{label} {index:3d}  onsets/step {row['onsets']:.2f}   "
-        f"single-ON {row['single_on']:.2f}   median dur {row['median']:.1f}   "
-        f"under a quarter {row['short']:.2f}"
-    )
+def of_walk(classes, music=None):
+    """The two instruments that ever decided anything, over one walk.
+
+    HOLD is the share of voice slots that repeat the step before, against the corpus's
+    78.17 percent on the canonical stream. It reads both failures a walk can have in one
+    number: far above the corpus is a drone, far below is jitter. It is what showed that
+    the elected draw did not transfer between the eras -- era five held 82.7 percent where
+    era four held 80.8 at the same temperature, and needed T 1.2 to reach the corpus.
+
+    ONSETS is the note-ons for each step, against the corpus's 0.81. The decode is the
+    rule of the frame and lives in data.py, thus an onset means here what it means on the
+    wire; a caller that already holds the decode passes it in.
+
+    Both are dense -- every step and every voice -- which is why they separate models
+    where the sparse instruments could not."""
+    frames = np.asarray(classes)
+    music = data.decode(frames) if music is None else music
+    ons = sum(1 for step in music for kind, _ in step if kind == "on")
+    return {
+        "hold": 100.0 * float(np.mean(frames[1:] == frames[:-1])),
+        "onsets": ons / len(music),
+    }
+
+
+def over_seeds(rows):
+    """the mean of each instrument over several walks, and the standard error beside it
+
+    THE ERROR IS NOT DECORATION. A single-seed reading did not survive a second seed once
+    in this era: a texture gap of 3.7 steps at one seed read 0.3 at the next, and a
+    conclusion was withdrawn for it. Two walks are the floor and sixteen is comfortable."""
+    return {
+        name: (
+            st.mean([row[name] for row in rows]),
+            st.stdev([row[name] for row in rows]) / len(rows) ** 0.5
+            if len(rows) > 1
+            else float("nan"),
+        )
+        for name in rows[0]
+    }
 
 
 def walk_line(label, row):
-    return (
-        f"{label:<18}  silence {row['silence']:5.2f}%   "
-        f"cadenced {row['cadenced']:5.1f}%   gap {row['gap']:4.1f}   "
-        f"onsets {row['onsets']:.2f}   median {row['median']:4.1f}   "
-        f"4-voice {row['four']:4.1f}%"
+    """one walk, or the mean of several with its error where [over_seeds] made it"""
+
+    def show(name):
+        value = row[name]
+        return (
+            f"{value[0]:6.2f} +- {value[1]:4.2f}"
+            if isinstance(value, tuple)
+            else f"{value:6.2f}"
+        )
+
+    return f"{label:<22} hold {show('hold')}%   onsets {show('onsets')}"
+
+
+def corpus_row(corpus_path=CORPUS):
+    """the same two numbers over stream zero of the train split: the row every other row
+    is read against"""
+    split = data.load_corpus(corpus_path)["train"]
+    return of_walk(split.classes[: int(split.index[0, 1])])
+
+
+# ==================================================================== #
+# The two commands                                                     #
+# ==================================================================== #
+
+
+@click.group(help=__doc__)
+def main():
+    pass
+
+
+@main.command(help=losses.__doc__)
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--corpus", "corpus_path", default=CORPUS)
+def forced(ckpt, corpus_path):
+    row = losses(model.load_params(ckpt), corpus_path)
+    for line in loss_lines(Path(ckpt).stem[:22], row):
+        click.echo(line)
+
+
+@main.command(help=of_walk.__doc__)
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--seeds", default="1-16", help="a list, or LOW-HIGH")
+@click.option("--steps", default=512)
+@click.option("--temperature", default=1.0)
+@click.option("--min-p", default=0.05)
+@click.option("--ring", default=model.ATTN_CONTEXT, help="the attention ring depth")
+@click.option("--corpus", "corpus_path", default=CORPUS)
+def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):
+    from mamba import infer
+
+    seeds = infer.parse_seeds(None, None, seeds)
+    walks = infer.sample(
+        model.load_params(ckpt),
+        seeds=seeds,
+        steps=steps,
+        temperature=temperature,
+        min_p=min_p,
+        ring=ring,
     )
+    click.echo(walk_line("the packed corpus", corpus_row(corpus_path)))
+    rows = [of_walk(walk) for walk in walks]
+    click.echo(
+        walk_line(f"T {temperature} min-p {min_p}, {len(rows)} walks", over_seeds(rows))
+    )
+
+
+if __name__ == "__main__":
+    main()
