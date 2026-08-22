@@ -1,9 +1,10 @@
 (library
  (name mgen_mamba)
- ; The reuse of era four is a DEPENDENCY and not a refactor: [Mac], [Divider], [Isqrt] and
- ; [Exp2] speak widths and strobes, not transformers, thus this library imports them and
- ; moves nothing. Mgen_transformer is not opened — its [Quantized] and [Source] would
- ; shadow this library's own — thus the four units are named through it.
+ ; The reuse of era four is a DEPENDENCY and not a refactor: [Isqrt] and [Exp2] speak
+ ; widths and strobes, not transformers, thus this library imports them and moves
+ ; nothing. [Mac] and [Divider] could not come the same way — their own files say why.
+ ; Mgen_transformer is not opened — its [Quantized] and [Source] would shadow this
+ ; library's own — thus the two units are named through it.
  (libraries
   base
   core

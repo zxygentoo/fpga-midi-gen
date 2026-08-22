@@ -27,9 +27,23 @@
      the op boundary, thus it reads only finished state.
    - THE ORIGIN IS A MUX AND NOT A CLEARING WALK. At step 0 the state reads as zero and
      the conv taps read zero by their age rule, thus [rewind] stays what era four made it:
-     load the PRNG, clear the counters, run nothing. [idle] never falls for it.
-   - THE KV RINGS, [Attend] AND THE SOFTMAX DIVISION ARE GONE. [Divider] serves the two
-     rms_norms alone, and no op walks an age.
+     load the PRNG, clear the counters, run nothing. [idle] never falls for it. The key
+     and value rings need no clearing either: the fill count masks the slots the walk has
+     not written, exactly as era four's did.
+   - THE PLAN, and it is the one thing a program of this machine reads that era four's did
+     not: a layer is a block, a Zamba head or a feed-forward, and the schedule builds the
+     ops of the kind the checkpoint states. A LAYER'S PLACE IN THE PLAN IS NOT ITS PLACE
+     IN A MEMORY — the state RAM and the tap ring hold a region for each block and the
+     rings one for each head, thus the ops carry the ordinal of their own kind and never
+     the index of the layer.
+   - THE NORMED EMBEDDING STANDS FOR THE WHOLE STEP, in a memory of its own. Every other
+     vector here dies inside its layer; this one is written once, after the embed, and the
+     head of the last layer still reads it — which is what the Zamba query and key are.
+   - NO WALK STALLS, and the head is where that rule was in danger. Era four merged the
+     lanes of a head in one walk and froze it while the divide of a finished row ran, thus
+     every read register and every tag of that machine carried an enable. [Attend] merges
+     ONE LANE A WALK and waits on the divide with the walk already retired, thus the
+     enables are not built here and [Mac] takes its hold at ground.
 
    The timing rules of era four are inherited as rules and not re-derived: every read two
    cycles from address to data, the ROM's first cycle on the address side (the register is
@@ -42,11 +56,12 @@
    - The tick positions of the bespoke chains are hand-encoded against the two-cycle
      product latency and the two-cycle table reads. If the pipe deepens, replace the ticks
      with a wait on a valid bit; do not renumber.
-   - THREE OPS HERE CHOOSE THEIR OPERAND BY THE POSITION INSIDE THE ROW, which era four
+   - FOUR OPS HERE CHOOSE THEIR OPERAND BY THE POSITION INSIDE THE ROW, which era four
      never did: its ops each read one memory. A choice like that must follow the DATA and
      not the address, thus [ii_at_data] and [oo_at_data] carry the counters forward by the
      read latency. Using [mac.ii] there would select with the address and read the wrong
-     memory two cycles early. *)
+     memory two cycles early. The fourth is the joined query: the top bit of its inner
+     counter says whether the term comes from the stream or from the embedding. *)
 
 open Base
 open Hardcaml
@@ -54,10 +69,10 @@ open Signal
 module I = Source_intf.I
 module O = Source_intf.O
 
-(* The three units era five takes from era four as they stand. They are model-free — their
+(* The two units era five takes from era four as they stand. They are model-free — their
    interfaces speak widths and strobes, not transformers — thus this library imports them
-   and moves nothing. [Mac] could not come the same way and [Mac.walk_bits] says why. *)
-module Divider = Mgen_transformer.Divider
+   and moves nothing. [Mac] could not come the same way and [Mac.walk_bits] says why;
+   [Divider] could not either, and its interface file says why. *)
 module Isqrt = Mgen_transformer.Isqrt
 module Exp2 = Mgen_transformer.Exp2
 
@@ -97,24 +112,50 @@ module Op = struct
     }
   [@@deriving sexp_of]
 
-  (* Which vector a norm reads, and it carries three facts at once: the memory, the format
-     it arrives in, and the width it divides by. The three move together — the stream is
-     Q16 over [d] and the gate product is Q24 over [d_in] — thus one field names them and
-     the op stays closed. *)
+  (* Which vector a norm reads and where it lands, and it carries four facts at once: the
+     memory, the format it arrives in, the width it divides by, and the memory the normed
+     vector goes to. The four move together — the stream is Q16 over [d] into the y RAM
+     and the gate product is Q24 over [d_in] into the same one — thus one field names them
+     and the op stays closed.
+
+     [Embedding] reads the same stream as [Stream] at the same format and the same width,
+     and it lands in a memory of its own: the head of the step norms the EMBEDDING once,
+     and that vector must stand while every layer writes over the stream. *)
   type over =
     | Stream
+    | Embedding
     | Gated
+  [@@deriving sexp_of]
+
+  (* Which vector a matvec walks against the weight.
+
+     [Joined] is the one of the three that is not one memory but a PAIR: the query and the
+     key of the Zamba head read [2 d] terms — the normed stream, then the normed embedding
+     — thus the operand follows the top bit of the inner counter, and it must follow it AT
+     THE DATA. *)
+  type source =
+    | Y
+    | Joined
+    | Hidden
   [@@deriving sexp_of]
 
   (* where a finished matvec sum lands *)
   type landing =
     | To_v (* clamp16 (rescale to v_q), the shared RAM from its base *)
+    | To_q (* clamp16 (rescale to v_q), the query RAM *)
+    | To_ring of
+        { k : bool
+        ; ring : int
+        }
+      (* the top byte of the same value, into the ring row of the newest slot *)
+    | To_hidden (* rescale to hid_q, relu, clamp16 — the feed-forward hidden *)
     | To_logits (* one shift by [e]; the peak tracked for the temper *)
     | Add_to_h (* the residual join: the whole sum, rescaled onto the stream *)
   [@@deriving sexp_of]
 
   type matvec =
-    { w : tensor
+    { src : source
+    ; w : tensor
     ; outer_major : bool (* the weight address order; true only for a seat readout *)
     ; inner : int
     ; outer : int
@@ -136,10 +177,10 @@ module Op = struct
         }
     | Rms_norm of { over : over }
     | Matvec of matvec
-    (* the depthwise causal convolution of one layer: the taps take the step's input, then
+    (* the depthwise causal convolution of one block: the taps take the step's input, then
        one row of [conv_taps] terms for each channel *)
     | Conv of
-        { layer : int
+        { block : int
         ; w : tensor
         }
     (* SiLU in place over a range of the shared RAM: the conv output, and the gate *)
@@ -148,13 +189,16 @@ module Op = struct
         ; count : int
         }
     (* dt and the decay of each head: softplus, then one exp2 *)
-    | Decay of { layer : int }
+    | Decay of { block : int }
     (* the inject operands, then the state read-modify-write *)
-    | State_update of { layer : int }
+    | State_update of { block : int }
     (* one row of [state + 1] terms for each lane, the skip folded in as the last term *)
-    | Readout of { layer : int }
+    | Readout of { block : int }
     (* the gated norm's input: the readout against the SiLU of the gate, kept wide *)
     | Gate
+    (* the attention of one head after another over the ages of its ring: the scores, the
+       exp2 weight of each age, then one merged lane at a time *)
+    | Attend of { ring : int }
     | Temper
     | Draw
     | Threshold
@@ -179,6 +223,10 @@ module Op = struct
 
     (* the start cycle, the walk, and the cycle the wait releases *)
     let divide = Divider.busy_cycles + 2
+
+    (* the same, less the start cycle: a divide that a retiring walk starts in its own
+       last cycle costs the caller only the wait *)
+    let divide_behind = Divider.busy_cycles + 1
     let root = Isqrt.busy_cycles + 1
 
     (* the ticks of the bespoke chains *)
@@ -193,18 +241,20 @@ module Op = struct
   (* The analytic cost of one op, in cycles from its go to its finish, both the cycle a
      predecessor's finish runs.
 
-     IT TAKES NO FILL COUNT. Era four's model took the ring's [n] and every number moved
-     with the walk; a recurrence holds a state of one size for ever, thus this cost is a
-     constant of the shape and the cycle bench is simpler than its predecessor. *)
-  let cycles (config : Mamba.Config.t) (op : t) =
-    let { Mamba.Config.d; d_in; heads; state; layers = (_ : int) } = config in
+     [n] is the ages the ring holds at this step, and [Attend] is the ONE op that reads
+     it. The trunk of era five dropped the fill count era four's model carried; the Zamba
+     head brings it back for its own op alone, and every other number here stays a
+     constant of the shape. *)
+  let cycles (config : Mamba.Config.t) ~n (op : t) =
+    let { Mamba.Config.d; d_in; heads; state; _ } = config in
     let channels = Mamba.Config.channels config in
+    let head_d = Mamba.Config.head_d config in
     let classes = Vocab.classes in
     let norm ~width = width + Cost.drain + Cost.root + (width * (1 + Cost.divide)) in
     match op with
     (* four seat rows and the phase row *)
     | Embed _ -> ((Frame.voices + 1) * d) + Cost.drain
-    | Rms_norm { over = Stream } -> norm ~width:d
+    | Rms_norm { over = Stream | Embedding } -> norm ~width:d
     | Rms_norm { over = Gated } -> norm ~width:d_in
     | Matvec { inner; outer; landing; _ } ->
       (inner * outer)
@@ -212,15 +262,25 @@ module Op = struct
       +
         (match landing with
         | Add_to_h -> 1
-        | To_v | To_logits -> 0)
+        | To_v | To_q | To_ring _ | To_hidden | To_logits -> 0)
     (* the taps take the input, then one row of taps for each channel *)
-    | Conv _ -> channels + Cost.drain + (channels * Mamba.conv_taps) + Cost.drain
+    | Conv _ -> channels + Cost.drain + (channels * config.taps) + Cost.drain
     | Silu_over { count; _ } -> Cost.silu * count
     | Decay _ -> Cost.decay * heads
     (* the inject walk, then two terms for each element of the state *)
     | State_update _ -> (heads * state) + Cost.drain + (2 * d_in * state) + Cost.drain
     | Readout _ -> (d_in * (state + 1)) + Cost.drain
     | Gate -> d_in + Cost.drain
+    (* For each head: one row of lanes an age, one weight chain an age, then ONE LANE A
+       WALK with its divide behind it. Era four merged every lane in one walk and stalled
+       that walk while the divide of a finished row ran; a lane a walk pays the drain of
+       each and keeps the machine's rule that no walk ever stalls. *)
+    | Attend _ ->
+      heads
+      * ((n * head_d)
+         + Cost.drain
+         + (Cost.exp_weight * n)
+         + (head_d * (n + Cost.drain + Cost.divide_behind)))
     | Temper -> Cost.exp_weight * classes
     | Draw -> Cost.draw
     | Threshold -> Cost.threshold
@@ -251,18 +311,17 @@ type program =
   }
 
 let schedule (model : Quantized.Model.t) : program =
-  let { Mamba.Config.d; d_in; heads = (_ : int); state = (_ : int); layers } =
-    model.config
-  in
+  let { Mamba.Config.d; d_in; plan; _ } = model.config in
   let classes = Vocab.classes in
   let bases = Quantized.Model.rom_bases model in
   let tensor_at (q : Quantized.Model.quantized) base = { Op.base; e = q.e } in
-  let matvec ?(outer_major = false) ~inner ~outer w base landing =
-    Op.Matvec { w = tensor_at w (Op.Fixed base); outer_major; inner; outer; landing }
+  let matvec ?(src = Op.Y) ?(outer_major = false) ~inner ~outer w base landing =
+    Op.Matvec { src; w = tensor_at w (Op.Fixed base); outer_major; inner; outer; landing }
   in
-  let layer l =
-    let w = model.layers.(l) in
-    let b = bases.Quantized.Model.Rom_data.layers.(l) in
+  (* A layer's place in the plan is not its place in a memory: [ordinals] gives each block
+     the region of the state RAM and the tap ring it owns, and each head the ring it owns. *)
+  let ordinals = Mamba.Config.ordinals model.config in
+  let block ~at (w : Quantized.Model.block) (b : int Quantized.Model.Rom_data.block) =
     [ Op.Rms_norm { over = Stream }
       (* the image stores W_in transposed, thus the outer counter walks [d]: see the note
          at [Quantized.Model.transpose] *)
@@ -273,25 +332,78 @@ let schedule (model : Quantized.Model.t) : program =
         w.w_in
         b.w_in
         To_v
-    ; Op.Conv { layer = l; w = tensor_at w.conv (Op.Fixed b.conv) }
+    ; Op.Conv { block = at; w = tensor_at w.conv (Op.Fixed b.conv) }
     ; Op.Silu_over { from = d_in; count = Mamba.Config.channels model.config }
-    ; Op.Decay { layer = l }
-    ; Op.State_update { layer = l }
-    ; Op.Readout { layer = l }
+    ; Op.Decay { block = at }
+    ; Op.State_update { block = at }
+    ; Op.Readout { block = at }
     ; Op.Silu_over { from = 0; count = d_in }
     ; Op.Gate
     ; Op.Rms_norm { over = Gated }
     ; matvec ~inner:d_in ~outer:d w.w_out b.w_out Add_to_h
     ]
   in
+  (* The Zamba head. The query and the key walk [2 d] terms over the JOINED vector — the
+     normed stream, then the normed embedding — where the value walks [d] over the stream
+     alone. [Attend] leaves its merged context in the y RAM, thus the output projection is
+     an ordinary matvec and it needs no landing of its own. *)
+  let attention
+    ~at
+    (w : Quantized.Model.attention)
+    (b : int Quantized.Model.Rom_data.attention)
+    =
+    [ Op.Rms_norm { over = Stream }
+    ; matvec ~src:Joined ~inner:(2 * d) ~outer:d w.wq b.wq To_q
+    ; matvec
+        ~src:Joined
+        ~inner:(2 * d)
+        ~outer:d
+        w.wk
+        b.wk
+        (To_ring { k = true; ring = at })
+    ; matvec ~inner:d ~outer:d w.wv b.wv (To_ring { k = false; ring = at })
+    ; Op.Attend { ring = at }
+    ; matvec ~inner:d ~outer:d w.wo b.wo Add_to_h
+    ]
+  in
+  let feed_forward
+    (w : Quantized.Model.feed_forward)
+    (b : int Quantized.Model.Rom_data.feed_forward)
+    =
+    [ Op.Rms_norm { over = Stream }
+    ; matvec ~inner:d ~outer:(4 * d) w.w1 b.w1 To_hidden
+    ; matvec ~src:Hidden ~inner:(4 * d) ~outer:d w.w2 b.w2 Add_to_h
+    ]
+  in
+  (* The weights and the image bases are two structures over ONE plan, thus a layer takes
+     them as a pair. The mismatch cannot happen — [check_shape] holds the layers against
+     the plan and [rom_bases] reads the same plan — and it is stated rather than assumed
+     away because both records are open. *)
+  let layer index =
+    let at = ordinals.(index) in
+    match model.layers.(index), bases.Quantized.Model.Rom_data.layers.(index) with
+    | Quantized.Model.Block w, Quantized.Model.Rom_data.Block b -> block ~at w b
+    | Attention w, Attention b -> attention ~at w b
+    | Feed_forward w, Feed_forward b -> feed_forward w b
+    | (_ : Quantized.Model.layer), (_ : int Quantized.Model.Rom_data.layer) ->
+      invalid_arg "the ROM image and the weights do not agree about the plan"
+  in
   (* One seat of the chain, and the machine runs it once for each seat. The seat register
      names the block of the seat tensor, thus the four readouts are one program and one
      mux over four constant addresses. *)
   let seat_block = Op.Seat_block bases.seats in
+  (* The normed embedding stands for the whole step and only a Zamba head reads it, thus a
+     plan without one norms nothing twice. *)
+  let embedding =
+    if Mamba.Config.attentions model.config > 0
+    then [ Op.Rms_norm { over = Embedding } ]
+    else []
+  in
   { chain =
       [ Op.Rms_norm { over = Stream }
       ; Op.Matvec
-          { w = tensor_at model.seats seat_block
+          { src = Y
+          ; w = tensor_at model.seats seat_block
           ; outer_major = true
           ; inner = d
           ; outer = classes
@@ -304,8 +416,9 @@ let schedule (model : Quantized.Model.t) : program =
       ; Accumulate { base = seat_block; e = model.seats.e }
       ]
   ; forward =
-      Embed { seats = bases.seats; phase = bases.phase; e = model.seats.e }
-      :: List.concat (List.init layers ~f:layer)
+      (Op.Embed { seats = bases.seats; phase = bases.phase; e = model.seats.e }
+       :: embedding)
+      @ List.concat (List.init (Array.length plan) ~f:layer)
   }
 ;;
 
@@ -322,11 +435,15 @@ end
 
 let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let { Quantized.Model.config; temper; min_weight; _ } = model in
-  let { Mamba.Config.d; d_in; heads; state = n_state; layers } = config in
+  let { Mamba.Config.d; d_in; heads; state = n_state; span; ring = slots; _ } = config in
   let head = Mamba.Config.head config in
+  let head_d = Mamba.Config.head_d config in
   let channels = Mamba.Config.channels config in
   let projection = Mamba.Config.projection config in
-  let taps = Mamba.conv_taps in
+  let taps = config.taps in
+  let blocks = Mamba.Config.blocks config in
+  let rings = Mamba.Config.attentions config in
+  let dff = 4 * d in
   let classes = Vocab.classes in
   (* the shift and address rules of the reference; the packing below derives every width *)
   Quantized.Model.check_shape model;
@@ -335,21 +452,37 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let inbits = Int.floor_log2 d_in in
   let head_bits = Int.floor_log2 heads in
   let lane_bits = Int.floor_log2 head in
+  let lane_d_bits = Int.floor_log2 head_d in
   let nbits = Int.floor_log2 n_state in
   let tapbits = Int.floor_log2 taps in
+  let slot_bits = Int.floor_log2 slots in
   let phase_bits = Int.floor_log2 Jsb.bar_steps in
   let class_bits = address_bits_for classes in
   let seat_bits = address_bits_for Frame.voices in
   let chan_bits = address_bits_for channels in
-  let state_bits = address_bits_for (layers * d_in * n_state) in
-  let tap_bits = address_bits_for (layers * channels * taps) in
-  (* vram serves zxbcdt, then the SiLU outputs and the gate product, then the logits and
-     the sampler weights of the chain *)
-  let vram_size = Int.max classes projection in
+  let state_bits = address_bits_for (blocks * d_in * n_state) in
+  let tap_bits = address_bits_for (blocks * channels * taps) in
+  (* the rings are sized at the attention count and not at the width of a rounded-up
+     field, thus a plan with one head pays for one; a model with none elaborates none *)
+  let ring_bits = address_bits_for (Int.max 1 rings * slots * d) in
+  let score_shift = Quantized.Constants.score_shift ~head_d in
+  (* vram serves zxbcdt, then the SiLU outputs and the gate product, then the scores and
+     the age weights of the head, the feed-forward hidden, and the logits and the sampler
+     weights of the chain *)
+  let vram_size = List.reduce_exn ~f:Int.max [ classes; projection; dff; slots ] in
   let vbits = address_bits_for vram_size in
   (* yram takes both norms: [d] entries for the stream and [d_in] for the gated one *)
   let yram_size = Int.max d d_in in
   let ybits = address_bits_for yram_size in
+  (* The blocks of the plan in their own order. A block op carries the ordinal that
+     indexes the state RAM and the tap ring, thus it names its per-head constants through
+     the same index and no op has to know where its layer stands in the plan. *)
+  let block_weights =
+    Array.filter_map model.layers ~f:(function
+      | Quantized.Model.Block w -> Some w
+      | Attention (_ : Quantized.Model.attention)
+      | Feed_forward (_ : Quantized.Model.feed_forward) -> None)
+  in
   let prog = schedule model in
   let forward_length = List.length prog.forward in
   let pc_bits = address_bits_for (forward_length + List.length prog.chain) in
@@ -383,6 +516,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let peak = Variable.reg spec ~width:32 in
   let diff = Variable.reg spec ~width:32 in
   let nn = Variable.reg spec ~width:22 in
+  (* the softmax denominator of one head: it accumulates over the age weights and divides
+     each merged lane *)
+  let den = Variable.reg spec ~width:24 in
   (* the bespoke chains hold one value each: the SiLU input, and the biased dt draw *)
   let sv = Variable.reg spec ~width:16 in
   let dtv = Variable.reg spec ~width:16 in
@@ -499,6 +635,24 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let oram_wen = Variable.wire ~default:gnd () in
   let oram_waddr = Variable.wire ~default:(zero inbits) () in
   let oram_wdata = Variable.wire ~default:(zero 16) () in
+  (* the two small vectors of the head: the query of the step, and the NORMED EMBEDDING,
+     which the head of the step writes once and every layer after it leaves alone *)
+  let qram_raddr = Variable.wire ~default:(zero dbits) () in
+  let qram_wen = Variable.wire ~default:gnd () in
+  let qram_waddr = Variable.wire ~default:(zero dbits) () in
+  let qram_wdata = Variable.wire ~default:(zero 16) () in
+  let eram_raddr = Variable.wire ~default:(zero dbits) () in
+  let eram_wen = Variable.wire ~default:gnd () in
+  let eram_waddr = Variable.wire ~default:(zero dbits) () in
+  let eram_wdata = Variable.wire ~default:(zero 16) () in
+  (* the key and value rings; the two share a write address, because the two matvecs that
+     fill them write the same slot of the same step *)
+  let kc_raddr = Variable.wire ~default:(zero ring_bits) () in
+  let vc_raddr = Variable.wire ~default:(zero ring_bits) () in
+  let kc_wen = Variable.wire ~default:gnd () in
+  let vc_wen = Variable.wire ~default:gnd () in
+  let ring_waddr = Variable.wire ~default:(zero ring_bits) () in
+  let ring_wdata = Variable.wire ~default:(zero 8) () in
   let bram_raddr = Variable.wire ~default:(zero (head_bits + nbits)) () in
   let bram_wen = Variable.wire ~default:gnd () in
   let bram_waddr = Variable.wire ~default:(zero (head_bits + nbits)) () in
@@ -567,7 +721,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let one_deep x = reg spec x in
   let std =
     ram
-      ~size:(layers * d_in * n_state)
+      ~size:(blocks * d_in * n_state)
       ~waddr:st_waddr.value
       ~wen:st_wen.value
       ~wdata:st_wdata.value
@@ -577,12 +731,35 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let tapd =
     two_deep
       (ram
-         ~size:(layers * channels * taps)
+         ~size:(blocks * channels * taps)
          ~waddr:tap_waddr.value
          ~wen:tap_wen.value
          ~wdata:tap_wdata.value
          ~raddr:tap_raddr.value)
   in
+  (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
+     dropped at the write, thus the format stays Q12 at a granularity of 2^-4.
+
+     The ring WRITE stands one register behind its landing, and it is era four's travel
+     stage: the sum-to-write route across the die wants it. The register is safe by the
+     schedule and not by luck — a ring row's nearest read is a whole op away, because the
+     head scores its ages only after the value matvec has retired. *)
+  let ring_waddr_r = reg spec ring_waddr.value in
+  let ring_wdata_r = reg spec ring_wdata.value in
+  let kc_wen_r = reg spec kc_wen.value in
+  let vc_wen_r = reg spec vc_wen.value in
+  let ring_of ~wen ~raddr =
+    two_deep
+      (ram
+         ~size:(Int.max 1 rings * slots * d)
+         ~waddr:ring_waddr_r
+         ~wen
+         ~wdata:ring_wdata_r
+         ~raddr
+       @: zero 8)
+  in
+  let kcd = ring_of ~wen:kc_wen_r ~raddr:kc_raddr.value in
+  let vcd = ring_of ~wen:vc_wen_r ~raddr:vc_raddr.value in
   let vramd =
     one_deep
       (ram
@@ -620,6 +797,24 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wen:oram_wen.value
          ~wdata:oram_wdata.value
          ~raddr:oram_raddr.value)
+  in
+  let qd2 =
+    two_deep
+      (ram
+         ~size:d
+         ~waddr:qram_waddr.value
+         ~wen:qram_wen.value
+         ~wdata:qram_wdata.value
+         ~raddr:qram_raddr.value)
+  in
+  let ed2 =
+    two_deep
+      (ram
+         ~size:d
+         ~waddr:eram_waddr.value
+         ~wen:eram_wen.value
+         ~wdata:eram_wdata.value
+         ~raddr:eram_raddr.value)
   in
   let bramd2 =
     two_deep
@@ -662,6 +857,47 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   let mac_row_in = sel_bottom mac.row ~width:inbits in
   let oo_class = sel_bottom oo.value ~width:class_bits in
   let phase = sel_bottom s.value ~width:phase_bits in
+  (* The ring, read off the step counter and not off registers of its own. Era four kept a
+     slot register and a filled flag; here the step counter already states both — the
+     newest slot is its low bits, and the ring is full once the walk has run [slots]
+     steps. *)
+  let cur = sel_bottom s.value ~width:slot_bits in
+  let filled = s.value >=: of_unsigned_int ~width:32 slots in
+  let nfill =
+    uresize
+      (mux2
+         filled
+         (of_unsigned_int ~width:(slot_bits + 1) slots)
+         (uresize cur ~width:(slot_bits + 1) +:. 1))
+      ~width:walk
+  in
+  let mac_ii_slot = sel_bottom mac.ii ~width:slot_bits in
+  let mac_oo_slot = sel_bottom mac.oo ~width:slot_bits in
+  let mac_row_slot = sel_bottom mac.row ~width:slot_bits in
+  let mac_ii_lane = sel_bottom mac.ii ~width:lane_d_bits in
+  (* the ring slot an age names: the walk counts the age, and [cur] is the newest slot *)
+  let slot_of_oo = cur -: mac_oo_slot in
+  let slot_of_ii = cur -: mac_ii_slot in
+  (* One row of a ring: the rows of one head stand together, thus the head's ring stands
+     above the slot and the dimension and the address is a concatenation — the slots and
+     [d] are powers of two, thus the ring's offset has nothing but zeros below it. *)
+  let ring_layer_bits = ring_bits - slot_bits - dbits in
+  let ring_row ~ring ~slot ~dim =
+    if ring_layer_bits = 0
+    then slot @: dim
+    else of_unsigned_int ~width:ring_layer_bits ring @: slot @: dim
+  in
+  (* the ALiBi penalty of the age the score walk has retired: the slope of head k is
+     2^-(span (k+1) / heads), thus the penalty is a shift of the age, in Q12 *)
+  let alibi =
+    mux
+      hd.value
+      (List.init heads ~f:(fun head ->
+         let exponent = Quantized.Constants.slope_exponent ~span ~heads ~head in
+         sll (uresize mac.row ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
+  in
+  let score = sel_bottom (sra mac.sum ~by:score_shift) ~width:32 -: alibi in
+  let den_next = den.value +: uresize exp2_e ~width:24 in
   (* The state address of an element: the layer stands above the lane and the lane above
      the state index, and every field is a power of two, thus the whole address is a
      concatenation and no adder pays for it. The update walk counts elements, thus its
@@ -822,11 +1058,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
       join_entry, body
     | Rms_norm { over } ->
       (* stage 0 sums the squares of a Q12 copy on the walk; stage 1 waits on the isqrt;
-         stage 2 divides each element. The vector, its format and its width move together,
-         thus [over] names all three. *)
+         stage 2 divides each element. The vector, its format, its width and the memory it
+         lands in move together, thus [over] names all four. *)
       let width, raddr, tap1, tap2, square_shift, num_shift =
         match over with
-        | Op.Stream ->
+        | Op.Stream | Embedding ->
           ( d
           , (fun a -> hram_raddr <-- sel_bottom a ~width:dbits)
           , hramd
@@ -840,6 +1076,21 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
           , vramd2
           , Quantized.Constants.gate_q - Quantized.Constants.y_q
           , (2 * Quantized.Constants.y_q) - Quantized.Constants.gate_q )
+      in
+      (* the normed embedding takes a memory of its own, because every layer after it
+         writes over the y RAM and the head of the last one still reads it *)
+      let land_normed at value =
+        match over with
+        | Op.Embedding ->
+          [ eram_wen <-- vdd
+          ; eram_waddr <-- sel_bottom at ~width:dbits
+          ; eram_wdata <-- value
+          ]
+        | Stream | Gated ->
+          [ yram_wen <-- vdd
+          ; yram_waddr <-- uresize at ~width:ybits
+          ; yram_wdata <-- value
+          ]
       in
       let wbits = address_bits_for width in
       let square = sel_bottom (sra tap2 ~by:square_shift) ~width:25 in
@@ -872,51 +1123,90 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
               ]
             ; [ when_
                   ~:div_busy
-                  [ yram_wen <-- vdd
-                  ; yram_waddr <-- uresize at ~width:ybits
-                  ; yram_wdata <-- quotient16
-                  ; tick <--. 0
-                  ; if_ (ii.value ==:. width - 1) finish [ ii <-- ii.value +:. 1 ]
-                  ]
+                  (land_normed at quotient16
+                   @ [ tick <--. 0
+                     ; if_ (ii.value ==:. width - 1) finish [ ii <-- ii.value +:. 1 ]
+                     ])
               ]
             ]
         ]
       in
       ( [ stage <--. 0; mac_go <-- vdd ]
       , [ by_stage [ sum_squares; await_root; divide_elements ] ] )
-    | Matvec { w; outer_major; inner; outer; landing } ->
+    | Matvec { src; w; outer_major; inner; outer; landing } ->
       let ibits = address_bits_for inner in
       let obits = address_bits_for outer in
       let ii_i = sel_bottom mac.ii ~width:ibits in
       let oo_o = sel_bottom mac.oo ~width:obits in
       let row_o = sel_bottom mac.row ~width:obits in
       let addr = if outer_major then oo_o @: ii_i else ii_i @: oo_o in
+      let read_src, srcd =
+        match src with
+        | Op.Y -> [ yram_raddr <-- uresize ii_i ~width:ybits ], yd2
+        (* The joined vector is [2 d] terms: the normed stream, then the normed embedding.
+           Both memories read at the low bits of the counter and THE MUX FOLLOWS THE DATA
+           — the top bit carried forward by the read latency — because a selection on the
+           address side would take the wrong memory two cycles early. *)
+        | Joined ->
+          ( [ yram_raddr <-- uresize (sel_bottom ii_i ~width:dbits) ~width:ybits
+            ; eram_raddr <-- sel_bottom ii_i ~width:dbits
+            ]
+          , mux2 (msb (sel_bottom ii_at_data ~width:ibits)) ed2 yd2 )
+        | Hidden ->
+          [ vram_raddr <-- uresize ii_i ~width:vbits ], sel_bottom vramd2 ~width:16
+      in
       let common =
-        [ yram_raddr <-- uresize ii_i ~width:ybits
-        ; mac_inner <--. inner
-        ; mac_outer <--. outer
-        ; rom_addr <-- base_of w.base +: uresize addr ~width:rom_addr_bits
-        ; mul_a <-- sresize yd2 ~width:25
-        ; mul_b <-- sresize romd ~width:18
-        ]
+        read_src
+        @ [ mac_inner <--. inner
+          ; mac_outer <--. outer
+          ; rom_addr <-- base_of w.base +: uresize addr ~width:rom_addr_bits
+          ; mul_a <-- sresize srcd ~width:25
+          ; mul_b <-- sresize romd ~width:18
+          ]
       in
       let simple ?(entry_extra = []) writes =
         ( entry_extra @ [ mac_go <-- vdd ]
         , common @ [ when_ mac.row_done writes; when_ mac.done_ finish ] )
+      in
+      (* the working-class landing of a projection, which four of the six landings take *)
+      let to_v v =
+        clamp16
+          (rescale
+             ~from:(Quantized.Constants.y_q + w.e)
+             ~target:Quantized.Constants.v_q
+             v)
       in
       (match landing with
        | To_v ->
          simple
            [ vram_wen <-- vdd
            ; vram_waddr <-- uresize row_o ~width:vbits
+           ; vram_wdata <-- sresize (to_v mac.sum) ~width:32
+           ]
+       | To_q ->
+         simple
+           [ qram_wen <-- vdd
+           ; qram_waddr <-- sel_bottom row_o ~width:dbits
+           ; qram_wdata <-- to_v mac.sum
+           ]
+       | To_ring { k; ring } ->
+         simple
+           [ (if k then kc_wen else vc_wen) <-- vdd
+           ; ring_waddr <-- ring_row ~ring ~slot:cur ~dim:(sel_bottom row_o ~width:dbits)
+           ; ring_wdata <-- sel_top (to_v mac.sum) ~width:8
+           ]
+       | To_hidden ->
+         let shifted =
+           rescale
+             ~from:(Quantized.Constants.y_q + w.e)
+             ~target:Quantized.Constants.hid_q
+             mac.sum
+         in
+         simple
+           [ vram_wen <-- vdd
+           ; vram_waddr <-- uresize row_o ~width:vbits
            ; vram_wdata
-             <-- sresize
-                   (clamp16
-                      (rescale
-                         ~from:(Quantized.Constants.y_q + w.e)
-                         ~target:Quantized.Constants.v_q
-                         mac.sum))
-                   ~width:32
+             <-- sresize (clamp16 (mux2 (shifted <+ zero 48) (zero 48) shifted)) ~width:32
            ]
        | To_logits ->
          (* no mask stands before the draw, thus the peak is the peak *)
@@ -929,8 +1219,13 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
            ; when_ (logit >+ peak.value) [ peak <-- logit ]
            ]
        | Add_to_h ->
-         join_entry, common @ join_to_h ~from:(Quantized.Constants.v_q + w.e) ~finish)
-    | Conv { layer; w } ->
+         let from =
+           match src with
+           | Op.Y | Joined -> Quantized.Constants.v_q
+           | Hidden -> Quantized.Constants.hid_q
+         in
+         join_entry, common @ join_to_h ~from:(from + w.e) ~finish)
+    | Conv { block = layer; w } ->
       (* Stage 0 walks the step's input into the tap ring, one channel a row, the DSP a
          wire. Stage 1 walks the taps: tap k of a channel reads the step k back, and it
          reads ZERO while the walk has not run k steps — one compare against the step
@@ -1011,11 +1306,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       entry, body
-    | Decay { layer } ->
+    | Decay { block = layer } ->
       (* one head a chain: the biased draw, the softplus of it, then one exp2 of dt times
          the head's decay constant. The three per-head numbers are elaboration constants,
          thus a mux over [heads] carries each. *)
-      let lay = model.layers.(layer) in
+      let lay = block_weights.(layer) in
       let bias =
         mux hd.value (Array.to_list (Array.map lay.dt_bias ~f:(of_signed_int ~width:16)))
       in
@@ -1067,7 +1362,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       entry, body
-    | State_update { layer } ->
+    | State_update { block = layer } ->
       (* Stage 0 writes the inject operands: [heads * state] products of a head's dt
          against
 
@@ -1146,11 +1441,11 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       [ stage <--. 0; mac_go <-- vdd ], [ by_stage [ inject; update ] ]
-    | Readout { layer } ->
+    | Readout { block = layer } ->
       (* one row of [state + 1] terms for each lane: the state against C, and the skip
          folded in as the last term with [d_skip] in Q12, thus every product of the row
          lands Q24. It reads the state the update just wrote. *)
-      let lay = model.layers.(layer) in
+      let lay = block_weights.(layer) in
       let is_skip o = o ==:. n_state in
       let skip_at_data = is_skip ii_at_data in
       let lane = mac_oo_in in
@@ -1218,6 +1513,95 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       [ mac_go <-- vdd ], body
+    | Attend { ring } ->
+      (* The attention of one head after another, in four stages. Stage 0 scores the ages
+         — one row of lanes an age — and tracks the peak. Stage 1 turns each score into
+         its exp2 weight over the score's own vram row and sums the denominator. Stages 2
+         and 3 merge ONE LANE: a walk of one row over the ages, weight row against value
+         ring, then a wait on the divide that lands it.
+
+         Era four merged every lane in one walk and froze that walk while a row's divide
+         ran, thus every read register and every tag of its machine carried an enable. A
+         lane a walk needs no freeze: the walk has retired before the divide starts. That
+         is what keeps the rule of this machine — NO WALK EVER STALLS — with an attention
+         layer inside it, and it is why [Mac] still takes its hold at ground.
+
+         Age [a] reads slot [(cur - a) & (slots - 1)], thus the ALiBi distance is the age
+         and the causal wall is the walk: [nfill] states how many ages the ring holds. *)
+      let head_entry =
+        [ ii <--. 0
+        ; tick <--. 0
+        ; den <--. 0
+        ; peak <-- min32
+        ; stage <--. 0
+        ; mac_go <-- vdd
+        ]
+      in
+      let entry = [ hd <--. 0 ] @ head_entry in
+      let lane = sel_bottom ii.value ~width:lane_d_bits in
+      let score_ages =
+        [ mac_inner <--. head_d
+        ; mac_outer <-- nfill
+        ; qram_raddr <-- hd.value @: mac_ii_lane
+        ; kc_raddr <-- ring_row ~ring ~slot:slot_of_oo ~dim:(hd.value @: mac_ii_lane)
+        ; mul_a <-- sresize qd2 ~width:25
+        ; mul_b <-- sresize kcd ~width:18
+        ; when_
+            mac.row_done
+            [ vram_wen <-- vdd
+            ; vram_waddr <-- uresize mac_row_slot ~width:vbits
+            ; vram_wdata <-- score
+            ; when_ (score >+ peak.value) [ peak <-- score ]
+            ]
+        ; when_ mac.done_ [ ii <--. 0; tick <--. 0; stage <--. 1 ]
+        ]
+      in
+      let weigh_ages =
+        exp_weight_chain
+          ~addr:(sel_bottom ii.value ~width:slot_bits)
+          ~scale:Quantized.Constants.log2e
+          ~land_:[ vram_wdata <-- uresize exp2_e ~width:32; den <-- den_next ]
+          ~advance:
+            [ if_
+                (ii.value ==: nfill -:. 1)
+                [ ii <--. 0; stage <--. 2; mac_go <-- vdd ]
+                [ ii <-- ii.value +:. 1 ]
+            ]
+      in
+      let merge_lane =
+        [ mac_inner <-- nfill
+        ; mac_outer <--. 1
+        ; vram_raddr <-- uresize mac_ii_slot ~width:vbits
+        ; vc_raddr <-- ring_row ~ring ~slot:slot_of_ii ~dim:(hd.value @: lane)
+        ; mul_a <-- uresize (sel_bottom vramd2 ~width:16) ~width:25
+        ; mul_b <-- sresize vcd ~width:18
+        ; when_
+            mac.done_
+            [ div_start <-- vdd
+            ; div_num <-- sel_bottom mac.sum ~width:40
+            ; div_den <-- den.value
+            ; stage <--. 3
+            ]
+        ]
+      in
+      let land_lane =
+        [ when_
+            ~:div_busy
+            [ yram_wen <-- vdd
+            ; yram_waddr <-- uresize (hd.value @: lane) ~width:ybits
+            ; yram_wdata <-- quotient16
+            ; if_
+                (ii.value ==:. head_d - 1)
+                [ if_
+                    (hd.value ==:. heads - 1)
+                    finish
+                    ([ hd <-- hd.value +:. 1 ] @ head_entry)
+                ]
+                [ ii <-- ii.value +:. 1; stage <--. 2; mac_go <-- vdd ]
+            ]
+        ]
+      in
+      entry, [ by_stage [ score_ages; weigh_ages; merge_lane; land_lane ] ]
     | Temper ->
       let entry = [ oo <--. 0; tick <--. 0; total <--. 0 ] in
       let keep = exp2_e >=: of_unsigned_int ~width:16 min_weight in
@@ -1381,8 +1765,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
 (* ==================================================================== *)
 
 let%expect_test "the program is data: the state table prints" =
-  let config = { Mamba.Config.d = 16; d_in = 32; heads = 2; state = 8; layers = 1 } in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let model = Quantized.Model.For_test.init Quantized.Model.For_test.config ~seed:11 in
   let { chain; forward } = schedule model in
   let show tag ops =
     List.iteri ops ~f:(fun index op ->
@@ -1390,35 +1773,50 @@ let%expect_test "the program is data: the state table prints" =
   in
   show "f" forward;
   show "c" chain;
-  let baseline =
-    schedule (Quantized.Model.For_test.init Mamba.Config.baseline ~seed:11)
-  in
+  (* The elected shape, which no simulation can afford and every cost of the board is: the
+     op count and the cycles of a drawn step at a full ring, out of the cost model. The
+     bench above holds that model to the measured circuit at a shape a test can run. *)
+  let elected = Mamba.Config.baseline in
+  let baseline = schedule (Quantized.Model.For_test.init elected ~seed:11) in
+  let step ops = List.sum (module Int) ops ~f:(Op.cycles elected ~n:elected.ring) in
   Stdio.printf
-    "baseline: %d forward ops, %d chain ops\n"
+    "%s: %d forward ops, %d chain ops, %d cycles a drawn step\n"
+    (Mamba.Kind.spell elected.plan)
     (List.length baseline.forward)
-    (List.length baseline.chain);
+    (List.length baseline.chain)
+    (step baseline.forward + (Frame.voices * step baseline.chain));
   [%expect
     {|
     f0  (Embed(seats 0)(phase 3072)(e 10))
-    f1  (Rms_norm(over Stream))
-    f2  (Matvec((w((base(Fixed 3328))(e 10)))(outer_major true)(inner 16)(outer 82)(landing To_v)))
-    f3  (Conv(layer 0)(w((base(Fixed 4640))(e 11))))
-    f4  (Silu_over(from 32)(count 48))
-    f5  (Decay(layer 0))
-    f6  (State_update(layer 0))
-    f7  (Readout(layer 0))
-    f8  (Silu_over(from 0)(count 32))
-    f9  Gate
-    f10 (Rms_norm(over Gated))
-    f11 (Matvec((w((base(Fixed 4832))(e 11)))(outer_major false)(inner 32)(outer 16)(landing Add_to_h)))
+    f1  (Rms_norm(over Embedding))
+    f2  (Rms_norm(over Stream))
+    f3  (Matvec((src Y)(w((base(Fixed 3328))(e 10)))(outer_major true)(inner 16)(outer 82)(landing To_v)))
+    f4  (Conv(block 0)(w((base(Fixed 4640))(e 11))))
+    f5  (Silu_over(from 32)(count 48))
+    f6  (Decay(block 0))
+    f7  (State_update(block 0))
+    f8  (Readout(block 0))
+    f9  (Silu_over(from 0)(count 32))
+    f10 Gate
+    f11 (Rms_norm(over Gated))
+    f12 (Matvec((src Y)(w((base(Fixed 4832))(e 11)))(outer_major false)(inner 32)(outer 16)(landing Add_to_h)))
+    f13 (Rms_norm(over Stream))
+    f14 (Matvec((src Joined)(w((base(Fixed 5344))(e 11)))(outer_major false)(inner 32)(outer 16)(landing To_q)))
+    f15 (Matvec((src Joined)(w((base(Fixed 5856))(e 10)))(outer_major false)(inner 32)(outer 16)(landing(To_ring(k true)(ring 0)))))
+    f16 (Matvec((src Y)(w((base(Fixed 6368))(e 11)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(ring 0)))))
+    f17 (Attend(ring 0))
+    f18 (Matvec((src Y)(w((base(Fixed 6624))(e 11)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
+    f19 (Rms_norm(over Stream))
+    f20 (Matvec((src Y)(w((base(Fixed 6880))(e 10)))(outer_major false)(inner 16)(outer 64)(landing To_hidden)))
+    f21 (Matvec((src Hidden)(w((base(Fixed 7904))(e 10)))(outer_major false)(inner 64)(outer 16)(landing Add_to_h)))
     c0  (Rms_norm(over Stream))
-    c1  (Matvec((w((base(Seat_block 0))(e 10)))(outer_major true)(inner 16)(outer 48)(landing To_logits)))
+    c1  (Matvec((src Y)(w((base(Seat_block 0))(e 10)))(outer_major true)(inner 16)(outer 48)(landing To_logits)))
     c2  Temper
     c3  Draw
     c4  Threshold
     c5  Pick
     c6  (Accumulate(base(Seat_block 0))(e 10))
-    baseline: 67 forward ops, 7 chain ops
+    MMMMMMZF: 77 forward ops, 7 chain ops, 403074 cycles a drawn step
     |}]
 ;;
 
@@ -1484,37 +1882,47 @@ let frames_agree ~model ~seed ~steps =
     Stdio.print_s ([%sexp_of: int list] reference))
 ;;
 
-(* The two memories that carry a layer field, and the two rules they take.
+(* The three memories that carry a layer field, and the two rules they take.
 
-   The state address PACKS: [d_in] and [state] are powers of two, thus the layer stands
-   above the lane and the lane above the state index and the whole address is a
+   The state address and the ring address PACK: [d_in], [state], [d] and the ring depth
+   are powers of two, thus the region stands above the row and the whole address is a
    concatenation. The tap address ADDS: the channel count is not a power of two, thus a
-   concatenated layer field would stride by the rounded-up power and the top layer would
+   concatenated layer field would stride by the rounded-up power and the top block would
    run off the end of the memory.
 
-   The layer field is EMPTY at one layer, thus the shape of a gate decides which half of
-   each rule the simulation ever elaborates — which is why the gates below run at two
-   layers as well. *)
+   The region field is EMPTY at one block and at one head, thus the plan of a gate decides
+   which half of each rule the simulation ever elaborates — which is why the gates below
+   run at two blocks and at two heads as well. *)
 let memory_geometry (config : Mamba.Config.t) =
-  let { Mamba.Config.d_in; state; layers; _ } = config in
+  let { Mamba.Config.d; d_in; state; ring; _ } = config in
   let channels = Mamba.Config.channels config in
+  let blocks = Mamba.Config.blocks config in
+  let rings = Mamba.Config.attentions config in
   let inbits = Int.floor_log2 d_in in
   let nbits = Int.floor_log2 state in
-  let state_bits = address_bits_for (layers * d_in * state) in
+  let state_bits = address_bits_for (blocks * d_in * state) in
   let chan_bits = address_bits_for channels in
+  let ring_bits = address_bits_for (Int.max 1 rings * ring * d) in
   Stdio.printf
-    "layers %d: state %d rows, %d bits = layer %d + lane %d + n %d (packed); taps %d \
-     rows, %d channels in %d bits, layer stride %d (added)\n"
-    layers
-    (layers * d_in * state)
+    "%d blocks, %d rings: state %d rows, %d bits = block %d + lane %d + n %d (packed); \
+     taps %d rows, %d channels in %d bits, block stride %d (added); ring %d rows, %d \
+     bits = head %d + slot %d + dim %d (packed)\n"
+    blocks
+    rings
+    (blocks * d_in * state)
     state_bits
     (state_bits - inbits - nbits)
     inbits
     nbits
-    (layers * channels * Mamba.conv_taps)
+    (blocks * channels * config.taps)
     channels
     chan_bits
-    (channels * Mamba.conv_taps)
+    (channels * config.taps)
+    (Int.max 1 rings * ring * d)
+    ring_bits
+    (ring_bits - Int.floor_log2 ring - Int.floor_log2 d)
+    (Int.floor_log2 ring)
+    (Int.floor_log2 d)
 ;;
 
 (* THE RESIDUAL STREAM, WRITE FOR WRITE, and it is the sharp instrument of this era.
@@ -1608,7 +2016,7 @@ let%expect_test "the source agrees with the reference, frame for frame" =
   frames_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:42 ~steps:20;
   [%expect
     {|
-    layers 1: state 256 rows, 8 bits = layer 0 + lane 5 + n 3 (packed); taps 192 rows, 48 channels in 6 bits, layer stride 192 (added)
+    1 blocks, 1 rings: state 256 rows, 8 bits = block 0 + lane 5 + n 3 (packed); taps 192 rows, 48 channels in 6 bits, block stride 192 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
     step  0  00000000
     step  1  00000000
     step 15  00000000
@@ -1623,7 +2031,7 @@ let%expect_test "the source agrees with the reference, frame for frame" =
 let%expect_test "the source agrees with the reference, stream write for stream write" =
   let config = Quantized.Model.For_test.config in
   streams_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:42 ~steps:22;
-  [%expect {| 44 stream writes over 22 steps, 0 part |}]
+  [%expect {| 88 stream writes over 22 steps, 0 part |}]
 ;;
 
 (* The seed 0 on the circuit. It is the fixed point of xorshift32 and the panel can state
@@ -1658,12 +2066,16 @@ let%expect_test "the source agrees with the reference at the seed 0" =
    wraps and the age rule is exercised where it is a wrap and not only where it is the
    origin. *)
 let%expect_test "the source agrees with the reference at two layers" =
-  let config = { Mamba.Config.d = 16; d_in = 32; heads = 2; state = 8; layers = 2 } in
+  let config =
+    { Quantized.Model.For_test.config with
+      plan = [| Block; Block; Attention; Attention |]
+    }
+  in
   memory_geometry config;
   frames_agree ~model:(Quantized.Model.For_test.init config ~seed:23) ~seed:42 ~steps:24;
   [%expect
     {|
-    layers 2: state 512 rows, 9 bits = layer 1 + lane 5 + n 3 (packed); taps 384 rows, 48 channels in 6 bits, layer stride 192 (added)
+    2 blocks, 2 rings: state 512 rows, 9 bits = block 1 + lane 5 + n 3 (packed); taps 384 rows, 48 channels in 6 bits, block stride 192 (added); ring 256 rows, 8 bits = head 1 + slot 3 + dim 4 (packed)
     step  0  00000000
     step  1  00000000
     step 15  00000000
@@ -1684,12 +2096,46 @@ let%expect_test "the source agrees with the reference at two layers" =
    accident of rounding, and at three it runs off the end. A shape that only ever ran two
    would have passed a circuit the board could not run at six. *)
 let%expect_test "the source agrees with the reference at three layers" =
-  let config = { Mamba.Config.d = 32; d_in = 64; heads = 4; state = 16; layers = 3 } in
+  let config =
+    { Quantized.Model.For_test.config with
+      d = 32
+    ; d_in = 64
+    ; heads = 4
+    ; state = 16
+    ; plan = [| Block; Block; Attention; Block; Attention; Feed_forward |]
+    }
+  in
   memory_geometry config;
   streams_agree ~model:(Quantized.Model.For_test.init config ~seed:37) ~seed:7 ~steps:20;
   [%expect
     {|
-    layers 3: state 3072 rows, 12 bits = layer 2 + lane 6 + n 4 (packed); taps 1152 rows, 96 channels in 7 bits, layer stride 384 (added)
+    3 blocks, 2 rings: state 3072 rows, 12 bits = block 2 + lane 6 + n 4 (packed); taps 1152 rows, 96 channels in 7 bits, block stride 384 (added); ring 512 rows, 9 bits = head 1 + slot 3 + dim 5 (packed)
+    140 stream writes over 20 steps, 0 part
+    |}]
+;;
+
+(* The same stream gate at a WIDE STATE AND A WIDE KERNEL, and it is the net under the two
+   fields the sweep of the quality round moves. K was a constant of this library until
+   that round, thus every width it sizes — the tap ring, the age mux over it and the layer
+   stride of the ring — was proven at four alone; N was a field, but no gate ran it above
+   16 and the state address never had to carry a wider n. Here K is 16 and N is 32, over
+   three layers so that the layer field of both addresses is live, and everything else is
+   as small as the gates above.
+
+   A stride written for one K and an address field written for one N both land here. *)
+let%expect_test "the source agrees with the reference at a wide state and kernel" =
+  let config =
+    { Quantized.Model.For_test.config with
+      state = 32
+    ; taps = 16
+    ; plan = [| Block; Block; Block |]
+    }
+  in
+  memory_geometry config;
+  streams_agree ~model:(Quantized.Model.For_test.init config ~seed:53) ~seed:9 ~steps:20;
+  [%expect
+    {|
+    3 blocks, 0 rings: state 3072 rows, 12 bits = block 2 + lane 5 + n 5 (packed); taps 4608 rows, 96 channels in 7 bits, block stride 1536 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
     80 stream writes over 20 steps, 0 part
     |}]
 ;;
@@ -1699,9 +2145,10 @@ let%expect_test "the source agrees with the reference at three layers" =
    command — the cycle that takes [step] and runs the first op's entry, and the cycle the
    bench spends dropping the strobe.
 
-   IT TAKES NO FILL COUNT. Era four's bench had to model the ring filling; this cost is a
-   constant of the shape, thus every drawn step costs the same and every silent step costs
-   the same. *)
+   THE FILL COUNT IS BACK, and it reaches one op. The trunk's cost is a constant of the
+   shape, thus a plan of blocks alone costs the same at every step; the Zamba head reads a
+   ring, thus a step of a hybrid grows until the ring is full and is constant after it.
+   The bench states the fill of each step and the model takes it. *)
 let bench ~steps () =
   let config = Quantized.Model.For_test.config in
   let model = Quantized.Model.For_test.init config ~seed:11 in
@@ -1710,8 +2157,10 @@ let bench ~steps () =
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let sum_ops ops =
-    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles config op)
+  (* the ages the ring holds at step [index], which is what [Quantized.Engine] walks *)
+  let fill index = Int.min (index + 1) config.ring in
+  let sum_ops ~n ops =
+    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles config ~n op)
   in
   let count_until_idle () =
     let cycles = ref 0 in
@@ -1735,8 +2184,11 @@ let bench ~steps () =
     Cyclesim.cycle sim;
     let measured = 2 + count_until_idle () in
     let draws = index + 1 >= Jsb.bar_steps in
+    let n = fill index in
     let modeled =
-      2 + sum_ops prog.forward + if draws then Frame.voices * sum_ops prog.chain else 0
+      2
+      + sum_ops ~n prog.forward
+      + if draws then Frame.voices * sum_ops ~n prog.chain else 0
     in
     if index < 1 || index >= Jsb.bar_steps - 1
     then
@@ -1765,10 +2217,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 5693, model 5693, delta 0
-    step 15: draws,  measured 13549, model 13549, delta 0
-    step 16: draws,  measured 13549, model 13549, delta 0
-    step 17: draws,  measured 13549, model 13549, delta 0
-    18 steps, 0 disagree, total 126042
+    step  0: silent, measured 12379, model 12379, delta 0
+    step 15: draws,  measured 20621, model 20621, delta 0
+    step 16: draws,  measured 20621, model 20621, delta 0
+    step 17: draws,  measured 20621, model 20621, delta 0
+    18 steps, 0 disagree, total 251090
     |}]
 ;;

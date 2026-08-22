@@ -10,6 +10,9 @@ module Constants = struct
   let alpha_q = 15
   let beta_q = 15
 
+  (* the feed-forward hidden after its ReLU: era four's format, unchanged *)
+  let hid_q = 10
+
   (* the gate product, in an int32: two Q12 values multiply and nothing truncates them
      before the norm that reads them *)
   let gate_q = 2 * v_q
@@ -97,6 +100,17 @@ module Constants = struct
     ; q = decay_q
     }
   ;;
+
+  (* The two rules of the attention head, and both are era four's unchanged.
+
+     A raw score is a product of two Q[v_q] rows; the shift brings it to Q[y_q] and
+     applies the 1/sqrt(head_d) of the reference in the same move, thus the scale costs no
+     multiply. [head_d] is a power of two, thus its half-log is exact.
+
+     The ALiBi slope of head [head] is 2^-(this), thus the penalty of an age is a shift of
+     the age and no multiply pays for it either. *)
+  let score_shift ~head_d = (2 * v_q) - y_q + (Int.floor_log2 head_d / 2)
+  let slope_exponent ~span ~heads ~head = span * (head + 1) / heads
 end
 
 module Tensor = struct
@@ -126,9 +140,10 @@ module Model = struct
     }
 
   (* The tensors the ROM carries, in the order it carries them: the two tables, then the
-     three matrices of each layer. It is NOT the order of the checkpoint — the checkpoint
-     holds six tensors a layer and three of them never reach the ROM — thus the two orders
-     are two structures and neither is implied by the other. *)
+     matrices of each layer. It is NOT the order of the checkpoint — a block holds six
+     tensors there and three of them never reach the ROM — thus the two orders are two
+     structures and neither is implied by the other. An attention layer and a feed-forward
+     layer carry every tensor they hold, thus only a block parts the two orders. *)
   module Rom_data = struct
     type 'a t =
       { seats : 'a
@@ -137,41 +152,77 @@ module Model = struct
       }
 
     and 'a layer =
+      | Block of 'a block
+      | Attention of 'a attention
+      | Feed_forward of 'a feed_forward
+
+    and 'a block =
       { w_in : 'a
       ; conv : 'a
       ; w_out : 'a
       }
 
-    let to_list { seats; phase; layers } =
-      seats
-      :: phase
-      :: List.concat_map (Array.to_list layers) ~f:(fun { w_in; conv; w_out } ->
-        [ w_in; conv; w_out ])
+    and 'a attention =
+      { wq : 'a
+      ; wk : 'a
+      ; wv : 'a
+      ; wo : 'a
+      }
+
+    and 'a feed_forward =
+      { w1 : 'a
+      ; w2 : 'a
+      }
+
+    let layer_to_list = function
+      | Block { w_in; conv; w_out } -> [ w_in; conv; w_out ]
+      | Attention { wq; wk; wv; wo } -> [ wq; wk; wv; wo ]
+      | Feed_forward { w1; w2 } -> [ w1; w2 ]
     ;;
 
-    let of_list ~layers items =
+    (* the tensors a layer of this kind carries into the image, which is the checkpoint's
+       count for every kind but the block *)
+    let tensors = function
+      | Mamba.Kind.Block -> 3
+      | Attention -> 4
+      | Feed_forward -> 2
+    ;;
+
+    let to_list { seats; phase; layers } =
+      seats :: phase :: List.concat_map (Array.to_list layers) ~f:layer_to_list
+    ;;
+
+    let layer_of_kind kind items =
+      match (kind : Mamba.Kind.t), items with
+      | Block, w_in :: conv :: w_out :: rest -> Block { w_in; conv; w_out }, rest
+      | Attention, wq :: wk :: wv :: wo :: rest -> Attention { wq; wk; wv; wo }, rest
+      | Feed_forward, w1 :: w2 :: rest -> Feed_forward { w1; w2 }, rest
+      | kind, (_ : 'a list) ->
+        invalid_arg
+          (Printf.sprintf
+             "a %s layer takes %d tensors in the image"
+             (Sexp.to_string (Mamba.Kind.sexp_of_t kind))
+             (tensors kind))
+    ;;
+
+    let of_list ~plan items =
       match items with
       | seats :: phase :: rest ->
-        let groups =
-          List.chunks_of rest ~length:3
-          |> List.map ~f:(function
-            | [ w_in; conv; w_out ] -> { w_in; conv; w_out }
-            | _ -> invalid_arg "a layer takes three tensors in the image")
-          |> Array.of_list
+        let rest, groups =
+          Array.fold_map plan ~init:rest ~f:(fun items kind ->
+            let layer, rest = layer_of_kind kind items in
+            rest, layer)
         in
-        if Array.length groups <> layers
+        if not (List.is_empty rest)
         then
           invalid_arg
-            (Printf.sprintf
-               "%d image layer groups do not fit %d layers"
-               (Array.length groups)
-               layers);
+            (Printf.sprintf "%d image tensors stand after the plan" (List.length rest));
         { seats; phase; layers = groups }
       | _ -> invalid_arg "the image starts with the two tables"
     ;;
   end
 
-  (* The weights of one layer as the machine holds them: three tensors in the ROM, and the
+  (* The weights of one block as the machine holds them: three tensors in the ROM, and the
      per-head numbers as constants the ops carry.
 
      [a_log], [dt_bias] and [d_skip] are [heads] values a layer, and an int8 tensor cannot
@@ -180,7 +231,7 @@ module Model = struct
      elaboration instead, into the numbers the ops carry — [a * log2(e)] folds into one Q
      constant for each head, exactly as era four folded log2(e) into the temper — thus the
      run time never sees them as tensors. *)
-  type layer =
+  type block =
     { w_in : quantized
     ; conv : quantized
     ; w_out : quantized
@@ -188,6 +239,29 @@ module Model = struct
     ; dt_bias : Tensor.t (** Q12 *)
     ; d_skip : Tensor.t (** Q12 *)
     }
+
+  type attention =
+    { wq : quantized
+    ; wk : quantized
+    ; wv : quantized
+    ; wo : quantized
+    }
+
+  type feed_forward =
+    { w1 : quantized
+    ; w2 : quantized
+    }
+
+  type layer =
+    | Block of block
+    | Attention of attention
+    | Feed_forward of feed_forward
+
+  let kind_of_layer : layer -> Mamba.Kind.t = function
+    | Block (_ : block) -> Block
+    | Attention (_ : attention) -> Attention
+    | Feed_forward (_ : feed_forward) -> Feed_forward
+  ;;
 
   type t =
     { config : Mamba.Config.t
@@ -202,7 +276,9 @@ module Model = struct
      obeys their rules. The reference holds this check because the reference states the
      rules; the circuit calls it at elaboration, where a bad shape must fail loudly. *)
   let check_shape t =
-    let { Mamba.Config.d; d_in; heads; state; layers } = t.config in
+    let { Mamba.Config.d; d_in; heads; state; taps; plan; span = (_ : int); ring } =
+      t.config
+    in
     (* the rms_norm of the stream divides by [d] and the gated norm by [d_in]: a shift *)
     assert (Int.is_pow2 d);
     assert (Int.is_pow2 d_in);
@@ -211,12 +287,19 @@ module Model = struct
     assert (Int.is_pow2 heads);
     assert (Int.is_pow2 (Mamba.Config.head t.config));
     assert (Int.is_pow2 state);
-    assert (Int.is_pow2 Mamba.conv_taps);
-    assert (layers = Array.length t.layers);
-    Array.iter t.layers ~f:(fun l ->
-      assert (Array.length l.decay = heads);
-      assert (Array.length l.dt_bias = heads);
-      assert (Array.length l.d_skip = heads));
+    assert (Int.is_pow2 taps);
+    (* the ring wraps by a mask, and the head splits [d] as it splits [d_in] *)
+    assert (Int.is_pow2 ring);
+    assert (Int.is_pow2 (Mamba.Config.head_d t.config));
+    assert (Array.length plan = Array.length t.layers);
+    Array.iteri t.layers ~f:(fun index l ->
+      assert (Mamba.Kind.equal plan.(index) (kind_of_layer l));
+      match l with
+      | Block l ->
+        assert (Array.length l.decay = heads);
+        assert (Array.length l.dt_bias = heads);
+        assert (Array.length l.d_skip = heads)
+      | Attention (_ : attention) | Feed_forward (_ : feed_forward) -> ());
     (* the seat rows and the phase row add row for row — [Engine.embed] adds them, and the
        Embed op of the circuit walks them as one tensor — thus one exponent covers both *)
     assert (t.phase.e = t.seats.e);
@@ -225,14 +308,18 @@ module Model = struct
 
   (* the element counts of the ROM tensors in the order of the image *)
   let rom_sizes (config : Mamba.Config.t) =
-    let layer =
-      [ config.d * Mamba.Config.projection config
-      ; Mamba.Config.channels config * Mamba.conv_taps
-      ; config.d_in * config.d
-      ]
+    let d = config.d in
+    let layer = function
+      | Mamba.Kind.Block ->
+        [ d * Mamba.Config.projection config
+        ; Mamba.Config.channels config * config.taps
+        ; config.d_in * d
+        ]
+      | Attention -> [ 2 * d * d; 2 * d * d; d * d; d * d ]
+      | Feed_forward -> [ d * 4 * d; 4 * d * d ]
     in
-    [ Frame.voices * Vocab.classes * config.d; Jsb.bar_steps * config.d ]
-    @ List.concat (List.init config.layers ~f:(fun (_ : int) -> layer))
+    [ Frame.voices * Vocab.classes * d; Jsb.bar_steps * d ]
+    @ List.concat_map (Array.to_list config.plan) ~f:layer
   ;;
 
   let rom_tensors t =
@@ -240,8 +327,10 @@ module Model = struct
       { Rom_data.seats = t.seats
       ; phase = t.phase
       ; layers =
-          Array.map t.layers ~f:(fun l ->
-            { Rom_data.w_in = l.w_in; conv = l.conv; w_out = l.w_out })
+          Array.map t.layers ~f:(function
+            | Block l -> Rom_data.Block { w_in = l.w_in; conv = l.conv; w_out = l.w_out }
+            | Attention l -> Attention { wq = l.wq; wk = l.wk; wv = l.wv; wo = l.wo }
+            | Feed_forward l -> Feed_forward { w1 = l.w1; w2 = l.w2 })
       }
   ;;
 
@@ -249,7 +338,7 @@ module Model = struct
   let rom_bases t =
     List.folding_map (rom_sizes t.config) ~init:0 ~f:(fun start size ->
       start + size, start)
-    |> Rom_data.of_list ~layers:t.config.Mamba.Config.layers
+    |> Rom_data.of_list ~plan:t.config.Mamba.Config.plan
   ;;
 
   let rom_bits t =
@@ -323,16 +412,12 @@ module Model = struct
   let of_floats (config : Mamba.Config.t) ~temperature ~min_p tensors =
     let temper, min_weight = policy ~temperature ~min_p in
     let { Params_data.seats; phase; layers } : Tensor.floats Params_data.t =
-      Params_data.of_list ~layers:config.layers tensors
+      Params_data.of_list ~plan:config.plan tensors
     in
     let e = max_exponent (Float.max (max_abs seats) (max_abs phase)) in
-    { config
-    ; temper
-    ; min_weight
-    ; seats = quantize ~e seats
-    ; phase = quantize ~e phase
-    ; layers =
-        Array.map layers ~f:(fun (l : Tensor.floats Params_data.layer) ->
+    let layer : Tensor.floats Params_data.layer -> layer = function
+      | Block l ->
+        Block
           { w_in =
               quantize
                 (transpose ~rows:config.d ~cols:(Mamba.Config.projection config) l.w_in)
@@ -343,7 +428,22 @@ module Model = struct
                 Constants.decay_scale ~a:(Float.exp a_log))
           ; dt_bias = fixed_q12 ~bound:32767 l.dt_bias
           ; d_skip = fixed_q12 ~bound:131071 l.d_skip
-          })
+          }
+      | Attention l ->
+        Attention
+          { wq = quantize l.wq
+          ; wk = quantize l.wk
+          ; wv = quantize l.wv
+          ; wo = quantize l.wo
+          }
+      | Feed_forward l -> Feed_forward { w1 = quantize l.w1; w2 = quantize l.w2 }
+    in
+    { config
+    ; temper
+    ; min_weight
+    ; seats = quantize ~e seats
+    ; phase = quantize ~e phase
+    ; layers = Array.map layers ~f:layer
     }
   ;;
 
@@ -378,9 +478,21 @@ module Model = struct
   ;;
 
   module For_test = struct
-    (* the shape of a test model: small enough to run in a simulation, and the same
-       structure as the model of the era *)
-    let config = { Mamba.Config.d = 16; d_in = 32; heads = 2; state = 8; layers = 1 }
+    (* The shape of a test model: small enough to run in a simulation, and the whole plan
+       of the era. A plan of blocks alone would elaborate no ring and no head, and the
+       faults this era's gates found are address faults that only a second layer of a kind
+       can show. *)
+    let config =
+      { Mamba.Config.d = 16
+      ; d_in = 32
+      ; heads = 2
+      ; state = 8
+      ; taps = 4
+      ; plan = [| Block; Attention; Feed_forward |]
+      ; span = Mamba.elected_span
+      ; ring = 8
+      }
+    ;;
 
     (* a model of drawn weights, quantized: a test reads no checkpoint, thus it reads no
        file that git ignores. The draw is [Mamba.Params.init], thus the decay rates and
@@ -420,9 +532,12 @@ module Engine = struct
   type t =
     { model : Model.t
     ; state : Tensor.t
-    (** [layers * d_in * state] values, Q12 — the recurrence, and the one memory this
+    (** [blocks * d_in * state] values, Q12 — the recurrence, and the one memory this
         machine modifies rather than rewrites *)
-    ; taps : Tensor.t (** [layers * channels * conv_taps] values, Q12 *)
+    ; taps : Tensor.t (** [blocks * channels * taps] values, Q12 *)
+    ; kc : Tensor.t array
+    (** the K ring: [attentions * ring] rows of [d], Q12 in a coarse byte *)
+    ; vc : Tensor.t array (** the V ring, the same shape *)
     ; h : Tensor.t (** the residual stream after the last forwarded step, Q16 *)
     ; position : int (** one step of the recurrence for each step of music *)
     ; prng : Prng.state
@@ -567,23 +682,23 @@ module Engine = struct
       above + rescale ~from:(from + w.e) ~target:Constants.h_q acc)
   ;;
 
-  (* The tap ring of one layer: a ring of [conv_taps] for each channel, and the position
+  (* The tap ring of one layer: a ring of [width] taps for each channel, and the position
      names the slot. Tap k reads the step k back, and it reads ZERO while the walk has not
      run k steps — thus the origin needs no clearing walk and the rule is a mux, as era
      four's fill count was. *)
-  let tap_slot ~base ~channel ~at =
-    base + (channel * Mamba.conv_taps) + (at land (Mamba.conv_taps - 1))
+  let tap_slot ~width ~base ~channel ~at = base + (channel * width) + (at land (width - 1))
+
+  let tap_at ~width ~taps ~base ~position ~channel ~k =
+    if position < k then 0 else taps.(tap_slot ~width ~base ~channel ~at:(position - k))
   ;;
 
-  let tap_at ~taps ~base ~position ~channel ~k =
-    if position < k then 0 else taps.(tap_slot ~base ~channel ~at:(position - k))
-  ;;
-
-  (* One layer of the trunk. It gives the stream after the residual join and the clamps it
-     met on the way, and it writes the state and the taps of its layer in place — the two
-     arrays are copies the caller made for this step. *)
-  let layer t ~index (lay : Model.layer) (h : Tensor.t) ~state ~taps ~clamps =
-    let { Mamba.Config.d; d_in; heads; state = n; layers = (_ : int) } = config t in
+  (* One block of the trunk. It gives the stream after the residual join and the clamps it
+     met on the way, and it writes the state and the taps of its own region in place — the
+     two arrays are copies the caller made for this step. [index] is the BLOCK ordinal and
+     not the place in the plan: [Mamba.Config.ordinals] states the difference. *)
+  let block t ~index (lay : Model.block) (h : Tensor.t) ~state ~taps ~clamps =
+    (* the tap COUNT takes another name here: [taps] is the ring this step writes *)
+    let { Mamba.Config.d; d_in; heads; state = n; taps = width; _ } = config t in
     let head = Mamba.Config.head (config t) in
     let channels = Mamba.Config.channels (config t) in
     let position = t.position in
@@ -598,17 +713,17 @@ module Engine = struct
         ~from:Constants.y_q
         ~target:Constants.v_q
     in
-    (* the convolution: the step's input enters the ring, then a row of [conv_taps] terms
-       for each channel, then the SiLU chain over the sums *)
-    let tap_base = index * channels * Mamba.conv_taps in
+    (* the convolution: the step's input enters the ring, then a row of [taps] terms for
+       each channel, then the SiLU chain over the sums *)
+    let tap_base = index * channels * width in
     Array.iteri (Array.sub zxbcdt ~pos:d_in ~len:channels) ~f:(fun c v ->
-      taps.(tap_slot ~base:tap_base ~channel:c ~at:position) <- v);
+      taps.(tap_slot ~width ~base:tap_base ~channel:c ~at:position) <- v);
     let xbc =
       Array.init channels ~f:(fun c ->
         let acc =
-          sum Mamba.conv_taps (fun k ->
-            tap_at ~taps ~base:tap_base ~position ~channel:c ~k
-            * lay.conv.q.((c * Mamba.conv_taps) + k))
+          sum width (fun k ->
+            tap_at ~width ~taps ~base:tap_base ~position ~channel:c ~k
+            * lay.conv.q.((c * width) + k))
         in
         silu
           (clamp16 (rescale ~from:(Constants.v_q + lay.conv.e) ~target:Constants.v_q acc)))
@@ -684,37 +799,162 @@ module Engine = struct
     join t h lay.w_out ~values:g ~len:d_in ~from:Constants.v_q, !clamps
   ;;
 
-  (* One step of the recurrence: the engine after it.
-
-     The two memories are copied once and then written in place through the layer walk.
-     This is the local mutation the style rule allows for a mutable structure used as one:
-     the state RAM of the circuit is written in place as well, and a fold that rebuilt a
-     12 288-element array for each of six layers would model something the machine does
-     not do. Nothing outside this function sees a half-written memory. *)
-  let forward t ~frame ~phase =
-    let state = Array.copy t.state in
-    let taps = Array.copy t.taps in
-    let h, clamps =
-      Array.foldi
-        t.model.layers
-        ~init:(embed t ~frame ~phase, t.clamps)
-        ~f:(fun index (h, clamps) lay -> layer t ~index lay h ~state ~taps ~clamps)
-    in
-    { t with h; state; taps; position = t.position + 1; clamps }
+  (* The ring keeps the top byte of a Q12 row: the circuit stores eight bits and restores
+     eight zero low bits at the read, thus the granularity is 2^-4 and the format stays
+     Q12. The query does not pass here — only the stored rows coarsen. This is era four's
+     ring and not the state: the state carries an error forward and keeps its whole int16,
+     where a ring error dies with its window. *)
+  (* [asr] and [lsl] associate to the right; the parentheses are the expression *)
+  let coarse_to_ring (row : Tensor.t) : Tensor.t =
+    Array.map row ~f:(fun v -> (v asr 8) lsl 8)
   ;;
 
-  (* The origin of a walk: a zero state, an empty tap ring and no residual. The lead-in is
-     not here — it is the first steps of the walk itself, thus [next_step] states it and a
-     caller that counts steps counts the steps the float sampler counts. *)
+  (* Attention over the newest [n] steps of the ring: the merged context of the query [q],
+     head by head. Age [a] reads slot [(cur - a) & (ring - 1)], thus the ALiBi distance IS
+     the age and the causal wall is the walk. *)
+  let attend t (kc : Tensor.t array) (vc : Tensor.t array) ~ring ~cur ~n (q : Tensor.t)
+    : Tensor.t
+    =
+    let { Mamba.Config.heads; span; ring = slots; _ } = config t in
+    let head_d = Mamba.Config.head_d (config t) in
+    (* the ring row that age [a] reads. The rows depend on neither the head nor the lane,
+       thus they are named once: the weighted sum below would otherwise walk the ring for
+       every (head, lane, age). *)
+    let row memory a = memory.((ring * slots) + ((cur - a) land (slots - 1))) in
+    let k_rows = Array.init n ~f:(row kc) in
+    let v_rows = Array.init n ~f:(row vc) in
+    let head_context head =
+      let hb = head * head_d in
+      let slope_exponent = Constants.slope_exponent ~span ~heads ~head in
+      let score_shift = Constants.score_shift ~head_d in
+      let score a =
+        let k = k_rows.(a) in
+        (sum head_d (fun j -> q.(hb + j) * k.(hb + j)) asr score_shift)
+        - (a lsl (Constants.y_q - slope_exponent))
+      in
+      let scores = Array.init n ~f:score in
+      let peak = max_over n (fun a -> scores.(a)) in
+      (* The exp2 weight of each age, Q15: the peak weighs 2^15.
+
+         THE NEGATION STANDS OUTSIDE THE SCALE, as it stands outside the temper of the
+         draw. The circuit scales the score's distance BELOW the peak — a nonpositive
+         number — and negates the shifted product, thus a scale that did not divide
+         exactly would round the other way if the reference negated first. *)
+      let age_weight =
+        Array.init n ~f:(fun a ->
+          exp2_of_magnitude (-Constants.apply Constants.log2e (scores.(a) - peak)))
+      in
+      let den = sum n (fun a -> age_weight.(a)) in
+      Array.init head_d ~f:(fun j ->
+        clamp16 (sum n (fun a -> age_weight.(a) * v_rows.(a).(hb + j)) / den))
+    in
+    (* head [k] gives the lanes [k * head_d] up to the next head; the heads are
+       independent, thus the order of [List.init] moves nothing *)
+    List.init heads ~f:head_context |> Array.concat
+  ;;
+
+  (* One attention layer, and it is era four's with one addition: the query and the key
+     read the JOINED vector — the normed stream beside the normed embedding — thus their
+     walk is [2 d] terms where the value's is [d]. [ring] is the attention ordinal. *)
+  let attention t ~ring (lay : Model.attention) (h : Tensor.t) ~e ~kc ~vc =
+    let { Mamba.Config.d; ring = slots; _ } = config t in
+    let cur = t.position land (slots - 1) in
+    let n = Int.min (t.position + 1) slots in
+    let y = rms_norm ~from:Constants.h_q ~width:d h in
+    let joined = Array.append y e in
+    let project w ~inner source =
+      matvec
+        source
+        w
+        ~outer_major:false
+        ~inner
+        ~outer:d
+        ~from:Constants.y_q
+        ~target:Constants.v_q
+    in
+    kc.((ring * slots) + cur) <- coarse_to_ring (project lay.wk ~inner:(2 * d) joined);
+    vc.((ring * slots) + cur) <- coarse_to_ring (project lay.wv ~inner:d y);
+    let context = attend t kc vc ~ring ~cur ~n (project lay.wq ~inner:(2 * d) joined) in
+    join t h lay.wo ~values:context ~len:d ~from:Constants.v_q
+  ;;
+
+  (* Era four's feed-forward as a layer of its own: one matvec and a ReLU, Q10, then the
+     join.
+
+     The ReLU stands after the clamp of the matvec and the circuit takes it before, which
+     is the same integer: a value the clamp raised was negative and the ReLU makes it zero
+     either way, and a value it lowered was above the ceiling and stays there. *)
+  let feed_forward t (lay : Model.feed_forward) (h : Tensor.t) =
+    let d = (config t).Mamba.Config.d in
+    let dff = 4 * d in
+    let y = rms_norm ~from:Constants.h_q ~width:d h in
+    let hidden =
+      matvec
+        y
+        lay.w1
+        ~outer_major:false
+        ~inner:d
+        ~outer:dff
+        ~from:Constants.y_q
+        ~target:Constants.hid_q
+      |> Array.map ~f:(Int.max 0)
+    in
+    join t h lay.w2 ~values:hidden ~len:dff ~from:Constants.hid_q
+  ;;
+
+  (* one layer's whole step, whichever kind it is. [ordinal] is the layer's place among
+     the layers of its own kind, which is what indexes the memory it owns. *)
+  let branch t ~ordinal (lay : Model.layer) (h : Tensor.t) ~e ~state ~taps ~kc ~vc ~clamps
+    =
+    match lay with
+    | Model.Block lay -> block t ~index:ordinal lay h ~state ~taps ~clamps
+    | Attention lay -> attention t ~ring:ordinal lay h ~e ~kc ~vc, clamps
+    | Feed_forward lay -> feed_forward t lay h, clamps
+  ;;
+
+  (* One step of the recurrence: the engine after it.
+
+     The memories are copied once and then written in place through the layer walk. This
+     is the local mutation the style rule allows for a mutable structure used as one: the
+     state RAM of the circuit is written in place as well, and a fold that rebuilt a 12
+     288-element array for each of six layers would model something the machine does not
+     do. Nothing outside this function sees a half-written memory. *)
+  let forward t ~frame ~phase =
+    let d = (config t).Mamba.Config.d in
+    let state = Array.copy t.state in
+    let taps = Array.copy t.taps in
+    let kc = Array.copy t.kc in
+    let vc = Array.copy t.vc in
+    let ordinals = Mamba.Config.ordinals (config t) in
+    let origin = embed t ~frame ~phase in
+    (* the embedding the attention reads, normed once: it is the input of layer 0 and it
+       does not change as the stream is written *)
+    let e = rms_norm ~from:Constants.h_q ~width:d origin in
+    let h, clamps =
+      Array.foldi t.model.layers ~init:(origin, t.clamps) ~f:(fun index (h, clamps) lay ->
+        branch t ~ordinal:ordinals.(index) lay h ~e ~state ~taps ~kc ~vc ~clamps)
+    in
+    { t with h; state; taps; kc; vc; position = t.position + 1; clamps }
+  ;;
+
+  (* The origin of a walk: a zero state, an empty tap ring, an empty key and value ring,
+     and no residual. The lead-in is not here — it is the first steps of the walk itself,
+     thus [next_step] states it and a caller that counts steps counts the steps the float
+     sampler counts. *)
   let init (model : Model.t) ~seed =
     Model.check_shape model;
-    let { Mamba.Config.d; d_in; heads = (_ : int); state = n; layers } = model.config in
+    let { Mamba.Config.d; d_in; state = n; ring; _ } = model.config in
+    let blocks = Mamba.Config.blocks model.config in
+    let rows = Mamba.Config.attentions model.config * ring in
+    let ring_of (_ : int) = Array.create ~len:d 0 in
     { model
-    ; state = Array.create ~len:(layers * d_in * n) 0
+    ; state = Array.create ~len:(blocks * d_in * n) 0
     ; taps =
         Array.create
-          ~len:(layers * Mamba.Config.channels model.config * Mamba.conv_taps)
+          ~len:(blocks * Mamba.Config.channels model.config * model.config.taps)
           0
+    ; kc = Array.init rows ~f:ring_of
+    ; vc = Array.init rows ~f:ring_of
     ; h = Array.create ~len:d 0
     ; position = 0
     ; prng = Prng.create ~seed
@@ -822,16 +1062,31 @@ module Engine = struct
     let stream t = t.h
 
     let layer_streams t ~frame ~phase =
+      let d = (config t).Mamba.Config.d in
       let state = Array.copy t.state in
       let taps = Array.copy t.taps in
+      let kc = Array.copy t.kc in
+      let vc = Array.copy t.vc in
+      let ordinals = Mamba.Config.ordinals (config t) in
       let origin = embed t ~frame ~phase in
+      let e = rms_norm ~from:Constants.h_q ~width:d origin in
       let (_ : Tensor.t * Clamps.t), rows =
         List.fold_map
           (List.init (Array.length t.model.layers) ~f:Fn.id)
           ~init:(origin, t.clamps)
           ~f:(fun (h, clamps) index ->
             let next, clamps =
-              layer t ~index t.model.layers.(index) h ~state ~taps ~clamps
+              branch
+                t
+                ~ordinal:ordinals.(index)
+                t.model.layers.(index)
+                h
+                ~e
+                ~state
+                ~taps
+                ~kc
+                ~vc
+                ~clamps
             in
             (next, clamps), next)
       in
@@ -1058,9 +1313,9 @@ let%expect_test "the ROM image holds the three matrices of a layer and not the s
     (List.length sizes);
   [%expect
     {|
-    (0 3072 3328 4640 4832)
+    (0 3072 3328 4640 4832 5344 5856 6368 6624 6880 7904)
     each base is the end of the one before: true, and the image ends at the last: true
-    the checkpoint holds 8 tensors and the image 5
+    the checkpoint holds 14 tensors and the image 11
     |}]
 ;;
 
@@ -1085,19 +1340,25 @@ let%expect_test "the checkpoint seam: a file quantizes as its tensors do" =
       (List.for_all2_exn (Model.rom_tensors read) (Model.rom_tensors made) ~f:same);
     (* the per-head constants cross the seam as well, and they are where a coarse byte
        would have shown *)
+    let per_head (a : Model.layer) (b : Model.layer) =
+      match a, b with
+      | Block a, Block b ->
+        Array.equal Int.equal a.dt_bias b.dt_bias
+        && Array.equal Int.equal a.d_skip b.d_skip
+        && Array.for_all2_exn a.decay b.decay ~f:(fun x y ->
+          x.q_value = y.q_value && x.q = y.q)
+      (* the other kinds carry none: their tensors are the whole of them *)
+      | (_ : Model.layer), (_ : Model.layer) -> true
+    in
     Stdio.printf
       "the decay, the bias and the skip agree: %b\n"
-      (Array.for_all2_exn read.layers made.layers ~f:(fun a b ->
-         Array.equal Int.equal a.dt_bias b.dt_bias
-         && Array.equal Int.equal a.d_skip b.d_skip
-         && Array.for_all2_exn a.decay b.decay ~f:(fun x y ->
-           x.q_value = y.q_value && x.q = y.q)));
+      (Array.for_all2_exn read.layers made.layers ~f:per_head);
     Stdio.printf
       "the file takes the elected policy: %b\n"
       (read.temper.q_value = made.temper.q_value && read.min_weight = made.min_weight));
   [%expect
     {|
-    5 image tensors, the file and the tensors quantize alike: true
+    11 image tensors, the file and the tensors quantize alike: true
     the decay, the bias and the skip agree: true
     the file takes the elected policy: true
     |}]
@@ -1241,14 +1502,15 @@ let%expect_test "the chain draws from the soprano down, and each seat lands in i
    make music the circuit could reproduce exactly, thus the frame gate would pass. These
    hold the two memories to their rules directly. *)
 let%expect_test "the tap ring reads the steps behind it, and zero before the walk began" =
-  let taps = Array.init (3 * Mamba.conv_taps) ~f:(fun (_ : int) -> 0) in
+  let width = Mamba.Config.baseline.taps in
+  let taps = Array.init (3 * width) ~f:(fun (_ : int) -> 0) in
   (* one channel, the values 10, 20, 30, 40, 50 entering at positions 0 to 4 *)
   let read position =
-    List.init Mamba.conv_taps ~f:(fun k ->
-      Engine.tap_at ~taps ~base:0 ~position ~channel:1 ~k)
+    List.init width ~f:(fun k ->
+      Engine.tap_at ~width ~taps ~base:0 ~position ~channel:1 ~k)
   in
   List.iteri [ 10; 20; 30; 40; 50 ] ~f:(fun position v ->
-    taps.(Engine.tap_slot ~base:0 ~channel:1 ~at:position) <- v;
+    taps.(Engine.tap_slot ~width ~base:0 ~channel:1 ~at:position) <- v;
     Stdio.printf
       "position %d: %s\n"
       position

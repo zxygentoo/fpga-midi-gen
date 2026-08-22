@@ -7,14 +7,17 @@
    file and not a flag: one checkpoint, one bitstream, and no runtime configuration. The
    draw is the one [Quantized.Model.of_checkpoint] defaults to.
 
-   Every width of the model comes from the file. Era four had to be told its heads, its
-   context and its ALiBi span; the recurrence of era five has no window, and the head
-   count and the state width size tensors, thus the shape is read and never stated. *)
+   Every width, the PLAN and the ALiBi span come from the file. Era four had to be told
+   its heads, its context and its span; here the head count and the state width size
+   tensors, the shape of each layer group names its kind, and the span stands after the
+   last one. The one number the file cannot hold is the depth of the ring at inference,
+   and [Mamba.elected_ring] states it. *)
 
 open Core
 
-(* the state-space model of era five, docs/mamba.md *)
-let checkpoint = "_train/mamba/d64-mamba-n16-l6-do03-96k-s6.ckpt"
+(* the elected model of era five, docs/mamba.md: six blocks, the Zamba head, the
+   feed-forward *)
+let checkpoint = "_train/mamba/d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
 
 let () =
   let argv = Sys.get_argv () in

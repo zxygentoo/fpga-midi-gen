@@ -1,8 +1,8 @@
-weights 11 over 4 walks: top-1 741/768  same draw 764/768  low cosine 0.9993
-weights 23 over 4 walks: top-1 734/768  same draw 758/768  low cosine 0.9988
-weights 37 over 4 walks: top-1 723/768  same draw 759/768  low cosine 0.9987
-weights 41 over 4 walks: top-1 740/768  same draw 763/768  low cosine 0.9991
-  64 steps: top-1 0.979  cosine 0.9994  clamped dt 0.0000 beta 0.0000 state 0.0000
- 256 steps: top-1 0.977  cosine 0.9994  clamped dt 0.0000 beta 0.0000 state 0.0000
-1024 steps: top-1 0.964  cosine 0.9993  clamped dt 0.0000 beta 0.0000 state 0.0000
-60 drawn seed pairs: low top-1 0.927  low same draw 0.979  low cosine 0.9989
+weights 11 over 4 walks: top-1 721/768  same draw 763/768  low cosine 0.9982
+weights 23 over 4 walks: top-1 718/768  same draw 755/768  low cosine 0.9969
+weights 37 over 4 walks: top-1 711/768  same draw 751/768  low cosine 0.9978
+weights 41 over 4 walks: top-1 739/768  same draw 761/768  low cosine 0.9981
+  64 steps: top-1 0.958  cosine 0.9986  clamped dt 0.0000 beta 0.0000 state 0.0000
+ 256 steps: top-1 0.935  cosine 0.9983  clamped dt 0.0000 beta 0.0000 state 0.0000
+1024 steps: top-1 0.938  cosine 0.9983  clamped dt 0.0000 beta 0.0000 state 0.0000
+60 drawn seed pairs: low top-1 0.875  low same draw 0.979  low cosine 0.9972

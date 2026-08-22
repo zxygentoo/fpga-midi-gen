@@ -28,7 +28,22 @@ let walk_seeds = [ 42; 43; 44; 45 ]
 
 (* the walk runs well past the lead-in of one bar, thus every trial draws *)
 let steps = 64
-let config = { Mamba.Config.d = 16; d_in = 32; heads = 2; state = 8; layers = 2 }
+
+(* The whole plan of the era at a shape a test can afford: two blocks, the Zamba head and
+   the feed-forward. The head brings a SECOND source of drift that era five's trunk did
+   not have — a coarse ring, a softmax and a division — thus the report answers for the
+   whole model and not for the recurrence alone. *)
+let config =
+  { Mamba.Config.d = 16
+  ; d_in = 32
+  ; heads = 2
+  ; state = 8
+  ; taps = 4
+  ; plan = [| Block; Block; Attention; Feed_forward |]
+  ; span = Mamba.elected_span
+  ; ring = 16
+  }
+;;
 
 (* the walks of one model, summed; the sharpest cosine signal is the lowest walk *)
 type tally =
@@ -83,8 +98,8 @@ let report weight_seed =
    less here than it proved there. This runs the same model out to 1 024 steps — the decay
    of a trained head empties its state in tens of steps, thus this is many lifetimes — and
    prints the drift at each length. A cumulative error would show as a number that falls
-   with the length. It does not: measured 2026-08-20, the cosine holds to four decimals
-   from 64 steps to 1 024.
+   with the length. It does not: measured 2026-08-20 and again with the Zamba head in the
+   plan, the cosine holds to three decimals from 64 steps to 1 024.
 
    The clamps are printed beside it because the formats of this era were chosen with
    margin and not metered on a trained checkpoint. Every one of them reads zero here, and
@@ -116,14 +131,22 @@ let long_walk () =
 ;;
 
 (* The floors, calibrated 2026-08-20 on this model's own first measured minima, which is
-   the rule era four's floors were set by. Over the trial set below the minima read 0.938,
-   0.974 and 0.9987; the floors sit far under them, thus a fail is a break of the scheme
-   and not a re-draw of the set — and the counterexample prints its seed pair.
+   the rule era four's floors were set by. The trunk alone read 0.938, 0.974 and 0.9987
+   over the trial set; with the Zamba head in the plan it reads 0.875, 0.979 and 0.9972.
+   The floors sit far under both, thus a fail is a break of the scheme and not a re-draw
+   of the set — and the counterexample prints its seed pair.
 
-   They are much tighter than era four's 0.55, 0.8 and 0.98, and the reason is a format
-   and not a virtue: this datapath keeps the gate product whole into the norm that reads
-   it, where a truncation back to the working class cost 0.10 of the cosine on its own. A
-   scheme that measures this well must be held to it. *)
+   THE HEAD IS NOW THE LARGER SOURCE OF DRIFT, and it is one format: the key and value
+   ring keeps the top byte of a Q12 row, which is era four's ring carried over whole. The
+   state of the recurrence keeps its int16 because a state error accumulates; a ring error
+   dies with its window, and era four shipped six such rings. The block RAM is there to
+   widen it if a later round wants the top-1 share back — 3.5 tiles of 135 at the elected
+   depth — and this number is what that round would be buying.
+
+   The floors are still much tighter than era four's 0.55, 0.8 and 0.98, and the reason is
+   a format and not a virtue: this datapath keeps the gate product whole into the norm
+   that reads it, where a truncation back to the working class cost 0.10 of the cosine on
+   its own. A scheme that measures this well must be held to it. *)
 let top1_floor = 0.80
 let same_draw_floor = 0.90
 let cosine_floor = 0.99

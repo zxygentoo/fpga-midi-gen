@@ -16,6 +16,11 @@
     drift walk runs long, past many decay lifetimes, because that is the only way to see a
     cumulative error.
 
+    **The key and value ring of the Zamba head keeps era four's coarse byte**, and that is
+    the same argument read the other way: a ring error still dies with its window. The
+    block RAM is there to widen it, and [test/test_mamba_drift.ml] records what widening
+    it would buy.
+
     What the quantization costs is a measurement and not a promise: [Drift] states it, on
     the walk the board really takes.
 
@@ -43,6 +48,9 @@ module Constants : sig
 
   (** the gate product, in an int32: two Q12 values multiply and the norm reads them whole *)
   val gate_q : int
+
+  (** the feed-forward hidden after its ReLU: era four's Q10, unchanged *)
+  val hid_q : int
 
   (** [beta = dt * B], the state-inject operand: Q15 in int16. It bounds the injection at
       one, and the drift report prints the share that rode that clamp. *)
@@ -92,6 +100,15 @@ module Constants : sig
       multiplies [dt] by it and the exp2 unit reads the product. The constant rides the
       25-bit operand port and [dt] the 18-bit one. *)
   val decay_scale : a:float -> scale
+
+  (** [score_shift ~head_d] brings a product of two Q[v_q] rows to Q[y_q] and applies the
+      1/sqrt(head_d) of the reference in the same move, thus the scale costs no multiply.
+      [head_d] is a power of two, thus its half-log is exact. It is era four's rule. *)
+  val score_shift : head_d:int -> int
+
+  (** [slope_exponent ~span ~heads ~head] is the ALiBi slope of a head as an exponent: the
+      slope is [2 ** -(this)], thus the penalty of an age is a shift of the age. *)
+  val slope_exponent : span:int -> heads:int -> head:int -> int
 end
 
 (** A vector of the integer model, and the two measures that compare one against the float
@@ -118,13 +135,13 @@ module Model : sig
     ; e : int
     }
 
-  (** The structure of the ROM image: the two tables, then the three matrices of each
-      layer.
+  (** The structure of the ROM image: the two tables, then the matrices of each layer.
 
-      It is NOT the structure of the checkpoint. A checkpoint layer holds six tensors and
+      It is NOT the structure of the checkpoint. A checkpoint BLOCK holds six tensors and
       three of them never reach the image — [a_log], [dt_bias] and [d_skip] are [heads]
       values that quantize at elaboration into the constants the ops carry — thus the two
-      orders are two structures and neither is implied by the other. *)
+      orders are two structures and neither is implied by the other. An attention layer
+      and a feed-forward layer carry every tensor they hold. *)
   module Rom_data : sig
     type 'a t =
       { seats : 'a
@@ -133,25 +150,42 @@ module Model : sig
       }
 
     and 'a layer =
+      | Block of 'a block
+      | Attention of 'a attention
+      | Feed_forward of 'a feed_forward
+
+    and 'a block =
       { w_in : 'a
       ; conv : 'a
       ; w_out : 'a
       }
 
+    and 'a attention =
+      { wq : 'a
+      ; wk : 'a
+      ; wv : 'a
+      ; wo : 'a
+      }
+
+    and 'a feed_forward =
+      { w1 : 'a
+      ; w2 : 'a
+      }
+
     (** the order of the image; [of_list] reads the same order *)
     val to_list : 'a t -> 'a list
 
-    val of_list : layers:int -> 'a list -> 'a t
+    val of_list : plan:Mamba.Kind.t array -> 'a list -> 'a t
   end
 
-  (** The weights of one layer as the machine holds them.
+  (** The weights of one block as the machine holds them.
 
       An int8 tensor cannot hold the three per-head numbers. The bias enters a softplus: a
       step of one part in 127 of its range moves [dt] by more than a small [dt] is, and
       the decay would follow it. They quantize at elaboration instead — [a * log2(e)]
       folds into one Q constant for each head, exactly as era four folded log2(e) into the
       temper. *)
-  type layer =
+  type block =
     { w_in : quantized
     ; conv : quantized
     ; w_out : quantized
@@ -159,6 +193,25 @@ module Model : sig
     ; dt_bias : Tensor.t (** Q12 *)
     ; d_skip : Tensor.t (** Q12 *)
     }
+
+  (** the four matrices of the Zamba head: [wq] and [wk] are [2 d] by [d], because the
+      query and the key read the normed stream beside the normed embedding *)
+  type attention =
+    { wq : quantized
+    ; wk : quantized
+    ; wv : quantized
+    ; wo : quantized
+    }
+
+  type feed_forward =
+    { w1 : quantized
+    ; w2 : quantized
+    }
+
+  type layer =
+    | Block of block
+    | Attention of attention
+    | Feed_forward of feed_forward
 
   type t =
     { config : Mamba.Config.t
@@ -171,12 +224,12 @@ module Model : sig
     }
 
   (** [check_shape t] raises when the model breaks a rule that its consumers assume: the
-      two widths and every field of the state and tap addresses are powers of two, the
-      layer count agrees with the tensors, each layer carries one constant for each head,
-      the seat table holds one row for each seat and class, and the seat and phase tables
-      share one exponent. The record is open, thus a model that no constructor here made
-      can break a rule; the circuit calls this at elaboration, where a bad shape must fail
-      loudly. *)
+      two widths, the ring depth and every field of the state and tap addresses are powers
+      of two, the layers agree with the plan kind for kind, each block carries one
+      constant for each head, the seat table holds one row for each seat and class, and
+      the seat and phase tables share one exponent. The record is open, thus a model that
+      no constructor here made can break a rule; the circuit calls this at elaboration,
+      where a bad shape must fail loudly. *)
   val check_shape : t -> unit
 
   (** the ROM image of the circuit: every tensor of [Rom_data] in its order, one byte for

@@ -25,7 +25,6 @@ import mido
 import numpy as np
 
 import data
-import measure
 import prng
 from transformer import model
 
@@ -138,24 +137,6 @@ def step_line(step, events):
     return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
 
 
-def report_texture(walks, music, *, seeds, span, corpus_path):
-    """both questions of measure.py, and the corpus row above each: does the texture hold
-    over the windows, and does the walk arrive before it goes quiet?"""
-    canonical, corpus = measure.of_canonical_stream(corpus_path)
-    for index, row in enumerate(measure.windows(canonical, len(canonical))):
-        click.echo(measure.window_line("the packed corpus", index, row))
-    for seed, walk in zip(seeds, music):
-        for index, row in enumerate(measure.windows(walk, span)):
-            click.echo(measure.window_line(f"seed {seed:4d} window", index, row))
-    click.echo("")
-    click.echo(measure.walk_line("the packed corpus", corpus))
-    rows = [measure.of_walk(walk, decoded) for walk, decoded in zip(walks, music)]
-    for seed, row in zip(seeds, rows):
-        click.echo(measure.walk_line(f"seed {seed:4d}", row))
-    if len(seeds) > 1:
-        mean = {name: measure.mean_of(rows, name) for name in rows[0]}
-        click.echo(measure.walk_line("the mean", mean))
-
 
 def play(music, *, device, step_ms, channel, velocity):
     """Send one walk to the synthesizer: raw channel voice bytes on the rawmidi device."""
@@ -238,18 +219,6 @@ def parse_seeds(ctx, param, value):
 @click.option("--step-ms", default=200)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
-@click.option(
-    "--texture",
-    "texture_span",
-    type=int,
-    help="report the windowed texture at this span instead of the step lines",
-)
-@click.option(
-    "--corpus",
-    "corpus_path",
-    default=str(JAX_ROOT / "_data" / "frames.safetensors"),
-    help="the packed corpus that --texture measures against",
-)
 def main(
     ckpt,
     seeds,
@@ -265,8 +234,6 @@ def main(
     step_ms,
     channel,
     velocity,
-    texture_span,
-    corpus_path,
 ):
     params = model.load_params(ckpt)
     walks = sample(
@@ -281,11 +248,6 @@ def main(
     )
     music = [data.decode(walk) for walk in walks]
 
-    if texture_span:
-        report_texture(
-            walks, music, seeds=seeds, span=texture_span, corpus_path=corpus_path
-        )
-        return
     if to_synth or to_file:
         if len(seeds) > 1:
             raise click.UsageError("--play and --save take one seed")

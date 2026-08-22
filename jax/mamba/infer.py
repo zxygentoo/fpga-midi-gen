@@ -28,7 +28,6 @@ import mido
 import numpy as np
 
 import data
-import measure
 import prng
 from mamba import model
 
@@ -86,8 +85,15 @@ def draw_frame(params, h, state, temperature, min_p):
     return state, frame
 
 
-def sample(params, *, seeds, steps, temperature, min_p):
+def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
+
+    [ring] is the depth of the attention layer's keys and values, and it exists only where
+    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size and
+    has no window at all. Training attends over the WHOLE window, thus a ring shorter than
+    the training window is a truncation, and whether the truncation costs anything depends
+    on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and a ring of
+    256 reads the same as one of 512, measured. At a longer span it would not.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
     opens at zero, which is where a training window opens, thus the model meets the
@@ -99,7 +105,7 @@ def sample(params, *, seeds, steps, temperature, min_p):
         lambda carry, classes, phases: model.forward_step(params, carry, classes, phases)
     )
     rng = prng.states(seeds)
-    carry = model.initial_carry(shape, batch)
+    carry = model.initial_carry(shape, batch, context=ring)
     lead = data.BAR_STEPS
     silence = np.zeros((batch, data.SEATS), dtype=np.int32)
     frames = []
@@ -122,24 +128,6 @@ def step_line(step, events):
     """the line format of bin/play_mamba.ml, so that a dump reads back"""
     return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
 
-
-def report_texture(walks, music, *, seeds, span, corpus_path):
-    """both questions of measure.py, and the corpus row above each: does the texture hold
-    over the windows, and does the walk arrive before it goes quiet?"""
-    canonical, corpus = measure.of_canonical_stream(corpus_path)
-    for index, row in enumerate(measure.windows(canonical, len(canonical))):
-        click.echo(measure.window_line("the packed corpus", index, row))
-    for seed, walk in zip(seeds, music):
-        for index, row in enumerate(measure.windows(walk, span)):
-            click.echo(measure.window_line(f"seed {seed:4d} window", index, row))
-    click.echo("")
-    click.echo(measure.walk_line("the packed corpus", corpus))
-    rows = [measure.of_walk(walk, decoded) for walk, decoded in zip(walks, music)]
-    for seed, row in zip(seeds, rows):
-        click.echo(measure.walk_line(f"seed {seed:4d}", row))
-    if len(seeds) > 1:
-        mean = {name: measure.mean_of(rows, name) for name in rows[0]}
-        click.echo(measure.walk_line("the mean", mean))
 
 
 def play(music, *, device, step_ms, channel, velocity):
@@ -206,50 +194,39 @@ def parse_seeds(ctx, param, value):
 # seam, thus they stand here again and the two must move together.
 @click.option("--temperature", default=1.0)
 @click.option("--min-p", default=0.05)
+@click.option(
+    "--ring",
+    default=model.ATTN_CONTEXT,
+    help="the depth of the attention layer's key and value ring, in steps. It is the "
+    "one context this model has, and only where the plan attends at all.",
+)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=DEVICE)
 @click.option("--step-ms", default=200)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
-@click.option(
-    "--texture",
-    "texture_span",
-    type=int,
-    help="report the windowed texture at this span instead of the step lines",
-)
-@click.option(
-    "--corpus",
-    "corpus_path",
-    default=str(JAX_ROOT / "_data" / "frames.safetensors"),
-    help="the packed corpus that --texture measures against",
-)
 def main(
     ckpt,
     seeds,
     steps,
     temperature,
     min_p,
+    ring,
     to_synth,
     to_file,
     device,
     step_ms,
     channel,
     velocity,
-    texture_span,
-    corpus_path,
 ):
     params = model.load_params(ckpt)
     walks = sample(
-        params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p
+        params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p,
+        ring=ring,
     )
     music = [data.decode(walk) for walk in walks]
 
-    if texture_span:
-        report_texture(
-            walks, music, seeds=seeds, span=texture_span, corpus_path=corpus_path
-        )
-        return
     if to_synth or to_file:
         if len(seeds) > 1:
             raise click.UsageError("--play and --save take one seed")

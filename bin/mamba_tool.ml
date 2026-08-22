@@ -108,16 +108,21 @@ let loss ~checkpoint ~config ~corpus ~context =
   let random_state = Random.State.make [| 0 |] in
   let stream = List.hd_exn (Jsb.streams data.valid ~count:1 ~random_state) in
   let windows = Jsb.windows stream ~context in
-  let { Mamba.Config.d; d_in; heads; state; layers } = config in
+  let { Mamba.Config.d; d_in; heads; state; plan; span; ring; taps = (_ : int) } =
+    config
+  in
   printf
-    "windows %d  context %d  d %d  d_in %d  heads %d  state %d  layers %d  loss %.6f\n"
+    "windows %d  context %d  d %d  d_in %d  heads %d  state %d  span %d  ring %d  plan \
+     %s  loss %.6f\n"
     (List.length windows)
     context
     d
     d_in
     heads
     state
-    layers
+    span
+    ring
+    (Mamba.Kind.spell plan)
     (Mamba.loss config params ~windows)
 ;;
 

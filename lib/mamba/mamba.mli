@@ -5,9 +5,14 @@
     has run. The four classes of a step enter through four tables that sum, and they leave
     through the same four tables in a chain from the soprano down: that head is era
     four's, unchanged. What changed is the trunk. A Mamba-2 block holds a fixed state
-    where era four held a window of keys and values, thus the model has no context length
-    at inference and the training window is a training choice alone. The design is
-    [docs/mamba.md].
+    where era four held a window of keys and values, thus a trunk of blocks alone has no
+    context length at all.
+
+    THE MODEL IS NOT A TRUNK ALONE. A layer is a Mamba block, the Zamba attention head or
+    the feed-forward, and the PLAN of a model — the sequence of those kinds — is a fact of
+    its checkpoint. The elected model of the era is six blocks, then the head, then the
+    feed-forward, thus one layer of it does carry a context: [Config.ring] states how far
+    back it reads. The design is [docs/mamba.md].
 
     This module is the reference and not the trainer. The trainer is [jax/mamba/train.py],
     and what stands here is what the gates of the project need: the same loss on the same
@@ -36,27 +41,81 @@ type tensor = (float, Nx.float32_elt) Nx.t
     product is the step between the two. *)
 val numel : int array -> int
 
-(** the taps of the depthwise convolution: four, the Mamba default. It sizes the tap ring
-    of the circuit as well, thus it is stated one time. *)
-val conv_taps : int
+(** The depth of the key and value ring an attention layer reads at inference, and it is
+    era four's TRAINING WINDOW. At this depth a window of [loss] reads exactly the
+    attention the trainer computed. A ring of 128 was measured against a 512-step window
+    and parts from it by 7.6e-05 relative, thus the depth can buy back four tiles of block
+    RAM if a build ever wants them; it holds only while the span is 4, because span and
+    ring are one decision. *)
+val elected_ring : int
+
+(** era four's elected ALiBi span, and the span of a checkpoint that states none: the
+    trainer defaults its flag to the same number *)
+val elected_span : int
+
+(** The kinds of layer. The PLAN of a model is the sequence of them, and a checkpoint
+    states its own plan through the shapes of its tensors.
+
+    [Attention] is half a Zamba block: the query and the key read the ORIGINAL EMBEDDING
+    beside the residual stream — their matrices are [2 d] by [d] — while the value reads
+    the stream alone. Era four's plain attention, a square query over the stream, measured
+    null in this trunk three times, thus it is not a kind here and a checkpoint that holds
+    one is refused. *)
+module Kind : sig
+  type t =
+    | Block
+    | Attention
+    | Feed_forward
+  [@@deriving equal, sexp_of]
+
+  (** [spell plan] is one letter for each layer — M a block, Z the Zamba head, F the
+      feed-forward — which is how [docs/mamba.md], the checkpoint names and the [--plan]
+      flag of the trainer all spell a plan. The elected model is MMMMMMZF. *)
+  val spell : t array -> string
+end
 
 (** The shape of the model: the numbers that size every tensor here and every register in
-    the circuit. There is no context and no window — the recurrence has neither. *)
+    the circuit. A block has no context and no window; an attention layer has both, thus
+    [span] and [ring] stand here and reach that kind alone. *)
 module Config : sig
   type t =
     { d : int (** the width of the residual stream *)
     ; d_in : int (** the inner width of a block; the expansion of two puts it at [2 d] *)
-    ; heads : int (** they split [d_in], thus [d_in] divides by them *)
+    ; heads : int (** they split [d_in] and [d], thus both divide by them *)
     ; state : int (** N, the state width of one head *)
-    ; layers : int
+    ; taps : int
+    (** K, the width of the depthwise convolution. It sizes the tap ring of the circuit
+        and the age mux over it, thus the address rule wants a power of two. *)
+    ; plan : Kind.t array (** the kind of each layer, in order *)
+    ; span : int
+    (** the ALiBi span: the slope of head k is [2 ** -(span (k+1) / heads)] *)
+    ; ring : int (** the keys and values an attention layer holds behind the step *)
     }
 
-  (** the shape of [docs/mamba.md]: d 64, d_in 128, 4 heads, state 16, 6 layers *)
+  (** the elected shape of the era: d 64, d_in 128, 4 heads, state 16, 4 taps, and the
+      plan of six blocks, the Zamba head and the feed-forward, at span 4 *)
   val baseline : t
 
-  (** [head t] is P, the head width: the state is [heads] blocks of [head] by [state]. It
-      is a power of four at the baseline, thus the shift rules of the machine hold. *)
+  (** the count of each kind that owns a memory: the state RAM and the tap ring of the
+      circuit are sized by [blocks], and the key and value rings by [attentions] *)
+  val blocks : t -> int
+
+  val attentions : t -> int
+
+  (** [ordinals t] is the ordinal of each layer among the layers of its own kind, and it
+      is what indexes a memory: the state RAM and the tap ring hold one region for each
+      block, and the key and value rings one for each attention layer, thus the seventh
+      layer of the elected plan owns ring 0. Both the integer twin and the circuit address
+      their memories through it. *)
+  val ordinals : t -> int array
+
+  (** [head t] is P, the head width of a block: the state is [heads] blocks of [head] by
+      [state]. It is a power of four at the baseline, thus the shift rules of the machine
+      hold. *)
   val head : t -> int
+
+  (** [head_d t] is the head width of an attention layer, which splits [d] and not [d_in] *)
+  val head_d : t -> int
 
   (** [channels t] is the channels the convolution walks: [d_in] of x, then B and C *)
   val channels : t -> int
@@ -65,21 +124,26 @@ module Config : sig
       and the raw dt, in that order *)
   val projection : t -> int
 
-  (** [of_checkpoint path] reads every width from the tensor shapes, thus a player states
-      none of them: the seat table gives [d], the output projection gives [d_in], the dt
-      bias gives the heads, the input projection gives the state width, and the tensor
-      count gives the layers. Era four had to be told its heads, its context and its span;
-      no number of this model stands outside its file.
+  (** [of_checkpoint ?ring path] reads every width and the plan from the tensor shapes,
+      thus a player states none of them: the seat table gives [d], the first block gives
+      [d_in], the heads, the state width and the taps, the shape of each group's first
+      tensor gives that layer's kind, and a value standing alone after the last group
+      gives the span. Era four had to be told its heads, its context and its span, and a
+      span played back wrong is silently wrong music.
+
+      [ring] is the one number that cannot be in the file — it is a choice of the player
+      at inference — and it defaults to [elected_ring].
 
       It raises [Invalid_argument] when the file is not a checkpoint of this model, and
-      the message names which shape refused. *)
-  val of_checkpoint : string -> t
+      the message names which tensor refused. *)
+  val of_checkpoint : ?ring:int -> string -> t
 end
 
 (** The parameter structure over any tensor type, and the flat order of the checkpoint
-    with it: the two tables, then six tensors for each layer. One definition holds the
-    shape and the order — [Params] instantiates it with the float tensor and keeps its own
-    type opaque, and [Quantized.Model] instantiates it with the integer one. *)
+    with it: the two tables, then the tensors of each layer in the order of the plan. One
+    definition holds the shape and the order — [Params] instantiates it with the float
+    tensor and keeps its own type opaque, and [Quantized.Model] instantiates it with the
+    integer one. *)
 module Params_data : sig
   type 'a t =
     { seats : 'a (** the four tied tables in one tensor, seat 0 first *)
@@ -88,21 +152,38 @@ module Params_data : sig
     }
 
   and 'a layer =
+    | Block of 'a block
+    | Attention of 'a attention
+    | Feed_forward of 'a feed_forward
+
+  and 'a block =
     { w_in : 'a (** [d] by [projection]: the gate, the convolution input, the raw dt *)
-    ; conv : 'a (** [channels] by [conv_taps]: tap k of a channel reads k steps back *)
+    ; conv : 'a (** [channels] by [taps]: tap k of a channel reads k steps back *)
     ; dt_bias : 'a (** one for each head *)
     ; a_log : 'a (** the log of the decay rate of each head *)
     ; d_skip : 'a (** the skip of each head, around the state *)
     ; w_out : 'a (** [d_in] by [d] *)
     }
 
+  and 'a attention =
+    { wq : 'a (** [2 d] by [d]: the query reads the stream beside the embedding *)
+    ; wk : 'a (** [2 d] by [d], the same source *)
+    ; wv : 'a (** [d] by [d]: the value reads the stream alone *)
+    ; wo : 'a (** [d] by [d] *)
+    }
+
+  and 'a feed_forward =
+    { w1 : 'a (** [d] by [4 d] *)
+    ; w2 : 'a (** [4 d] by [d] *)
+    }
+
   (** the flat order of the tensors — the order of the checkpoint; [of_list] reads the
       same order *)
   val to_list : 'a t -> 'a list
 
-  (** [of_list ~layers items] reads the order of [to_list]. It raises [Invalid_argument]
-      when the count of items is not two tables and six for each of [layers]. *)
-  val of_list : layers:int -> 'a list -> 'a t
+  (** [of_list ~plan items] reads the order of [to_list]. It raises [Invalid_argument]
+      when the items are not two tables and a whole group for each kind of [plan]. *)
+  val of_list : plan:Kind.t array -> 'a list -> 'a t
 end
 
 (** The weights of the float model: the two tables — the four tied seat tables in one
@@ -137,15 +218,16 @@ module Params : sig
 end
 
 (** The memory of the walk, and the only thing that crosses from one step to the next: for
-    each layer a state and the convolution taps behind the step.
+    each block a state and the convolution taps behind the step, and for each attention
+    layer the ring of the keys and values behind it. A feed-forward layer holds nothing.
 
     It is a value and not a buffer. A walk that wants to branch keeps two of them, and
     nothing in this module writes one in place. *)
 module Memory : sig
   type t
 
-  (** [origin config ~batch] is the memory at the head of a walk: a zero state and empty
-      taps, for [batch] independent walks at once.
+  (** [origin config ~batch] is the memory at the head of a walk: a zero state, empty taps
+      and an empty ring, for [batch] independent walks at once.
 
       A training window opens here and the boot of the sampler opens here, thus the seam
       condition of the packed corpus is the condition the model trains on. *)

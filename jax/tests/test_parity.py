@@ -140,7 +140,11 @@ def test_gate_c_the_two_walks_are_the_same_stream(seed):
 # Era five: the same two gates, over the state-space model             #
 # ==================================================================== #
 
-MAMBA_CHECKPOINT = ROOT / "_train" / "mamba" / "d64-mamba-n16-l6-do03-96k-s6.ckpt"
+# the elected model of the era: six blocks, the Zamba head, the feed-forward. The plan and
+# the span are in the file, thus neither side states one and neither can drift.
+MAMBA_CHECKPOINT = (
+    ROOT / "_train" / "mamba" / "d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
+)
 MAMBA_TOOL = BUILT / "mamba_tool.exe"
 MAMBA_PLAYER = BUILT / "play_mamba.exe"
 
