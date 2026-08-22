@@ -1,6 +1,8 @@
-(* The restoring divider — see divider.mli for the contract. The walk holds the magnitude
-   alone and the sign lands at the output, thus the quotient truncates toward zero at
-   every sign — the one division rule of the circuit. *)
+(* The restoring divider, with the magnitude inside the walk — see divider.mli for the
+   contract and for why the magnitude moved there. The start cycle only latches the raw
+   operands; the first busy cycle takes the magnitude reg-to-reg; the sign lands at the
+   output, thus the quotient truncates toward zero at every sign — the one division rule
+   of both circuits. *)
 
 open Base
 open Hardcaml
@@ -25,8 +27,8 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* one cycle for each bit of the quotient, thus the width of the numerator *)
-let busy_cycles = 40
+(* one cycle for the magnitude, then one for each bit of the quotient *)
+let busy_cycles = 41
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -41,8 +43,10 @@ let create (i : _ I.t) : _ O.t =
   compile
     [ if_
         i.start
-        [ m <-- mux2 (i.numerator <+ zero 40) (negate i.numerator) i.numerator
-        ; sign <-- (i.numerator <+ zero 40)
+        [ (* the raw numerator, sign and all: no carry chain stands between the caller's
+             operand mux and this register *)
+          m <-- i.numerator
+        ; sign <-- msb i.numerator
         ; d <-- i.denominator
         ; q <--. 0
         ; r <--. 0
@@ -51,15 +55,19 @@ let create (i : _ I.t) : _ O.t =
         ]
         [ when_
             busy.value
-            [ (let r' = sel_bottom (r.value @: msb m.value) ~width:25 in
-               let fits = r' >=: uresize d.value ~width:25 in
-               proc
-                 [ m <-- sll m.value ~by:1
-                 ; n <-- n.value -:. 1
-                 ; r <-- mux2 fits (r' -: uresize d.value ~width:25) r'
-                 ; q <-- sel_bottom (q.value @: fits) ~width:40
-                 ; when_ (n.value ==:. 1) [ busy <-- gnd ]
-                 ])
+            [ if_
+                (n.value ==:. busy_cycles)
+                [ m <-- mux2 sign.value (negate m.value) m.value; n <-- n.value -:. 1 ]
+                [ (let r' = sel_bottom (r.value @: msb m.value) ~width:25 in
+                   let fits = r' >=: uresize d.value ~width:25 in
+                   proc
+                     [ m <-- sll m.value ~by:1
+                     ; n <-- n.value -:. 1
+                     ; r <-- mux2 fits (r' -: uresize d.value ~width:25) r'
+                     ; q <-- sel_bottom (q.value @: fits) ~width:40
+                     ; when_ (n.value ==:. 1) [ busy <-- gnd ]
+                     ])
+                ]
             ]
         ]
     ];
@@ -156,12 +164,12 @@ let%expect_test "the fuzz: every walk truncates toward zero, as the reference do
 
 let%expect_test "the waveform of one walk: the strobe, the busy window, the landing" =
   (* The shape of the contract, 1000 / 7. [start] is one cycle; [busy] rises in the cycle
-     after it and falls [busy_cycles] later. The quotient shifts a bit in on every cycle
-     of the walk, thus it is meaningless while [busy] stands — the picture shows it flat
-     at 0 while the high bits are still zero, then moving each cycle as the low bits land.
-     It is whole in the cycle [busy] reads 0, and the line under the picture reads it
-     there. Forty cycles leave one column each, thus the value is a shape here and a
-     number below. *)
+     after it and falls [busy_cycles] later — one cycle for the magnitude and forty for
+     the bits. The quotient shifts a bit in on every cycle of the walk, thus it is
+     meaningless while [busy] stands — the picture shows it flat at 0 while the high bits
+     are still zero, then moving each cycle as the low bits land. It is whole in the cycle
+     [busy] reads 0, and the line under the picture reads it there. Forty-one cycles leave
+     one column each, thus the value is a shape here and a number below. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Cyclesim.Waveform.create sim in
@@ -199,13 +207,13 @@ let%expect_test "the waveform of one walk: the strobe, the busy window, the land
     │clock          ││╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥│
     │               ││╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨│
     │start          ││─┐                                                 │
-    │               ││ └─────────────────────────────────────────        │
-    │busy           ││ ┌───────────────────────────────────────┐         │
-    │               ││─┘                                       └─        │
-    │               ││──────────────────────────────────┬┬┬┬┬┬┬┬─        │
-    │quotient       ││ 0000000000                       ││││││││.        │
-    │               ││──────────────────────────────────┴┴┴┴┴┴┴┴─        │
+    │               ││ └──────────────────────────────────────────       │
+    │busy           ││ ┌────────────────────────────────────────┐        │
+    │               ││─┘                                        └─       │
+    │               ││───────────────────────────────────┬┬┬┬┬┬┬┬─       │
+    │quotient       ││ 0000000000                        ││││││││.       │
+    │               ││───────────────────────────────────┴┴┴┴┴┴┴┴─       │
     └───────────────┘└───────────────────────────────────────────────────┘
-    the wait released after 40 cycles and the quotient read 142
+    the wait released after 41 cycles and the quotient read 142
     |}]
 ;;

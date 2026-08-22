@@ -20,18 +20,17 @@ meaning what they meant.
 """
 
 import time
-from pathlib import Path
 
 import click
 import jax
 import jax.numpy as jnp
 import numpy as np
-from safetensors.numpy import save_file
 
 import data
+import nn
 from transformer import model
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
+JAX_ROOT = nn.JAX_ROOT
 
 
 def draw_params(key, d, layers):
@@ -63,85 +62,31 @@ def draw_params(key, d, layers):
 
 
 def save_checkpoint(path, params):
-    """the tables in construction order, then the layers"""
-    tensors = [params[name] for name in model.TABLES] + [
-        layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS
-    ]
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    save_file({str(i): np.asarray(t) for i, t in enumerate(tensors)}, path)
-
-
-def schedule(step, peak, warmup, total):
-    """linear warmup to the peak, cosine decay to zero; a warmup of zero is a constant"""
-    if warmup == 0:
-        return peak
-    if step <= warmup:
-        return peak * step / warmup
-    progress = (step - warmup) / max(1, total - warmup)
-    return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
+    """the tables in construction order, then the layers; nn.save_checkpoint states the
+    naming rule of the seam"""
+    nn.save_checkpoint(
+        path,
+        [params[name] for name in model.TABLES]
+        + [layer[name] for layer in params["layers"] for name in model.LAYER_TENSORS],
+    )
 
 
 def make_step(heads, dropout, clip, weight_decay, span):
-    def step_fn(params, m, v, t, classes, phases, lr, key):
-        def loss_fn(p):
-            nll = model.seat_nll(
+    def loss(p, classes, phases, key):
+        return jnp.mean(
+            model.seat_nll(
                 p, classes, phases, heads=heads, dropout=dropout, key=key, span=span
             )
-            return jnp.mean(nll)
-
-        value, grads = jax.value_and_grad(loss_fn)(params)
-        if clip > 0.0:
-            norm = jnp.sqrt(sum(jnp.sum(g * g) for g in jax.tree.leaves(grads)))
-            scale = clip / jnp.maximum(norm, clip)
-            grads = jax.tree.map(lambda g: g * scale, grads)
-        b1, b2, eps = 0.9, 0.999, 1e-8
-        m = jax.tree.map(lambda m_, g: b1 * m_ + (1 - b1) * g, m, grads)
-        v = jax.tree.map(lambda v_, g: b2 * v_ + (1 - b2) * g * g, v, grads)
-        m_hat = jax.tree.map(lambda m_: m_ / (1 - b1**t), m)
-        v_hat = jax.tree.map(lambda v_: v_ / (1 - b2**t), v)
-        params = jax.tree.map(
-            lambda p, mh, vh: p - lr * (mh / (jnp.sqrt(vh) + eps) + weight_decay * p),
-            params,
-            m_hat,
-            v_hat,
         )
-        return value, params, m, v
 
-    return jax.jit(step_fn)
+    return nn.make_step(loss, clip=clip, weight_decay=weight_decay)
 
 
 def make_eval(heads, span):
-    def eval_fn(params, classes, phases):
-        nll = model.seat_nll(params, classes, phases, heads=heads, span=span)
-        steps = jnp.sum(nll, axis=-1)
-        moving = data.moving(classes) >= 2
-        return (
-            jnp.sum(steps),
-            jnp.sum(jnp.where(moving, steps, 0.0)),
-            jnp.sum(moving),
-            jnp.size(steps),
-        )
+    def nll(params, classes, phases):
+        return model.seat_nll(params, classes, phases, heads=heads, span=span)
 
-    return jax.jit(eval_fn)
-
-
-def on_device(batches):
-    """the evaluation windows are fixed for the whole run, thus they cross to the device
-    one time and not at every evaluation"""
-    return [(jnp.asarray(classes), jnp.asarray(phases)) for classes, phases in batches]
-
-
-def eval_loss(eval_fn, params, batches):
-    """nats for each step, over every step and over the moving steps alone"""
-    total = moved = 0.0
-    steps = moves = 0
-    for classes, phases in batches:
-        sums = eval_fn(params, classes, phases)
-        total += float(sums[0])
-        moved += float(sums[1])
-        moves += int(sums[2])
-        steps += int(sums[3])
-    return total / max(steps, 1), moved / max(moves, 1)
+    return nn.make_eval(nll)
 
 
 @click.command(help=__doc__)
@@ -202,8 +147,8 @@ def main(
 ):
     corpus = data.load_corpus(corpus_path)
     pool = data.train_pool(corpus, train_on)
-    train_eval = on_device(data.eval_batches(corpus["train"], context, eval_limit, batch))
-    valid_eval = on_device(data.eval_batches(corpus["valid"], context, eval_limit, batch))
+    train_eval = nn.on_device(data.eval_batches(corpus["train"], context, eval_limit, batch))
+    valid_eval = nn.on_device(data.eval_batches(corpus["valid"], context, eval_limit, batch))
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     key, draw_key = jax.random.split(key)
@@ -226,8 +171,8 @@ def main(
 
     def evaluate(step, params):
         nonlocal best
-        train_all, train_moving = eval_loss(eval_fn, params, train_eval)
-        valid_all, valid_moving = eval_loss(eval_fn, params, valid_eval)
+        train_all, train_moving = nn.eval_loss(eval_fn, params, train_eval)
+        valid_all, valid_moving = nn.eval_loss(eval_fn, params, valid_eval)
         mark = ""
         if valid_all < best:
             best = valid_all
@@ -249,7 +194,7 @@ def main(
         classes, phases = data.train_batch(rng, pool, batch, context)
         # a name of its own: [lr] is the peak the schedule reads, and a loop that writes
         # its own peak decays the rate geometrically to zero and trains nothing
-        rate = schedule(step, lr, warmup, steps)
+        rate = nn.schedule(step, lr, warmup, steps)
         key, step_key = jax.random.split(key)
         value, params, m, v = step_fn(
             params,

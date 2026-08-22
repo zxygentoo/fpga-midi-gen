@@ -195,7 +195,9 @@ def forced(ckpt, corpus_path):
 def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):
     from mamba import infer
 
-    seeds = infer.parse_seeds(None, None, seeds)
+    import midi
+
+    seeds = midi.parse_seeds(None, None, seeds)
     walks = infer.sample(
         model.load_params(ckpt),
         seeds=seeds,

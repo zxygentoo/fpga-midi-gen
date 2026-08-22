@@ -356,17 +356,6 @@ module Engine : sig
         is the instrument that found the two address faults and the operand that followed
         its address instead of its data. *)
     val layer_streams : t -> frame:int -> phase:int -> Tensor.t list
-
-    val isqrt : int -> int
-
-    (** [exp2_of_magnitude m] is 2^-(m/2^12) in Q15. It is era four's rule read the other
-        way round: that circuit exponentiated a nonpositive score and this one a decay
-        that is a magnitude by construction. *)
-    val exp2_of_magnitude : int -> int
-
-    val sigmoid_q : int -> int
-    val softplus : int -> int
-    val silu : int -> int
   end
 end
 

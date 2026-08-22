@@ -775,3 +775,76 @@ shown.
 **The board runs this build since 2026-08-23**, programmed through the
 JTAG — volatile, thus era four holds the flash and returns on a power
 cycle. The ear has not heard era five yet.
+
+## 2026-08-23 — the common home (feat/nn-uni)
+
+**The unification round the divider copy promised.** Four layers, two
+eras, one rule each: `lib/nn` (`mgen_nn`) and `jax/nn.py` now hold what
+was one thing written twice, and the era libraries hold what is theirs
+alone. Both era libraries depend on `mgen_nn`; neither depends on the
+other any more — `mgen_mamba` dropped `mgen_transformer` from its
+libraries, and `jax/mamba` stopped importing `transformer.model`.
+
+**What moved, by layer:**
+
+- **RTL.** `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` moved whole
+  with their gates. `Mac` became a FUNCTOR over its walk width — era four
+  instantiates nine bits, era five fourteen — which is the parameter its
+  own file asked for. THE ONE DIVIDER is era five's, with the magnitude
+  inside the walk: era four's copy is gone, its cost model followed
+  `Divider.busy_cycles` to 41 by itself, and its cycle bench re-recorded
+  at delta 0 on every step — 354,696 → 356,808 over the 18-step bench,
+  one cycle for each divide and the proof that its waits survived.
+- **The integer rules.** `Mgen_nn.Quantized`: the formats, the three
+  tables and their index rules, `quantize` and the exponent rule, the
+  scalar oracles (`isqrt`, `exp2`, `sigmoid_q`, `softplus`, `silu`,
+  `clamp16`), the integer `policy` and the 24-bit `draw`. The era
+  `Constants` are now an `include` plus their own formats; the negation
+  gate that held the two exp2 readings to one table is gone because one
+  definition holds them now.
+- **The float rules.** `Mgen_nn.Policy` (the tempered draw, its bounds,
+  the elected numbers) and `Mgen_nn.Checkpoint` (the seam writer, the
+  refusal scrubber, `numel`). Their gates moved with them.
+- **JAX.** `jax/nn.py`: the precision pin, ALiBi and its span, the
+  four-table embed, the chained head, the host draw chain, the trainer
+  skeleton (Adam step, the schedule, the eval sums, the seam writer).
+  `jax/midi.py`: the wire side of an audition, out of both `infer.py`.
+
+**The op and schedule layer did not move**, by standing rule: the
+abstraction is a discussion, not a side effect of a branch.
+
+**The proofs.** The era-five board netlist is BYTE-IDENTICAL through the
+whole round — `gen_verilog` gives md5 `a648db22…` before and after, thus
+the design on the board today is provably untouched. Era four's netlist
+changes by design (the 41-cycle divider, the nine-bit functor `Mac`);
+its drift floors, its socket gate and every other expect held without a
+re-record. The full battery: `dune runtest` clean, all 62 JAX tests
+green — the parity seam still reads 1.640810 — and `dune fmt` silent.
+
+The eras now differ only where their models differ, and the next model
+starts from `lib/nn` instead of a copy.
+
+**Era four VERIFIED in silicon terms, not only in simulation.** The seat
+moved to `mgen_transformer` by the one dune line the top level promises,
+era four's `gen_verilog` came back from `4a4814b` with its checkpoint
+path corrected to `_train/transformer/`, and the full board top
+elaborated from HEAD's libraries — the common home serves the closed era
+whole. The default flow, in a scratch directory so `board/_build` keeps
+era five's programmed bitstream:
+
+| | era four at 4a4814b | era four at HEAD, one divider |
+|---|---|---|
+| WNS | +0.059 ns | **+0.005 ns — MET** |
+| failing endpoints | 0 | 0 of 6,536 |
+| WHS | — | +0.034 |
+| slice LUTs | 3,061 | 2,996 |
+| block RAM tiles | 126 | 126 |
+
+The critical path is the pc decode into a register — 13 levels, one
+CARRY4, 75 percent route — thus the divider stands off era four's
+critical path exactly as the magnitude stage predicts. The margin moved
+from +0.059 to +0.005, which is inside the content-lottery band a new
+netlist rolls; the number that matters is MET at default directives, on
+a closed era that ships from the flash and is not rebuilt. No bitstream
+was written and the tree carries the era-five seat, restored and proven
+byte-identical after the switch.

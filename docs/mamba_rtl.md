@@ -23,38 +23,34 @@ The modules of the era:
 | `Mamba` (`lib/mamba/mamba.ml`) | the float reference: the plan, the block, the head, the loss, the sampler |
 | `Mamba.Quantized` (`lib/mamba/quantized.ml`) | the quantization of the checkpoint, and the integer twin: the recurrence, the chain and the sampler |
 | `Mamba.Source` (`lib/mamba/source.ml`) | the same integers as a circuit: the schedule, the datapath and the socket machine |
-| `Sigmoid`, `Softplus` (`lib/mamba/`) | the two new tables, in the idiom of `Exp2` |
-| `Mac`, `Divider` (`lib/mamba/`) | era four's units that could not come whole; the prose below and their files say why |
-| from `mgen_transformer`: `Isqrt`, `Exp2` | the units of era four, reused as they stand |
+| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — the shared integer rules, the sampling policy and the checkpoint seam |
 
-**The reuse is a dependency, not a refactor.** `mgen_mamba` depends on
-`mgen_transformer` for the units and the exp2 table. The units are
-model-free already — their interfaces speak widths and strobes, not
-transformers — thus the prototype imports them and moves nothing. If the
-era survives the ear, the units and the shared tables take a common home
-in their own round; a prototype does not pay for one.
+**The units live in `lib/nn`, and the unification round put them there.**
+The prototype imported era four's units as they stood and copied the two
+that could not come whole; the promised common-home round then moved all
+of them, and the history of the two copies is the design content of two
+units:
 
-**`Mac` and `Divider` are the two that could not come.** `Mac` failed on
-a single number: era four's walks never ran past 256 rows, thus its
-counters are nine bits, and the state update here walks `d_in * N` rows —
-2 048 at the baseline, and 8 192 if the state sweep ever reaches 64.
-`lib/mamba/mac.ml` is that file with fourteen-bit counters and nothing
-else changed. `Divider` failed on its start path: era four's unit takes
-the magnitude in the start cycle, thus a 40-bit carry chain stands
-between the caller's operand mux and the first register. One writer of
-the numerator closed; the head is a second writer, and the build read
-the program counter's mux in front of that carry chain as the critical
-path of the whole design, at −0.081 ns. `lib/mamba/divider.ml` is that
-file with the magnitude moved into the first busy cycle —
-`busy_cycles` 41, one cycle more for each divide — and nothing else
-changed. The claim that those units are model-free is therefore ALMOST
-true, and the walk length and the start path are the two places a bigger
-model shows through; the round that gives them a common home should
-carry both. The op and
-schedule layer is **restated** in `lib/mamba/source.ml`, not shared: the
-op vocabulary is different, and the abstraction of era four is an open
-question by standing rule — an improvement to it is a discussion, not a
-side effect of this branch.
+- **`Mac` takes its walk width as a functor argument.** Era four's
+  longest walk ran 256 rows and takes nine bits; the state update here
+  walks `d_in * N` rows — 2 048 at the baseline, and 8 192 if the state
+  sweep ever reaches 64 — and takes fourteen. Each source instantiates
+  its own width, thus both netlists stand as their boards proved them.
+- **`Divider` takes the magnitude inside the walk.** Era four's original
+  negated in the start cycle, which put a 40-bit carry chain between the
+  caller's operand mux and the first register. One writer of the
+  numerator closed; the head is a second writer, and the build read the
+  program counter's mux in front of that carry chain as the critical
+  path of the whole design, at −0.081 ns. The magnitude stage cut it —
+  `busy_cycles` 41, one cycle more for each divide — and the one unit
+  now serves both eras, thus era four pays the cycle too and its cost
+  model follows `Divider.busy_cycles` as it always did.
+
+The op and schedule layer is **restated** in `lib/mamba/source.ml`, not
+shared: the op vocabulary is different, and the abstraction of era four
+is an open question by standing rule — an improvement to it is a
+discussion, not a side effect of a branch. The unification round left it
+out on that rule.
 
 ## What the state changes
 
@@ -261,7 +257,7 @@ The five layers stand:
 
 | Layer | What it is |
 |---|---|
-| L0 | `Isqrt`, `Exp2`, `Prng.Rtl` from era four; `Divider` its own — the magnitude inside the walk; `Sigmoid` and `Softplus` new |
+| L0 | the units of `mgen_nn` — `Divider` with the magnitude inside the walk, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and `Prng.Rtl` from the core |
 | L1 | the datapath: the RAMs, the state RAM, the tap rings, the banked weight ROM, `Mac` |
 | L2 | the schedule: the step as a list of operations, built from the config |
 | L3 | the compiler: the list folds into the cases of a program counter |
@@ -528,8 +524,8 @@ gets, and only a broken link stops the chain:
 - **The units.** `Sigmoid` and `Softplus` against the reference tables,
   **exhaustively** — 256 entries under the input rules is a few thousand
   readings, the `Exp2` precedent. Waveform tests where the two-cycle
-  hold is the contract. The reused units keep their own gates in
-  `mgen_transformer`.
+  hold is the contract. Every unit keeps its own gates beside it, in
+  `mgen_nn` since the unification round.
 - **The twin against the float model.** `Drift.walk`, teacher-forced on
   the twin's own walk, with the fixed sweep and the QCheck floors — and
   **long walks**: the state carries error forward, thus a walk of a few
