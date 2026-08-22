@@ -447,41 +447,11 @@ module Params = struct
   ;;
 end
 
-(* the table of one seat: [Params.seats] holds the four in one tensor, seat 0 first *)
-let seat_table (params : Params.t) seat = Nx.contiguous (Nx.get [ seat ] params.seats)
+(* the shared float rules: the head, the norm and the draw chain; the trunk stays here *)
+module Reference = Mgen_nn.Reference
 
-(* float32, because the block goes into a matmul *)
-let one_hot_rows ~num_classes rows =
-  let batch = Array.length rows in
-  let length = Array.length rows.(0) in
-  let codes =
-    Nx.init Nx.int32 [| batch; length |] (fun index ->
-      Int32.of_int_exn rows.(index.(0)).(index.(1)))
-  in
-  Nx.astype Nx.float32 (Nx.one_hot ~num_classes codes)
-;;
-
-(* the table lookup as one-hot times table: small, and one definition serves every table *)
-let embed_rows table ~num_classes rows = Nx.matmul (one_hot_rows ~num_classes rows) table
-
-(* The classes of a batch of frames, apart by seat: the result at [seat] holds one row of
-   classes for each walk. Four tables read four rows, thus the pass wants the seats apart
-   and never the frame whole. *)
-let seat_classes frames =
-  let classes =
-    Array.map frames ~f:(Array.map ~f:(fun frame -> Vocab.classes_of_frame frame))
-  in
-  Array.init Frame.voices ~f:(fun seat ->
-    Array.map classes ~f:(Array.map ~f:(fun row -> List.nth_exn row seat)))
-;;
-
-(* RMSNorm with no scale: the trainer of the design document folds the scale away *)
-let rms_norm x =
-  let axis = Array.length (Nx.shape x) - 1 in
-  let mean_square = Nx.mean (Nx.square x) ~axes:[ axis ] ~keepdims:true in
-  Nx.mul x (Nx.rsqrt (Nx.add_s mean_square 1e-6))
-;;
-
+let seat_classes = Reference.seat_classes
+let rms_norm = Reference.rms_norm
 let silu x = Nx.mul x (Nx.sigmoid x)
 
 (* softplus, in the two parts the integer twin also takes: the ramp, which is exact, and a
@@ -490,18 +460,12 @@ let silu x = Nx.mul x (Nx.sigmoid x)
    one. *)
 let softplus x = Nx.add (Nx.relu x) (Nx.log (Nx.add_s (Nx.exp (Nx.neg (Nx.abs x))) 1.0))
 
-(* The input of one step: the four seat rows sum, and the bar phase adds to them.
-
-   A shared table with a voice tag cannot work here, and the reason is arithmetic and not
-   capacity. Every step carries all four seats, thus the sum of four tags is the same
-   vector at every position — a bias, which carries nothing — and what remains is
-   symmetric in the four classes. A soprano on 72 over a bass on 48 would give the vector
-   of a soprano on 48 under a bass on 72, and the voices would be thrown away on the way
-   in. *)
 let embedding params ~classes ~phases =
-  let phase = embed_rows params.Params_data.phase ~num_classes:Jsb.bar_steps phases in
-  Array.foldi classes ~init:phase ~f:(fun seat h rows ->
-    Nx.add h (embed_rows (seat_table params seat) ~num_classes:Vocab.classes rows))
+  Reference.embedding
+    ~seats:params.Params_data.seats
+    ~phase:params.Params_data.phase
+    ~classes
+    ~phases
 ;;
 
 module Memory = struct
@@ -619,21 +583,14 @@ let block (config : Config.t) (layer : Params.block) ~state ~taps y =
    counter enters the arithmetic. A slot whose distance stands at or above the fill has
    never been written, and the wall refuses it: a walk that has not filled the ring reads
    the scores a training window reads at the same position. *)
-let alibi_bias (config : Config.t) ~filled =
+let attention_bias (config : Config.t) ~filled =
   let heads = config.heads in
-  let slope head =
-    let reach = -config.span * (head + 1) in
-    Float.(neg (2.0 ** (of_int reach / of_int heads)))
+  let slopes =
+    Array.init heads ~f:(fun head -> Reference.alibi_slope ~span:config.span ~heads ~head)
   in
-  let slopes = Array.init heads ~f:slope in
   Nx.init Nx.float32 [| 1; config.ring; heads |] (fun index ->
     let distance = config.ring - 1 - index.(1) in
     if distance >= filled then -1e9 else slopes.(index.(2)) *. Float.of_int distance)
-;;
-
-let softmax_over x ~axis =
-  let weights = Nx.exp (Nx.sub x (Nx.max x ~axes:[ axis ] ~keepdims:true)) in
-  Nx.div weights (Nx.sum weights ~axes:[ axis ] ~keepdims:true)
 ;;
 
 (* One attention layer's branch at one step, against the ring of the keys and values
@@ -664,9 +621,9 @@ let attention (config : Config.t) (layer : Params.attention) ~keys ~values ~fill
       (Nx.mul_s
          (Nx.sum (Nx.mul query (lanes keys)) ~axes:[ 3 ])
          (1.0 /. Float.sqrt (Float.of_int head_d)))
-      (alibi_bias config ~filled)
+      (attention_bias config ~filled)
   in
-  let weights = softmax_over scores ~axis:1 in
+  let weights = Reference.softmax scores ~axis:1 in
   let merged =
     Nx.sum
       (Nx.mul (Nx.reshape [| batch; ring; heads; 1 |] weights) (lanes values))
@@ -690,7 +647,8 @@ let branch (config : Config.t) layer memory ~y ~e =
     after, Nx.matmul gated layer.w_out
   | Attention layer, Ring { keys; values; filled } ->
     attention config layer ~keys ~values ~filled ~y ~e
-  | Feed_forward layer, Stateless -> Memory.Stateless, feed_forward layer y
+  | Feed_forward layer, Stateless ->
+    Memory.Stateless, Reference.feed_forward ~w1:layer.w1 ~w2:layer.w2 y
   | (_ : Params.layer), (_ : Memory.layer) ->
     invalid_arg "the memory of a layer does not fit its kind"
 ;;
@@ -735,85 +693,18 @@ let hidden (config : Config.t) params ~classes ~phases =
   Nx.stack ~axis:1 rows
 ;;
 
-(* The seats of the chain, soprano first: the head draws seat 3 and then walks down.
-
-   The order keeps the one decision the ear accepted in era three — the top voice is
-   chosen first, and it conditions on no voice under it, as the music is written. *)
-let chain_seats = List.rev (List.range 0 Frame.voices)
-
-(* The chained head of era four, unchanged. Each seat reads the stream that the seats
-   above it have written:
-
-   {v
-     h3 = h                   logits(seat 3) = E[3] . rms(h3)
-     h2 = h3 + E[3][c3]       logits(seat 2) = E[2] . rms(h2)
-     h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
-     h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
-   v}
-
-   [drawn] holds the classes the chain conditions on — the true frame in training, where
-   the four heads then run in one pass with no sampling. Only seats 3, 2 and 1 are read. *)
 let seat_logits params h ~drawn =
-  let (_ : tensor), rows =
-    List.fold_map chain_seats ~init:h ~f:(fun stream seat ->
-      let table = seat_table params seat in
-      let raw = Nx.matmul (rms_norm stream) (Nx.transpose table) in
-      let stream =
-        if seat = 0
-        then stream
-        else Nx.add stream (embed_rows table ~num_classes:Vocab.classes drawn.(seat))
-      in
-      stream, (seat, raw))
-  in
-  rows
+  Reference.seat_logits ~seats:params.Params_data.seats h ~drawn
 ;;
-
-(* the negative log likelihood of one seat: [raw] is [batch; length; classes] *)
-let class_nll raw labels =
-  let axis = 2 in
-  let shifted = Nx.sub raw (Nx.max raw ~axes:[ axis ] ~keepdims:true) in
-  let total = Nx.log (Nx.sum (Nx.exp shifted) ~axes:[ axis ] ~keepdims:true) in
-  let hot = one_hot_rows ~num_classes:Vocab.classes labels in
-  Nx.neg (Nx.sum (Nx.mul (Nx.sub shifted total) hot) ~axes:[ axis ])
-;;
-
-(* the inputs and the targets of one window: [context] positions state [context] targets,
-   and the last frame of the window is a target alone *)
-let inputs rows =
-  Array.map rows ~f:(fun row -> Array.subo row ~len:(Array.length row - 1))
-;;
-
-let targets rows = Array.map rows ~f:(fun row -> Array.subo row ~pos:1)
 
 let loss (config : Config.t) params ~windows =
-  let frames = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.frames) in
-  let positions = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.positions) in
-  if Array.is_empty frames then invalid_arg "the loss takes one window or more";
-  (* the bar phase is the low four bits of the rolling coordinate; the high four were the
-     window position, which the ear dropped and the corpus still carries *)
-  let phases =
-    Array.map (inputs positions) ~f:(Array.map ~f:(fun at -> at % Jsb.bar_steps))
-  in
-  let classes = seat_classes (inputs frames) in
-  let labels = seat_classes (targets frames) in
-  let h = hidden config params ~classes ~phases in
-  let nll =
-    List.fold (seat_logits params h ~drawn:labels) ~init:None ~f:(fun total (seat, raw) ->
-      let seat_nll = class_nll raw labels.(seat) in
-      Some (Option.value_map total ~default:seat_nll ~f:(Nx.add seat_nll)))
-  in
-  (* the sum over the seats is the loss of one step, and the mean is over the steps: a
-     mean over the predictions would divide by a count that changes with the encoding *)
-  Nx.item [] (Nx.mean (Option.value_exn nll))
+  Reference.loss
+    ~seats:params.Params_data.seats
+    ~hidden:(fun ~classes ~phases -> hidden config params ~classes ~phases)
+    ~windows
 ;;
 
-(* The draw of one seat as one function, from the one policy both eras share: the sampler
-   below and the drift report of [Quantized] both take it, thus the two pipelines are
-   comparable pick for pick. *)
 let draw_class = Mgen_nn.Policy.draw_class
-
-(* the row of a table as a stream of one position, thus the chain can add it *)
-let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
 
 (* the stream of one walk as the tensor the head reads: one row of [d] *)
 let stream_tensor stream ~d = Nx.reshape [| 1; d |] (Nx.create Nx.float32 [| d |] stream)
@@ -842,31 +733,16 @@ let logits (config : Config.t) params ~stream ~drawn =
     List.Assoc.find_exn rows seat ~equal:Int.equal |> Nx.to_array)
 ;;
 
-(* One step of the chained draw, on the host and between two steps of the recurrence: the
-   soprano first, and each seat under it reading the stream the seats above have written.
-   It gives the classes of the frame, seat 0 first. *)
 let draw_frame (config : Config.t) params ~temperature ~min_p ~rng ~stream =
-  let (rng, (_ : tensor)), classes =
-    List.fold_map
-      chain_seats
-      ~init:(rng, stream_tensor stream ~d:config.d)
-      ~f:(fun (rng, stream) seat ->
-        let table = seat_table params seat in
-        let raw = Nx.to_array (Nx.matmul (rms_norm stream) (Nx.transpose table)) in
-        let rng, uniform = Prng.run Prng.uniform rng in
-        let index = draw_class raw ~temperature ~min_p ~uniform in
-        let stream =
-          if seat = 0 then stream else Nx.add stream (table_row table index ~d:config.d)
-        in
-        (rng, stream), index)
-  in
-  (* the chain runs from the soprano down, and a frame reads from seat 0 up *)
-  rng, List.rev classes
+  Reference.draw_frame
+    ~seats:params.Params_data.seats
+    ~d:config.d
+    ~temperature
+    ~min_p
+    ~rng
+    (stream_tensor stream ~d:config.d)
 ;;
 
-(* The bounds and the elected numbers of the draw, from the one policy both eras share.
-   This era re-elects the numbers by ear with the whole chain in view; until then the two
-   eras are auditioned on one policy. *)
 let check_policy = Mgen_nn.Policy.check_policy
 let elected_temperature = Mgen_nn.Policy.elected_temperature
 let elected_min_p = Mgen_nn.Policy.elected_min_p
@@ -914,10 +790,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
 let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
-     three readers, thus one writer states the naming rule and the gates of both modules
-     read one file. *)
   let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
   let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end

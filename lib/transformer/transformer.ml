@@ -149,40 +149,11 @@ module Params = struct
   ;;
 end
 
-(* the table of one seat: [Params.seats] holds the four in one tensor, seat 0 first *)
-let seat_table (params : Params.t) seat = Nx.contiguous (Nx.get [ seat ] params.seats)
+(* the shared float rules: the head, the norm and the draw chain; the trunk stays here *)
+module Reference = Mgen_nn.Reference
 
-(* float32, because the block goes into a matmul *)
-let one_hot_rows ~num_classes rows =
-  let batch = Array.length rows in
-  let length = Array.length rows.(0) in
-  let codes =
-    Nx.init Nx.int32 [| batch; length |] (fun index ->
-      Int32.of_int_exn rows.(index.(0)).(index.(1)))
-  in
-  Nx.astype Nx.float32 (Nx.one_hot ~num_classes codes)
-;;
-
-(* the table lookup as one-hot times table: small, and one definition serves every table *)
-let embed_rows table ~num_classes rows = Nx.matmul (one_hot_rows ~num_classes rows) table
-
-(* The classes of a batch of frames, apart by seat: the result at [seat] holds one row of
-   classes for each walk. Four tables read four rows, thus the pass wants the seats apart
-   and never the frame whole. *)
-let seat_classes frames =
-  let classes =
-    Array.map frames ~f:(Array.map ~f:(fun frame -> Vocab.classes_of_frame frame))
-  in
-  Array.init Frame.voices ~f:(fun seat ->
-    Array.map classes ~f:(Array.map ~f:(fun row -> List.nth_exn row seat)))
-;;
-
-(* RMSNorm with no scale: the trainer of the design document folds the scale away *)
-let rms_norm x =
-  let axis = Array.length (Nx.shape x) - 1 in
-  let mean_square = Nx.mean (Nx.square x) ~axes:[ axis ] ~keepdims:true in
-  Nx.mul x (Nx.rsqrt (Nx.add_s mean_square 1e-6))
-;;
+let seat_classes = Reference.seat_classes
+let rms_norm = Reference.rms_norm
 
 (* ALiBi and the causal wall, shape [1; heads; length; length]. The slope is a recency
    prior, and [Config.slope_span] of the interface holds its reasoning. *)
@@ -193,35 +164,28 @@ let attention_bias ~heads ~length ~span =
   let distance = Nx.sub positions (Nx.transpose positions) in
   let slopes =
     Nx.init Nx.float32 [| 1; heads; 1; 1 |] (fun index ->
-      -.(2. ** (-.Float.of_int span *. Float.of_int (index.(1) + 1) /. Float.of_int heads)))
+      Reference.alibi_slope ~span ~heads ~head:index.(1))
   in
   let alibi = Nx.mul slopes (Nx.reshape [| 1; 1; length; length |] distance) in
   let wall = Nx.mul_s (Nx.triu ~k:1 (Nx.ones Nx.float32 [| length; length |])) (-1e9) in
   Nx.add alibi (Nx.reshape [| 1; 1; length; length |] wall)
 ;;
 
-let softmax x =
-  let axis = Array.length (Nx.shape x) - 1 in
-  let shifted = Nx.sub x (Nx.max x ~axes:[ axis ] ~keepdims:true) in
-  let exp = Nx.exp shifted in
-  Nx.div exp (Nx.sum exp ~axes:[ axis ] ~keepdims:true)
-;;
-
-(* the branch alone: the residual sum happens in [hidden] *)
-let attention (config : Config.t) (layer : Params.layer) ~bias h =
+(* one attention layer's branch over a whole window: [y] is the normed stream, and the
+   residual join is the caller's *)
+let attention (config : Config.t) (layer : Params.layer) ~bias y =
   let d = config.d in
   let heads = config.heads in
-  let shape = Nx.shape h in
+  let shape = Nx.shape y in
   let batch = shape.(0) in
   let length = shape.(1) in
   let head_d = d / heads in
   let split x =
     Nx.transpose ~axes:[ 0; 2; 1; 3 ] (Nx.reshape [| batch; length; heads; head_d |] x)
   in
-  let normed = rms_norm h in
-  let q = split (Nx.matmul normed layer.wq) in
-  let k = split (Nx.matmul normed layer.wk) in
-  let v = split (Nx.matmul normed layer.wv) in
+  let q = split (Nx.matmul y layer.wq) in
+  let k = split (Nx.matmul y layer.wk) in
+  let v = split (Nx.matmul y layer.wv) in
   let scores =
     Nx.add
       (Nx.mul_s
@@ -229,7 +193,7 @@ let attention (config : Config.t) (layer : Params.layer) ~bias h =
          (1. /. Float.sqrt (Float.of_int head_d)))
       bias
   in
-  let context = Nx.matmul (softmax scores) v in
+  let context = Nx.matmul (Reference.softmax scores ~axis:3) v in
   let merged =
     (* the transpose leaves a strided view; the reshape needs one piece of memory *)
     Nx.reshape
@@ -245,18 +209,12 @@ let feed_forward (layer : Params.layer) h =
   Nx.matmul hidden layer.w2
 ;;
 
-(* The input of one position: the four seat rows sum, and the bar phase adds to them.
-
-   A shared table with a voice tag cannot work here, and the reason is arithmetic and not
-   capacity. Every step carries all four seats, thus the sum of four tags is the same
-   vector at every position — a bias, which carries nothing — and what remains is
-   symmetric in the four classes. A soprano on 72 over a bass on 48 would give the vector
-   of a soprano on 48 under a bass on 72, and the voices would be thrown away on the way
-   in. *)
 let embedding params ~classes ~phases =
-  let phase = embed_rows params.Params_data.phase ~num_classes:Jsb.bar_steps phases in
-  Array.foldi classes ~init:phase ~f:(fun seat h rows ->
-    Nx.add h (embed_rows (seat_table params seat) ~num_classes:Vocab.classes rows))
+  Reference.embedding
+    ~seats:params.Params_data.seats
+    ~phase:params.Params_data.phase
+    ~classes
+    ~phases
 ;;
 
 (* the residual stream after the last layer and before any readout *)
@@ -265,112 +223,31 @@ let hidden (config : Config.t) params ~classes ~phases =
   let bias = attention_bias ~heads:config.heads ~length ~span:config.slope_span in
   let h = embedding params ~classes ~phases in
   Array.fold params.Params_data.layers ~init:h ~f:(fun h weights ->
-    let h = Nx.add h (attention config weights ~bias h) in
-    Nx.add h (feed_forward weights h))
+    let h = Nx.add h (attention config weights ~bias (rms_norm h)) in
+    Nx.add h (Reference.feed_forward ~w1:weights.w1 ~w2:weights.w2 (rms_norm h)))
 ;;
 
-(* The seats of the chain, soprano first: the head draws seat 3 and then walks down.
-
-   The order keeps the one decision the ear accepted in era three — the top voice is
-   chosen first, and it conditions on no voice under it, as the music is written. *)
-let chain_seats = List.rev (List.range 0 Frame.voices)
-
-(* The chained head: the logits of each seat, paired with its seat.
-
-   Each seat reads the stream that the seats above it have written:
-
-   {v
-     h3 = h                   logits(seat 3) = E[3] . rms(h3)
-     h2 = h3 + E[3][c3]       logits(seat 2) = E[2] . rms(h2)
-     h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
-     h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
-   v}
-
-   [drawn] holds the classes the chain conditions on — the true frame in training, where
-   the four heads then run in one pass with no sampling. Only seats 3, 2 and 1 are read.
-
-   Four heads that drew in parallel would make the voices conditionally independent, and a
-   chord is a joint choice: measured on this model, that costs 0.3157 nats for each step.
-   The chain removes the cost for no parameters at all and three adds of a vector. *)
 let seat_logits params h ~drawn =
-  let (_ : tensor), rows =
-    List.fold_map chain_seats ~init:h ~f:(fun stream seat ->
-      let table = seat_table params seat in
-      let raw = Nx.matmul (rms_norm stream) (Nx.transpose table) in
-      let stream =
-        if seat = 0
-        then stream
-        else Nx.add stream (embed_rows table ~num_classes:Vocab.classes drawn.(seat))
-      in
-      stream, (seat, raw))
-  in
-  rows
+  Reference.seat_logits ~seats:params.Params_data.seats h ~drawn
 ;;
-
-(* the negative log likelihood of one seat: [raw] is [batch; length; classes] *)
-let class_nll raw labels =
-  let axis = 2 in
-  let shifted = Nx.sub raw (Nx.max raw ~axes:[ axis ] ~keepdims:true) in
-  let total = Nx.log (Nx.sum (Nx.exp shifted) ~axes:[ axis ] ~keepdims:true) in
-  let hot = one_hot_rows ~num_classes:Vocab.classes labels in
-  Nx.neg (Nx.sum (Nx.mul (Nx.sub shifted total) hot) ~axes:[ axis ])
-;;
-
-(* the inputs and the targets of one window: [context] positions state [context] targets,
-   and the last frame of the window is a target alone *)
-let inputs rows =
-  Array.map rows ~f:(fun row -> Array.subo row ~len:(Array.length row - 1))
-;;
-
-let targets rows = Array.map rows ~f:(fun row -> Array.subo row ~pos:1)
 
 let loss (config : Config.t) params ~windows =
-  let frames = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.frames) in
-  let positions = Array.of_list_map windows ~f:(fun (w : Jsb.stream) -> w.positions) in
-  if Array.is_empty frames then invalid_arg "the loss takes one window or more";
-  (* the bar phase is the low four bits of the rolling coordinate; the high four were the
-     window position, which the ear dropped and the corpus still carries *)
-  let phases =
-    Array.map (inputs positions) ~f:(Array.map ~f:(fun at -> at % Jsb.bar_steps))
-  in
-  let classes = seat_classes (inputs frames) in
-  let labels = seat_classes (targets frames) in
-  let h = hidden config params ~classes ~phases in
-  let nll =
-    List.fold (seat_logits params h ~drawn:labels) ~init:None ~f:(fun total (seat, raw) ->
-      let seat_nll = class_nll raw labels.(seat) in
-      Some (Option.value_map total ~default:seat_nll ~f:(Nx.add seat_nll)))
-  in
-  (* the sum over the seats is the loss of one step, and the mean is over the steps: a
-     mean over the predictions would divide by a count that changes with the encoding *)
-  Nx.item [] (Nx.mean (Option.value_exn nll))
+  Reference.loss
+    ~seats:params.Params_data.seats
+    ~hidden:(fun ~classes ~phases -> hidden config params ~classes ~phases)
+    ~windows
 ;;
 
-(* The draw of one seat as one function: the tempered weights, the min-p floor, and the
-   class whose running total passes the draw. The sampler below and the drift report of
-   [Quantized] both take it, thus the two pipelines are comparable pick for pick. *)
 let draw_class = Mgen_nn.Policy.draw_class
 
-(* the row of a table as a stream of one position, thus the chain can add it *)
-let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
-
-(* One step of the chained draw, on the host and between two passes of the network: the
-   soprano first, and each seat under it reading the stream the seats above have written.
-   It gives the classes of the frame, seat 0 first. *)
 let draw_frame (config : Config.t) params ~temperature ~min_p ~rng stream =
-  let (rng, (_ : tensor)), classes =
-    List.fold_map chain_seats ~init:(rng, stream) ~f:(fun (rng, stream) seat ->
-      let table = seat_table params seat in
-      let raw = Nx.to_array (Nx.matmul (rms_norm stream) (Nx.transpose table)) in
-      let rng, uniform = Prng.run Prng.uniform rng in
-      let index = draw_class raw ~temperature ~min_p ~uniform in
-      let stream =
-        if seat = 0 then stream else Nx.add stream (table_row table index ~d:config.d)
-      in
-      (rng, stream), index)
-  in
-  (* the chain runs from the soprano down, and a frame reads from seat 0 up *)
-  rng, List.rev classes
+  Reference.draw_frame
+    ~seats:params.Params_data.seats
+    ~d:config.d
+    ~temperature
+    ~min_p
+    ~rng
+    stream
 ;;
 
 (* The logits of every seat at the last position of one window, over the classes the chain
@@ -400,8 +277,6 @@ type walk =
    report of [Quantized] cuts its own history by this rule and compares the two models
    over the result, thus the rule stands here and not inside the sampler. *)
 let window history ~context = List.take history context |> List.rev |> Array.of_list
-
-(* The bounds and the elected numbers of the draw, from the one policy both eras share. *)
 let check_policy = Mgen_nn.Policy.check_policy
 let elected_temperature = Mgen_nn.Policy.elected_temperature
 let elected_min_p = Mgen_nn.Policy.elected_min_p
@@ -447,10 +322,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
 let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
-     three readers, thus one writer states the naming rule and the gates of both modules
-     read one file. *)
   let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
   let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end

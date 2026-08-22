@@ -1,13 +1,6 @@
-(* The MAC and its walk — see mac.mli for the contract. The datapath registers have no
-   clear: the tags decide what is real, and a stale value that no tag marks can touch
-   nothing. The control registers clear.
-
-   THE WALK WIDTH IS THE FUNCTOR'S ARGUMENT, and it is the one place a bigger model shows
-   through an otherwise model-free unit: era four's longest walk ran 256 rows and takes
-   nine bits, era five's state update walks [d_in * state] rows — 2 048 at its baseline,
-   and 8 192 if the state sweep ever reaches 64 — and takes fourteen. Each source
-   instantiates the width its own walks need, and both netlists stand as their boards
-   proved them. *)
+(* The MAC and its walk — see mac.mli for the contract and for why the walk width is the
+   functor's argument. The datapath registers have no clear: the tags decide what is real,
+   and a stale value that no tag marks can touch nothing. The control registers clear. *)
 
 open Base
 open Hardcaml

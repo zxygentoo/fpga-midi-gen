@@ -2,8 +2,6 @@
 
 open Base
 
-(* The tempered weight of each class against the peak: the peak weighs one, thus [min_p]
-   is a share of the peak and one compare holds the filter. *)
 let tempered raw ~temperature =
   let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
   Array.map raw ~f:(fun value -> Float.exp ((value -. peak) /. temperature))
@@ -58,9 +56,6 @@ let check_policy ~temperature ~min_p =
   if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1"
 ;;
 
-(* The draw the ear elected on 2026-08-18, on era four with the whole chain in view, and
-   carried into era five. Every player, the integer twins and the bitstreams start from
-   these two, thus a number the ear moves moves one time. *)
 let elected_temperature = 1.0
 let elected_min_p = 0.05
 

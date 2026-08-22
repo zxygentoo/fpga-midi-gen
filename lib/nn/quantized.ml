@@ -197,8 +197,6 @@ let quantize ?e (floats : Tensor.floats) =
   { q = Array.map floats ~f:clamp; e }
 ;;
 
-(* the ROM image of a circuit: every tensor in the checkpoint order, one byte for each
-   weight, two's complement *)
 let rom_bits tensors =
   Array.concat_map (Array.of_list tensors) ~f:(fun { q; e = (_ : int) } ->
     Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
@@ -234,11 +232,6 @@ let u24 prng =
     prng
 ;;
 
-(* The pick over integer weights: the threshold is a floor of [u * total] over 2^24 with
-   [u] below 2^24, thus it is below the total, thus some running total passes it and the
-   class it names always holds the weight the min-p floor left standing. It gives the
-   uniform back as the float the drift reports hand to [Policy.draw_class], thus the two
-   pipelines draw on one number. *)
 let draw ~weights prng =
   let count = Array.length weights in
   let total = sum count (fun c -> weights.(c)) in
