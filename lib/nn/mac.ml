@@ -1,6 +1,13 @@
 (* The MAC and its walk — see mac.mli for the contract. The datapath registers have no
    clear: the tags decide what is real, and a stale value that no tag marks can touch
-   nothing. The control registers clear. *)
+   nothing. The control registers clear.
+
+   THE WALK WIDTH IS THE FUNCTOR'S ARGUMENT, and it is the one place a bigger model shows
+   through an otherwise model-free unit: era four's longest walk ran 256 rows and takes
+   nine bits, era five's state update walks [d_in * state] rows — 2 048 at its baseline,
+   and 8 192 if the state sweep ever reaches 64 — and takes fourteen. Each source
+   instantiates the width its own walks need, and both netlists stand as their boards
+   proved them. *)
 
 open Base
 open Hardcaml
@@ -9,94 +16,110 @@ open Signal
 let read_latency = 2
 let depth = read_latency + 2
 
-module I = struct
-  type 'a t =
-    { clock : 'a
-    ; clear : 'a
-    ; go : 'a
-    ; inner : 'a [@bits 9]
-    ; outer : 'a [@bits 9]
-    ; hold : 'a
-    ; a : 'a [@bits 25]
-    ; b : 'a [@bits 18]
-    }
-  [@@deriving hardcaml]
+module type Width = sig
+  val walk_bits : int
 end
 
-module O = struct
-  type 'a t =
-    { ii : 'a [@bits 9]
-    ; oo : 'a [@bits 9]
-    ; product : 'a [@bits 43]
-    ; sum : 'a [@bits 48]
-    ; row_done : 'a
-    ; row : 'a [@bits 9]
-    ; done_ : 'a
-    }
-  [@@deriving hardcaml]
-end
+module Make (W : Width) = struct
+  let walk_bits = W.walk_bits
+  let read_latency = read_latency
 
-let create (i : _ I.t) : _ O.t =
-  let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
-  let dspec = Reg_spec.create ~clock:i.clock () in
-  let run = ~:(i.hold) in
-  (* the free-running data pipe *)
-  let opa = reg dspec ~enable:run i.a in
-  let opb = reg dspec ~enable:run i.b in
-  let product = reg dspec ~enable:run (opa *+ opb) in
-  let product48 = sresize product ~width:48 in
-  let open Always in
-  let ii = Variable.reg spec ~width:9 in
-  let oo = Variable.reg spec ~width:9 in
-  let row = Variable.reg spec ~width:9 in
-  (* one flag, because the retire side needs none of its own: the tags carry the terms
-     still in flight. [go] raises it and the last term's issue lowers it. *)
-  let issuing = Variable.reg spec ~width:1 in
-  let last_in = ii.value ==: i.inner -:. 1 in
-  (* the tags follow a term from its address to its retirement *)
-  let tag_in = issuing.value @: (ii.value ==:. 0) @: last_in in
-  let tags = pipeline spec ~enable:run ~n:depth tag_in in
-  let valid_r = msb tags in
-  let first_r = select tags ~high:1 ~low:1 in
-  let last_r = lsb tags in
-  let retire = valid_r &: run in
-  let row_done = retire &: last_r in
-  let done_ = row_done &: (row.value ==: i.outer -:. 1) in
-  (* the row's first term loads the accumulator; [sum] is whole in the retire cycle *)
-  let acc, sum =
-    reg_fb_and_next dspec ~enable:retire ~width:48 ~f:(fun acc ->
-      mux2 first_r product48 (acc +: product48))
-  in
-  ignore (acc : Signal.t);
-  compile
-    [ when_
-        run
-        [ when_
-            (issuing.value &: ~:(i.go))
-            [ if_
-                last_in
-                [ ii <--. 0
-                ; if_
-                    (oo.value ==: i.outer -:. 1)
-                    [ issuing <-- gnd ]
-                    [ oo <-- oo.value +:. 1 ]
-                ]
-                [ ii <-- ii.value +:. 1 ]
-            ]
-        ; when_ row_done [ row <-- row.value +:. 1 ]
-        ]
-    ; (* last, thus its resets win when a walk starts in the old walk's [done_] cycle —
-         the chain convention. A command also lands under hold: the walk is over when the
-         caller starts one. *)
-      when_ i.go [ ii <--. 0; oo <--. 0; row <--. 0; issuing <-- vdd ]
-    ];
-  { O.ii = ii.value; oo = oo.value; product; sum; row_done; row = row.value; done_ }
-;;
+  module I = struct
+    type 'a t =
+      { clock : 'a
+      ; clear : 'a
+      ; go : 'a
+      ; inner : 'a [@bits walk_bits]
+      ; outer : 'a [@bits walk_bits]
+      ; hold : 'a
+      ; a : 'a [@bits 25]
+      ; b : 'a [@bits 18]
+      }
+    [@@deriving hardcaml]
+  end
+
+  module O = struct
+    type 'a t =
+      { ii : 'a [@bits walk_bits]
+      ; oo : 'a [@bits walk_bits]
+      ; product : 'a [@bits 43]
+      ; sum : 'a [@bits 48]
+      ; row_done : 'a
+      ; row : 'a [@bits walk_bits]
+      ; done_ : 'a
+      }
+    [@@deriving hardcaml]
+  end
+
+  let create (i : _ I.t) : _ O.t =
+    let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
+    let dspec = Reg_spec.create ~clock:i.clock () in
+    let run = ~:(i.hold) in
+    (* the free-running data pipe *)
+    let opa = reg dspec ~enable:run i.a in
+    let opb = reg dspec ~enable:run i.b in
+    let product = reg dspec ~enable:run (opa *+ opb) in
+    let product48 = sresize product ~width:48 in
+    let open Always in
+    let ii = Variable.reg spec ~width:walk_bits in
+    let oo = Variable.reg spec ~width:walk_bits in
+    let row = Variable.reg spec ~width:walk_bits in
+    (* one flag, because the retire side needs none of its own: the tags carry the terms
+       still in flight. [go] raises it and the last term's issue lowers it. *)
+    let issuing = Variable.reg spec ~width:1 in
+    let last_in = ii.value ==: i.inner -:. 1 in
+    (* the tags follow a term from its address to its retirement *)
+    let tag_in = issuing.value @: (ii.value ==:. 0) @: last_in in
+    let tags = pipeline spec ~enable:run ~n:depth tag_in in
+    let valid_r = msb tags in
+    let first_r = select tags ~high:1 ~low:1 in
+    let last_r = lsb tags in
+    let retire = valid_r &: run in
+    let row_done = retire &: last_r in
+    let done_ = row_done &: (row.value ==: i.outer -:. 1) in
+    (* the row's first term loads the accumulator; [sum] is whole in the retire cycle *)
+    let acc, sum =
+      reg_fb_and_next dspec ~enable:retire ~width:48 ~f:(fun acc ->
+        mux2 first_r product48 (acc +: product48))
+    in
+    ignore (acc : Signal.t);
+    compile
+      [ when_
+          run
+          [ when_
+              (issuing.value &: ~:(i.go))
+              [ if_
+                  last_in
+                  [ ii <--. 0
+                  ; if_
+                      (oo.value ==: i.outer -:. 1)
+                      [ issuing <-- gnd ]
+                      [ oo <-- oo.value +:. 1 ]
+                  ]
+                  [ ii <-- ii.value +:. 1 ]
+              ]
+          ; when_ row_done [ row <-- row.value +:. 1 ]
+          ]
+      ; (* last, thus its resets win when a walk starts in the old walk's [done_] cycle —
+           the chain convention. A command also lands under hold: the walk is over when
+           the caller starts one. *)
+        when_ i.go [ ii <--. 0; oo <--. 0; row <--. 0; issuing <-- vdd ]
+      ];
+    { O.ii = ii.value; oo = oo.value; product; sum; row_done; row = row.value; done_ }
+  ;;
+end
 
 (* ==================================================================== *)
 (* The gates *)
 (* ==================================================================== *)
 
+(* The gates run at era five's width; the walks and the sums they print do not depend on
+   it, and the era sources exercise each instantiation in their own simulations. *)
+module M14 = Make (struct
+    let walk_bits = 14
+  end)
+
+open M14
 module Sim = Cyclesim.With_interface (I) (O)
 
 (* the operand of a term is a function of its indexes; the testbench serves them at the
@@ -134,8 +157,8 @@ let driver (sim : Sim.t) =
     then Queue.enqueue feed (Bits.to_int_trunc !(out.ii), Bits.to_int_trunc !(out.oo))
   in
   fun ~inner ~outer ~holds ->
-    inp.inner := Bits.of_unsigned_int ~width:9 inner;
-    inp.outer := Bits.of_unsigned_int ~width:9 outer;
+    inp.inner := Bits.of_unsigned_int ~width:walk_bits inner;
+    inp.outer := Bits.of_unsigned_int ~width:walk_bits outer;
     let sums = ref [] in
     inp.go := Bits.vdd;
     step ~hold:false;

@@ -82,7 +82,7 @@ let harness () =
 
 let%expect_test "the isqrt floors, as the reference does" =
   let isqrt = harness () in
-  let oracle = Quantized.Engine.For_test.isqrt in
+  let oracle = Quantized.isqrt in
   List.iter
     [ 0; 15; 16; 4295; (1 lsl 41) + 12345 ]
     ~f:(fun v -> Stdio.printf "%d -> %d (oracle %d)\n" v (isqrt v) (oracle v));
@@ -124,7 +124,7 @@ let%expect_test "the fuzz: the root is the floor, and it squares back under the 
   let fault v =
     let root = isqrt v in
     let floors = root * root <= v && (root + 1) * (root + 1) > v in
-    if floors && root = Quantized.Engine.For_test.isqrt v then None else Some (v, root)
+    if floors && root = Quantized.isqrt v then None else Some (v, root)
   in
   (match List.filter_map cases ~f:fault with
    | [] ->
@@ -136,7 +136,7 @@ let%expect_test "the fuzz: the root is the floor, and it squares back under the 
        "the root of %d read %d, the reference gives %d\n"
        v
        root
-       (Quantized.Engine.For_test.isqrt v));
+       (Quantized.isqrt v));
   [%expect {| 1070 walks: every root floors its value and agrees with the reference |}]
 ;;
 

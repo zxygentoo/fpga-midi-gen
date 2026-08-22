@@ -2,74 +2,21 @@ open Base
 module Params_data = Transformer.Params_data
 
 module Constants = struct
-  (* the scores and the logits are Q12 as well, and stay wide; no constant names them *)
-  let h_q = 16
-  let y_q = 12
+  (* the shared rules of [Mgen_nn.Quantized], and this era's own beside them; the scores
+     and the logits are Q12 as well, and stay wide — no constant names them *)
+  include Mgen_nn.Quantized.Constants
+
+  (* the query, the keys, the values and the context: Q12 in int16. It is a name of its
+     own because the rings store these rows and the ring is where the format is a design
+     choice, not an accident of the datapath. *)
   let kv_q = 12
-  let hid_q = 10
-
-  (* the rms epsilon of the float model, in the Q of the squared stream: the sum squares a
-     Q12 copy, thus the mean is Q(2 y_q) *)
-  let eps_q = Float.iround_nearest_exn (Float.ldexp 1e-6 (2 * y_q))
-
-  (* A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
-     the value because the two are one fact — a multiply that takes the wrong shift is
-     silently wrong, and both the reference and the circuit apply these scales. *)
-  type scale =
-    { q_value : int
-    ; q : int
-    }
-
-  (* [apply s v] scales [v] by [s], toward negative infinity — an arithmetic shift, as the
-     circuit's. *)
-  let apply { q_value; q } v = (v * q_value) asr q
-
-  (* log2(e): the exp2 form of the softmax exponent *)
-  let log2e =
-    let q = 15 in
-    { q_value = Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0) q); q }
-  ;;
-
-  (* the quantized exponential: exp2 of -j/256 in Q15 — the table of the softmax and the
-     sampler, and the same species as the weights *)
-  let exp2_table =
-    Array.init 256 ~f:(fun j ->
-      Float.iround_nearest_exn Float.(32768.0 * (2.0 ** (-of_int j / 256.0))))
-  ;;
-
-  let exp2_bits = Array.map exp2_table ~f:(Hardcaml.Bits.of_unsigned_int ~width:16)
-
-  (* The score walk sums the products of two Q[kv_q] values, thus its sum is Q(2 kv_q);
-     this brings it to Q[y_q] and applies the 1/sqrt(head_d) of the reference in the same
-     shift, thus [head_d] is a power of four. *)
-  let score_shift ~head_d = (2 * kv_q) - y_q + (Int.floor_log2 head_d / 2)
-
-  (* The ALiBi slope of head [head] is 2^-(this), thus the penalty is a shift of the age. *)
-  let slope_exponent ~span ~heads ~head = span * (head + 1) / heads
+  let score_shift ~head_d = score_shift ~row_q:kv_q ~head_d
 end
 
-module Tensor = struct
-  type t = int array
-  type floats = float array
-
-  (* the index of the peak; the compare is strict, thus a tie keeps the first *)
-  let peak_index (values : floats) =
-    Array.foldi values ~init:0 ~f:(fun i best v ->
-      if Float.(v > values.(best)) then i else best)
-  ;;
-
-  let dot a b = Array.fold2_exn a b ~init:0.0 ~f:(fun acc x y -> Float.(acc + (x * y)))
-  let floats_of (q : t) = Array.map q ~f:Float.of_int
-  let same_peak (q : t) (f : floats) = peak_index (floats_of q) = peak_index f
-
-  let cosine (q : t) (f : floats) =
-    let q = floats_of q in
-    Float.(dot q f / sqrt (dot q q * dot f f))
-  ;;
-end
+module Tensor = Mgen_nn.Quantized.Tensor
 
 module Model = struct
-  type quantized =
+  type quantized = Mgen_nn.Quantized.quantized =
     { q : Tensor.t
     ; e : int
     }
@@ -117,51 +64,13 @@ module Model = struct
     |> Params_data.of_list ~layers:t.config.Transformer.Config.layers
   ;;
 
-  let rom_bits t =
-    Array.concat_map
-      (Array.of_list (Params_data.to_list t.params))
-      ~f:(fun { q; e = (_ : int) } ->
-        Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
-  ;;
+  let rom_bits t = Mgen_nn.Quantized.rom_bits (Params_data.to_list t.params)
 
-  (* The policy in the integer forms of the machine; the rules of the float sampler. The
-     temper is log2(e) / T, and its Q is one below the Q of [Constants.log2e]. The extra
-     bit is headroom for the temperature: the circuit multiplies by this constant on an
-     18-bit signed port, thus the Q of [log2e] would overflow that port under a
-     temperature of about 0.36, and this Q holds down to about 0.18. *)
-  let policy ~temperature ~min_p =
-    Transformer.check_policy ~temperature ~min_p;
-    let q = Constants.log2e.q - 1 in
-    ( { Constants.q_value =
-          Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0 /. temperature) q)
-      ; q
-      }
-    , Float.iround_nearest_exn (min_p *. 32768.0) )
-  ;;
-
-  (* the quantization arithmetic: pure functions from the float values to the int8 form *)
-  let max_abs (floats : Tensor.floats) =
-    Array.fold floats ~init:0.0 ~f:(fun acc v -> Float.max acc (Float.abs v))
-  ;;
-
-  (* the largest exponent that keeps round(max|w| * 2^e) at 127 or less; 14 caps the
-     all-zero tensor *)
-  let max_exponent v =
-    let fits e = Float.iround_nearest_exn (Float.ldexp v e) <= 127 in
-    (* [fits] falls monotonically in [e], thus the first [e] that fits is the largest *)
-    let rec largest e = if fits e then e else largest (e - 1) in
-    if Float.(v <= 0.0) then 14 else largest 14
-  ;;
-
-  (* [e] overrides the exponent of the tensor's own peak — the two tables share one,
-     because their rows add *)
-  let quantize ?e (floats : Tensor.floats) =
-    let e = Option.value e ~default:(max_exponent (max_abs floats)) in
-    let clamp ft =
-      Int.clamp_exn (Float.iround_nearest_exn (Float.ldexp ft e)) ~min:(-127) ~max:127
-    in
-    { q = Array.map floats ~f:clamp; e }
-  ;;
+  (* the quantization and the integer policy, from the shared rules *)
+  let policy = Mgen_nn.Quantized.policy
+  let max_abs = Mgen_nn.Quantized.max_abs
+  let max_exponent = Mgen_nn.Quantized.max_exponent
+  let quantize = Mgen_nn.Quantized.quantize
 
   let of_floats (config : Transformer.Config.t) ~temperature ~min_p tensors =
     let temper, min_weight = policy ~temperature ~min_p in
@@ -279,38 +188,12 @@ module Engine = struct
     if target >= from then v lsl (target - from) else v asr (from - target)
   ;;
 
-  let clamp16 v = Int.clamp_exn v ~min:(-32768) ~max:32767
-
-  (* the reductions of the engine: [sum n f] is the MAC — the sum of [f i] over
-     [0 .. n - 1] — and [max_over n f] is the peak scan *)
-  let sum n f =
-    let rec go acc i = if i = n then acc else go (acc + f i) (i + 1) in
-    go 0 0
-  ;;
-
-  let max_over n f =
-    let rec go acc i = if i = n then acc else go (Int.max acc (f i)) (i + 1) in
-    go Int.min_value 0
-  ;;
-
-  (* floor of the square root; any correct algorithm gives the one answer the circuit must
-     also give *)
-  let isqrt n =
-    if n <= 0
-    then 0
-    else (
-      let rec shrink g = if g * g > n then shrink (g - 1) else g in
-      let rec grow g = if (g + 1) * (g + 1) <= n then grow (g + 1) else g in
-      grow (shrink (Float.to_int (Float.sqrt (Float.of_int n)))))
-  ;;
-
-  (* exp2 of a Q12 value that is 0 or less: the integer part shifts, the top eight bits of
-     the fraction index the table. The result is Q15, and the peak — input 0 — is 2^15. *)
-  let exp2_q u =
-    let n = -u in
-    let i = n asr 12 in
-    if i >= 16 then 0 else Constants.exp2_table.((n asr 4) land 255) asr i
-  ;;
+  (* the scalar rules of the engine, from the shared integer rules of [Mgen_nn] *)
+  let clamp16 = Mgen_nn.Quantized.clamp16
+  let sum = Mgen_nn.Quantized.sum
+  let max_over = Mgen_nn.Quantized.max_over
+  let isqrt = Mgen_nn.Quantized.isqrt
+  let exp2_q = Mgen_nn.Quantized.exp2_q
 
   (* rms_norm of the residual stream: the sum squares a Q12 copy of the stream — one
      DSP-sized product — then one isqrt, and one division for each element. The division
@@ -499,23 +382,9 @@ module Engine = struct
       above + rescale ~from:t.p.seats.e ~target:Constants.h_q t.p.seats.q.(base + i))
   ;;
 
-  (* three PRNG bytes, high first: the walk of [Prng.uniform] *)
-  let u24 prng =
-    let open Prng in
-    run
-      (let* high = next in
-       let* middle = next in
-       let+ low = next in
-       (((high * 256) + middle) * 256) + low)
-      prng
-  ;;
-
-  (* The draw over the logits of one seat. No mask stands before it, because no frame is
-     illegal.
-
-     The arithmetic decides the tie the float twin has to argue about: [u] is below 2^24,
-     thus the threshold is below the total, thus some running total passes it and the
-     class the walk names always holds weight. The walk needs no fallback and states none. *)
+  (* The draw over the logits of one seat, through the shared integer pick. No mask stands
+     before it, because no frame is illegal, and the pick needs no fallback:
+     [Mgen_nn.Quantized.draw] states why. *)
   let draw_of_logits t ~logits =
     let peak = max_over classes (fun c -> logits.(c)) in
     (* the tempered weight of one class: exp2, and refused under min-p *)
@@ -524,17 +393,8 @@ module Engine = struct
       if e >= t.min_weight then e else 0
     in
     let weights = Array.init classes ~f:weight in
-    let total = sum classes (fun c -> weights.(c)) in
-    let prng, u = u24 t.prng in
-    let threshold = (u * total) asr 24 in
-    let rec walk c running =
-      if c = classes - 1
-      then c
-      else (
-        let running = running + weights.(c) in
-        if running > threshold then c else walk (c + 1) running)
-    in
-    { t with prng }, Float.of_int u *. 0x1p-24, walk 0 0
+    let prng, uniform, index = Mgen_nn.Quantized.draw ~weights t.prng in
+    { t with prng }, uniform, index
   ;;
 
   (* One frame, drawn in a chain from the soprano down: each seat reads the stream that
@@ -570,13 +430,6 @@ module Engine = struct
     in
     forward t ~frame:step.frame ~phase, step
   ;;
-
-  (* the scalar rules the L0 circuit units must reproduce; their gate tests read them here
-     rather than restate them *)
-  module For_test = struct
-    let isqrt = isqrt
-    let exp2_q = exp2_q
-  end
 end
 
 module Drift = struct
@@ -663,37 +516,6 @@ let test_model ~seed = Model.For_test.(init config ~seed)
 (* ==================================================================== *)
 (* The image the bitstream carries *)
 (* ==================================================================== *)
-
-(* These four rules decide every byte the board holds. The frame gate reads them only
-   through a walk of tens of thousands of cycles, thus a break there says "the frames
-   disagree" and says nothing about which rule broke. *)
-let%expect_test "the exponent of a tensor, and the clamp of the byte" =
-  (* the largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
-     every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
-     exponent has to step down. *)
-  List.iter [ 0.0; 0.02; 0.08; 127.0; 127.49; 127.5; 1e9 ] ~f:(fun v ->
-    Stdio.printf "%-6g -> %d\n" v (Model.max_exponent v));
-  (* The byte is two's complement and the negative end is not used: the clamp is -127 and
-     not -128, thus the image is symmetric and a negated weight is a negated byte. A tie
-     rounds up and never away from zero, thus -5.5 is -5. *)
-  let { Model.q; e } = Model.quantize ~e:0 [| 200.0; -200.0; 5.4; -5.5; 0.0 |] in
-  Stdio.printf "at e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
-  (* with no exponent given, the tensor's own peak states it *)
-  let { Model.q; e } = Model.quantize [| 0.02; -0.01; 0.0 |] in
-  Stdio.printf "at its own e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
-  [%expect
-    {|
-    0      -> 14
-    0.02   -> 12
-    0.08   -> 10
-    127    -> 0
-    127.49 -> 0
-    127.5  -> -1
-    1e+09  -> -23
-    at e 0: (127 -127 5 -5 0)
-    at its own e 12: (82 -41 0)
-    |}]
-;;
 
 let%expect_test "the seat table and the phase table share one exponent" =
   let config = Model.For_test.config in
@@ -792,25 +614,6 @@ let%expect_test "the checkpoint seam: a tensor of the wrong count raises" =
          let (_ : Model.t) = Model.of_checkpoint config path in
          ())));
   [%expect {| <file> tensor 2 holds 992 values, not 1024 |}]
-;;
-
-let%expect_test "the exp2 table: the peak, the floor and the halving" =
-  (* entry 0 is the peak 2^15; a full fractional step halves; the last entry sits one
-     table step above one half *)
-  Stdio.printf
-    "%d %d %d  half at one: %d\n"
-    Constants.exp2_table.(0)
-    Constants.exp2_table.(128)
-    Constants.exp2_table.(255)
-    (Engine.exp2_q (-4096));
-  [%expect {| 32768 23170 16428  half at one: 16384 |}]
-;;
-
-let%expect_test "isqrt floors" =
-  List.iter [ 0; 1; 2; 3; 4; 15; 16; 17; 1_000_000 ] ~f:(fun n ->
-    Stdio.printf "%d " (Engine.For_test.isqrt n));
-  Stdio.printf "\n";
-  [%expect {| 0 1 1 1 2 3 4 4 1000 |}]
 ;;
 
 let%expect_test "the lead-in draws nothing, and the seed names the walk" =

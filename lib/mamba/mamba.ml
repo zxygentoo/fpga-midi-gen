@@ -3,7 +3,7 @@ module Ptree = Kaun.Ptree
 
 type tensor = (float, Nx.float32_elt) Nx.t
 
-let numel shape = Array.fold shape ~init:1 ~f:( * )
+let numel = Mgen_nn.Checkpoint.numel
 
 (* The depth of the key and value ring an attention layer reads at inference, and it is
    ERA FOUR'S TRAINING WINDOW. A block carries a state of one size and knows no context;
@@ -807,52 +807,10 @@ let loss (config : Config.t) params ~windows =
   Nx.item [] (Nx.mean (Option.value_exn nll))
 ;;
 
-(* The tempered weight of each class against the peak: the peak weighs one, thus [min_p]
-   is a share of the peak and one compare holds the filter. *)
-let tempered raw ~temperature =
-  let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
-  Array.map raw ~f:(fun value -> Float.exp ((value -. peak) /. temperature))
-;;
-
-let above_min_p weights ~min_p =
-  if Float.(min_p <= 0.0)
-  then weights
-  else
-    Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
-;;
-
-(* the running totals of the weights, left to right; the last of them is the total *)
-let running_totals weights =
-  Array.folding_map weights ~init:0.0 ~f:(fun total weight ->
-    let total = total +. weight in
-    total, total)
-;;
-
-(* The class whose running total passes the draw.
-
-   It takes the uniform and not a draw, thus one function owns both sums and the total is
-   the last running total — never a second sum of the same weights. Two sums of one array
-   differ in the last bits, and a draw made against the other sum can land above every
-   running total, where no class passes at all.
-
-   Against this total the draw is strictly below it: the uniform falls under 1 by 2 ** -24
-   at the least. Therefore the walk always ends on a class, and that class always holds
-   weight — to reach the last index is to know that no earlier total passed, thus the
-   weight there is the difference of two totals across the draw. No fallback is necessary,
-   and none is written. *)
-let pick weights ~uniform =
-  let running = running_totals weights in
-  let last = Array.length running - 1 in
-  let draw = uniform *. running.(last) in
-  let rec walk index =
-    if index = last || Float.(running.(index) > draw) then index else walk (index + 1)
-  in
-  walk 0
-;;
-
-let draw_class raw ~temperature ~min_p ~uniform =
-  pick (above_min_p (tempered raw ~temperature) ~min_p) ~uniform
-;;
+(* The draw of one seat as one function, from the one policy both eras share: the sampler
+   below and the drift report of [Quantized] both take it, thus the two pipelines are
+   comparable pick for pick. *)
+let draw_class = Mgen_nn.Policy.draw_class
 
 (* the row of a table as a stream of one position, thus the chain can add it *)
 let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
@@ -906,17 +864,12 @@ let draw_frame (config : Config.t) params ~temperature ~min_p ~rng ~stream =
   rng, List.rev classes
 ;;
 
-(* The bounds of the draw. The quantized twin states the same two, thus one module owns
-   them and a reader finds one message for each. *)
-let check_policy ~temperature ~min_p =
-  if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
-  if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1"
-;;
-
-(* The draw era four elected on 2026-08-18, carried over. This era re-elects it by ear
-   with the whole chain in view; until then the two eras are auditioned on one policy. *)
-let elected_temperature = 1.0
-let elected_min_p = 0.05
+(* The bounds and the elected numbers of the draw, from the one policy both eras share.
+   This era re-elects the numbers by ear with the whole chain in view; until then the two
+   eras are auditioned on one policy. *)
+let check_policy = Mgen_nn.Policy.check_policy
+let elected_temperature = Mgen_nn.Policy.elected_temperature
+let elected_min_p = Mgen_nn.Policy.elected_min_p
 
 (* the walk of the sampler: the generator, the memory of the model, and the stream the
    chain of the next step will read *)
@@ -958,36 +911,15 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   Array.of_list frames
 ;;
 
-(* the message of the [Invalid_argument] that a rule raises, and ["no raise"] when the
-   rule accepts: a gate that pins a message needs no exception handler of its own *)
-let refusal f =
-  match f () with
-  | () -> "no raise"
-  | exception Invalid_argument message -> message
-;;
+let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint as [jax/mamba/train.py] writes it: the tensors named "0" upward, in
-     the flat order of [Params_data.to_list]. Three readers cross that seam —
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] — thus one
-     writer states the naming rule and the gates of both modules read one file.
-
-     The gate makes the file itself, thus it reads no file that git ignores, and [f] holds
-     the whole life of the file: it goes when [f] gives and when [f] raises. *)
-  let with_checkpoint tensors ~f =
-    let path = Stdlib.Filename.temp_file "mgen_mamba_checkpoint" ".safetensors" in
-    Exn.protect
-      ~f:(fun () ->
-        Nx_io.save_safetensors
-          path
-          (List.mapi tensors ~f:(fun index tensor -> Int.to_string index, Nx_io.P tensor));
-        f path)
-      ~finally:(fun () -> Stdlib.Sys.remove path)
-  ;;
-
-  let refusal ~path f =
-    String.substr_replace_all (refusal f) ~pattern:path ~with_:"<file>"
-  ;;
+  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
+     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
+     three readers, thus one writer states the naming rule and the gates of both modules
+     read one file. *)
+  let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
+  let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end
 
 (* the shape of a test model: small enough to run in a test, and the whole plan of the era
@@ -1226,58 +1158,5 @@ let%expect_test "the flat order of the checkpoint reads back" =
     a block one tensor short: a Block layer takes 6 tensors
     a head where a block stands: a Block layer takes 6 tensors
     two blocks of tensors for one block: 6 tensors stand after the plan
-    |}]
-;;
-
-(* ==================================================================== *)
-(* The rules both pipelines share *)
-(* ==================================================================== *)
-
-(* The quantized twin draws through these rules and never through a copy of them, thus a
-   rule that moved here would move the circuit's walk with it. *)
-let%expect_test "the fuzz: a pick lands on a class that holds weight" =
-  let state = Random.State.make [| 20260819 |] in
-  let drawn_weights (_ : int) =
-    let classes = Random.State.int_incl state 1 Vocab.classes in
-    let raw =
-      Array.init classes ~f:(fun (_ : int) -> Random.State.float_range state (-20.) 20.)
-    in
-    let temperature = Random.State.float_range state 0.5 1.5 in
-    let min_p = Random.State.float_range state 0.0 0.9 in
-    above_min_p (tempered raw ~temperature) ~min_p
-  in
-  let edges = [ [| 1.0 |]; [| 1.0; 0.0 |]; [| 0.0; 1.0 |]; [| 0.0; 0.0; 1.0; 0.0 |] ] in
-  let cases = edges @ List.map (List.range 0 200) ~f:drawn_weights in
-  let uniforms = [ 0.0; 0.5; Float.of_int 0xFFFFFF *. 0x1p-24 ] in
-  let fault weights =
-    List.find_map uniforms ~f:(fun uniform ->
-      let index = pick weights ~uniform in
-      if Float.(weights.(index) > 0.0) then None else Some (Array.length weights, index))
-  in
-  (match List.filter_map cases ~f:fault with
-   | [] ->
-     printf
-       "%d weight rows over %d uniforms: every pick holds weight\n"
-       (List.length cases)
-       (List.length uniforms)
-   | (classes, index) :: (_ : (int * int) list) ->
-     printf "a row of %d classes picked %d, which holds no weight\n" classes index);
-  [%expect {| 204 weight rows over 3 uniforms: every pick holds weight |}]
-;;
-
-let%expect_test "the policy bounds: one message for each" =
-  let policy ~temperature ~min_p = refusal (fun () -> check_policy ~temperature ~min_p) in
-  printf "temperature 0: %s\n" (policy ~temperature:0.0 ~min_p:elected_min_p);
-  printf "min_p 1: %s\n" (policy ~temperature:elected_temperature ~min_p:1.0);
-  printf "min_p below 0: %s\n" (policy ~temperature:elected_temperature ~min_p:(-0.1));
-  printf
-    "the elected policy: %s\n"
-    (policy ~temperature:elected_temperature ~min_p:elected_min_p);
-  [%expect
-    {|
-    temperature 0: the temperature is positive
-    min_p 1: min_p is 0 up to 1
-    min_p below 0: min_p is 0 up to 1
-    the elected policy: no raise
     |}]
 ;;

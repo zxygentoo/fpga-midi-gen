@@ -12,11 +12,11 @@ next forward, so the loop is latency-bound and a GPU would take the device from 
 trainer.
 
 The decode is a rule of the frame and lives in data.py; the player sends what it makes:
-raw channel voice bytes on the rawmidi device, with no backend library in the way.
+raw channel voice bytes on the rawmidi device, with no backend library in the way —
+the wire side itself is midi.py, shared by both eras.
 """
 
 import os
-import time
 from pathlib import Path
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -24,65 +24,13 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import click
 import jax
 import jax.numpy as jnp
-import mido
 import numpy as np
 
 import data
+import midi
 import prng
+from nn import draw_frame
 from mamba import model
-
-NOTE_ON, NOTE_OFF = 0x90, 0x80
-RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
-DEVICE = "/dev/snd/midiC2D0"
-JAX_ROOT = Path(__file__).resolve().parent.parent
-
-
-def rms_norm(x):
-    return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-6)
-
-
-def temper(raw, temperature, min_p):
-    """the tempered weight of each class against the peak, then the min-p floor; the peak
-    weighs one, thus min_p is a share of the peak"""
-    weights = np.exp((raw - raw.max(axis=1, keepdims=True)) / temperature)
-    if min_p > 0.0:
-        weights = np.where(weights >= min_p, weights, 0.0)
-    return weights
-
-
-def pick(weights, uniform):
-    """The class whose running total passes the draw.
-
-    It takes the uniform and not a draw, thus one function owns both sums and the total is
-    the last running total -- never a second sum of the same weights. numpy adds pairwise in
-    sum() and left to right in cumsum(), thus two sums of one array differ in the last bits,
-    and a draw made against the other sum can land above every running total, where no class
-    passes at all.
-
-    Against this total the draw is strictly below it, because the uniform falls under 1 by
-    2**-24 at the least. Therefore the walk always ends on a class, and that class always
-    holds weight the floor left standing."""
-    running = np.cumsum(weights, axis=1)
-    return (running > (uniform * running[:, -1])[:, None]).argmax(axis=1)
-
-
-def draw_frame(params, h, state, temperature, min_p):
-    """One step of the chained head, on the host: the soprano first, and each seat under it
-    reading the stream the seats above have written.
-
-    The chain is the reason a frame is a joint choice and not four independent ones. Seat 0
-    is the bass and seat 3 the soprano, thus the loop runs down."""
-    seats = np.asarray(params["seats"])
-    stream = h
-    frame = np.zeros((len(h), data.SEATS), dtype=np.int32)
-    for seat in reversed(range(data.SEATS)):
-        raw = (rms_norm(stream) @ seats[seat].T).astype(np.float64)
-        weights = temper(raw, temperature, min_p)
-        state, uniform = prng.uniform(state, True)
-        frame[:, seat] = pick(weights, uniform)
-        if seat:
-            stream = stream + seats[seat][frame[:, seat]]
-    return state, frame
 
 
 def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
@@ -124,69 +72,9 @@ def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT)
     return np.stack(frames, axis=1)
 
 
-def step_line(step, events):
-    """the line format of bin/play_mamba.ml, so that a dump reads back"""
-    return f"step {step:3d}  " + (" ".join(f"{k}:{p}" for k, p in events) or "-")
-
-
-
-def play(music, *, device, step_ms, channel, velocity):
-    """Send one walk to the synthesizer: raw channel voice bytes on the rawmidi device."""
-    ringing = set()
-    with open(device, "wb", buffering=0) as wire:
-        try:
-            for step, events in enumerate(music):
-                click.echo(step_line(step, events))
-                for kind, pitch in events:
-                    if kind == "on":
-                        wire.write(bytes([NOTE_ON | channel, pitch, velocity]))
-                        ringing.add(pitch)
-                    else:
-                        wire.write(bytes([NOTE_OFF | channel, pitch, RELEASE_VELOCITY]))
-                        ringing.discard(pitch)
-                time.sleep(step_ms / 1000.0)
-        finally:
-            # the drain: each open note closes, as the sequencer does at a stop
-            for pitch in ringing:
-                wire.write(bytes([NOTE_OFF | channel, pitch, RELEASE_VELOCITY]))
-
-
-def save(music, path, *, step_ms, channel, velocity):
-    """one walk as a standard MIDI file: one step is one tick, and the tempo carries the
-    step period"""
-    track = mido.MidiTrack()
-    midi = mido.MidiFile(ticks_per_beat=4)
-    midi.tracks.append(track)
-    track.append(mido.MetaMessage("set_tempo", tempo=int(step_ms * 1000 * 4)))
-    waited = 0
-    for events in music:
-        for kind, pitch in events:
-            track.append(
-                mido.Message(
-                    "note_on" if kind == "on" else "note_off",
-                    note=pitch,
-                    velocity=velocity if kind == "on" else RELEASE_VELOCITY,
-                    channel=channel,
-                    time=waited,
-                )
-            )
-            waited = 0
-        waited += 1
-    midi.save(path)
-
-
-def parse_seeds(ctx, param, value):
-    """a list, or LOW-HIGH"""
-    del ctx, param
-    if "-" in value:
-        low, high = value.split("-")
-        return list(range(int(low), int(high) + 1))
-    return [int(seed) for seed in value.split(",")]
-
-
 @click.command(help=__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--seeds", default="1", callback=parse_seeds, help="a list, or LOW-HIGH")
+@click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 # The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
 # it does the two eras are auditioned on one policy. The OCaml side states these once, as
@@ -200,9 +88,9 @@ def parse_seeds(ctx, param, value):
     help="the depth of the attention layer's key and value ring, in steps. It is the "
     "one context this model has, and only where the plan attends at all.",
 )
-@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}")
+@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
-@click.option("--device", default=DEVICE)
+@click.option("--device", default=midi.DEVICE)
 @click.option("--step-ms", default=200)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
@@ -231,10 +119,10 @@ def main(
         if len(seeds) > 1:
             raise click.UsageError("--play and --save take one seed")
         if to_file:
-            save(music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity)
+            midi.save(music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity)
             click.echo(f"wrote {to_file}")
         if to_synth:
-            play(
+            midi.play(
                 music[0],
                 device=device,
                 step_ms=step_ms,
@@ -245,7 +133,7 @@ def main(
     for seed, walk in zip(seeds, music):
         if len(seeds) > 1:
             click.echo(f"# seed {seed}")
-        click.echo("\n".join(step_line(step, events) for step, events in enumerate(walk)))
+        click.echo("\n".join(midi.step_line(step, events) for step, events in enumerate(walk)))
 
 
 if __name__ == "__main__":

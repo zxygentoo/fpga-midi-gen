@@ -51,14 +51,17 @@ import jax
 import jax.numpy as jnp
 from safetensors.numpy import load_file
 
-from data import BAR_STEPS, SEATS
-from transformer.model import SLOPE_SPAN, attention_bias
-
-jax.config.update("jax_default_matmul_precision", "float32")
-
-# the phase table IS the bar -- one row for each step of it, as era four states it
-PHASE_BUCKETS = BAR_STEPS
-TABLES = ("seats", "phase")
+from nn import (
+    PHASE_BUCKETS,
+    SLOPE_SPAN,
+    TABLES,
+    attention_bias,
+    dropout_masks,
+    embed,
+    rms_norm,
+    seat_logits,
+    seat_nll_of_hidden,
+)
 
 # The two kinds of layer. A trunk of blocks alone is the model of docs/mamba.md; a plan
 # with an attention layer in it is the hybrid probe, and the attention is ERA FOUR'S,
@@ -211,10 +214,6 @@ def load_params(path):
     if span is not None:
         params[SPAN_KEY] = span
     return params
-
-
-def rms_norm(x):
-    return x * jax.lax.rsqrt(jnp.mean(x * x, axis=-1, keepdims=True) + 1e-6)
 
 
 def initial_carry(shape, batch, context=ATTN_CONTEXT):
@@ -536,18 +535,6 @@ def branch_window(shape, kind, layer, y, e, span):
     return block_window(shape, layer, y) @ layer["w_out"]
 
 
-def embed(params, classes):
-    """The input of one step: the four seat rows sum.
-
-    A shared table with a voice tag cannot work here, and the reason is arithmetic and not
-    capacity. Every step carries all four seats, thus the sum of the four tags is the same
-    vector at every position -- a bias, which carries nothing -- and what remains is
-    symmetric in the four codes. A soprano on 72 over a bass on 48 would give the vector of
-    a soprano on 48 under a bass on 72, and the voices would be thrown away on the way in.
-    Four tables break the symmetry, and no voice tag is then necessary anywhere."""
-    return sum(params["seats"][seat][classes[..., seat]] for seat in range(SEATS))
-
-
 def forward_step(params, carry, classes, phases, *, span=None):
     """One step of the walk: the frame that just played goes in, and the residual stream
     the head reads comes out. [carry] is the whole memory of the model and the only thing
@@ -564,12 +551,6 @@ def forward_step(params, carry, classes, phases, *, span=None):
         h = h + branch
         out.append(after)
     return out, h
-
-
-def dropout_masks(key, rate, shape_):
-    """the multiplier form of the inverted dropout of era four"""
-    keep = 1.0 - rate
-    return jax.random.bernoulli(key, keep, shape_) / keep
 
 
 def hidden(params, classes, phases, *, dropout=0.0, key=None, span=None):
@@ -596,35 +577,6 @@ def hidden(params, classes, phases, *, dropout=0.0, key=None, span=None):
     return h
 
 
-def seat_logits(params, h, drawn):
-    """The chained head: [batch, length, d] -> [batch, length, SEATS, CLASSES].
-
-    Era four's head, carried over to the tensor. Each seat reads the stream that the seats
-    above it have already written:
-
-        h3 = h                   logits(seat 3) = E[3] . rms(h3)
-        h2 = h3 + E[3][c3]       logits(seat 2) = E[2] . rms(h2)
-        h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
-        h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
-
-    [drawn] holds the classes the chain conditions on -- the true frame in training, where
-    all four heads then run in one pass with no sampling, and the drawn seats at the draw.
-    Only seats 3, 2 and 1 are read.
-
-    The chain runs from the soprano down, which keeps the one decision the ear accepted:
-    the top voice is chosen first and conditions on no voice under it, as the music is
-    written. Four heads that drew in parallel would make the voices conditionally
-    independent, and a chord is a joint choice."""
-    seats = params["seats"]
-    stream = h
-    logits = [None] * SEATS
-    for seat in reversed(range(SEATS)):
-        logits[seat] = rms_norm(stream) @ seats[seat].T
-        if seat:
-            stream = stream + seats[seat][drawn[..., seat]]
-    return jnp.stack(logits, axis=-2)
-
-
 def seat_nll(params, classes, phases, *, dropout=0.0, key=None, span=None):
     """The negative log likelihood of every voice of every step: classes
     [batch, length + 1, SEATS] -> [batch, length, SEATS].
@@ -634,5 +586,4 @@ def seat_nll(params, classes, phases, *, dropout=0.0, key=None, span=None):
     four speaks this same unit on these same windows, thus the two eras compare."""
     labels = classes[:, 1:]
     h = hidden(params, classes[:, :-1], phases, dropout=dropout, key=key, span=span)
-    logp = jax.nn.log_softmax(seat_logits(params, h, labels), axis=-1)
-    return -jnp.take_along_axis(logp, labels[..., None], axis=-1)[..., 0]
+    return seat_nll_of_hidden(params, h, labels)

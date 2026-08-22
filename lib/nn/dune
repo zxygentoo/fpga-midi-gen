@@ -1,0 +1,17 @@
+(library
+ (name mgen_nn)
+ ; The common parts of the neural-net sources. Era four and era five each hold a model in
+ ; four layers — the JAX trainer, the OCaml float reference, the integer twin and the
+ ; circuit — and what is one thing across the eras stands here one time: the units, the
+ ; fixed-point rules, the sampling policy and the checkpoint seam. What only rhymes
+ ; between the eras — the op vocabularies, the schedules, the parameter structures — stays
+ ; in the era libraries, and the op and schedule abstraction is an open question by
+ ; standing rule.
+ (libraries base stdio hardcaml hardcaml_waveterm nx nx.io mgen_core)
+ (flags
+  (:standard -open Mgen_core))
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (preprocess
+  (pps ppx_hardcaml ppx_expect ppx_sexp_conv)))

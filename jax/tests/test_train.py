@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+import nn
 from transformer import train
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
@@ -26,7 +27,7 @@ def test_the_schedule_holds_its_peak():
     """the peak is an input and never moves; a caller that overwrites it is the bug this
     file guards, and this pins the half that lives in the schedule"""
     peak = 1e-3
-    rates = [train.schedule(step, peak, 300, 48000) for step in range(1, 1000)]
+    rates = [nn.schedule(step, peak, 300, 48000) for step in range(1, 1000)]
     assert max(rates) == pytest.approx(peak)
     assert rates[299] == pytest.approx(peak)  # the warmup ends exactly on the peak
     assert rates[-1] > peak * 0.9  # and the cosine has barely begun to fall

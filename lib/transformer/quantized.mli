@@ -195,14 +195,6 @@ module Engine : sig
       2^24, thus it is below the total, thus some running total passes it and the class it
       names always holds the weight the floor left standing. *)
   val next_step : t -> t * step
-
-  (** The scalar rules of the engine that a circuit unit must reproduce exactly. The gate
-      tests of [Isqrt] and [Exp2] read them here rather than restate them, thus the unit
-      and the reference cannot drift apart in a definition. *)
-  module For_test : sig
-    val isqrt : int -> int
-    val exp2_q : int -> int
-  end
 end
 
 (** What the quantization costs, measured on the walk the board takes. *)

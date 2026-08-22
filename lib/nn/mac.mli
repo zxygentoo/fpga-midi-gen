@@ -1,4 +1,4 @@
-(** The MAC and its walk: the multiplier pipe of the source, one term a cycle.
+(** The MAC and its walk: the multiplier pipe of the sources, one term a cycle.
 
     The unit walks [outer] rows of [inner] terms. Each cycle it names one term by its
     issue counters [ii] (the term within the row) and [oo] (the row); the caller turns the
@@ -8,6 +8,12 @@
     from its address to its retirement, thus the control needs no knowledge of the pipe's
     depth: the row's first tag loads the accumulator, the last raises [row_done]. Rows
     stream back to back with no cycle between.
+
+    THE WALK WIDTH IS THE FUNCTOR'S ARGUMENT, and it is the one place a bigger model shows
+    through an otherwise model-free unit: era four's longest walk ran 256 rows and takes
+    nine bits, era five's state update walks [d_in * state] rows and takes fourteen. Each
+    source instantiates the width its own walks need, thus both netlists stand as their
+    boards proved them and neither pays for the other.
 
     The contract:
 
@@ -35,34 +41,47 @@ open Hardcaml
 
 (** Cycles from an issued address to the operands at [a]/[b]. Every memory that serves the
     walk reads through two registers: the array's read register, then the output register
-    that packs into the block RAM. *)
+    that packs into the block RAM. It does not depend on the width, thus a cost model
+    reads it without naming one. *)
 val read_latency : int
 
-module I : sig
-  type 'a t =
-    { clock : 'a
-    ; clear : 'a
-    ; go : 'a (** start a walk: the counters clear, issue begins next cycle *)
-    ; inner : 'a (** terms in a row, a count; stable during the walk *)
-    ; outer : 'a (** rows in the walk, a count; stable during the walk *)
-    ; hold : 'a (** freeze the walk and its tags *)
-    ; a : 'a (** operand, 25 bits signed, [read_latency] behind the counters *)
-    ; b : 'a (** operand, 18 bits signed, [read_latency] behind the counters *)
-    }
-  [@@deriving hardcaml]
+(** the width of the walk counters of one instantiation *)
+module type Width = sig
+  val walk_bits : int
 end
 
-module O : sig
-  type 'a t =
-    { ii : 'a (** the term this cycle's addresses must name *)
-    ; oo : 'a (** the row this cycle's addresses must name *)
-    ; product : 'a (** the free-running product — the bespoke tap *)
-    ; sum : 'a (** the finished row's sum; whole only while [row_done] *)
-    ; row_done : 'a (** one pulse per completed row *)
-    ; row : 'a (** the completed row's index, retire side *)
-    ; done_ : 'a (** the last row's [row_done] *)
-    }
-  [@@deriving hardcaml]
-end
+module Make (W : Width) : sig
+  (** [W.walk_bits], re-exported: the era sources size their command wires from it *)
+  val walk_bits : int
 
-val create : Signal.t I.t -> Signal.t O.t
+  val read_latency : int
+
+  module I : sig
+    type 'a t =
+      { clock : 'a
+      ; clear : 'a
+      ; go : 'a (** start a walk: the counters clear, issue begins next cycle *)
+      ; inner : 'a (** terms in a row, a count; stable during the walk *)
+      ; outer : 'a (** rows in the walk, a count; stable during the walk *)
+      ; hold : 'a (** freeze the walk and its tags *)
+      ; a : 'a (** operand, 25 bits signed, [read_latency] behind the counters *)
+      ; b : 'a (** operand, 18 bits signed, [read_latency] behind the counters *)
+      }
+    [@@deriving hardcaml]
+  end
+
+  module O : sig
+    type 'a t =
+      { ii : 'a (** the term this cycle's addresses must name *)
+      ; oo : 'a (** the row this cycle's addresses must name *)
+      ; product : 'a (** the free-running product — the bespoke tap *)
+      ; sum : 'a (** the finished row's sum; whole only while [row_done] *)
+      ; row_done : 'a (** one pulse per completed row *)
+      ; row : 'a (** the completed row's index, retire side *)
+      ; done_ : 'a (** the last row's [row_done] *)
+      }
+    [@@deriving hardcaml]
+  end
+
+  val create : Signal.t I.t -> Signal.t O.t
+end

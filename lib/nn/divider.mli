@@ -5,14 +5,23 @@
     lands at the output. Therefore the quotient truncates toward zero at every sign, as
     the reference division does.
 
+    The one design choice with a history: the start cycle latches the raw signed
+    numerator, and the FIRST BUSY CYCLE takes the magnitude, register to register. Era
+    four's original negated in the start cycle, which put a 40-bit carry chain between the
+    caller's operand mux and the first register. That closed with one writer of the
+    numerator; era five's head made a second, and the program counter's mux in front of
+    that carry chain was the critical path of the whole design — the magnitude stage cut
+    it, at one cycle for each divide. Both eras drive this unit now, and a caller with any
+    number of numerator writers pays no carry chain behind its mux.
+
     The contract:
 
     - [start] loads the operands and begins the walk. It wins over a walk in flight: a
       [start] in a busy cycle discards that walk and begins a new one.
     - [busy] reads 1 in the cycle after [start], and it reads 0 again [busy_cycles] later
-      — one cycle for each bit of the quotient. [quotient] is whole in the cycle [busy]
-      reads 0, and it stands until the next [start]. Therefore the caller waits on [busy]
-      and reads the result in the cycle the wait releases.
+      — one cycle for the magnitude, then one for each bit of the quotient. [quotient] is
+      whole in the cycle [busy] reads 0, and it stands until the next [start]. Therefore
+      the caller waits on [busy] and reads the result in the cycle the wait releases.
     - [numerator] is signed and [denominator] is unsigned.
     - The unit does not test the denominator against 0. A walk over 0 gives the largest
       magnitude the quotient holds, thus the caller must keep a zero denominator away.

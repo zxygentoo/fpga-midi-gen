@@ -55,6 +55,18 @@ open Signal
 module I = Source_intf.I
 module O = Source_intf.O
 
+(* The units, from the common home of the sources. [Mac] takes the width of this era's
+   longest walk — 256 rows, nine bits. The divider takes its magnitude in the first busy
+   cycle, thus [Divider.busy_cycles] is 41 here where the unit this source was built with
+   took 40: one more cycle for each divide, and no carry chain behind the operand mux. *)
+module Divider = Mgen_nn.Divider
+module Isqrt = Mgen_nn.Isqrt
+module Exp2 = Mgen_nn.Exp2
+
+module Mac = Mgen_nn.Mac.Make (struct
+    let walk_bits = 9
+  end)
+
 let clamp16 v =
   let v = sresize v ~width:32 in
   mux2
@@ -1513,10 +1525,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 16754, model 16754, delta 0
-    step 15: draws,  measured 31732, model 31732, delta 0
-    step 16: draws,  measured 31732, model 31732, delta 0
-    step 17: draws,  measured 31732, model 31732, delta 0
-    18 steps, 0 disagree, total 354696
+    step  0: silent, measured 16850, model 16850, delta 0
+    step 15: draws,  measured 31956, model 31956, delta 0
+    step 16: draws,  measured 31956, model 31956, delta 0
+    step 17: draws,  measured 31956, model 31956, delta 0
+    18 steps, 0 disagree, total 356808
     |}]
 ;;

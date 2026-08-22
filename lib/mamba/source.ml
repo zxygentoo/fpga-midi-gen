@@ -69,12 +69,17 @@ open Signal
 module I = Source_intf.I
 module O = Source_intf.O
 
-(* The two units era five takes from era four as they stand. They are model-free — their
-   interfaces speak widths and strobes, not transformers — thus this library imports them
-   and moves nothing. [Mac] could not come the same way and [Mac.walk_bits] says why;
-   [Divider] could not either, and its interface file says why. *)
-module Isqrt = Mgen_transformer.Isqrt
-module Exp2 = Mgen_transformer.Exp2
+(* The units, from the common home of the sources. [Mac] takes the width of this era's
+   longest walk — the state update's [d_in * state] rows, fourteen bits. *)
+module Divider = Mgen_nn.Divider
+module Isqrt = Mgen_nn.Isqrt
+module Exp2 = Mgen_nn.Exp2
+module Sigmoid = Mgen_nn.Sigmoid
+module Softplus = Mgen_nn.Softplus
+
+module Mac = Mgen_nn.Mac.Make (struct
+    let walk_bits = 14
+  end)
 
 let clamp16 v =
   let v = sresize v ~width:32 in

@@ -3,7 +3,7 @@ module Ptree = Kaun.Ptree
 
 type tensor = (float, Nx.float32_elt) Nx.t
 
-let numel shape = Array.fold shape ~init:1 ~f:( * )
+let numel = Mgen_nn.Checkpoint.numel
 
 module Config = struct
   type t =
@@ -346,57 +346,10 @@ let loss (config : Config.t) params ~windows =
   Nx.item [] (Nx.mean (Option.value_exn nll))
 ;;
 
-(* The tempered weight of each class against the peak: the peak weighs one, thus [min_p]
-   is a share of the peak and one compare holds the filter. *)
-let tempered raw ~temperature =
-  let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
-  Array.map raw ~f:(fun value -> Float.exp ((value -. peak) /. temperature))
-;;
-
-let above_min_p weights ~min_p =
-  if Float.(min_p <= 0.0)
-  then weights
-  else
-    Array.map weights ~f:(fun weight -> if Float.(weight >= min_p) then weight else 0.0)
-;;
-
-(* the running totals of the weights, left to right; the last of them is the total *)
-let running_totals weights =
-  Array.folding_map weights ~init:0.0 ~f:(fun total weight ->
-    let total = total +. weight in
-    total, total)
-;;
-
-(* The class whose running total passes the draw.
-
-   It takes the uniform and not a draw, thus one function owns both sums and the total is
-   the last running total — never a second sum of the same weights. Two sums of one array
-   differ in the last bits, and a draw made against the other sum can land above every
-   running total, where no class passes at all. That case is real in the twin, which adds
-   pairwise in [sum] and left to right in [cumsum].
-
-   Against this total the draw is strictly below it: the uniform falls under 1 by 2 ** -24
-   at the least, thus the exact product falls short by about 2 ** 29 units in the last
-   place, where rounding moves a result by half of one. Therefore the walk always ends on
-   a class, and that class always holds weight — to reach the last index is to know that
-   no earlier total passed, thus the weight there is the difference of two totals across
-   the draw. No fallback is necessary, and none is written. *)
-let pick weights ~uniform =
-  let running = running_totals weights in
-  let last = Array.length running - 1 in
-  let draw = uniform *. running.(last) in
-  let rec walk index =
-    if index = last || Float.(running.(index) > draw) then index else walk (index + 1)
-  in
-  walk 0
-;;
-
 (* The draw of one seat as one function: the tempered weights, the min-p floor, and the
    class whose running total passes the draw. The sampler below and the drift report of
    [Quantized] both take it, thus the two pipelines are comparable pick for pick. *)
-let draw_class raw ~temperature ~min_p ~uniform =
-  pick (above_min_p (tempered raw ~temperature) ~min_p) ~uniform
-;;
+let draw_class = Mgen_nn.Policy.draw_class
 
 (* the row of a table as a stream of one position, thus the chain can add it *)
 let table_row table index ~d = Nx.reshape [| 1; d |] (Nx.get [ index ] table)
@@ -448,17 +401,10 @@ type walk =
    over the result, thus the rule stands here and not inside the sampler. *)
 let window history ~context = List.take history context |> List.rev |> Array.of_list
 
-(* The bounds of the draw. The quantized twin states the same two, thus one module owns
-   them and a reader finds one message for each. *)
-let check_policy ~temperature ~min_p =
-  if Float.(temperature <= 0.0) then invalid_arg "the temperature is positive";
-  if Float.(min_p < 0.0 || min_p >= 1.0) then invalid_arg "min_p is 0 up to 1"
-;;
-
-(* The draw the ear elected on 2026-08-18. Every player, the quantized twin and the
-   bitstream start from these two, thus a number the ear moves moves one time. *)
-let elected_temperature = 1.0
-let elected_min_p = 0.05
+(* The bounds and the elected numbers of the draw, from the one policy both eras share. *)
+let check_policy = Mgen_nn.Policy.check_policy
+let elected_temperature = Mgen_nn.Policy.elected_temperature
+let elected_min_p = Mgen_nn.Policy.elected_min_p
 
 let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   check_policy ~temperature ~min_p;
@@ -498,39 +444,15 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
   Array.of_list (List.rev drawn.frames)
 ;;
 
-(* the message of the [Invalid_argument] that a rule raises, and ["no raise"] when the
-   rule accepts: a gate that pins a message needs no exception handler of its own *)
-let refusal f =
-  match f () with
-  | () -> "no raise"
-  | exception Invalid_argument message -> message
-;;
+let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint as [jax/transformer/train.py] writes it: the tensors named "0" upward,
-     in the flat order of [Params_data.to_list]. Three readers cross that seam —
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] — thus one
-     writer states the naming rule and the gates of both modules read one file.
-
-     The gate makes the file itself, thus it reads no file that git ignores, and [f] holds
-     the whole life of the file: it goes when [f] gives and when [f] raises. *)
-  let with_checkpoint tensors ~f =
-    let path = Stdlib.Filename.temp_file "mgen_checkpoint" ".safetensors" in
-    Exn.protect
-      ~f:(fun () ->
-        Nx_io.save_safetensors
-          path
-          (List.mapi tensors ~f:(fun index tensor -> Int.to_string index, Nx_io.P tensor));
-        f path)
-      ~finally:(fun () -> Stdlib.Sys.remove path)
-  ;;
-
-  (* A reader of the checkpoint names the file in its refusal, and the file of a gate is a
-     temporary one, thus the name must leave the message before an expected block holds
-     it. *)
-  let refusal ~path f =
-    String.substr_replace_all (refusal f) ~pattern:path ~with_:"<file>"
-  ;;
+  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
+     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
+     three readers, thus one writer states the naming rule and the gates of both modules
+     read one file. *)
+  let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
+  let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end
 
 (* the shapes of a test model: small enough to run in a test, and the same structure *)
@@ -725,99 +647,6 @@ let%expect_test "the flat order of the checkpoint reads back" =
     |}]
 ;;
 
-(* ==================================================================== *)
-(* The rules both pipelines share *)
-(* ==================================================================== *)
-
-(* The quantized twin draws through these rules and never through a copy of them, thus a
-   rule that moved here would move the circuit's walk with it. The prose of [pick] argues
-   that the walk always ends on a class that holds weight; this fuzz measures it. *)
-let%expect_test "the fuzz: a pick lands on a class that holds weight" =
-  (* The seed is fixed, thus the gate is the same gate on every machine, and the report is
-     a verdict: a case that lands on a zero prints itself.
-
-     [pick] takes the weights a draw gives it, thus one class always holds weight — the
-     tempered peak weighs one and a floor under one keeps it. An array of zeros is not a
-     case of this function, and no floor can make one. *)
-  let state = Random.State.make [| 20260819 |] in
-  let drawn_weights (_ : int) =
-    let classes = Random.State.int_incl state 1 Vocab.classes in
-    let raw =
-      Array.init classes ~f:(fun (_ : int) -> Random.State.float_range state (-20.) 20.)
-    in
-    let temperature = Random.State.float_range state 0.5 1.5 in
-    (* a floor high enough to zero most of a wide row, thus the walk crosses long runs of
-       refused classes *)
-    let min_p = Random.State.float_range state 0.0 0.9 in
-    above_min_p (tempered raw ~temperature) ~min_p
-  in
-  (* the shapes a draw makes rarely: the one class, and the weight at each end of the row *)
-  let edges = [ [| 1.0 |]; [| 1.0; 0.0 |]; [| 0.0; 1.0 |]; [| 0.0; 0.0; 1.0; 0.0 |] ] in
-  let cases = edges @ List.map (List.range 0 200) ~f:drawn_weights in
-  (* the two ends of the grid of [Prng.uniform] and one draw between them: at the top end
-     a total summed a second time would send the walk past every running total *)
-  let uniforms = [ 0.0; 0.5; Float.of_int 0xFFFFFF *. 0x1p-24 ] in
-  let fault weights =
-    List.find_map uniforms ~f:(fun uniform ->
-      let index = pick weights ~uniform in
-      if Float.(weights.(index) > 0.0) then None else Some (Array.length weights, index))
-  in
-  (match List.filter_map cases ~f:fault with
-   | [] ->
-     printf
-       "%d weight rows over %d uniforms: every pick holds weight\n"
-       (List.length cases)
-       (List.length uniforms)
-   | (classes, index) :: (_ : (int * int) list) ->
-     printf "a row of %d classes picked %d, which holds no weight\n" classes index);
-  [%expect {| 204 weight rows over 3 uniforms: every pick holds weight |}]
-;;
-
-let%expect_test "the min-p floor: 0 removes nothing, and the peak stands under any floor" =
-  let state = Random.State.make [| 20260819 |] in
-  let raw (_ : int) =
-    Array.init Vocab.classes ~f:(fun (_ : int) ->
-      Random.State.float_range state (-20.) 20.)
-  in
-  let rows = List.map (List.range 0 100) ~f:raw in
-  let floors = [ 0.0; elected_min_p; 0.5; 0.999 ] in
-  let removes_nothing row =
-    let weights = tempered row ~temperature:1.0 in
-    Array.equal Float.equal (above_min_p weights ~min_p:0.0) weights
-  in
-  (* The tempered peak weighs exactly one, thus every floor under one keeps it. This is
-     why a draw always exists and why one compare holds the whole filter. *)
-  let peak_stands row =
-    let weights = tempered row ~temperature:1.0 in
-    List.for_all floors ~f:(fun min_p ->
-      Array.exists (above_min_p weights ~min_p) ~f:(fun w -> Float.(w = 1.0)))
-  in
-  printf
-    "%d rows: the floor 0 removes nothing: %b, the peak stands under every floor: %b\n"
-    (List.length rows)
-    (List.for_all rows ~f:removes_nothing)
-    (List.for_all rows ~f:peak_stands);
-  (* A class ten nats under the peak weighs 4.5e-5 of it. With no floor the walk reaches
-     it at the top of the grid; the elected floor removes it, and no uniform can name it. *)
-  let far_under = [| 0.0; -10.0 |] in
-  let draw ~min_p ~uniform = draw_class far_under ~temperature:1.0 ~min_p ~uniform in
-  let top = Float.of_int 0xFFFFFF *. 0x1p-24 in
-  printf
-    "no floor: %d at 0.5, %d at the top of the grid\n"
-    (draw ~min_p:0.0 ~uniform:0.5)
-    (draw ~min_p:0.0 ~uniform:top);
-  printf
-    "the elected floor: %d at 0.5, %d at the top of the grid\n"
-    (draw ~min_p:elected_min_p ~uniform:0.5)
-    (draw ~min_p:elected_min_p ~uniform:top);
-  [%expect
-    {|
-    100 rows: the floor 0 removes nothing: true, the peak stands under every floor: true
-    no floor: 0 at 0.5, 1 at the top of the grid
-    the elected floor: 0 at 0.5, 0 at the top of the grid
-    |}]
-;;
-
 let%expect_test "the window is the newest steps of the history, oldest first" =
   (* the history holds the newest step first, and a forward pass reads them oldest first *)
   let history = [ 5; 4; 3; 2; 1; 0 ] in
@@ -837,22 +666,5 @@ let%expect_test "the window is the newest steps of the history, oldest first" =
     context 6: (0 1 2 3 4 5)
     context 3: (3 4 5)
     context 1: (5)
-    |}]
-;;
-
-let%expect_test "the policy bounds: one message for each" =
-  let policy ~temperature ~min_p = refusal (fun () -> check_policy ~temperature ~min_p) in
-  printf "temperature 0: %s\n" (policy ~temperature:0.0 ~min_p:elected_min_p);
-  printf "min_p 1: %s\n" (policy ~temperature:elected_temperature ~min_p:1.0);
-  printf "min_p below 0: %s\n" (policy ~temperature:elected_temperature ~min_p:(-0.1));
-  printf
-    "the elected policy: %s\n"
-    (policy ~temperature:elected_temperature ~min_p:elected_min_p);
-  [%expect
-    {|
-    temperature 0: the temperature is positive
-    min_p 1: min_p is 0 up to 1
-    min_p below 0: min_p is 0 up to 1
-    the elected policy: no raise
     |}]
 ;;

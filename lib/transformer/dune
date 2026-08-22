@@ -11,6 +11,7 @@
   rune
   kaun
   mgen_core
+  mgen_nn
   mgen_corpus)
  (flags
   (:standard -open Mgen_core -open Mgen_corpus))
