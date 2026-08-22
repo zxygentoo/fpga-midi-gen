@@ -75,19 +75,31 @@ Three reasons, and one honest risk.
 step. A state-space layer holds a fixed state and carries it forward:
 24,576 bytes at six layers, written and read in place. The window
 disappears as a concept: the model has no context length at inference,
-and the training window is a training choice alone.
+and the training window is a training choice alone. **The election
+brought one window back**: the ear took the plan with the Zamba head,
+thus one layer of eight carries a ring of 256 again — 32,768 bytes —
+and the model has a context length after all. The seven other layers
+keep the argument whole.
 
 **The step cost falls and stops growing.** Attention walks the ring at
 every step: two passes of `T * d` terms for each layer, 32,768 of the
 81,920 multiplies of an era-four layer. The recurrence costs a constant
 that does not know `T`. The estimate below puts the step at about 2.4 ms
-against era four's 7, on the same one-multiplier machine.
+against era four's 7, on the same one-multiplier machine. **The trunk
+measured 2.93 ms, and the elected plan 4.03** — 403,074 cycles, and with
+the head the step grows again until the ring fills at step 256, then
+holds. The wire's 8 ms floor stands over both numbers, thus the argument
+bought margin and the head spent some of it.
 
 **The block RAM falls from 93 percent to about 41.** The six-layer build
 of era four closes timing at +0.031 ns and does not close without the
 post-route pass, and the reason is routing at 126 of 135 tiles. The
 budget below puts this model near 55 tiles. The margin that era four
-fights for, this design buys back with room to spare.
+fights for, this design buys back with room to spare. **The trunk built
+at 57.5 tiles — 42.6 percent — and the elected plan at 80.5, 59.6
+percent.** The head paid a third of the buy-back, and the margin
+argument held: the elected build meets timing at +0.278 ns on the
+default directives, where era four stood at +0.059.
 
 **The risk, stated first: music lives on repetition, and exact
 repetition is what a state-space model does worst.** The floor of two
