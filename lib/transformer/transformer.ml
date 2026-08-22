@@ -149,9 +149,7 @@ module Params = struct
   ;;
 end
 
-(* The shared float rules of [Mgen_nn.Reference]: the head, the norm and the draw chain
-   live there, one time for both eras. What stays in this file is the trunk — the windowed
-   attention — and the walks over it. *)
+(* the shared float rules: the head, the norm and the draw chain; the trunk stays here *)
 module Reference = Mgen_nn.Reference
 
 let seat_classes = Reference.seat_classes
@@ -173,8 +171,8 @@ let attention_bias ~heads ~length ~span =
   Nx.add alibi (Nx.reshape [| 1; 1; length; length |] wall)
 ;;
 
-(* One attention layer's branch over a whole window. [y] is the normed stream; the
-   residual join is the caller's, as it is in the era-five file and on the JAX side. *)
+(* one attention layer's branch over a whole window: [y] is the normed stream, and the
+   residual join is the caller's *)
 let attention (config : Config.t) (layer : Params.layer) ~bias y =
   let d = config.d in
   let heads = config.heads in
@@ -211,7 +209,6 @@ let feed_forward (layer : Params.layer) h =
   Nx.matmul hidden layer.w2
 ;;
 
-(* the embedding of [Mgen_nn.Reference], over this model's tables *)
 let embedding params ~classes ~phases =
   Reference.embedding
     ~seats:params.Params_data.seats
@@ -230,7 +227,6 @@ let hidden (config : Config.t) params ~classes ~phases =
     Nx.add h (Reference.feed_forward ~w1:weights.w1 ~w2:weights.w2 (rms_norm h)))
 ;;
 
-(* the chained head of [Mgen_nn.Reference], over this model's seat tables *)
 let seat_logits params h ~drawn =
   Reference.seat_logits ~seats:params.Params_data.seats h ~drawn
 ;;
@@ -242,12 +238,8 @@ let loss (config : Config.t) params ~windows =
     ~windows
 ;;
 
-(* The draw of one seat as one function, from the one policy both eras share: the sampler
-   below and the drift report of [Quantized] both take it, thus the two pipelines are
-   comparable pick for pick. *)
 let draw_class = Mgen_nn.Policy.draw_class
 
-(* the chained draw of [Mgen_nn.Reference]: [stream] is the last position's row *)
 let draw_frame (config : Config.t) params ~temperature ~min_p ~rng stream =
   Reference.draw_frame
     ~seats:params.Params_data.seats
@@ -285,8 +277,6 @@ type walk =
    report of [Quantized] cuts its own history by this rule and compares the two models
    over the result, thus the rule stands here and not inside the sampler. *)
 let window history ~context = List.take history context |> List.rev |> Array.of_list
-
-(* The bounds and the elected numbers of the draw, from the one policy both eras share. *)
 let check_policy = Mgen_nn.Policy.check_policy
 let elected_temperature = Mgen_nn.Policy.elected_temperature
 let elected_min_p = Mgen_nn.Policy.elected_min_p
@@ -332,10 +322,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
 let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
-     three readers, thus one writer states the naming rule and the gates of both modules
-     read one file. *)
   let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
   let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end

@@ -250,8 +250,6 @@ module Model = struct
   ;;
 
   let rom_bits t = Mgen_nn.Quantized.rom_bits (rom_tensors t)
-
-  (* the quantization and the integer policy, from the shared rules *)
   let policy = Mgen_nn.Quantized.policy
   let max_abs = Mgen_nn.Quantized.max_abs
   let max_exponent = Mgen_nn.Quantized.max_exponent
@@ -440,7 +438,6 @@ module Engine = struct
     if target >= from then v lsl (target - from) else v asr (from - target)
   ;;
 
-  (* the scalar rules of the engine, from the shared integer rules of [Mgen_nn] *)
   let clamp16 = Mgen_nn.Quantized.clamp16
   let clamps16 = Mgen_nn.Quantized.clamps16
   let sum = Mgen_nn.Quantized.sum

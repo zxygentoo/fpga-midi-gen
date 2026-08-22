@@ -56,9 +56,7 @@ module I = Source_intf.I
 module O = Source_intf.O
 
 (* The units, from the common home of the sources. [Mac] takes the width of this era's
-   longest walk — 256 rows, nine bits. The divider takes its magnitude in the first busy
-   cycle, thus [Divider.busy_cycles] is 41 here where the unit this source was built with
-   took 40: one more cycle for each divide, and no carry chain behind the operand mux. *)
+   longest walk — 256 rows, nine bits. *)
 module Divider = Mgen_nn.Divider
 module Isqrt = Mgen_nn.Isqrt
 module Exp2 = Mgen_nn.Exp2

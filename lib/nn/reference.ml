@@ -1,7 +1,5 @@
-(* The float rules both era references share — see reference.mli for the contract. Every
-   function here must keep the exact arithmetic of the era files it was lifted from: the
-   drift reports and the seed-walk gates pin float values, thus a reorder of one product
-   is a re-record of every one of them. *)
+(* The float rules both era references share — see reference.mli for the contract. Keep
+   the exact arithmetic: the gates pin float values. *)
 
 open Base
 
@@ -50,8 +48,6 @@ let alibi_slope ~span ~heads ~head =
   Float.(-(2.0 ** (-of_int span * of_int rank / of_int heads)))
 ;;
 
-(* era four's feed-forward, position-wise; the norm before it is the caller's, because the
-   eras place it differently around their residual joins *)
 let feed_forward ~w1 ~w2 y = Nx.matmul (Nx.relu (Nx.matmul y w1)) w2
 
 (* The input of one step: the four seat rows sum, and the bar phase adds to them.

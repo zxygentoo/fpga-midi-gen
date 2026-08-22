@@ -2,8 +2,7 @@ open Base
 module Params_data = Transformer.Params_data
 
 module Constants = struct
-  (* the shared rules of [Mgen_nn.Quantized], and this era's own beside them; the scores
-     and the logits are Q12 as well, and stay wide — no constant names them *)
+  (* the scores and the logits are Q12 as well, and stay wide; no constant names them *)
   include Mgen_nn.Quantized.Constants
 
   (* the query, the keys, the values and the context: Q12 in int16. It is a name of its
@@ -65,8 +64,6 @@ module Model = struct
   ;;
 
   let rom_bits t = Mgen_nn.Quantized.rom_bits (Params_data.to_list t.params)
-
-  (* the quantization and the integer policy, from the shared rules *)
   let policy = Mgen_nn.Quantized.policy
   let max_abs = Mgen_nn.Quantized.max_abs
   let max_exponent = Mgen_nn.Quantized.max_exponent
@@ -188,7 +185,6 @@ module Engine = struct
     if target >= from then v lsl (target - from) else v asr (from - target)
   ;;
 
-  (* the scalar rules of the engine, from the shared integer rules of [Mgen_nn] *)
   let clamp16 = Mgen_nn.Quantized.clamp16
   let sum = Mgen_nn.Quantized.sum
   let max_over = Mgen_nn.Quantized.max_over

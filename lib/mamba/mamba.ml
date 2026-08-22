@@ -447,9 +447,7 @@ module Params = struct
   ;;
 end
 
-(* The shared float rules of [Mgen_nn.Reference]: the head, the norm and the draw chain
-   live there, one time for both eras. What stays in this file is the trunk — the
-   recurrence, the ring — and the walks over it. *)
+(* the shared float rules: the head, the norm and the draw chain; the trunk stays here *)
 module Reference = Mgen_nn.Reference
 
 let seat_classes = Reference.seat_classes
@@ -462,7 +460,6 @@ let silu x = Nx.mul x (Nx.sigmoid x)
    one. *)
 let softplus x = Nx.add (Nx.relu x) (Nx.log (Nx.add_s (Nx.exp (Nx.neg (Nx.abs x))) 1.0))
 
-(* the embedding of [Mgen_nn.Reference], over this model's tables *)
 let embedding params ~classes ~phases =
   Reference.embedding
     ~seats:params.Params_data.seats
@@ -696,7 +693,6 @@ let hidden (config : Config.t) params ~classes ~phases =
   Nx.stack ~axis:1 rows
 ;;
 
-(* the chained head of [Mgen_nn.Reference], over this model's seat tables *)
 let seat_logits params h ~drawn =
   Reference.seat_logits ~seats:params.Params_data.seats h ~drawn
 ;;
@@ -708,9 +704,6 @@ let loss (config : Config.t) params ~windows =
     ~windows
 ;;
 
-(* The draw of one seat as one function, from the one policy both eras share: the sampler
-   below and the drift report of [Quantized] both take it, thus the two pipelines are
-   comparable pick for pick. *)
 let draw_class = Mgen_nn.Policy.draw_class
 
 (* the stream of one walk as the tensor the head reads: one row of [d] *)
@@ -740,7 +733,6 @@ let logits (config : Config.t) params ~stream ~drawn =
     List.Assoc.find_exn rows seat ~equal:Int.equal |> Nx.to_array)
 ;;
 
-(* the chained draw of [Mgen_nn.Reference]: the walk carries the stream as a float array *)
 let draw_frame (config : Config.t) params ~temperature ~min_p ~rng ~stream =
   Reference.draw_frame
     ~seats:params.Params_data.seats
@@ -751,9 +743,6 @@ let draw_frame (config : Config.t) params ~temperature ~min_p ~rng ~stream =
     (stream_tensor stream ~d:config.d)
 ;;
 
-(* The bounds and the elected numbers of the draw, from the one policy both eras share.
-   This era re-elects the numbers by ear with the whole chain in view; until then the two
-   eras are auditioned on one policy. *)
 let check_policy = Mgen_nn.Policy.check_policy
 let elected_temperature = Mgen_nn.Policy.elected_temperature
 let elected_min_p = Mgen_nn.Policy.elected_min_p
@@ -801,10 +790,6 @@ let sample (config : Config.t) params ~seed ~steps ~temperature ~min_p =
 let refusal = Mgen_nn.Checkpoint.refusal
 
 module For_test = struct
-  (* The checkpoint seam of [Mgen_nn.Checkpoint], under this module's flat order:
-     [Config.of_checkpoint], [Params.load] and [Quantized.Model.of_checkpoint] are the
-     three readers, thus one writer states the naming rule and the gates of both modules
-     read one file. *)
   let with_checkpoint = Mgen_nn.Checkpoint.with_checkpoint
   let refusal = Mgen_nn.Checkpoint.scrubbed_refusal
 end
