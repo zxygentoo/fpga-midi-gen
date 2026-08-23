@@ -4,18 +4,17 @@ Run it from the jax directory as a module:
 
     uv run python -m mamba.train --steps 200
 
-The recipe opens where era four closed: the same hand-rolled AdamW with a decoupled decay
+The recipe opens where era four closed: the same AdamW of nn.py with a decoupled decay
 and a global-norm clip, the same batch draw -- a uniform stream, then a uniform window --
-and the same two numbers out of every evaluation.
+and the same number out of every evaluation.
 
 The loss is reported as NATS FOR EACH STEP -- the sum over the four seats -- because a
 per-prediction mean divides against a different count in each encoding and compares
 nothing. Era four and era five share one encoding and one window rule, thus this number
 compares across the two eras and the elected model of era four stands at 1.6282.
 
-A second number covers the steps where two or more voices move: 77.91 percent of the voice
-slots repeat the step before, they dominate the mean, and a recurrence that decays too fast
-degenerates to exactly that predictor. Watch the moving-steps number, not the mean.
+The moving-steps loss -- the drone detector, and the number the elections of this era
+read -- is measure.py's instrument and not this log's.
 
 The gradient takes the mean over the predictions and not the sum over the seats. Adam is
 blind to the scale, but the global-norm clip is not: a loss four times larger would make
@@ -24,12 +23,10 @@ meaning what they meant.
 """
 
 
-import time
 
 import click
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 import data
 import nn
@@ -310,120 +307,50 @@ def main(
     ckpt,
     average_top,
 ):
-    corpus = data.load_corpus(corpus_path)
-    pool = data.train_pool(corpus, train_on)
-    train_eval = nn.on_device(data.eval_batches(corpus["train"], context, eval_limit, batch))
-    valid_eval = nn.on_device(data.eval_batches(corpus["valid"], context, eval_limit, batch))
-    rng = np.random.default_rng(seed)
-    key = jax.random.PRNGKey(seed)
-    key, draw_key = jax.random.split(key)
-    params = draw_params(
-        draw_key,
-        d=d,
-        layers=layers,
-        heads=heads,
-        state=state,
-        taps=taps,
-        expand=expand,
-        conv_scale=conv_scale,
-        half_lives=half_lives,
-        attention_at=attention_at,
-        spelt=spelt,
-    )
-    m = v = jax.tree.map(jnp.zeros_like, params)
-    step_fn = make_step(dropout, clip, wd, alibi_span)
-    eval_fn = make_eval(alibi_span)
-    count = sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
-    corpus_steps = sum(int(split.index[row, 1]) for split, row in pool)
-    click.echo(
-        f"corpus: {len(pool)} pool streams, {corpus_steps} steps; eval rows: "
-        f"{sum(len(b[0]) for b in train_eval)} train, "
-        f"{sum(len(b[0]) for b in valid_eval)} valid; parameters: {count}"
-    )
-    click.echo(
-        f"shape: {model.shape_of(params)}, dropout {dropout}, seed {seed}, "
-        f"dt half-lives {half_lives or 'the Mamba draw'}, ALiBi span {alibi_span}"
-    )
-
-    best = float("inf")
-    top = []  # (valid, step, host params) -- the K best snapshots for averaging
-    losses = []
-    started = time.perf_counter()
-
-    def evaluate(step, params):
-        nonlocal best
-        train_all, train_moving = nn.eval_loss(eval_fn, params, train_eval)
-        valid_all, valid_moving = nn.eval_loss(eval_fn, params, valid_eval)
-        mark = ""
-        if valid_all < best:
-            best = valid_all
-            mark = "  *"
-            if ckpt and train_on != "all":
-                save_checkpoint(ckpt, params, span=alibi_span)
-        # the snapshot crosses to the host only when it can stay: the sort would drop it
-        # again, and the copy is the whole parameter tree
-        if average_top > 0 and (len(top) < average_top or valid_all < top[-1][0]):
-            top.append((valid_all, step, jax.tree.map(np.asarray, params)))
-            top.sort(key=lambda entry: entry[0])
-            del top[average_top:]
-        click.echo(
-            f"step {step:5d}  eval  train {train_all:.4f} (moving {train_moving:.4f})"
-            f"  valid {valid_all:.4f} (moving {valid_moving:.4f}){mark}"
+    def draw(key):
+        return draw_params(
+            key,
+            d=d,
+            layers=layers,
+            heads=heads,
+            state=state,
+            taps=taps,
+            expand=expand,
+            conv_scale=conv_scale,
+            half_lives=half_lives,
+            attention_at=attention_at,
+            spelt=spelt,
         )
 
-    for step in range(1, steps + 1):
-        classes, phases = data.train_batch(rng, pool, batch, context)
-        # a name of its own: [lr] is the peak the schedule reads, and a loop that writes
-        # its own peak decays the rate geometrically to zero and trains nothing
-        rate = nn.schedule(step, lr, warmup, steps)
-        key, step_key = jax.random.split(key)
-        value, params, m, v = step_fn(
-            params,
-            m,
-            v,
-            jnp.float32(step),
-            jnp.asarray(classes),
-            jnp.asarray(phases),
-            jnp.float32(rate),
-            step_key,
-        )
-        # the device array, NOT float(value): a read blocks until the step finishes, and
-        # the loop then cannot overlap the next batch draw and its transfer with the
-        # compute of this one. The log below reads, thus the run-ahead stays inside one
-        # log window.
-        losses.append(value)
-        if step % log_every == 0 or step == 1:
-            # the training number is nats for each step too: the mean over the predictions
-            # times the four seats
-            mean = float(jnp.mean(jnp.stack(losses)))
-            click.echo(f"step {step:5d}  loss {data.SEATS * mean:.4f}")
-            losses = []
-        if step % eval_every == 0 or step == steps:
-            evaluate(step, params)
+    def save(path, params):
+        save_checkpoint(path, params, span=alibi_span)
 
-    seconds = time.perf_counter() - started
-    click.echo(
-        f"time: {seconds:.0f} s, {seconds / steps * 1000:.0f} ms each step, "
-        f"the evaluations inside"
+    def describe(params):
+        return (
+            f"shape: {model.shape_of(params)}, dropout {dropout}, seed {seed}, "
+            f"dt half-lives {half_lives or 'the Mamba draw'}, ALiBi span {alibi_span}"
+        )
+
+    nn.train(
+        corpus_path=corpus_path,
+        train_on=train_on,
+        context=context,
+        batch=batch,
+        steps=steps,
+        lr=lr,
+        seed=seed,
+        warmup=warmup,
+        log_every=log_every,
+        eval_every=eval_every,
+        eval_limit=eval_limit,
+        ckpt=ckpt,
+        average_top=average_top,
+        draw_params=draw,
+        step_fn=make_step(dropout, clip, wd, alibi_span),
+        eval_fn=make_eval(alibi_span),
+        save_checkpoint=save,
+        describe=describe,
     )
-    click.echo(f"best valid {best:.4f}")
-    if ckpt:
-        if train_on == "all":
-            save_checkpoint(ckpt, params, span=alibi_span)
-            click.echo(f"checkpoint of the last step: {ckpt}")
-        else:
-            click.echo(f"checkpoint of the best: {ckpt}")
-        if average_top > 0 and top:
-            averaged = jax.tree.map(
-                lambda *tensors: np.mean(np.stack(tensors), axis=0),
-                *[entry[2] for entry in top],
-            )
-            path = ckpt.replace(".ckpt", "-avg.ckpt")
-            save_checkpoint(path, averaged, span=alibi_span)
-            click.echo(
-                f"average of {len(top)} best snapshots "
-                f"(steps {[entry[1] for entry in top]}): {path}"
-            )
 
 
 if __name__ == "__main__":

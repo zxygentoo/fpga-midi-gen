@@ -138,8 +138,8 @@ end
 
     A second number belongs beside it and does not belong here: 77.91 percent of the voice
     slots repeat the step before, thus a model that holds its chord for ever scores well
-    on this mean and plays a drone. The trainer reports the loss over the steps where two
-    or more voices move; a reference measures one thing.
+    on this mean and plays a drone. [jax/measure.py] reports the loss over the steps where
+    two or more voices move; a reference measures one thing.
 
     It raises [Invalid_argument] when [windows] is empty. *)
 val loss : Config.t -> Params.t -> windows:Jsb.stream list -> float
