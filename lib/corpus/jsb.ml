@@ -114,6 +114,24 @@ let transpose ~by { cells; legal_shifts } =
   }
 ;;
 
+(* The same piece on a coarser grid: every [every]-th step of the sixteenth grid, and
+   nothing else. A grid of 1 is the identity — it keeps every step and recomputes the same
+   shifts — thus the sixteenth grid of the corpus needs no special case anywhere.
+
+   The grid decides what a canvas holds. The sixteenth grid is the corpus as it stands and
+   the grid of docs/coconet.md; the eighth grid halves the canvas, at the price of the
+   onset that stands on an odd sixteenth — 1.4 percent of the onsets of this corpus, the
+   ornamental passing tones — which the even step before it swallows.
+
+   The shifts are computed again over the steps that remain, and not carried over. A pitch
+   that only a dropped step sang no longer bounds the piece, thus a coarse-grid piece can
+   hold a shift that the sixteenth-grid piece cannot. *)
+let on_grid ~every { cells; legal_shifts = _ } =
+  if every < 1 then invalid_argf "a grid of %d steps is not a grid" every ();
+  let kept = Array.filteri cells ~f:(fun step (_ : int list) -> step % every = 0) in
+  { cells = kept; legal_shifts = legal_shifts_of_cells (Array.to_list kept) }
+;;
+
 (* The frame of one step. [Frame] owns the word — the voice code, the seat order and the
    decode — and this reader only turns the order around: the file gives the soprano first
    and seat 0 is the lowest voice, thus the reversed cells land the bass in the low byte
@@ -277,6 +295,66 @@ let%expect_test "the shifts of the range-limited policy" =
   (* a silent piece takes the identity alone *)
   print_s ([%sexp_of: int list] (legal_shifts_of_cells [ [ -1; -1; -1; -1 ] ]));
   [%expect {| (0) |}]
+;;
+
+let%expect_test "the grid of one piece" =
+  let piece cells =
+    { cells = Array.of_list cells; legal_shifts = legal_shifts_of_cells cells }
+  in
+  let show { cells; legal_shifts } =
+    print_s ([%sexp_of: int list array] cells);
+    printf "shifts %d to %d\n" (List.hd_exn legal_shifts) (List.last_exn legal_shifts)
+  in
+  (* The head of the first chorale of the corpus, twelve sixteenth steps. The eighth grid
+     keeps steps 0, 2, 4, 6, 8 and 10, thus the move of the tenor at step 6 stands and the
+     four repeats of each chord become two. *)
+  let head =
+    [ [ 74; 70; 65; 58 ]
+    ; [ 74; 70; 65; 58 ]
+    ; [ 74; 70; 65; 58 ]
+    ; [ 74; 70; 65; 58 ]
+    ; [ 75; 70; 58; 55 ]
+    ; [ 75; 70; 58; 55 ]
+    ; [ 75; 70; 60; 55 ]
+    ; [ 75; 70; 60; 55 ]
+    ; [ 77; 69; 62; 50 ]
+    ; [ 77; 69; 62; 50 ]
+    ; [ 77; 69; 62; 50 ]
+    ; [ 77; 69; 62; 50 ]
+    ]
+  in
+  (* the sixteenth grid is the identity, and the round of docs/coconet.md rests on it *)
+  show (on_grid ~every:1 (piece head));
+  [%expect
+    {|
+    ((74 70 65 58) (74 70 65 58) (74 70 65 58) (74 70 65 58) (75 70 58 55)
+     (75 70 58 55) (75 70 60 55) (75 70 60 55) (77 69 62 50) (77 69 62 50)
+     (77 69 62 50) (77 69 62 50))
+    shifts -12 to 4
+    |}];
+  show (on_grid ~every:2 (piece head));
+  [%expect
+    {|
+    ((74 70 65 58) (74 70 65 58) (75 70 58 55) (75 70 60 55) (77 69 62 50)
+     (77 69 62 50))
+    shifts -12 to 4
+    |}];
+  (* A soprano that sings 81 on an odd step alone: the eighth grid loses that onset, and
+     the shifts it forbade come back — the piece may now rise nine semitones. *)
+  let ornament =
+    [ [ 72; 64; 55; 48 ]; [ 81; 64; 55; 48 ]; [ 72; 64; 55; 48 ]; [ 72; 64; 55; 48 ] ]
+  in
+  show (piece ornament);
+  [%expect
+    {|
+    ((72 64 55 48) (81 64 55 48) (72 64 55 48) (72 64 55 48))
+    shifts -9 to 0
+    |}];
+  show (on_grid ~every:2 (piece ornament));
+  [%expect {|
+    ((72 64 55 48) (72 64 55 48))
+    shifts -9 to 9
+    |}]
 ;;
 
 let%expect_test "the vocabulary covers the corpus" =

@@ -65,6 +65,21 @@ val load : path:string -> t
     of a voice code bounds it — and a member of [legal_shifts] never raises. *)
 val transpose : by:int -> chorale -> chorale
 
+(** [on_grid ~every chorale] is the same piece on a coarser grid: every [every]-th step of
+    the sixteenth grid, and nothing else. A grid of 1 is the identity, thus the sixteenth
+    grid of the corpus — the grid of docs/coconet.md — costs the caller no special case.
+
+    A grid of 2 is the eighth grid, which halves a canvas. It loses the onset that stands
+    on an odd sixteenth: the even step before it holds its pitch through. That is 1.4
+    percent of the onsets of this corpus, the ornamental passing tones.
+
+    The legal shifts are computed again over the steps that remain. A pitch that only a
+    dropped step sang no longer bounds the piece, thus a coarse-grid piece can hold a
+    shift that the sixteenth-grid piece cannot.
+
+    It raises [Invalid_argument] when [every] is 0 or less. *)
+val on_grid : every:int -> chorale -> chorale
+
 (** [pack chorales] is the packed stream of docs/transformer.md: piece, seam, piece, seam.
     The caller states the order of the pieces and the transposition each one takes, thus
     one call is one stream and a split needs more than one to carry its transpositions.

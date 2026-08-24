@@ -204,30 +204,43 @@ def schedule(step, peak, warmup, total):
     return peak * 0.5 * (1.0 + np.cos(np.pi * progress))
 
 
+def adamw(state, params, grads, t, lr, *, clip, weight_decay):
+    """One update: the global-norm clip, then Adam with a decoupled weight decay. [t] is
+    the step count, which the bias correction reads.
+
+    It stands apart from [make_step] because the update rule is one thing and the shape of
+    a step is another: the canvas era carries the batch-norm population statistics beside
+    the two moments, and its step is its own while the rule here stays shared."""
+    m, v = state
+    if clip > 0.0:
+        norm = jnp.sqrt(sum(jnp.sum(g * g) for g in jax.tree.leaves(grads)))
+        scale = clip / jnp.maximum(norm, clip)
+        grads = jax.tree.map(lambda g: g * scale, grads)
+    b1, b2, eps = 0.9, 0.999, 1e-8
+    m = jax.tree.map(lambda m_, g: b1 * m_ + (1 - b1) * g, m, grads)
+    v = jax.tree.map(lambda v_, g: b2 * v_ + (1 - b2) * g * g, v, grads)
+    m_hat = jax.tree.map(lambda m_: m_ / (1 - b1**t), m)
+    v_hat = jax.tree.map(lambda v_: v_ / (1 - b2**t), v)
+    params = jax.tree.map(
+        lambda p, mh, vh: p - lr * (mh / (jnp.sqrt(vh) + eps) + weight_decay * p),
+        params,
+        m_hat,
+        v_hat,
+    )
+    return params, (m, v)
+
+
 def make_step(loss, clip, weight_decay):
-    """The jitted training step around an era's loss: the gradient, the global-norm clip,
-    and Adam with decoupled weight decay. [loss params classes phases key] is the era's
-    own -- the trunks differ, the update does not."""
+    """The jitted training step around an era's loss: the gradient and one [adamw] update.
+    [loss params classes phases key] is the era's own -- the trunks differ, the update
+    does not."""
 
     def step_fn(params, state, t, classes, phases, lr, key):
-        m, v = state
         value, grads = jax.value_and_grad(lambda p: loss(p, classes, phases, key))(params)
-        if clip > 0.0:
-            norm = jnp.sqrt(sum(jnp.sum(g * g) for g in jax.tree.leaves(grads)))
-            scale = clip / jnp.maximum(norm, clip)
-            grads = jax.tree.map(lambda g: g * scale, grads)
-        b1, b2, eps = 0.9, 0.999, 1e-8
-        m = jax.tree.map(lambda m_, g: b1 * m_ + (1 - b1) * g, m, grads)
-        v = jax.tree.map(lambda v_, g: b2 * v_ + (1 - b2) * g * g, v, grads)
-        m_hat = jax.tree.map(lambda m_: m_ / (1 - b1**t), m)
-        v_hat = jax.tree.map(lambda v_: v_ / (1 - b2**t), v)
-        params = jax.tree.map(
-            lambda p, mh, vh: p - lr * (mh / (jnp.sqrt(vh) + eps) + weight_decay * p),
-            params,
-            m_hat,
-            v_hat,
+        params, state = adamw(
+            state, params, grads, t, lr, clip=clip, weight_decay=weight_decay
         )
-        return value, params, (m, v)
+        return value, params, state
 
     return jax.jit(step_fn)
 
