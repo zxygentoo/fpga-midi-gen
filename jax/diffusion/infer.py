@@ -1,0 +1,341 @@
+"""The audition of the masked canvas: independent blocked Gibbs, eight measures at a time.
+
+    uv run python -m diffusion.infer sample --ckpt C --canvases 8 --seed 7 --play
+    uv run python -m diffusion.infer sample --ckpt C --harmonize --canvases 4
+    uv run python -m diffusion.infer curve  --ckpt C
+
+THE CURVE IS THE DELIVERABLE OF THE ROUND. `curve` draws the same canvases at N of 32, 64,
+128, 256 and 512 and prints the structure battery of each against the corpus row, with the
+seconds each one cost. The paper's rule of thumb is N = I times T = 512 evaluations and it
+states that a lower N costs a little quality; the board's silence window affords tens of
+canvas passes, thus this one curve decides whether the masked era reaches the RTL.
+
+`sample` is the ear's path: draw, print the battery, and speak the music to the synthesizer
+or to a .mid. A batch is several whole pieces and not one piece in parts, thus --gap puts a
+silence between two of them on the wire, as a performer breathes between two chorales, and
+--fade takes the velocity down over the last bar of each. Neither makes a crop ARRIVE.
+With --harmonize the walk keeps the soprano of a corpus crop and writes the three voices
+under it, which is the completion task the trunk is strongest in and which the mask planes
+give for one flag.
+
+CPU is the default platform here, and deliberately: a walk is a few hundred forward passes
+of one small canvas and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override
+it -- at N 512 and sixteen canvases the card is worth having.
+"""
+
+import os
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
+import time
+from pathlib import Path
+
+import click
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+import data
+import measure
+import midi
+from diffusion import measure as canvas
+from diffusion import model
+
+# seat 3, as data.py and the chained head of the earlier eras read the seats
+SOPRANO = model.VOICES - 1
+CURVE = "32,64,128,256,512"
+
+
+def free_cells(canvases, steps, harmonize):
+    """The region the walk may write: the whole canvas, or everything under a given
+    soprano.
+
+    Harmonization needs no second model and no second training. The mask planes already say
+    which cells are given, thus the task is one flag on the sampler -- which is the whole
+    argument for a masked canvas over a one-way chain."""
+    free = np.ones((canvases, steps, model.VOICES), dtype=bool)
+    if harmonize:
+        free[..., SOPRANO] = False
+    return free
+
+
+def seeded_canvas(canvases, steps, seed):
+    """A canvas of random notes, each voice inside the register of its own seat.
+
+    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper
+    starts on "an empty (zero everywhere) piano roll" and its roll has no silence row, thus
+    an empty cell there states nothing. THIS roll holds silence as a class, so an empty cell
+    states a REST with the authority of context, and the corpus rests in 0.35 percent of its
+    cells. At alpha_max 0.9 the opening Bernoulli leaves a tenth of the canvas standing, and
+    on a silent canvas a tenth of it would be a lie. The round paid for that with a first
+    step that hid the whole free region -- one step of the walk unlike every other, and a
+    branch in the state machine the RTL would have to carry.
+
+    A canvas of notes needs no such step. A cell the Bernoulli leaves standing states SOME
+    NOTE, and four voices sounding is 99.8 percent of the corpus. Measured 2026-08-25 on
+    L 48 by H 20 over 256 canvases, the two openings are the same instrument from N 64
+    upward -- under half an error on the parallels at every N above 32 -- thus the schedule
+    goes back to the paper's for free, and the silent opening was removed rather than left
+    as a flag nobody would pull.
+
+    The draw is over [measure.RANGES] and not over the whole roll, because a bass at 81 and
+    a soprano at 36 are further from this corpus than a rest is. The ranges are four pairs
+    of bounds, which is a ROM on the board.
+
+    It takes its own stream from the seed, thus the canvas and the walk's masks never share
+    a draw and either one can change without moving the other."""
+    rng = np.random.default_rng([seed, 1])
+    return np.stack(
+        [
+            rng.integers(
+                low - data.PITCH_LOW + 1,
+                high - data.PITCH_LOW + 2,
+                size=(canvases, steps),
+            )
+            for low, high in measure.RANGES
+        ],
+        axis=-1,
+    ).astype(np.int32)
+
+
+@jax.jit
+def turn(params, stats, key, classes, hidden, heat):
+    """One pass of the walk: the net reads the whole canvas and every masked cell redraws
+    from its own softmax, independently of the others.
+
+    It takes the weights as ARGUMENTS and stands at the module level, thus its compiled
+    form is keyed on the shapes and every walk of a run reuses the first compile. A jit
+    closed over [params] inside [gibbs] compiles again at every call, and [curve] calls
+    one walk for each N of its sweep -- inside the seconds it reports."""
+    said, _ = model.logits(params, stats, model.planes(classes, hidden))
+    drawn = jax.random.categorical(key, said / heat, axis=-2)
+    return jnp.where(hidden, drawn, classes)
+
+
+def gibbs(params, stats, given, free, *, walk, temperature, seed):
+    """Independent blocked Gibbs with the annealed schedule of Yao et al.
+
+    At step n of [walk] each free cell masks with probability model.anneal(n, walk), one
+    forward pass runs, and every masked cell resamples INDEPENDENTLY from its own softmax.
+    The cells are not conditionally independent, which is exactly why the schedule anneals:
+    a high masking probability mixes fast and resamples badly, and as it falls the block
+    shrinks toward the one-variable-at-a-time chain it approximates.
+
+    The seed names the whole batch and not a row of it. Every canvas of a batch shares the
+    walk and draws its own masks, thus a batch of one is one reproducible piece and a batch
+    of sixteen is one reproducible set of sixteen.
+
+    EVERY STEP IS THE SAME STEP, which is the paper's schedule and which [seeded_canvas]
+    is what buys back."""
+    rng = np.random.default_rng(seed)
+    key = jax.random.PRNGKey(seed)
+    classes = jnp.asarray(given)
+    for step in range(walk):
+        masking = model.anneal(step, walk)
+        hidden = free & (rng.random(free.shape) < masking)
+        key, turn_key = jax.random.split(key)
+        classes = turn(
+            params,
+            stats,
+            turn_key,
+            classes,
+            jnp.asarray(hidden),
+            jnp.float32(temperature),
+        )
+    return np.asarray(classes)
+
+
+def audition_path(path, at, count):
+    """The file one canvas writes: the name the caller gave when there is one canvas, and
+    that name numbered when there are several.
+
+    A batch is a set of whole pieces and not one piece in parts, thus each one takes a file
+    of its own and none of them is the batch."""
+    if count == 1:
+        return path
+    name = Path(path)
+    return str(name.with_name(f"{name.stem}-{at}{name.suffix}"))
+
+
+def opening(corpus, crop, canvases, harmonize, seed):
+    """The canvas the walk opens on: notes drawn from the seed, or the first [canvases]
+    rows of [corpus] when a soprano is given.
+
+    Either way the walk opens on NOTES; [seeded_canvas] states why silence would lie.
+    Under --harmonize the free region opens as the corpus's own lower voices, and none of
+    that answer survives to be read as the model's: a free cell escapes every mask of an
+    N 512 walk with probability under 10^-100.
+
+    It takes the corpus AS AN ARRAY. The command reads the split one time for its own
+    battery row, and a walk for each N of a sweep would otherwise read it again."""
+    if not harmonize:
+        return seeded_canvas(canvases, crop, seed)
+    return corpus[:canvases].copy()
+
+
+def draw(
+    params,
+    stats,
+    *,
+    corpus,
+    crop,
+    canvases,
+    harmonize,
+    walk,
+    temperature,
+    seed,
+):
+    """one batch of canvases, and the seconds the walk cost"""
+    given = opening(corpus, crop, canvases, harmonize, seed)
+    free = free_cells(len(given), crop, harmonize)
+    started = time.perf_counter()
+    classes = gibbs(
+        params,
+        stats,
+        given,
+        free,
+        walk=walk,
+        temperature=temperature,
+        seed=seed,
+    )
+    return classes, time.perf_counter() - started
+
+
+@click.group(help=__doc__)
+def main():
+    pass
+
+
+def sampling_options(command):
+    """the flags every drawing command takes; the walk is the one they disagree on"""
+    for option in reversed(
+        [
+            click.option(
+                "--ckpt", required=True, type=click.Path(exists=True, dir_okay=False)
+            ),
+            click.option("--corpus", "corpus_path", default=canvas.CORPUS),
+            click.option("--split", default="valid", type=click.Choice(data.SPLITS)),
+            click.option("--crop", default=model.CROP, help="T; the training crop"),
+            click.option(
+                "--canvases",
+                default=1,
+                help="pieces to draw in one walk; --play speaks them in turn and --save "
+                "numbers them",
+            ),
+            click.option(
+                "--harmonize",
+                is_flag=True,
+                help="keep the soprano of a corpus crop and write the three voices under it",
+            ),
+            # the code release's sampler defaults to 0.99, which is not a measurable
+            # difference from 1.0; the flag is here because the ear may want one
+            click.option("--temperature", default=1.0),
+            click.option("--seed", default=1, help="the batch, not a row of it"),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
+@main.command(help=gibbs.__doc__)
+@sampling_options
+@click.option(
+    "--walk", default=model.CROP * model.VOICES, help="N, the paper's I times T"
+)
+@click.option(
+    "--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}"
+)
+@click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
+@click.option("--device", default=midi.DEVICE)
+@click.option("--step-ms", default=200)
+@click.option(
+    "--gap",
+    default=32,
+    help="steps of silence between two canvases; 32 is two bars, 0 is none",
+)
+@click.option(
+    "--fade",
+    default=16,
+    help="steps of diminuendo at the end of a canvas; 16 is one bar, 0 is none",
+)
+@click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
+@click.option("--velocity", default=100)
+def sample(
+    ckpt,
+    walk,
+    to_synth,
+    to_file,
+    device,
+    step_ms,
+    gap,
+    fade,
+    channel,
+    velocity,
+    corpus_path,
+    split,
+    **flags,
+):
+    params, stats = model.load_params(ckpt)
+    corpus = canvas.corpus_canvases(corpus_path, split, flags["crop"], flags["seed"])
+    classes, seconds = draw(params, stats, corpus=corpus, walk=walk, **flags)
+    canvas.echo_structure("the corpus", corpus)
+    canvas.echo_structure(f"N {walk}, {len(classes)} canvases", classes)
+    click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} canvases")
+
+    # a canvas is a whole piece, thus several of them are several pieces: the synth hears
+    # them in turn and the disk takes one file for each
+    music = [data.decode(drawn) for drawn in classes]
+    for at, piece in enumerate(music):
+        if len(music) > 1:
+            click.echo(f"# canvas {at}")
+        if to_file:
+            path = audition_path(to_file, at, len(music))
+            midi.save(
+                piece,
+                path,
+                step_ms=step_ms,
+                channel=channel,
+                velocity=velocity,
+                fade=fade,
+            )
+            click.echo(f"wrote {path}")
+        if to_synth:
+            if at:
+                midi.rest(gap, step_ms=step_ms)
+            midi.play(
+                piece,
+                device=device,
+                step_ms=step_ms,
+                channel=channel,
+                velocity=velocity,
+                fade=fade,
+            )
+        if not (to_synth or to_file):
+            click.echo(
+                "\n".join(
+                    midi.step_line(step, events) for step, events in enumerate(piece)
+                )
+            )
+
+
+@main.command()
+@sampling_options
+@click.option("--walks", default=CURVE, help="the N of each row, a comma list")
+def curve(ckpt, walks, corpus_path, split, **flags):
+    """Quality against N: the same canvases drawn at each step budget, read by the
+    structure battery against the corpus row.
+
+    The paper sets N = I times T = 512 as a rule of thumb and says a lower N costs a little
+    quality. The board affords tens of passes and not hundreds, thus what this round needs
+    to know is the shape of that cost and not its existence."""
+    params, stats = model.load_params(ckpt)
+    corpus = canvas.corpus_canvases(corpus_path, split, flags["crop"], flags["seed"])
+    canvas.echo_structure("the corpus", corpus)
+    for walk in [int(n) for n in walks.split(",")]:
+        classes, seconds = draw(params, stats, corpus=corpus, walk=walk, **flags)
+        canvas.echo_structure(f"N {walk:4d}", classes)
+        click.echo(f"{'':<22} {seconds:.1f} s for {len(classes)} canvases")
+
+
+if __name__ == "__main__":
+    main()

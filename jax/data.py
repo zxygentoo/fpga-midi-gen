@@ -1,15 +1,21 @@
-"""The corpus of frames, and the two ways to draw from it.
+"""The corpus, and the ways to draw from it.
 
-This sits beside the models and not inside one: the packed stream is the corpus of the
-project, and a later model reads the same frames.
+This sits beside the models and not inside one: the corpus is the corpus of the project,
+and every era reads it here.
 
-Reads the export of corpus_tool -- the frames, the rolling coordinates and the stream
-index per split -- and holds the two batching policies: the training draw (a uniform
-stream, then a uniform window) and the fixed evaluation windows of the referee (the
-canonical stream, stride context, from its start).
+There are two exports of it, because the eras ask two different questions of the same
+music:
 
-A split is a set of packed streams -- piece, seam, piece, seam -- and not a set of pieces.
-One position is one step, thus a window is always full and every position weighs one.
+- THE PACKED STREAM, `frames.safetensors`, for the walk of eras two to five: piece, seam,
+  piece, seam, with the rolling coordinate of each step and the stream index per split. A
+  split is a set of streams and not a set of pieces. One position is one step, thus a
+  window is always full and every position weighs one. The two batching policies are the
+  training draw (a uniform stream, then a uniform window) and the fixed evaluation windows
+  of the referee (the canonical stream, stride context, from its start).
+- THE PIECES, `pieces.safetensors`, for the canvas of era six: whole chorales on one grid,
+  one row for each, padded to the longest, with the true length and the legal shift range
+  beside the cells. The canvas draw crops inside the true length, thus the padding is a
+  fact of the file and never a fact of the music.
 
 There are no masks. No frame is illegal, thus nothing guards a draw.
 """
@@ -28,6 +34,9 @@ SPLITS = ("train", "valid", "test")
 # RAM of the device, where four of 129 rows put it at 99 and it does not fit.
 CLASSES = 48
 PITCH_LOW = 36
+# the top of the same corpus study: the classes 1 to 46 cover PITCH_LOW to here, and the
+# piano roll of the canvas era holds one row for each of them
+PITCH_HIGH = 81
 SILENCE = 0
 
 
@@ -49,6 +58,21 @@ def classes_of_codes(codes):
         bad = np.unique(pitches[~inside])
         raise ValueError(f"pitches outside the {CLASSES}-class vocabulary: {bad}")
     return np.where(sounds, pitches - PITCH_LOW + 1, SILENCE).astype(np.int32)
+
+
+def classes_of_cells(cells):
+    """The pitch cells of the piece export become class indices, which is one subtraction.
+
+    The two exports carry the corpus in the two forms it takes on either side of the
+    packer: the stream carries wire codes, where a silent voice is a flag, and a piece
+    carries the cells of the file, where a rest is -1. Each export meets the one
+    vocabulary here."""
+    sounds = cells >= 0
+    inside = ~sounds | ((cells >= PITCH_LOW) & (cells <= PITCH_HIGH))
+    if not inside.all():
+        bad = np.unique(cells[~inside])
+        raise ValueError(f"pitches outside the {CLASSES}-class vocabulary: {bad}")
+    return np.where(sounds, cells - PITCH_LOW + 1, SILENCE).astype(np.int32)
 
 
 def pitches_of_classes(classes):
@@ -155,6 +179,78 @@ def eval_rows(split, context, limit):
 def eval_batches(split, context, limit, batch):
     rows = eval_rows(split, context, limit)
     return [stack_rows(rows[at : at + batch]) for at in range(0, len(rows), batch)]
+
+
+class Pieces:
+    """The whole pieces of one split, as `corpus_tool pieces` wrote them.
+
+    One row is one piece: [classes] is [pieces, steps, SEATS], the piece stands at steps 0
+    to its length, and the tail of the row past that is silence. [lengths] holds the true
+    step count of each piece and [shifts] the two ends of its legal transposition range,
+    both inclusive.
+
+    The padding is a fact of the file and never a fact of the music. It exists only because
+    a rectangular tensor is one shape and the chorales are not; [Crops] reads inside the
+    true length and no model ever sees it. That is the whole difference from the proto
+    round of feat/diffusion-proto, where the tail WAS the training signal and owned 53.2
+    percent of the columns of a canvas.
+
+    [shifts] is unread this round -- the paper of docs/diffusion.md states no transposition
+    augmentation and the pitch axis of the trunk carries the equivariance instead. It stays
+    because it is the third tensor of the export, and a reader that dropped it would make
+    the file and its reader disagree."""
+
+    def __init__(self, tensors, name):
+        self.classes = classes_of_cells(tensors[f"{name}/cells"])
+        self.lengths = tensors[f"{name}/lengths"]
+        self.shifts = tensors[f"{name}/shifts"]  # [pieces, 2]: low, high
+
+
+def load_pieces(path):
+    tensors = load_file(str(path))
+    return {name: Pieces(tensors, name) for name in SPLITS}
+
+
+class Crops:
+    """The canvas draw of docs/diffusion.md: a uniform piece, then a uniform crop of it.
+
+    A crop is [length] steps taken inside the true length of a piece, thus it never reads
+    the padded tail. A piece shorter than the crop is dropped -- one of the 229 train
+    chorales of this corpus is 100 steps -- and the round then trains on 228, 76 and 77.
+    Silence inside a crop is therefore the real rests of the music, a fraction of one
+    percent of the cells.
+
+    The piece draw is UNIFORM and not weighted by length: one piece is one member of the
+    corpus. Weighting by length would state the objective of the packed walk, where a long
+    piece holds more windows than a short one, and the walk is over."""
+
+    def __init__(self, pieces, length):
+        self.classes = pieces.classes
+        self.lengths = pieces.lengths
+        self.length = length
+        self.rows = np.nonzero(pieces.lengths >= length)[0]
+        if not len(self.rows):
+            raise ValueError(f"no piece of this split holds a crop of {length} steps")
+
+    def crop(self, rng, row):
+        """one uniform crop of piece [row], inside its true length"""
+        start = rng.integers(int(self.lengths[row]) - self.length + 1)
+        return self.classes[row, start : start + self.length]
+
+    def row(self, rng):
+        return self.crop(rng, self.rows[rng.integers(len(self.rows))])
+
+    def batch(self, rng, batch):
+        return np.stack([self.row(rng) for _ in range(batch)])
+
+    def every_piece(self, seed):
+        """One crop of every piece that holds one, at a fixed seed.
+
+        The valid curve and the referees read these. A fresh crop at every evaluation
+        would move the number by the draw as much as by the model, and two steps of a run
+        would not compare."""
+        rng = np.random.default_rng(seed)
+        return np.stack([self.crop(rng, row) for row in self.rows])
 
 
 def moving(classes):
