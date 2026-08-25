@@ -39,6 +39,7 @@ import numpy as np
 import data
 import measure
 import midi
+import nn
 import prng
 from diffusion import measure as canvas
 from diffusion import model
@@ -86,15 +87,13 @@ def forward(params, stats, classes, hidden):
 
 def tempered_pick(raw, temperature, uniform):
     """The draw of one cell over the batch: Policy.draw_class of the OCaml reference, row
-    for row -- the weights tempered against the peak, the running totals left to right,
-    and the first total past [uniform * total]; when none passes, the last class, which
-    then holds the weight the totals left standing. [raw] is [canvases, ROWS] float64."""
-    peak = raw.max(axis=1, keepdims=True)
-    weights = np.exp((raw - peak) / temperature)
-    totals = np.cumsum(weights, axis=1)
-    draw = uniform * totals[:, -1]
-    passed = totals > draw[:, None]
-    return np.where(passed.any(axis=1), passed.argmax(axis=1), raw.shape[1] - 1)
+    for row. [raw] is [canvases, ROWS] float64.
+
+    The era draws with no min-p floor, thus the temper is the peak alone. One `pick`
+    answers for all three eras, and its docstring holds the argument that no fallback is
+    needed here: the peak weighs one, thus the last running total is one or more, and the
+    draw is strictly under it, thus a class always passes."""
+    return nn.pick(nn.temper(raw, temperature, 0.0), uniform)
 
 
 def gibbs(params, stats, given, states, *, walk, temperature):
