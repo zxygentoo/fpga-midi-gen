@@ -34,8 +34,8 @@
   mgen_corpus))
 
 (executable
- (name checkpoint_tool)
- (modules checkpoint_tool)
+ (name check_transformer)
+ (modules check_transformer)
  (preprocess
   (pps ppx_let))
  (libraries
@@ -54,8 +54,8 @@
  (libraries core core_unix core_unix.command_unix mgen_core mgen_mamba))
 
 (executable
- (name mamba_tool)
- (modules mamba_tool)
+ (name check_mamba)
+ (modules check_mamba)
  (preprocess
   (pps ppx_let))
  (libraries
@@ -65,3 +65,23 @@
   mgen_core
   mgen_corpus
   mgen_mamba))
+
+(executable
+ (name play_diffusion)
+ (modules play_diffusion)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix core_unix.command_unix mgen_core mgen_diffusion))
+
+(executable
+ (name check_diffusion)
+ (modules check_diffusion)
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  mgen_core
+  mgen_corpus
+  mgen_diffusion))

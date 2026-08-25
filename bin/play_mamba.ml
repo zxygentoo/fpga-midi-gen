@@ -10,8 +10,9 @@
    a walk of the twin compare with `diff`. That comparison is the walk gate of
    docs/transformer.md.
 
-   The configuration flags must equal the flags of the training run; the checkpoint holds
-   only tensors. The audition of the integer twin returns with the twin. *)
+   The float model draws by default; [-quantized] draws the integer twin — the piece the
+   board plays at this seed, heard off the board. The checkpoint states its own widths and
+   plan, thus no flag restates the training run. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
@@ -19,6 +20,7 @@ module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
 module Signal = Mgen_core.Signal
 module Mamba = Mgen_mamba.Mamba
+module Quantized = Mgen_mamba.Quantized
 
 (* the argument check of play_pink: the range of a register is the range of the flag *)
 let ranged name address =
@@ -126,6 +128,14 @@ let command =
          ~doc:
            "F drop the classes under this share of the peak; 0 turns the filter off. The \
             peak always stays, thus a draw always exists"
+     and quantized =
+       flag
+         "-quantized"
+         no_arg
+         ~doc:
+           " sample the integer twin of the circuit: the piece the board plays at this \
+            seed. Every sampling flag applies as in the float path, and the policy bakes \
+            into the twin, as the bitstream carries it"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
      and device =
        flag
@@ -158,9 +168,24 @@ let command =
            (* every width is in the file: the recurrence has no window, and the head count
               and the state width both size tensors *)
            let config = Mamba.Config.of_checkpoint checkpoint in
-           let params = Mamba.Params.load config ~path:checkpoint in
-           Mamba.sample config params ~seed ~steps ~temperature ~min_p
-           |> Frame.events_of_frames
+           let frames =
+             if quantized
+             then (
+               let model =
+                 Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint
+               in
+               let engine = ref (Quantized.Engine.init model ~seed) in
+               Array.init steps ~f:(fun (_ : int) ->
+                 let next, (step : Quantized.Engine.step) =
+                   Quantized.Engine.next_step !engine
+                 in
+                 engine := next;
+                 step.frame))
+             else (
+               let params = Mamba.Params.load config ~path:checkpoint in
+               Mamba.sample config params ~seed ~steps ~temperature ~min_p)
+           in
+           Frame.events_of_frames frames
          with
          | Invalid_argument message | Failure message ->
            Printf.eprintf "%s\n" message;

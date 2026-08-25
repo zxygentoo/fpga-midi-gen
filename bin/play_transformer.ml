@@ -10,13 +10,15 @@
    a walk of the twin compare with `diff`. That comparison is the walk gate of
    docs/transformer.md.
 
-   The configuration flags must equal the flags of the training run; the checkpoint holds
-   only tensors. The audition of the integer twin returns with the twin. *)
+   The float model draws by default; [-quantized] draws the integer twin — the piece the
+   board plays at this seed, heard off the board. The configuration flags must equal the
+   flags of the training run; the checkpoint holds only tensors. *)
 
 open Core
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
+module Quantized = Mgen_transformer.Quantized
 module Signal = Mgen_core.Signal
 module Transformer = Mgen_transformer.Transformer
 
@@ -141,6 +143,14 @@ let command =
          ~doc:
            "F drop the classes under this share of the peak; 0 turns the filter off. The \
             peak always stays, thus a draw always exists"
+     and quantized =
+       flag
+         "-quantized"
+         no_arg
+         ~doc:
+           " sample the integer twin of the circuit: the piece the board plays at this \
+            seed. Every sampling flag applies as in the float path, and the policy bakes \
+            into the twin, as the bitstream carries it"
      and send = flag "-play" no_arg ~doc:" send the steps to the synthesizer"
      and device =
        flag
@@ -173,9 +183,24 @@ let command =
            let config =
              Transformer.Config.of_checkpoint checkpoint ~heads ~context ~slope_span
            in
-           let params = Transformer.Params.load config ~path:checkpoint in
-           Transformer.sample config params ~seed ~steps ~temperature ~min_p
-           |> Frame.events_of_frames
+           let frames =
+             if quantized
+             then (
+               let model =
+                 Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint
+               in
+               let engine = ref (Quantized.Engine.init model ~seed) in
+               Array.init steps ~f:(fun (_ : int) ->
+                 let next, (step : Quantized.Engine.step) =
+                   Quantized.Engine.next_step !engine
+                 in
+                 engine := next;
+                 step.frame))
+             else (
+               let params = Transformer.Params.load config ~path:checkpoint in
+               Transformer.sample config params ~seed ~steps ~temperature ~min_p)
+           in
+           Frame.events_of_frames frames
          with
          | Invalid_argument message | Failure message ->
            Printf.eprintf "%s\n" message;

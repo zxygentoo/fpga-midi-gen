@@ -1,11 +1,15 @@
-(* checkpoint_tool: what the integer twin of a checkpoint does — the drift of the twin
-   against the float model, and the event stream the board must send.
+(* check_transformer: the referee numbers of one era-four checkpoint — the loss of the
+   float model over the canonical valid windows (Gate A of the JAX seam), and the drift of
+   the integer twin against it.
+
+   The tool holds no walk of its own: play_transformer draws both models, and its step
+   lines without -play are the reference stream, thus the float walk, the twin and the JAX
+   walk all compare with `diff`.
 
    The configuration flags must equal the flags of the training run; the checkpoint holds
    only tensors. *)
 
 open Core
-module Frame = Mgen_core.Frame
 module Jsb = Mgen_corpus.Jsb
 module Quantized = Mgen_transformer.Quantized
 module Transformer = Mgen_transformer.Transformer
@@ -65,30 +69,6 @@ let drift_command =
      fun () -> drift ~checkpoint ~config ~steps ~seed)
 ;;
 
-(* The reference stream: what the board must send, event for event. The line format is the
-   one of play_transformer and of the JAX twin, thus the three compare with `diff` — and
-   the difference between this stream and the float player's is the quantization. *)
-let stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p =
-  let model = Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint in
-  let engine = ref (Quantized.Engine.init model ~seed) in
-  let frames =
-    Array.init steps ~f:(fun (_ : int) ->
-      let next, (step : Quantized.Engine.step) = Quantized.Engine.next_step !engine in
-      engine := next;
-      step.frame)
-  in
-  List.iteri (Frame.events_of_frames frames) ~f:(fun index events ->
-    let text =
-      List.map events ~f:(function
-        | Frame.Event.On pitch -> sprintf "on:%d" pitch
-        | Frame.Event.Off pitch -> sprintf "off:%d" pitch)
-    in
-    printf
-      "step %3d  %s\n"
-      index
-      (if List.is_empty text then "-" else String.concat ~sep:" " text))
-;;
-
 (* Gate A of the JAX seam: the loss of the float model over the canonical valid windows.
 
    A referee reads the canonical stream alone — every piece at shift zero, in the order
@@ -133,31 +113,10 @@ let loss_command =
      fun () -> loss ~checkpoint ~config ~corpus)
 ;;
 
-let stream_command =
-  Command.basic
-    ~summary:"the reference event stream: what the board must send, event for event"
-    (let%map_open.Command checkpoint, config = config_flags
-     and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
-     and seed =
-       flag
-         "-seed"
-         (optional_with_default 1 int)
-         ~doc:"N the seed, under the rule of the SEED cell: 1 up to 0xFFFFFFFF"
-     and temperature =
-       flag
-         "-temperature"
-         (optional_with_default Transformer.elected_temperature float)
-         ~doc:"F"
-     and min_p =
-       flag "-min-p" (optional_with_default Transformer.elected_min_p float) ~doc:"F"
-     in
-     fun () -> stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p)
-;;
-
 let command =
   Command.group
     ~summary:"the integer twin of one checkpoint"
-    [ "drift", drift_command; "loss", loss_command; "stream", stream_command ]
+    [ "drift", drift_command; "loss", loss_command ]
 ;;
 
 let () = Command_unix.run command

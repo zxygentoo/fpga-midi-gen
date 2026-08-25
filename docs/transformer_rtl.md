@@ -376,7 +376,7 @@ that measurement is owed when the circuit exists.
   test pins the measured numbers of a fixed sweep of drawn weights, and a
   QCheck property holds calibrated floors over drawn seed pairs; every
   walk is longer than the window, thus the KV ring wraps. On a
-  checkpoint, the same walk is `checkpoint_tool drift`.
+  checkpoint, the same walk is `check_transformer drift`.
 - **`Source` against `Quantized`: the gate of this document.** A short
   walk must give the same frames, integer for integer, and the frames
   then give the same events. The walk must cross the lead-in, because the

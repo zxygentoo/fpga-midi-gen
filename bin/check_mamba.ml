@@ -1,6 +1,7 @@
-(* mamba_tool: what one checkpoint of era five states — the loss over the canonical
-   windows, the drift of the integer twin against the float model, and the event stream
-   the board must send.
+(* check_mamba: the referee numbers of one era-five checkpoint — the loss over the
+   canonical valid windows (Gate A of the JAX seam), and the drift of the integer twin
+   against the float model. The tool holds no walk of its own: play_mamba draws both
+   models, and its step lines without -play are the reference stream.
 
    It states no shape of its own. Era four's tool had to be told the heads, the context
    and the ALiBi span, because none of the three sized a tensor there; the recurrence has
@@ -8,7 +9,6 @@
    comes out of the file and a wrong flag cannot pass a different model. *)
 
 open Core
-module Frame = Mgen_core.Frame
 module Jsb = Mgen_corpus.Jsb
 module Mamba = Mgen_mamba.Mamba
 module Quantized = Mgen_mamba.Quantized
@@ -70,29 +70,6 @@ let drift_command =
      fun () -> drift ~checkpoint ~config ~steps ~seed)
 ;;
 
-(* The reference stream: what the board must send, event for event. The line format is the
-   one of play_mamba and of the JAX twin, thus the three compare with `diff`. *)
-let stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p =
-  let model = Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint in
-  let engine = ref (Quantized.Engine.init model ~seed) in
-  let frames =
-    Array.init steps ~f:(fun (_ : int) ->
-      let next, (step : Quantized.Engine.step) = Quantized.Engine.next_step !engine in
-      engine := next;
-      step.frame)
-  in
-  List.iteri (Frame.events_of_frames frames) ~f:(fun index events ->
-    let text =
-      List.map events ~f:(function
-        | Frame.Event.On pitch -> sprintf "on:%d" pitch
-        | Frame.Event.Off pitch -> sprintf "off:%d" pitch)
-    in
-    printf
-      "step %3d  %s\n"
-      index
-      (if List.is_empty text then "-" else String.concat ~sep:" " text))
-;;
-
 (* Gate A of the JAX seam: the loss of the float model over the canonical valid windows.
 
    A referee reads the canonical stream alone — every piece at shift zero, in the order
@@ -146,30 +123,9 @@ let loss_command =
      fun () -> loss ~checkpoint ~config ~corpus ~context)
 ;;
 
-let stream_command =
-  Command.basic
-    ~summary:"the reference event stream: what the board must send, event for event"
-    (let%map_open.Command checkpoint, config = config_flags
-     and steps = flag "-steps" (optional_with_default 64 int) ~doc:"N the steps to draw"
-     and seed =
-       flag
-         "-seed"
-         (optional_with_default 1 int)
-         ~doc:"N the seed, under the rule of the SEED cell: 1 up to 0xFFFFFFFF"
-     and temperature =
-       flag
-         "-temperature"
-         (optional_with_default Mamba.elected_temperature float)
-         ~doc:"F"
-     and min_p =
-       flag "-min-p" (optional_with_default Mamba.elected_min_p float) ~doc:"F"
-     in
-     fun () -> stream ~checkpoint ~config ~steps ~seed ~temperature ~min_p)
-;;
-
 let () =
   Command_unix.run
     (Command.group
        ~summary:"one checkpoint of the state-space model"
-       [ "drift", drift_command; "loss", loss_command; "stream", stream_command ])
+       [ "drift", drift_command; "loss", loss_command ])
 ;;

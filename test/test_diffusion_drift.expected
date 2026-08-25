@@ -1,0 +1,8 @@
+weights 11 over 4 walks: top-1 3101/3299  same draw 3036/3299  low cosine 0.9979
+weights 23 over 4 walks: top-1 2983/3299  same draw 3075/3299  low cosine 0.9970
+weights 37 over 4 walks: top-1 3114/3299  same draw 3096/3299  low cosine 0.9980
+weights 41 over 4 walks: top-1 3136/3299  same draw 2969/3299  low cosine 0.9992
+   8 passes: top-1 0.955  cosine 0.9986  clamped 0.0000
+  32 passes: top-1 0.940  cosine 0.9984  clamped 0.0000
+ 128 passes: top-1 0.937  cosine 0.9982  clamped 0.0000
+60 drawn seed pairs, 0 released by their clamps: low top-1 0.884  low same draw 0.801  low cosine 0.9901
