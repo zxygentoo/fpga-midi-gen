@@ -160,7 +160,9 @@ let command =
            in
            (* The float walk folds the seed and the twin takes it as the SEED cell will; a
               seed inside 32 bits opens the two on ONE generator state, thus the A/B at
-              one seed hears the quantization and nothing else. *)
+              one seed hears the quantization and nothing else. Seed 0 is the exception
+              the fold states: it goes to the top state on the float side while the twin
+              stands still on it, as the board does, thus the two are not one walk there. *)
            let draw seed =
              let canvas =
                match model with
