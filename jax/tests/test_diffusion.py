@@ -604,11 +604,12 @@ def test_the_walk_writes_the_free_region_and_leaves_the_rest():
     given = np.zeros((2, 8, model.VOICES), dtype=np.int32)
     given[..., infer.SOPRANO] = 20
     free = infer.free_cells(2, 8, harmonize=True)
-    drawn = infer.gibbs(
-        params, stats, given, free, walk=4, temperature=1.0, seed=1
-    )
+    drawn = infer.gibbs(params, stats, given, free, walk=4, temperature=1.0, seed=1)
     assert (drawn[..., infer.SOPRANO] == 20).all()
     assert drawn.shape == given.shape
+    # and the free region was WRITTEN: the lower voices opened as silence, and a walk
+    # that left every one of them standing would be a sampler that never fired
+    assert (drawn[..., : infer.SOPRANO] != given[..., : infer.SOPRANO]).any()
 
 
 def test_several_canvases_take_a_file_each():
@@ -638,7 +639,9 @@ def test_the_seeded_canvas_is_the_seed_and_nothing_else():
     """the project's rule: the seed is an input, and one seed gives one canvas in the
     simulation and on the board"""
     assert np.array_equal(infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 3))
-    assert not np.array_equal(infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 4))
+    assert not np.array_equal(
+        infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 4)
+    )
 
 
 @needs_corpus

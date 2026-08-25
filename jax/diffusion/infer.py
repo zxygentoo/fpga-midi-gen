@@ -13,9 +13,10 @@ canvas passes, thus this one curve decides whether the masked era reaches the RT
 `sample` is the ear's path: draw, print the battery, and speak the music to the synthesizer
 or to a .mid. A batch is several whole pieces and not one piece in parts, thus --gap puts a
 silence between two of them on the wire, as a performer breathes between two chorales, and
---fade takes the velocity down over the last bar of each. Neither makes a crop ARRIVE. With --harmonize the walk keeps the soprano of a corpus crop and writes the
-three voices under it, which is the completion task the trunk is strongest in and which the
-mask planes give for one flag.
+--fade takes the velocity down over the last bar of each. Neither makes a crop ARRIVE.
+With --harmonize the walk keeps the soprano of a corpus crop and writes the three voices
+under it, which is the completion task the trunk is strongest in and which the mask planes
+give for one flag.
 
 CPU is the default platform here, and deliberately: a walk is a few hundred forward passes
 of one small canvas and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override
@@ -87,7 +88,9 @@ def seeded_canvas(canvases, steps, seed):
     return np.stack(
         [
             rng.integers(
-                low - data.PITCH_LOW + 1, high - data.PITCH_LOW + 2, size=(canvases, steps)
+                low - data.PITCH_LOW + 1,
+                high - data.PITCH_LOW + 2,
+                size=(canvases, steps),
             )
             for low, high in measure.RANGES
         ],
@@ -142,11 +145,12 @@ def audition_path(path, at, count):
 
 def opening(corpus_path, split, crop, canvases, harmonize, seed):
     """The canvas the walk opens on: notes drawn from the seed, or the first [canvases]
-    corpus
-    crops when a soprano is given.
+    corpus crops when a soprano is given.
 
-    A silent opening is never read as music. The whole free region is masked at step 0,
-    thus the model is handed an all-masked canvas and states the prior of the corpus."""
+    Either way the walk opens on NOTES; [seeded_canvas] states why silence would lie.
+    Under --harmonize the free region opens as the corpus's own lower voices, and none of
+    that answer survives to be read as the model's: a free cell escapes every mask of an
+    N 512 walk with probability under 10^-100."""
     if not harmonize:
         return seeded_canvas(canvases, crop, seed)
     return canvas.corpus_canvases(corpus_path, split, crop, seed)[:canvases].copy()
@@ -190,7 +194,9 @@ def sampling_options(command):
     """the flags every drawing command takes; the walk is the one they disagree on"""
     for option in reversed(
         [
-            click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False)),
+            click.option(
+                "--ckpt", required=True, type=click.Path(exists=True, dir_okay=False)
+            ),
             click.option("--corpus", "corpus_path", default=canvas.CORPUS),
             click.option("--split", default="valid", type=click.Choice(data.SPLITS)),
             click.option("--crop", default=model.CROP, help="T; the training crop"),
@@ -217,8 +223,12 @@ def sampling_options(command):
 
 @main.command(help=gibbs.__doc__)
 @sampling_options
-@click.option("--walk", default=model.CROP * model.VOICES, help="N, the paper's I times T")
-@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
+@click.option(
+    "--walk", default=model.CROP * model.VOICES, help="N, the paper's I times T"
+)
+@click.option(
+    "--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}"
+)
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=midi.DEVICE)
 @click.option("--step-ms", default=200)
@@ -258,7 +268,12 @@ def sample(
         if to_file:
             path = audition_path(to_file, at, len(music))
             midi.save(
-                piece, path, step_ms=step_ms, channel=channel, velocity=velocity, fade=fade
+                piece,
+                path,
+                step_ms=step_ms,
+                channel=channel,
+                velocity=velocity,
+                fade=fade,
             )
             click.echo(f"wrote {path}")
         if to_synth:
@@ -274,7 +289,9 @@ def sample(
             )
         if not (to_synth or to_file):
             click.echo(
-                "\n".join(midi.step_line(step, events) for step, events in enumerate(piece))
+                "\n".join(
+                    midi.step_line(step, events) for step, events in enumerate(piece)
+                )
             )
 
 

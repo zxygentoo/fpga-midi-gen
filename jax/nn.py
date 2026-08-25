@@ -339,7 +339,9 @@ def train(
             top.append((valid_all, step, jax.tree.map(np.asarray, params)))
             top.sort(key=lambda entry: entry[0])
             del top[average_top:]
-        click.echo(f"step {step:5d}  eval  train {train_all:.4f}  valid {valid_all:.4f}{mark}")
+        click.echo(
+            f"step {step:5d}  eval  train {train_all:.4f}  valid {valid_all:.4f}{mark}"
+        )
 
     for step in range(1, steps + 1):
         classes, phases = data.train_batch(rng, pool, batch, context)

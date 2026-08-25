@@ -13,8 +13,8 @@ The loss is orderless NADE, the paper's: mask a uniform subset of the cells, tak
 negative log-likelihood of the masked cells under the softmax over the pitch rows, and
 scale by one over the masked count. THE NUMBER IS NATS FOR EACH MASKED CELL. It is not the
 paper's Table 1 figure, which is nats for each FRAME under Algorithm 1 with five orderings;
-that referee lives in referee.py and it is the only thing that compares with 0.57. Nor does
-this number compare with the loss of any earlier era of this project.
+that referee lives in diffusion/measure.py and it is the only thing that compares with
+0.57. Nor does this number compare with the loss of any earlier era of this project.
 
 No transposition augmentation: the paper states none, and the pitch axis of the trunk
 carries the equivariance that the shifts used to buy. The elected checkpoint is the best
@@ -27,11 +27,12 @@ paper's -- it is ISMIR 2017, where AdamW is arXiv 1711.05101 of November 2017 an
 and the code release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no
 L2 anywhere. Batch norm and the best-by-valid checkpoint are the whole of its regularisation.
 
-THE LEARNING RATE IS NOT THE PAPER'S. The release carries no flag for it: `lib_hparams`
-holds 2**-4 marked "for sigmoids", with 2**-6 commented out above it, and halves it on a
-plateau of five epochs. Neither number is stated in the paper and both are large for Adam.
-The default here is a modern guess with the warmup and cosine decay of nn.schedule, and it
-is the first thing a sweep should settle.
+THE RATE MOVES WITH THE RUNG. The release carries no flag for it: `lib_hparams` holds
+2**-4 marked "for sigmoids", with 2**-6 commented out above it, and halves on a plateau of
+five epochs. Measured 2026-08-24 under the warmup and cosine decay of nn.schedule, the
+board rung wants that commented 2**-6 = 1.6e-2 and the ceiling wants 3e-3. The default is
+the ceiling's rate, because every other default states the paper's shape; a rung passes
+its own, as docs/diffusion.md records them.
 """
 
 import time
@@ -85,7 +86,10 @@ def draw_params(key, layers, width):
         }
 
     def opening(outputs):
-        return {"mean": jnp.zeros(outputs, jnp.float32), "variance": jnp.ones(outputs, jnp.float32)}
+        return {
+            "mean": jnp.zeros(outputs, jnp.float32),
+            "variance": jnp.ones(outputs, jnp.float32),
+        }
 
     params = [layer(key, *shape) for key, shape in zip(keys, channels)]
     return {"layers": params}, [opening(outputs) for _, outputs in channels]
@@ -300,7 +304,9 @@ def train(
 @click.option("--width", default=model.WIDTH, help="H, the paper's 128 channels")
 @click.option("--batch", default=8)
 @click.option("--steps", default=30000)
-@click.option("--lr", default=1e-3)
+# the ceiling's measured rate, as the shape defaults are the ceiling's; a rung's own rate
+# is in docs/diffusion.md
+@click.option("--lr", default=3e-3)
 @click.option("--seed", default=6)
 @click.option("--warmup", default=1000)
 @click.option("--clip", default=1.0)

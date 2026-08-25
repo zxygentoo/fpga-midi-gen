@@ -57,7 +57,9 @@ RANGES = ((36, 66), (46, 69), (52, 74), (60, 81))
 # the two that skip a voice, then the outer pair. That order is nearly the order of their
 # span in the corpus, thus [voice_pairs] reads left to right as the pitch reach runs out.
 PAIRS = tuple(
-    sorted(itertools.combinations(range(data.SEATS), 2), key=lambda p: (p[1] - p[0], p[0]))
+    sorted(
+        itertools.combinations(range(data.SEATS), 2), key=lambda p: (p[1] - p[0], p[0])
+    )
 )
 
 
@@ -113,7 +115,8 @@ def voice_pairs(spans, intervals, pairs_sound):
             {
                 "name": f"{VOICE_NAMES[low][:2]}-{VOICE_NAMES[high][:2]}",
                 "span": float(np.mean(spans[..., at][sounds])) if sounds.any() else 0.0,
-                "dissonant": 100.0 * float(np.mean(np.isin(intervals[..., at][sounds], DISSONANT)))
+                "dissonant": 100.0
+                * float(np.mean(np.isin(intervals[..., at][sounds], DISSONANT)))
                 if sounds.any()
                 else 0.0,
             }
@@ -269,9 +272,14 @@ def structure(classes):
         "hold": 100.0 * float(np.mean(classes[:, 1:] == classes[:, :-1])),
         "onsets": ons / sum(len(piece) for piece in music),
         "voices": [100.0 * float(np.mean(voices == count)) for count in range(5)],
-        "triads": 100.0 * float(np.mean(FITS_A_TRIAD[words[thick]])) if thick.any() else 0.0,
+        "triads": 100.0 * float(np.mean(FITS_A_TRIAD[words[thick]]))
+        if thick.any()
+        else 0.0,
         "dissonant": 100.0
-        * float(np.sum(np.isin(intervals, DISSONANT) & pairs_sound) / max(pairs_sound.sum(), 1)),
+        * float(
+            np.sum(np.isin(intervals, DISSONANT) & pairs_sound)
+            / max(pairs_sound.sum(), 1)
+        ),
         "order": 100.0
         * float(np.mean(np.all(ordered | ~pairs_sound, axis=-1)[voices >= 2]))
         if (voices >= 2).any()
@@ -321,5 +329,3 @@ def structure_lines(label, row):
         f"{'':<22} " + "   ".join(pairs[:half]),
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
-
-

@@ -192,9 +192,11 @@ THE OPTIMIZER IS PLAIN ADAM AND THE RATE IS THE PAPER'S. The paper is ISMIR
 the code release calls `AdamOptimizer` and holds no weight decay, no dropout
 and no L2 anywhere. Batch norm and the best-by-valid checkpoint are its whole
 regularization. The rate is in neither the paper nor a flag — the release
-carries `2**-4` and `2**-6` and halves on a plateau of five epochs. Measured
-2026-08-24 at two ends of the ladder, over 1,500 steps, in valid nats for
-each masked cell:
+carries `2**-4` and `2**-6` and halves on a plateau of five epochs. The
+plateau rule does not carry over: the trainer runs the warmup and cosine
+decay of `nn.schedule`, as every era of this project trains, and the sweep
+below stands on that schedule. Measured 2026-08-24 at two ends of the ladder,
+over 1,500 steps, in valid nats for each masked cell:
 
 | shape | 3e-4 | 1e-3 | 3e-3 | 1.6e-2 | 3e-2 | 6e-2 |
 |---|---|---|---|---|---|---|
