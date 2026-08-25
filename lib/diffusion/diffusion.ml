@@ -51,12 +51,9 @@ let class_of_cell pitch =
   else pitch - Vocab.pitch_low + 1
 ;;
 
-(* The canvas of one piece of [Jsb]: [steps] rows of [voices] class indices, seat 0 the
-   bass — the file gives the soprano first, thus the step turns around, as every reader of
-   the corpus turns it. A rest is the silence class. A pitch outside the corpus's 36 to 81
-   raises [Invalid_argument]: the spare class of the vocabulary is the draw's to state and
-   never the corpus's, thus a file that names its pitch is corrupt, and the twin reader of
-   [jax/data.py] refuses the same range. *)
+(* the canvas of one piece of [Jsb]: [steps] rows of [voices] class indices, seat 0 the
+   bass, and a rest is the silence class. [class_of_cell] states what a pitch outside the
+   corpus does, and why. *)
 let classes_of_chorale { Jsb.cells; legal_shifts = _ } =
   (* the file gives the soprano first; the reverse lands the bass at seat 0 *)
   Array.map cells ~f:(fun step -> Array.of_list (List.rev_map step ~f:class_of_cell))
@@ -425,6 +422,8 @@ let gate_mask ~index ~steps =
   snd (hidden_cells (Prng.create ~seed:(index + 1)) ~steps ~threshold:(1 lsl 23))
 ;;
 
+(* the checkpoint seam of the expect tests below. The interface states nothing of it: the
+   tests that read it stand in this file, thus nothing outside needs the names. *)
 module For_test = struct
   let with_checkpoint = Checkpoint.with_checkpoint
   let refusal ~path f = Checkpoint.scrubbed_refusal ~path f

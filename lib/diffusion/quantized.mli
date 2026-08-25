@@ -17,10 +17,11 @@
       at 184 on half-masked corpus canvases and at 313 on the seeded openings the walk
       really visits. Q6 holds 512 with a 1.6 margin. The input planes enter exact — a cell
       is 0 or one.
-    - The accumulator is int32 and cannot overflow below 58 input channels — 9 C products
-      of int8 by int16 stand under 2^31 — thus the sum is exact and the order of the taps
-      cannot matter. [Model.check_shape] refuses a wider layer, thus the bound is a rule
-      and not a comment; the elected shapes stand far under it.
+    - The accumulator is int32 and is exact up to 57 input channels — 9 C products of int8
+      by int16 reach under 2^31 there and one channel more can pass it — thus the sum is
+      exact and the order of the taps cannot matter. [Model.check_shape] refuses a wider
+      layer, thus the bound is a rule and not a comment; the elected shapes stand far
+      under it.
     - The norm folds at quantization: [gain = scale * rsqrt (variance + eps)] becomes a
       per-channel multiplier that also retires the weight exponent, and
       [bias = shift - mean * gain] becomes Q[activation_q] in int16. Then ReLU; the head
@@ -150,7 +151,9 @@ module Engine : sig
       already drawn, under [Prng.create] — the seed as it stands, under the rule of the
       SEED cell. A seed inside 32 bits walks the very stream [Diffusion.gibbs] folds to,
       thus the two openings are one opening and the walks part only where the arithmetic
-      parts. *)
+      parts — EXCEPT AT 0, the one seed the fold does not carry: [Prng.create_folded]
+      sends it to the top state, while this engine stands still on it as the circuit does.
+      An A/B at seed 0 therefore compares two walks and not two arithmetics. *)
   val init : Model.t -> steps:int -> walk:int -> seed:int -> t
 
   (** [next_pass t] takes one Gibbs pass: the masks, one integer forward, the redraws.
