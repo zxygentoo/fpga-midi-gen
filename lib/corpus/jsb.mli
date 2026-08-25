@@ -50,6 +50,15 @@ val default_path : string
     and the two are different facts that happen to agree. *)
 val voices : int
 
+(** The observed range of each voice over the corpus, the soprano first as the file orders
+    its cells: the lowest and the highest pitch that voice sings anywhere. The three
+    splits agree exactly, thus this is a fact of the genre and not of a draw.
+
+    Two consumers read one table: the transposition policy holds each voice inside its own
+    row, and the seeded opening of the diffusion walk draws inside it — a canvas that
+    opens on notes must open on notes a chorale could hold. *)
+val voice_ranges : (int * int) array
+
 (** the steps of one bar on the sixteenth grid: the rows of the bar-phase table of the
     model, and the one clock the packed stream carries *)
 val bar_steps : int

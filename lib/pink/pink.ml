@@ -212,14 +212,18 @@ let%expect_test "the note histogram of the soprano, stretch 1 against stretch 2"
 ;;
 
 let%expect_test "the articulation grid is the ctz schedule" =
-  let t = ref (create ~model:default ~seed:7) in
-  let due_steps = Array.create ~len:(List.length default_voices) [] in
-  for step = 1 to 128 do
-    let t', states = next_step !t in
-    t := t';
-    List.iteri states ~f:(fun k s -> if s.due then due_steps.(k) <- step :: due_steps.(k))
-  done;
-  let count k = List.length due_steps.(k) in
+  let walk =
+    List.folding_map
+      (List.range 1 129)
+      ~init:(create ~model:default ~seed:7)
+      ~f:(fun t (_ : int) -> next_step t)
+  in
+  (* the steps at which voice [k] is due, in order: the walk opens at step 1 *)
+  let due_steps k =
+    List.filter_mapi walk ~f:(fun index states ->
+      Option.some_if (List.nth_exn states k).due (index + 1))
+  in
+  let count k = List.length (due_steps k) in
   Stdio.printf
     "soprano %d (every step), alto %d (every 4), tenor %d (every 16), bass %d (every 64)\n"
     (count 0)
@@ -228,7 +232,7 @@ let%expect_test "the articulation grid is the ctz schedule" =
     (count 3);
   Stdio.printf
     "bass at steps %s\n"
-    (String.concat ~sep:" " (List.rev_map due_steps.(3) ~f:Int.to_string));
+    (String.concat ~sep:" " (List.map (due_steps 3) ~f:Int.to_string));
   [%expect
     {|
     soprano 128 (every step), alto 33 (every 4), tenor 9 (every 16), bass 3 (every 64)

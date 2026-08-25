@@ -56,7 +56,11 @@ def classes_of_codes(codes):
     inside = ~sounds | ((pitches >= PITCH_LOW) & (pitches < PITCH_LOW + CLASSES - 1))
     if not inside.all():
         bad = np.unique(pitches[~inside])
-        raise ValueError(f"pitches outside the {CLASSES}-class vocabulary: {bad}")
+        # the WINDOW and not the corpus range: a walk that drew the spare class comes
+        # back through here as pitch 82, and that is music, not a fault
+        raise ValueError(
+            f"pitches outside the vocabulary's {PITCH_LOW} to {PITCH_LOW + CLASSES - 2}: {bad}"
+        )
     return np.where(sounds, pitches - PITCH_LOW + 1, SILENCE).astype(np.int32)
 
 
@@ -71,7 +75,9 @@ def classes_of_cells(cells):
     inside = ~sounds | ((cells >= PITCH_LOW) & (cells <= PITCH_HIGH))
     if not inside.all():
         bad = np.unique(cells[~inside])
-        raise ValueError(f"pitches outside the {CLASSES}-class vocabulary: {bad}")
+        raise ValueError(
+            f"pitches outside the corpus's {PITCH_LOW} to {PITCH_HIGH}: {bad}"
+        )
     return np.where(sounds, cells - PITCH_LOW + 1, SILENCE).astype(np.int32)
 
 

@@ -341,10 +341,11 @@ reaches the RTL.
    A parallel is a rare event. 64 canvases hold a Poisson error near a sixth
    of the count, thus a comparison between two models wants 256.
 3. **The ear.** Gibbs draws of eight measures through the audition rig —
-   the excerpt length the paper's raters heard. A secondary audition masks
-   alto, tenor and bass and keeps the soprano: harmonization is the
-   completion task, the regime the trunk is strongest in, and the mask
-   planes give it for one flag.
+   the excerpt length the paper's raters heard. A harmonization audition —
+   keep the soprano, write the three voices under it — was heard in the
+   ladder round and CUT with its flag on 2026-08-26: the completion regime
+   is the whole-piece round's thesis, and the mask planes give it back for
+   one flag whenever that round wants it.
 
    `--gap` puts a silence between two canvases on the wire and `--fade`
    takes the velocity down over the last bar of one, two bars and one bar

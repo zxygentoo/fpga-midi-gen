@@ -133,19 +133,24 @@ let%expect_test "the rule holds its three properties over a drawn stream" =
            let draw = next () % 20 in
            if draw < 4 then silent_code else code_of_pitch (48 + (draw % 16)))))
   in
-  let sounding = ref (Set.empty (module Int)) in
-  let strikes = ref 0 in
-  List.iter (events_of_frames drawn) ~f:(fun events ->
-    List.iter events ~f:(function
-      | Event.On pitch ->
-        if Set.mem !sounding pitch then failwith "a strike of a pitch that sounds";
-        Int.incr strikes;
-        sounding := Set.add !sounding pitch
-      | Event.Off pitch ->
-        if not (Set.mem !sounding pitch)
-        then failwith "a release of a pitch that does not sound";
-        sounding := Set.remove !sounding pitch);
-    if Set.length !sounding > voices then failwith "five notes sound at the same time");
-  printf "%d strikes, and the three properties hold at every step\n" !strikes;
+  let after_event (strikes, sounding) = function
+    | Event.On pitch ->
+      if Set.mem sounding pitch then failwith "a strike of a pitch that sounds";
+      strikes + 1, Set.add sounding pitch
+    | Event.Off pitch ->
+      if not (Set.mem sounding pitch)
+      then failwith "a release of a pitch that does not sound";
+      strikes, Set.remove sounding pitch
+  in
+  let after_step state events =
+    let strikes, sounding = List.fold events ~init:state ~f:after_event in
+    if Set.length sounding > voices then failwith "five notes sound at the same time";
+    strikes, sounding
+  in
+  let strikes =
+    List.fold (events_of_frames drawn) ~init:(0, Set.empty (module Int)) ~f:after_step
+    |> fst
+  in
+  printf "%d strikes, and the three properties hold at every step\n" strikes;
   [%expect {| 9876 strikes, and the three properties hold at every step |}]
 ;;

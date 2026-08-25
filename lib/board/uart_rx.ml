@@ -71,22 +71,29 @@ module For_test = struct
   let decode_line wave ~clocks_per_bit =
     let n = String.length wave in
     let bit k = if k < n && Char.equal wave.[k] '1' then 1 else 0 in
-    let bytes = Buffer.create 8 in
-    let i = ref 1 in
-    while !i < n do
-      if bit (!i - 1) = 1 && bit !i = 0
+    (* the frame that opens at [start]: the eight data bits, the least significant first.
+       A frame whose start bit or stop bit does not stand where 8N1 says gives nothing. *)
+    let byte_at start =
+      let center k = start + (clocks_per_bit / 2) + (k * clocks_per_bit) in
+      let data =
+        List.fold (List.range 1 9) ~init:0 ~f:(fun byte k ->
+          byte lor (bit (center k) lsl (k - 1)))
+      in
+      Option.some_if (bit (center 0) = 0 && bit (center 9) = 1) data
+    in
+    (* the falling edge is the start bit, and the frame after it is ten bit times wide *)
+    let rec scan start bytes =
+      if start >= n
+      then List.rev bytes
+      else if bit (start - 1) = 1 && bit start = 0
       then (
-        let center k = !i + (clocks_per_bit / 2) + (k * clocks_per_bit) in
-        let byte = ref 0 in
-        for k = 1 to 8 do
-          byte := !byte lor (bit (center k) lsl (k - 1))
-        done;
-        if bit (center 0) = 0 && bit (center 9) = 1
-        then Buffer.add_char bytes (Char.of_int_exn !byte);
-        i := !i + (10 * clocks_per_bit))
-      else Int.incr i
-    done;
-    Buffer.contents_bytes bytes
+        let after = start + (10 * clocks_per_bit) in
+        match byte_at start with
+        | Some byte -> scan after (byte :: bytes)
+        | None -> scan after bytes)
+      else scan (start + 1) bytes
+    in
+    scan 1 [] |> List.map ~f:Char.of_int_exn |> String.of_char_list |> Bytes.of_string
   ;;
 end
 

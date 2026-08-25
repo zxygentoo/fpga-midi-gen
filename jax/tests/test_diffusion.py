@@ -27,6 +27,7 @@ from click.testing import CliRunner
 import data
 import measure
 import nn
+import prng
 from diffusion import infer, model, train
 from diffusion import measure as canvas
 
@@ -597,19 +598,46 @@ def test_algorithm_one_adds_the_four_voices_of_a_frame():
 # ---------------------------------------------------------------------
 
 
-def test_the_walk_writes_the_free_region_and_leaves_the_rest():
-    """Harmonization is one flag on the sampler: the soprano the caller gives must come back
-    unchanged, and every voice under it must have been written."""
+def test_the_walk_rewrites_the_canvas():
+    """a walk of a few passes must change the opening it was handed -- a sampler that
+    left every cell standing never fired -- and it must state a canvas of the same
+    shape, every cell a class of the vocabulary"""
     params, stats = tiny()
-    given = np.zeros((2, 8, model.VOICES), dtype=np.int32)
-    given[..., infer.SOPRANO] = 20
-    free = infer.free_cells(2, 8, harmonize=True)
-    drawn = infer.gibbs(params, stats, given, free, walk=4, temperature=1.0, seed=1)
-    assert (drawn[..., infer.SOPRANO] == 20).all()
+    states, given = infer.opening_canvas(prng.states([1, 2]), 8)
+    drawn, _ = infer.gibbs(params, stats, given, states, walk=4, temperature=1.0)
     assert drawn.shape == given.shape
-    # and the free region was WRITTEN: the lower voices opened as silence, and a walk
-    # that left every one of them standing would be a sampler that never fired
-    assert (drawn[..., : infer.SOPRANO] != given[..., : infer.SOPRANO]).any()
+    assert (drawn != given).any()
+    assert drawn.min() >= 0 and drawn.max() < model.ROWS
+
+
+def test_a_canvas_walks_the_same_alone_or_in_a_batch():
+    """One seed names one CANVAS, whatever stands beside it: each walk holds its own
+    generator, thus a batch is independent pieces and a sweep's seed crosses to a solo
+    audition unchanged. The old sampler could not say this -- its seed named the batch."""
+    params, stats = tiny()
+
+    def walk(seeds):
+        states, given = infer.opening_canvas(prng.states(seeds), 8)
+        drawn, _ = infer.gibbs(params, stats, given, states, walk=3, temperature=1.0)
+        return drawn
+
+    alone = walk([7])
+    batched = walk([3, 7, 11])
+    assert np.array_equal(alone[0], batched[1])
+
+
+def test_the_tempered_pick_is_the_policy_pick():
+    """The rules of Policy.draw_class, held cell for cell: the peak always survives, a
+    uniform of 0 lands on the first class that holds weight, and the top of the 24-bit
+    grid lands on the LAST class that holds weight -- never past it."""
+    raw = np.array([[0.0, -1.0, -10.0], [-10.0, 0.0, -1.0]])
+    top = float(0xFFFFFF) * 2.0**-24
+    assert list(infer.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
+    # a class ten nats under the peak weighs 4.5e-5 of it, which the top of the grid
+    # reaches -- the same case Policy's own gate walks
+    assert list(infer.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
+    # the middle of the grid stays on the heavy classes
+    assert list(infer.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
 
 
 def test_several_canvases_take_a_file_each():
@@ -621,12 +649,12 @@ def test_several_canvases_take_a_file_each():
     assert infer.audition_path("a/eight.mid", 3, 4) == "a/eight-3.mid"
 
 
-def test_the_seeded_canvas_puts_every_voice_in_its_own_register():
+def test_the_seeded_opening_puts_every_voice_in_its_own_register():
     """The opening that needs no special step. A bass at 81 and a soprano at 36 are further
     from this corpus than a rest is, thus the draw is over each seat's own range and not
     over the whole roll -- and a cell the Bernoulli leaves standing then states a NOTE,
     which is what 99.8 percent of the corpus's cells state."""
-    drawn = infer.seeded_canvas(4, 32, 7)
+    _, drawn = infer.opening_canvas(prng.states([7, 8, 9, 10]), 32)
     assert drawn.shape == (4, 32, model.VOICES)
     assert not (drawn == data.SILENCE).any()
     pitches = data.pitches_of_classes(drawn)
@@ -635,13 +663,17 @@ def test_the_seeded_canvas_puts_every_voice_in_its_own_register():
         assert heard.min() >= low and heard.max() <= high
 
 
-def test_the_seeded_canvas_is_the_seed_and_nothing_else():
-    """the project's rule: the seed is an input, and one seed gives one canvas in the
-    simulation and on the board"""
-    assert np.array_equal(infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 3))
-    assert not np.array_equal(
-        infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 4)
-    )
+def test_the_seeded_opening_is_the_seed_and_nothing_else():
+    """the project's rule: the seed is an input, and one seed gives one canvas here, in
+    the OCaml reference and on the board"""
+
+    def drawn(seeds):
+        return infer.opening_canvas(prng.states(seeds), 16)[1]
+
+    assert np.array_equal(drawn([3, 4]), drawn([3, 4]))
+    assert not np.array_equal(drawn([3, 4]), drawn([4, 3]))
+    # and a row is its seed's, not its batch's
+    assert np.array_equal(drawn([3])[0], drawn([9, 3])[1])
 
 
 @needs_corpus

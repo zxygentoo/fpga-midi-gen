@@ -1,0 +1,14 @@
+(library
+ (name mgen_diffusion)
+ ; Era six below the JAX seam: the float reference of the masked canvas and its integer
+ ; twin. The units and the shared rules come from mgen_nn, as the unification round put
+ ; them. Mgen_nn is not opened — its [Quantized] would shadow this library's own — thus
+ ; everything is named through it.
+ (libraries base core stdio hardcaml nx nx.io mgen_core mgen_nn mgen_corpus)
+ (flags
+  (:standard -open Mgen_core -open Mgen_corpus))
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (preprocess
+  (pps ppx_expect ppx_sexp_conv)))

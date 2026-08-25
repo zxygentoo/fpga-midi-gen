@@ -33,21 +33,18 @@ let tensors_of_split streams =
   let frames = Array.create ~len:(total * Jsb.voices) 0 in
   let positions = Array.create ~len:total 0 in
   let index = Array.create ~len:(Array.length all * 2) 0 in
-  let offset = ref 0 in
-  Array.iteri all ~f:(fun row (stream : Jsb.stream) ->
+  (* one stream into the flat tensors, and the offset the next one opens at *)
+  let write_stream row offset (stream : Jsb.stream) =
     let length = Array.length stream.frames in
     Array.iteri stream.frames ~f:(fun step frame ->
       List.iteri (Frame.codes frame) ~f:(fun seat code ->
-        frames.(((!offset + step) * Jsb.voices) + seat) <- code));
-    Array.blit
-      ~src:stream.positions
-      ~src_pos:0
-      ~dst:positions
-      ~dst_pos:!offset
-      ~len:length;
-    index.(2 * row) <- !offset;
+        frames.(((offset + step) * Jsb.voices) + seat) <- code));
+    Array.blit ~src:stream.positions ~src_pos:0 ~dst:positions ~dst_pos:offset ~len:length;
+    index.(2 * row) <- offset;
     index.((2 * row) + 1) <- length;
-    offset := !offset + length);
+    offset + length
+  in
+  let (_ : int) = Array.foldi all ~init:0 ~f:write_stream in
   [ "frames", Nx_io.P (i32 ~shape:[| total; Jsb.voices |] frames)
   ; "positions", Nx_io.P (i32 ~shape:[| total |] positions)
   ; "index", Nx_io.P (i32 ~shape:[| Array.length all; 2 |] index)

@@ -3,6 +3,7 @@
   test_txn
   test_quantized_drift
   test_mamba_drift
+  test_diffusion_drift
   test_socket
   test_pink_socket)
  (libraries
@@ -15,4 +16,5 @@
   mgen_pink
   mgen_transformer
   mgen_mamba
+  mgen_diffusion
   mgen_nexys4))

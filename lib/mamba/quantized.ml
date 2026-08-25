@@ -861,6 +861,15 @@ module Engine = struct
     forward t ~frame:step.frame ~phase, step
   ;;
 
+  (* the integer twin of [Mamba.sample]: the walk a player draws, and the lead-in counts
+     inside [steps] as it does there *)
+  let frames t ~steps =
+    List.folding_map (List.range 0 steps) ~init:t ~f:(fun t (_ : int) ->
+      let t, (taken : step) = next_step t in
+      t, taken.frame)
+    |> Array.of_list
+  ;;
+
   let clamps t = t.clamps
 
   (* the scalar rules the L0 circuit units must reproduce; their gate tests read them here
@@ -918,6 +927,25 @@ module Drift = struct
     ; state_clamped : float
     }
 
+  (* what the comparison counts over the draws it has seen *)
+  type tally =
+    { draws : int
+    ; same_peak : int
+    ; same_draw : int
+    ; cosine_sum : float
+    }
+
+  let counted_nothing = { draws = 0; same_peak = 0; same_draw = 0; cosine_sum = 0.0 }
+
+  (* The state the report folds. [stream] is the residual stream the last float step gave,
+     which is what the head of this step reads. *)
+  type walk =
+    { engine : Engine.t
+    ; memory : Mamba.Memory.t
+    ; stream : float array
+    ; tally : tally
+    }
+
   (* One weights source and one policy: the walk quantizes the float tensors itself, under
      the draw of the era, thus the pairing cannot slip.
 
@@ -939,53 +967,62 @@ module Drift = struct
         (* [Nx.to_array] is already row-major and flat: what the quantization reads *)
         (List.map (Mamba.Params.to_list params) ~f:Nx.to_array)
     in
-    let engine = ref (Engine.init model ~seed) in
-    let memory = ref (Mamba.Memory.origin config ~batch:1) in
-    let stream = ref (Array.create ~len:config.d 0.0) in
     let drawn_classes draws =
       let seats = Array.create ~len:Frame.voices 0 in
       List.iter draws ~f:(fun (d : Engine.draw) -> seats.(d.seat) <- d.drawn);
       seats
     in
-    let draws = ref 0 in
-    let same_peak = ref 0 in
-    let same_draw = ref 0 in
-    let cosine_sum = ref 0.0 in
-    for step = 0 to steps - 1 do
-      let next, { Engine.frame; draws = chain } = Engine.next_step !engine in
-      if not (List.is_empty chain)
-      then (
-        let floated =
-          Mamba.logits config params ~stream:!stream ~drawn:(drawn_classes chain)
-        in
-        List.iter chain ~f:(fun (d : Engine.draw) ->
-          let float_row = floated.(d.seat) in
-          if Tensor.same_peak d.logits float_row then Int.incr same_peak;
-          cosine_sum := !cosine_sum +. Tensor.cosine d.logits float_row;
-          let float_class =
-            Mamba.draw_class
-              float_row
-              ~temperature:Mamba.elected_temperature
-              ~min_p:Mamba.elected_min_p
-              ~uniform:d.uniform
-          in
-          if float_class = d.drawn then Int.incr same_draw;
-          Int.incr draws));
-      engine := next;
-      let after, row =
-        Mamba.forward config params !memory ~frame ~phase:(step % Jsb.bar_steps)
+    (* one draw of the chain against the float logits of the same seat, on the very
+       uniform the engine took *)
+    let count_draw floated tally (d : Engine.draw) =
+      let float_row = floated.(d.seat) in
+      let float_class =
+        Mamba.draw_class
+          float_row
+          ~temperature:Mamba.elected_temperature
+          ~min_p:Mamba.elected_min_p
+          ~uniform:d.uniform
       in
-      memory := after;
-      stream := row
-    done;
+      { draws = tally.draws + 1
+      ; same_peak =
+          (tally.same_peak + if Tensor.same_peak d.logits float_row then 1 else 0)
+      ; same_draw = (tally.same_draw + if float_class = d.drawn then 1 else 0)
+      ; cosine_sum = tally.cosine_sum +. Tensor.cosine d.logits float_row
+      }
+    in
+    let take_step w step =
+      let engine, { Engine.frame; draws = chain } = Engine.next_step w.engine in
+      let tally =
+        if List.is_empty chain
+        then w.tally
+        else (
+          let floated =
+            Mamba.logits config params ~stream:w.stream ~drawn:(drawn_classes chain)
+          in
+          List.fold chain ~init:w.tally ~f:(count_draw floated))
+      in
+      let memory, stream =
+        Mamba.forward config params w.memory ~frame ~phase:(step % Jsb.bar_steps)
+      in
+      { engine; memory; stream; tally }
+    in
+    let opening =
+      { engine = Engine.init model ~seed
+      ; memory = Mamba.Memory.origin config ~batch:1
+      ; stream = Array.create ~len:config.d 0.0
+      ; tally = counted_nothing
+      }
+    in
+    let walked = List.fold (List.range 0 steps) ~init:opening ~f:take_step in
+    let { draws; same_peak; same_draw; cosine_sum } = walked.tally in
     let { Clamps.dt; dt_seen; beta; beta_seen; state; state_seen } =
-      Engine.clamps !engine
+      Engine.clamps walked.engine
     in
     { steps
-    ; draws = !draws
-    ; same_peak = !same_peak
-    ; same_draw = !same_draw
-    ; mean_cosine = !cosine_sum /. Float.of_int (max 1 !draws)
+    ; draws
+    ; same_peak
+    ; same_draw
+    ; mean_cosine = cosine_sum /. Float.of_int (max 1 draws)
     ; dt_clamped = Clamps.share dt dt_seen
     ; beta_clamped = Clamps.share beta beta_seen
     ; state_clamped = Clamps.share state state_seen
@@ -1090,11 +1127,10 @@ let%expect_test "the checkpoint seam: a tensor of the wrong count raises" =
 
 let%expect_test "the lead-in draws nothing, and the seed names the walk" =
   let walk ~seed ~steps =
-    let engine = ref (Engine.init (test_model ~seed:1) ~seed) in
-    List.map (List.range 0 steps) ~f:(fun (_ : int) ->
-      let next, step = Engine.next_step !engine in
-      engine := next;
-      step)
+    List.folding_map
+      (List.range 0 steps)
+      ~init:(Engine.init (test_model ~seed:1) ~seed)
+      ~f:(fun engine (_ : int) -> Engine.next_step engine)
   in
   let steps = walk ~seed:7 ~steps:20 in
   List.iteri steps ~f:(fun index (step : Engine.step) ->
@@ -1134,15 +1170,11 @@ let%expect_test "the lead-in draws nothing, and the seed names the walk" =
    The float sampler answers another walk for the same number: [Mamba.sample] folds its
    seed and 0 is the one seed the fold does not carry to the board. *)
 let%expect_test "the seed 0 stands still, and each seat takes the first class it may" =
-  let engine = ref (Engine.init (test_model ~seed:1) ~seed:0) in
-  let steps = ref [] in
-  for _ = 1 to 20 do
-    let next, (step : Engine.step) = Engine.next_step !engine in
-    engine := next;
-    steps := step :: !steps
-  done;
   let drawn =
-    List.rev !steps
+    List.folding_map
+      (List.range 0 20)
+      ~init:(Engine.init (test_model ~seed:1) ~seed:0)
+      ~f:(fun engine (_ : int) -> Engine.next_step engine)
     |> List.filter ~f:(fun (s : Engine.step) -> not (List.is_empty s.draws))
   in
   let stands_still (s : Engine.step) =
@@ -1164,15 +1196,11 @@ let%expect_test "the seed 0 stands still, and each seat takes the first class it
 ;;
 
 let%expect_test "the chain draws from the soprano down, and each seat lands in its seat" =
-  let engine = ref (Engine.init (test_model ~seed:2) ~seed:3) in
-  let steps = ref [] in
-  for _ = 1 to 20 do
-    let next, (step : Engine.step) = Engine.next_step !engine in
-    engine := next;
-    steps := step :: !steps
-  done;
   let drawn =
-    List.rev !steps
+    List.folding_map
+      (List.range 0 20)
+      ~init:(Engine.init (test_model ~seed:2) ~seed:3)
+      ~f:(fun engine (_ : int) -> Engine.next_step engine)
     |> List.filter ~f:(fun (s : Engine.step) -> not (List.is_empty s.draws))
   in
   Stdio.printf

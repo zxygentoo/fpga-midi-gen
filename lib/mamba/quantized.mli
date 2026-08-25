@@ -338,6 +338,11 @@ module Engine : sig
       names always holds the weight the floor left standing. *)
   val next_step : t -> t * step
 
+  (** [frames t ~steps] is the frame of each of [steps] steps of the walk from [t]: the
+      integer twin of [Mamba.sample], and what a player draws. The lead-in counts inside
+      [steps], as it does there. *)
+  val frames : t -> steps:int -> int array
+
   (** the clamps the walk has met so far. It accumulates over the whole walk, thus a
       caller that wants the clamps of one stretch takes the difference. *)
   val clamps : t -> Clamps.t
