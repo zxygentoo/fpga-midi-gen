@@ -604,7 +604,9 @@ def test_the_walk_writes_the_free_region_and_leaves_the_rest():
     given = np.zeros((2, 8, model.VOICES), dtype=np.int32)
     given[..., infer.SOPRANO] = 20
     free = infer.free_cells(2, 8, harmonize=True)
-    drawn = infer.gibbs(params, stats, given, free, walk=4, temperature=1.0, seed=1)
+    drawn = infer.gibbs(
+        params, stats, given, free, walk=4, temperature=1.0, seed=1
+    )
     assert (drawn[..., infer.SOPRANO] == 20).all()
     assert drawn.shape == given.shape
 
@@ -618,16 +620,25 @@ def test_several_canvases_take_a_file_each():
     assert infer.audition_path("a/eight.mid", 3, 4) == "a/eight-3.mid"
 
 
-def test_the_walk_opens_by_masking_the_whole_free_region():
-    """A cell the opening step left unmasked would stand as a REST stated with the authority
-    of context, because this roll holds a silence row where the paper's holds none. One step
-    of the walk must therefore have written every free cell."""
-    params, stats = tiny()
-    given = np.zeros((1, 8, model.VOICES), dtype=np.int32)
-    free = infer.free_cells(1, 8, harmonize=False)
-    # a model drawn at zero is nearly uniform, thus one step leaves almost nothing silent
-    drawn = infer.gibbs(params, stats, given, free, walk=1, temperature=1.0, seed=2)
-    assert float(np.mean(drawn == data.SILENCE)) < 0.1
+def test_the_seeded_canvas_puts_every_voice_in_its_own_register():
+    """The opening that needs no special step. A bass at 81 and a soprano at 36 are further
+    from this corpus than a rest is, thus the draw is over each seat's own range and not
+    over the whole roll -- and a cell the Bernoulli leaves standing then states a NOTE,
+    which is what 99.8 percent of the corpus's cells state."""
+    drawn = infer.seeded_canvas(4, 32, 7)
+    assert drawn.shape == (4, 32, model.VOICES)
+    assert not (drawn == data.SILENCE).any()
+    pitches = data.pitches_of_classes(drawn)
+    for seat, (low, high) in enumerate(measure.RANGES):
+        heard = pitches[..., seat]
+        assert heard.min() >= low and heard.max() <= high
+
+
+def test_the_seeded_canvas_is_the_seed_and_nothing_else():
+    """the project's rule: the seed is an input, and one seed gives one canvas in the
+    simulation and on the board"""
+    assert np.array_equal(infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 3))
+    assert not np.array_equal(infer.seeded_canvas(2, 16, 3), infer.seeded_canvas(2, 16, 4))
 
 
 @needs_corpus

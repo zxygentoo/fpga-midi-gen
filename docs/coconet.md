@@ -211,14 +211,30 @@ and it states that a lower N costs a little quality. The constants pin from
 the code release, `YaoSchedule(pmin=0.1, pmax=0.9, alpha=0.7)`: alpha_min
 0.1, alpha_max 0.9, eta 0.7. They are levers, not decisions.
 
-One step of the walk is not the paper's. THE OPENING STEP MASKS THE WHOLE
-FREE REGION, where the code release opens with the same Bernoulli as every
-other step. The reason is the vocabulary: this roll has a silence row and the
-paper's has none. A cell that the opening Bernoulli leaves unmasked is
-therefore not a blank — it is a REST, stated with the authority of context,
-and the corpus rests in 0.35 percent of its cells. At alpha_max 0.9 that
-freezes a tenth of the canvas into false rests, and at a low N most of them
-never come back to be corrected.
+EVERY STEP OF THE WALK IS THE SAME STEP, and it took a change of the opening
+to keep it that way. The paper starts on "an empty (zero everywhere) piano
+roll" and its roll has no silence row, thus an empty cell there states
+nothing. THIS roll holds silence as a class, so an empty cell states a REST
+with the authority of context, and the corpus rests in 0.35 percent of its
+cells; at alpha_max 0.9 the opening Bernoulli leaves a tenth of the canvas
+standing and a tenth of it would be a lie. The round paid for that with an
+opening step that masked the whole free region — one step unlike every other,
+and a branch the RTL would have to carry.
+
+**The walk therefore opens on NOTES and not on rests.** Every cell takes a
+pitch drawn from the seed, each voice inside its own register of
+`measure.RANGES`, thus a cell the Bernoulli leaves standing states some note
+— and four voices sounding is 99.8 percent of the corpus. The release ships
+this initialiser itself, as `UniformRandomSampler` beside `ZeroSampler`.
+
+Measured 2026-08-25 on L 48 by H 20 over 256 canvases, THE TWO OPENINGS ARE
+THE SAME INSTRUMENT. On the parallels they part by under half an error at
+every N above 32, and at N 32 the silent opening leads by 1.6 and 1.3 errors,
+which is not significant across ten comparisons and sits at a budget the
+board will not run — L 48 by H 20 reaches N 512 on 206 of the 238 free DSPs.
+The ear could not tell them apart. The silent opening was removed rather than
+kept as a flag nobody would pull, and the curve numbers recorded above were
+measured on it and carry forward unchanged.
 
 **The curve of the round is quality against N**, over N in 32, 64, 128, 256
 and 512, read by the referees below. The board's silence window affords tens

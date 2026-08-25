@@ -58,6 +58,43 @@ def free_cells(canvases, steps, harmonize):
     return free
 
 
+def seeded_canvas(canvases, steps, seed):
+    """A canvas of random notes, each voice inside the register of its own seat.
+
+    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper
+    starts on "an empty (zero everywhere) piano roll" and its roll has no silence row, thus
+    an empty cell there states nothing. THIS roll holds silence as a class, so an empty cell
+    states a REST with the authority of context, and the corpus rests in 0.35 percent of its
+    cells. At alpha_max 0.9 the opening Bernoulli leaves a tenth of the canvas standing, and
+    on a silent canvas a tenth of it would be a lie. The round paid for that with a first
+    step that hid the whole free region -- one step of the walk unlike every other, and a
+    branch in the state machine the RTL would have to carry.
+
+    A canvas of notes needs no such step. A cell the Bernoulli leaves standing states SOME
+    NOTE, and four voices sounding is 99.8 percent of the corpus. Measured 2026-08-25 on
+    L 48 by H 20 over 256 canvases, the two openings are the same instrument from N 64
+    upward -- under half an error on the parallels at every N above 32 -- thus the schedule
+    goes back to the paper's for free, and the silent opening was removed rather than left
+    as a flag nobody would pull.
+
+    The draw is over [measure.RANGES] and not over the whole roll, because a bass at 81 and
+    a soprano at 36 are further from this corpus than a rest is. The ranges are four pairs
+    of bounds, which is a ROM on the board.
+
+    It takes its own stream from the seed, thus the canvas and the walk's masks never share
+    a draw and either one can change without moving the other."""
+    rng = np.random.default_rng([seed, 1])
+    return np.stack(
+        [
+            rng.integers(
+                low - data.PITCH_LOW + 1, high - data.PITCH_LOW + 2, size=(canvases, steps)
+            )
+            for low, high in measure.RANGES
+        ],
+        axis=-1,
+    ).astype(np.int32)
+
+
 def gibbs(params, stats, given, free, *, walk, temperature, seed):
     """Independent blocked Gibbs with the annealed schedule of Yao et al.
 
@@ -69,7 +106,10 @@ def gibbs(params, stats, given, free, *, walk, temperature, seed):
 
     The seed names the whole batch and not a row of it. Every canvas of a batch shares the
     walk and draws its own masks, thus a batch of one is one reproducible piece and a batch
-    of sixteen is one reproducible set of sixteen."""
+    of sixteen is one reproducible set of sixteen.
+
+    EVERY STEP IS THE SAME STEP, which is the paper's schedule and which [seeded_canvas]
+    is what buys back."""
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
 
@@ -81,16 +121,8 @@ def gibbs(params, stats, given, free, *, walk, temperature, seed):
 
     classes = jnp.asarray(given)
     for step in range(walk):
-        # THE WALK OPENS BY MASKING THE WHOLE FREE REGION, where the code release opens
-        # with the same Bernoulli as every other step. The reason is the vocabulary and not
-        # a taste: this roll holds a silence row where the paper's holds none, thus a cell
-        # the opening Bernoulli happens to leave unmasked is not a blank the model reads as
-        # "nothing stated here" -- it is a REST, stated with the authority of context, and
-        # the corpus rests in 0.35 percent of its cells. At alpha_max 0.9 that would freeze
-        # a tenth of the canvas into false rests, and at a low N most of them would never be
-        # masked again to be corrected.
         masking = model.anneal(step, walk)
-        hidden = free if step == 0 else free & (rng.random(free.shape) < masking)
+        hidden = free & (rng.random(free.shape) < masking)
         key, turn_key = jax.random.split(key)
         classes = turn(turn_key, classes, jnp.asarray(hidden), jnp.float32(temperature))
     return np.asarray(classes)
@@ -109,23 +141,42 @@ def audition_path(path, at, count):
 
 
 def opening(corpus_path, split, crop, canvases, harmonize, seed):
-    """The canvas the walk opens on: silence everywhere, or the first [canvases] corpus
+    """The canvas the walk opens on: notes drawn from the seed, or the first [canvases]
+    corpus
     crops when a soprano is given.
 
     A silent opening is never read as music. The whole free region is masked at step 0,
     thus the model is handed an all-masked canvas and states the prior of the corpus."""
     if not harmonize:
-        return np.zeros((canvases, crop, model.VOICES), dtype=np.int32)
+        return seeded_canvas(canvases, crop, seed)
     return canvas.corpus_canvases(corpus_path, split, crop, seed)[:canvases].copy()
 
 
-def draw(params, stats, *, corpus_path, split, crop, canvases, harmonize, walk, temperature, seed):
+def draw(
+    params,
+    stats,
+    *,
+    corpus_path,
+    split,
+    crop,
+    canvases,
+    harmonize,
+    walk,
+    temperature,
+    seed,
+):
     """one batch of canvases, and the seconds the walk cost"""
     given = opening(corpus_path, split, crop, canvases, harmonize, seed)
     free = free_cells(len(given), crop, harmonize)
     started = time.perf_counter()
     classes = gibbs(
-        params, stats, given, free, walk=walk, temperature=temperature, seed=seed
+        params,
+        stats,
+        given,
+        free,
+        walk=walk,
+        temperature=temperature,
+        seed=seed,
     )
     return classes, time.perf_counter() - started
 
