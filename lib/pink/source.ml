@@ -217,11 +217,10 @@ let%expect_test "the frames agree with the reference, step for step" =
   rewind ();
   let circuit = collect 200 step in
   let reference =
-    let walk = ref (Pink.create ~model:Pink.default ~seed) in
-    collect 200 (fun () ->
-      let walk', frame = Pink.next_frame !walk in
-      walk := walk';
-      frame)
+    List.folding_map
+      (List.range 0 200)
+      ~init:(Pink.create ~model:Pink.default ~seed)
+      ~f:(fun walk (_ : int) -> Pink.next_frame walk)
   in
   Stdio.print_s ([%sexp_of: int list] (Frame.pitches (List.hd_exn circuit)));
   Stdio.printf "200 steps agree: %b\n" ([%compare.equal: int list] circuit reference);

@@ -333,24 +333,22 @@ let%expect_test "the sigmoid table: the ends, the middle and the symmetry" =
 
 let%expect_test "the softplus is the ramp and its correction" =
   (* against the float function the references state: relu(v) + ln(1+exp(-|v|)) *)
-  let worst = ref 0.0 in
-  let at = ref 0 in
-  for v = -32768 to 32767 do
+  let wider (worst, at) v =
     let float_v = Float.of_int v /. 4096.0 in
     let want =
       Float.max 0.0 float_v +. Float.log (1.0 +. Float.exp (-.Float.abs float_v))
     in
     let gap = Float.abs (want -. (Float.of_int (softplus v) /. 4096.0)) in
-    if Float.(gap > !worst)
-    then (
-      worst := gap;
-      at := v)
-  done;
+    if Float.(gap > worst) then gap, v else worst, at
+  in
+  let worst, at =
+    Sequence.range (-32768) 32768 |> Sequence.fold ~init:(0.0, 0) ~f:wider
+  in
   Stdio.printf
     "over every int16 input the table stands within %.5f of the float softplus, worst at \
      %.4f\n"
-    !worst
-    (Float.of_int !at /. 4096.0);
+    worst
+    (Float.of_int at /. 4096.0);
   [%expect
     {| over every int16 input the table stands within 0.00784 of the float softplus, worst at 0.0000 |}]
 ;;

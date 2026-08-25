@@ -139,6 +139,14 @@ val masked_nll : Params.t -> classes:int array array -> hidden:bool array array 
     compare against the same number, and it is the entry the circuit's table will hold. *)
 val anneal_threshold : step:int -> walk:int -> int
 
+(** [cell_order ~steps] is the order the walk visits the cells of a canvas in: a step at a
+    time, and the seats of a step inside it, as [step, voice] pairs.
+
+    Every uniform of the walk is drawn in this order — the opening, each mask, and the
+    draw of each hidden cell — thus the integer twin of [Quantized] takes the same walk by
+    taking the same order, and the circuit will read this rule rather than restate it. *)
+val cell_order : steps:int -> (int * int) list
+
 (** [opening_canvas state ~steps] is the seeded opening of the walk: one uniform for each
     cell in the cell order, the class [low + floor (u * width)] inside the register of the
     cell's own seat. [gibbs] opens here and the engine of [Quantized] opens here, thus the

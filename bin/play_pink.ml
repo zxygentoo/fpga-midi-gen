@@ -55,27 +55,31 @@ let play ~device ~seed ~steps ~step_ms ~channel ~velocity =
       Printf.eprintf "cannot open %s: %s\n" path (Core_unix.Error.message error);
       exit 1
   in
-  let walk = ref (Pink.create ~model:Pink.default ~seed) in
-  let sounding = ref Frame.silent in
-  let send frame =
-    List.iter (events_after !sounding frame) ~f:(function
+  (* the frame that sounds after the send: the walk carries it into the next step *)
+  let send ~sounding frame =
+    List.iter (events_after sounding frame) ~f:(function
       | Frame.Event.On note -> Midi.send_note_on fd ~channel ~note ~velocity
       | Frame.Event.Off note -> Midi.send_note_off fd ~channel ~note);
-    sounding := frame
+    frame
   in
   (* Ctrl-C must not leave the four voices ringing; [Signal] holds the rule and the
      measurement behind it. The silent frame below is the road out, and it is the rule the
      board keeps at the run stop. *)
   let stopped = Signal.watch_stop_play () in
-  let step = ref 0 in
-  while (not (Signal.stop_requested stopped)) && (steps = 0 || !step < steps) do
-    Int.incr step;
-    let w, frame = Pink.next_frame !walk in
-    walk := w;
-    send frame;
-    sleep_ms step_ms
-  done;
-  send Frame.silent;
+  (* [steps] of 0 plays with no end, thus only the stop ends that walk *)
+  let rec play_steps walk ~sounding ~step =
+    if Signal.stop_requested stopped || (steps > 0 && step >= steps)
+    then sounding
+    else (
+      let walk, frame = Pink.next_frame walk in
+      let sounding = send ~sounding frame in
+      sleep_ms step_ms;
+      play_steps walk ~sounding ~step:(step + 1))
+  in
+  let sounding =
+    play_steps (Pink.create ~model:Pink.default ~seed) ~sounding:Frame.silent ~step:0
+  in
+  let (_ : int) = send ~sounding Frame.silent in
   Signal.exit_if_stopped stopped
 ;;
 

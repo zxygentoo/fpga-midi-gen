@@ -355,30 +355,31 @@ module Engine = struct
     let counters = { hits = 0; seen = 0; peak = 0 } in
     let said = forward counters t.model before hidden ~steps:t.steps in
     let canvas = Array.map before ~f:Array.copy in
-    let prng = ref prng in
-    let draws = ref [] in
-    for step = 0 to t.steps - 1 do
-      for voice = 0 to voices - 1 do
-        if hidden.(step).(voice)
-        then (
-          let logits = column said ~step ~voice in
-          let next, uniform, drawn = draw_cell t.model logits !prng in
-          prng := next;
-          canvas.(step).(voice) <- drawn;
-          draws := { step; voice; logits; uniform; drawn } :: !draws)
-      done
-    done;
+    (* one draw for each hidden cell, in the cell order the float walk takes: a cell the
+       mask left standing takes no uniform *)
+    let draw_hidden_cell (prng, draws) (step, voice) =
+      if not hidden.(step).(voice)
+      then prng, draws
+      else (
+        let logits = column said ~step ~voice in
+        let next, uniform, drawn = draw_cell t.model logits prng in
+        canvas.(step).(voice) <- drawn;
+        next, { step; voice; logits; uniform; drawn } :: draws)
+    in
+    let prng, draws =
+      List.fold (Diffusion.cell_order ~steps:t.steps) ~init:(prng, []) ~f:draw_hidden_cell
+    in
     ( { t with
         pass = t.pass + 1
       ; canvas
-      ; prng = !prng
+      ; prng
       ; clamps =
           { Clamps.activations = t.clamps.activations + counters.hits
           ; activations_seen = t.clamps.activations_seen + counters.seen
           ; peak = max t.clamps.peak counters.peak
           }
       }
-    , { before; hidden; draws = List.rev !draws } )
+    , { before; hidden; draws = List.rev draws } )
   ;;
 
   let rec run t = if t.pass >= t.walk then t.canvas else run (fst (next_pass t))
@@ -395,39 +396,58 @@ module Drift = struct
     ; activation_peak : float
     }
 
+  (* what the comparison counts over the cells it has seen *)
+  type tally =
+    { cells : int
+    ; same_peak : int
+    ; same_draw : int
+    ; cosine_sum : float
+    }
+
+  let counted_nothing = { cells = 0; same_peak = 0; same_draw = 0; cosine_sum = 0.0 }
+
+  (* the state the report folds: the engine, and what the comparison has counted *)
+  type walk =
+    { engine : Engine.t
+    ; tally : tally
+    }
+
   let walk params ~steps ~walk ~seed =
     let model = Model.of_params params in
-    let engine = ref (Engine.init model ~steps ~walk ~seed) in
-    let cells = ref 0
-    and same_peak = ref 0
-    and same_draw = ref 0
-    and cosines = ref 0.0 in
-    for _ = 1 to walk do
-      let next, (pass : Engine.pass) = Engine.next_pass !engine in
-      engine := next;
+    (* one cell of a pass against the float logits of the same cell, on the very uniform
+       the engine took *)
+    let count_cell float_said tally { Engine.step; voice; logits; uniform; drawn } =
+      let raw =
+        Array.init rows ~f:(fun row ->
+          float_said.((((step * rows) + row) * voices) + voice))
+      in
+      let float_class = Policy.draw_class raw ~temperature:1.0 ~min_p:0.0 ~uniform in
+      { cells = tally.cells + 1
+      ; same_peak = (tally.same_peak + if Nn.Tensor.same_peak logits raw then 1 else 0)
+      ; same_draw = (tally.same_draw + if float_class = drawn then 1 else 0)
+      ; cosine_sum = tally.cosine_sum +. Nn.Tensor.cosine logits raw
+      }
+    in
+    let take_pass w (_ : int) =
+      let engine, (pass : Engine.pass) = Engine.next_pass w.engine in
       (* the float model, teacher-forced on the engine's canvas and the engine's mask: one
          context, thus what parts the two is the arithmetic alone *)
       let float_said =
         Nx.to_array (Diffusion.logits params ~classes:pass.before ~hidden:pass.hidden)
       in
-      List.iter pass.draws ~f:(fun { Engine.step; voice; logits; uniform; drawn } ->
-        let raw =
-          Array.init rows ~f:(fun row ->
-            float_said.((((step * rows) + row) * voices) + voice))
-        in
-        Int.incr cells;
-        if Nn.Tensor.same_peak logits raw then Int.incr same_peak;
-        cosines := !cosines +. Nn.Tensor.cosine logits raw;
-        (* the float draw on the very uniform the engine took *)
-        if Policy.draw_class raw ~temperature:1.0 ~min_p:0.0 ~uniform = drawn
-        then Int.incr same_draw)
-    done;
-    let clamps = Engine.clamps !engine in
+      { engine; tally = List.fold pass.draws ~init:w.tally ~f:(count_cell float_said) }
+    in
+    let opening =
+      { engine = Engine.init model ~steps ~walk ~seed; tally = counted_nothing }
+    in
+    let walked = List.fold (List.range 0 walk) ~init:opening ~f:take_pass in
+    let { cells; same_peak; same_draw; cosine_sum } = walked.tally in
+    let clamps = Engine.clamps walked.engine in
     { passes = walk
-    ; cells = !cells
-    ; same_peak = !same_peak
-    ; same_draw = !same_draw
-    ; mean_cosine = (if !cells = 0 then 1.0 else !cosines /. Float.of_int !cells)
+    ; cells
+    ; same_peak
+    ; same_draw
+    ; mean_cosine = (if cells = 0 then 1.0 else cosine_sum /. Float.of_int cells)
     ; activations_clamped = Clamps.share clamps.activations clamps.activations_seen
     ; activation_peak = Float.of_int clamps.peak /. Float.of_int activation_one
     }

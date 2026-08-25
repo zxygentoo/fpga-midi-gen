@@ -287,21 +287,25 @@ let column said ~step ~voice =
 
 let masked_nll (params : Params.t) ~classes ~hidden =
   let said = Nx.to_array (logits params ~classes ~hidden) in
-  let total = ref 0.0
-  and count = ref 0 in
-  Array.iteri classes ~f:(fun step cells ->
-    Array.iteri cells ~f:(fun voice label ->
+  (* the cross entropy of one cell: the log-sum-exp of its column, less the logit of the
+     label the canvas holds *)
+  let cell_nll ~step ~voice label =
+    let raw = column said ~step ~voice in
+    let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
+    let sum =
+      Array.fold raw ~init:0.0 ~f:(fun acc logit -> acc +. Float.exp (logit -. peak))
+    in
+    peak +. Float.log sum -. raw.(label)
+  in
+  let over_step step total_and_count cells =
+    Array.foldi cells ~init:total_and_count ~f:(fun voice (total, count) label ->
       if hidden.(step).(voice)
-      then (
-        let raw = column said ~step ~voice in
-        let peak = Array.fold raw ~init:Float.neg_infinity ~f:Float.max in
-        let sum =
-          Array.fold raw ~init:0.0 ~f:(fun acc logit -> acc +. Float.exp (logit -. peak))
-        in
-        total := !total +. (peak +. Float.log sum -. raw.(label));
-        Int.incr count)));
-  if !count = 0 then invalid_arg "the masked loss takes one hidden cell or more";
-  !total /. Float.of_int !count
+      then total +. cell_nll ~step ~voice label, count + 1
+      else total, count)
+  in
+  let total, count = Array.foldi classes ~init:(0.0, 0) ~f:over_step in
+  if count = 0 then invalid_arg "the masked loss takes one hidden cell or more";
+  total /. Float.of_int count
 ;;
 
 (* ==================================================================== *)
@@ -324,17 +328,17 @@ let anneal_threshold ~step ~walk =
 (* a threshold compare on the 24-bit grid: exact, because [u * grid] is an integer *)
 let under ~threshold u = Float.(u *. grid < of_int threshold)
 
+(* The cell order of the walk: one step at a time, and the seats inside a step. Every
+   uniform of the walk is drawn in this order and every hidden cell is drawn in it, thus
+   the integer twin takes the same walk by taking the same order. *)
+let cell_order ~steps = List.cartesian_product (List.range 0 steps) (List.range 0 voices)
+
 (* one uniform for each cell in the cell order, folded into [f] *)
 let over_cells state ~steps ~f =
-  let state = ref state in
-  for step = 0 to steps - 1 do
-    for voice = 0 to voices - 1 do
-      let next, value = Prng.run Prng.uniform !state in
-      state := next;
-      f ~step ~voice value
-    done
-  done;
-  !state
+  List.fold (cell_order ~steps) ~init:state ~f:(fun state (step, voice) ->
+    let next, value = Prng.run Prng.uniform state in
+    f ~step ~voice value;
+    next)
 ;;
 
 let opening_canvas state ~steps =
@@ -368,23 +372,25 @@ let gibbs (params : Params.t) ~steps ~walk ~temperature ~seed =
   (* the canvas is the walk's own state: local mutation, because the walk IS a sequence of
      writes and a rebuilt canvas at every pass would say less *)
   let state, canvas = opening_canvas (Prng.create_folded ~seed) ~steps in
-  let state = ref state in
-  for pass = 0 to walk - 1 do
-    let threshold = anneal_threshold ~step:pass ~walk in
-    let next, hidden = hidden_cells !state ~steps ~threshold in
-    state := next;
+  (* one uniform for each hidden cell, in the cell order: a cell the mask left standing
+     takes no uniform, thus the walk of the twin lands on the same draws *)
+  let draw_hidden_cells state ~hidden =
     let said = Nx.to_array (logits params ~classes:canvas ~hidden) in
-    for step = 0 to steps - 1 do
-      for voice = 0 to voices - 1 do
-        if hidden.(step).(voice)
-        then (
-          let raw = column said ~step ~voice in
-          let next, uniform = Prng.run Prng.uniform !state in
-          state := next;
-          canvas.(step).(voice) <- Policy.draw_class raw ~temperature ~min_p:0.0 ~uniform)
-      done
-    done
-  done;
+    List.fold (cell_order ~steps) ~init:state ~f:(fun state (step, voice) ->
+      if not hidden.(step).(voice)
+      then state
+      else (
+        let raw = column said ~step ~voice in
+        let next, uniform = Prng.run Prng.uniform state in
+        canvas.(step).(voice) <- Policy.draw_class raw ~temperature ~min_p:0.0 ~uniform;
+        next))
+  in
+  let take_pass state pass =
+    let threshold = anneal_threshold ~step:pass ~walk in
+    let state, hidden = hidden_cells state ~steps ~threshold in
+    draw_hidden_cells state ~hidden
+  in
+  let (_ : Prng.state) = List.fold (List.range 0 walk) ~init:state ~f:take_pass in
   canvas
 ;;
 
