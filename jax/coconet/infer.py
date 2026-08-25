@@ -34,8 +34,10 @@ import jax.numpy as jnp
 import numpy as np
 
 import data
+import measure
 import midi
-from coconet import model, referee
+from coconet import measure as canvas
+from coconet import model
 
 # seat 3, as data.py and the chained head of the earlier eras read the seats
 SOPRANO = model.VOICES - 1
@@ -113,7 +115,7 @@ def opening(corpus_path, split, crop, canvases, harmonize, seed):
     thus the model is handed an all-masked canvas and states the prior of the corpus."""
     if not harmonize:
         return np.zeros((canvases, crop, model.VOICES), dtype=np.int32)
-    return referee.corpus_canvases(corpus_path, split, crop, seed)[:canvases].copy()
+    return canvas.corpus_canvases(corpus_path, split, crop, seed)[:canvases].copy()
 
 
 def draw(params, stats, *, corpus_path, split, crop, canvases, harmonize, walk, temperature, seed):
@@ -137,7 +139,7 @@ def sampling_options(command):
     for option in reversed(
         [
             click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False)),
-            click.option("--corpus", "corpus_path", default=referee.CORPUS),
+            click.option("--corpus", "corpus_path", default=canvas.CORPUS),
             click.option("--split", default="valid", type=click.Choice(data.SPLITS)),
             click.option("--crop", default=model.CROP, help="T; the training crop"),
             click.option(
@@ -180,13 +182,13 @@ def sample(
 ):
     params, stats = model.load_params(ckpt)
     classes, seconds = draw(params, stats, walk=walk, **flags)
-    corpus = referee.corpus_canvases(
+    corpus = canvas.corpus_canvases(
         flags["corpus_path"], flags["split"], flags["crop"], flags["seed"]
     )
     label = f"N {walk}, {len(classes)} canvases"
-    for line in referee.structure_lines("the corpus", referee.structure(corpus)):
+    for line in measure.structure_lines("the corpus", measure.structure(corpus)):
         click.echo(line)
-    for line in referee.structure_lines(label, referee.structure(classes)):
+    for line in measure.structure_lines(label, measure.structure(classes)):
         click.echo(line)
     click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} canvases")
 
@@ -221,14 +223,14 @@ def curve(ckpt, walks, **flags):
     quality. The board affords tens of passes and not hundreds, thus what this round needs
     to know is the shape of that cost and not its existence."""
     params, stats = model.load_params(ckpt)
-    corpus = referee.corpus_canvases(
+    corpus = canvas.corpus_canvases(
         flags["corpus_path"], flags["split"], flags["crop"], flags["seed"]
     )
-    for line in referee.structure_lines("the corpus", referee.structure(corpus)):
+    for line in measure.structure_lines("the corpus", measure.structure(corpus)):
         click.echo(line)
     for walk in [int(n) for n in walks.split(",")]:
         classes, seconds = draw(params, stats, walk=walk, **flags)
-        for line in referee.structure_lines(f"N {walk:4d}", referee.structure(classes)):
+        for line in measure.structure_lines(f"N {walk:4d}", measure.structure(classes)):
             click.echo(line)
         click.echo(f"{'':<22} {seconds:.1f} s for {len(classes)} canvases")
 
