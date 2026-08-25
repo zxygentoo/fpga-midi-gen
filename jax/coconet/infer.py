@@ -11,7 +11,8 @@ states that a lower N costs a little quality; the board's silence window affords
 canvas passes, thus this one curve decides whether the masked era reaches the RTL.
 
 `sample` is the ear's path: draw, print the battery, and speak the music to the synthesizer
-or to a .mid. With --harmonize the walk keeps the soprano of a corpus crop and writes the
+or to a .mid. A batch is several whole pieces and not one piece in parts, thus --gap puts a
+silence between two of them on the wire, as a performer breathes between two chorales. With --harmonize the walk keeps the soprano of a corpus crop and writes the
 three voices under it, which is the completion task the trunk is strongest in and which the
 mask planes give for one flag.
 
@@ -167,9 +168,16 @@ def sampling_options(command):
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=midi.DEVICE)
 @click.option("--step-ms", default=200)
+@click.option(
+    "--gap",
+    default=16,
+    help="steps of silence between two canvases; 16 is one bar, 0 is none",
+)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
-def sample(ckpt, walk, to_synth, to_file, device, step_ms, channel, velocity, **flags):
+def sample(
+    ckpt, walk, to_synth, to_file, device, step_ms, gap, channel, velocity, **flags
+):
     params, stats = model.load_params(ckpt)
     classes, seconds = draw(params, stats, walk=walk, **flags)
     corpus = referee.corpus_canvases(
@@ -193,6 +201,8 @@ def sample(ckpt, walk, to_synth, to_file, device, step_ms, channel, velocity, **
             midi.save(piece, path, step_ms=step_ms, channel=channel, velocity=velocity)
             click.echo(f"wrote {path}")
         if to_synth:
+            if at:
+                midi.rest(gap, step_ms=step_ms)
             midi.play(piece, device=device, step_ms=step_ms, channel=channel, velocity=velocity)
         if not (to_synth or to_file):
             click.echo(

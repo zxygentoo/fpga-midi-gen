@@ -250,6 +250,29 @@ reaches the RTL.
 
    An untrained model must read 4 log 48 = 15.48 nats for each frame. That
    is the arithmetic check of the referee, and it passes.
+
+   **THE TAIL STANDS BESIDE THE MEAN.** The referee also reports the median,
+   the 90th and the 99th percentile of the frames and the share of them over
+   2 nats, each with a bootstrap error over the PIECES — the frames of one
+   chorale are one draw of a composer and not 128 of them. Measured over the
+   ladder on 2026-08-25, THE MEDIAN AND THE 90TH ARE THE MEAN IN OTHER
+   CLOTHES: they rank the six rungs in the same order and separate them
+   about as well (9 to 10 times their own error, against the mean's 9.5).
+   The 99th does not move with capacity at all — 1.4 times its error, and
+   not monotone. Read as a ratio it moves the wrong way: the 99th over the
+   median runs 9.97 at the smallest rung to 11.25 at the largest, thus
+   CAPACITY BUYS THE ORDINARY FRAME AND NOT THE EXCEPTIONAL ONE.
+
+   Read the tail against what it measures. These are CORPUS canvases, thus a
+   frame of high nats is a frame where Bach surprised the model and not one
+   where the model wrote something strange.
+
+   It earns its place on a pair that capacity did not separate. The span arm
+   reads 0.7635 ± 0.0202 against rung 1's 0.7599 ± 0.0155 — 0.14 of an error
+   apart, one model to the mean — and 5.3 ± 0.4 percent of its frames stand
+   over 2 nats against 4.0 ± 0.3, which is 2.6 errors apart, with the BETTER
+   median of the two. Wrong less often and more badly is a trade the mean
+   cannot see and the ear can.
 2. **The structure battery** of the proto round, held to its method: the
    corpus row stands as the referee of every number, and triads count only
    over the steps that carry three voices or more. The corpus row on this
@@ -265,11 +288,36 @@ reaches the RTL.
    every span, from the alto against the soprano at 5.5 semitones to the
    bass against the soprano at 19.7, thus a rung that reads 27 at the
    widest pair has a reach fault and not a taste.
+
+   **PARALLEL FIFTHS AND OCTAVES** are the one instrument of the battery
+   that reads across time, and the one that separates this era from the
+   corpus where every vertical instrument says it has arrived. THE DIVISOR
+   IS THE PAIRS THAT MOVE TOGETHER, and it was the pairs that merely SOUND
+   until 2026-08-25. A parallel needs both voices to move, thus a model that
+   holds its notes was being paid for holding them — which the span arm was
+   caught doing, halving the old number while its onsets fell a fifth below
+   the corpus. The share of pairs that move stands on the same line, because
+   a rung whose motion has left the corpus is not to be read on the rates
+   alone. The corpus reads **1.37 fifths and 1.06 octaves for each thousand
+   pairs that move, with 15.2 percent of its pairs moving**.
+
+   A parallel is a rare event. 64 canvases hold a Poisson error near a sixth
+   of the count, thus a comparison between two models wants 256.
 3. **The ear.** Gibbs draws of eight measures through the audition rig —
    the excerpt length the paper's raters heard. A secondary audition masks
    alto, tenor and bass and keeps the soprano: harmonization is the
    completion task, the regime the trunk is strongest in, and the mask
    planes give it for one flag.
+
+   `--gap` puts a silence between two canvases on the wire, one bar by
+   default. A batch is several INDEPENDENT draws and each one is a whole
+   piece; with nothing between them the second opens on the first one's
+   last chord, which no performance does. The ear set the bar on
+   2026-08-25 and reported what the silence CANNOT do: a canvas is a crop
+   and it stops where the corpus was cut, thus it does not arrive, and no
+   silence after a phrase that never closed makes it sound closed. That is
+   the deferred whole-piece round below, and it is the open musical
+   problem the transformer era logged before this one.
 
 ## The cost
 
@@ -314,6 +362,20 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
 
 ## Deferred
 
+- **THE STRETCH GOAL, AFTER THE INT8 RTL SHIPS: int4, the 17-bar canvas and
+  the mix, which are one round and not three.** The int8 board holds
+  L 48 by H 20 at T 128, and T 128 holds one whole chorale in a hundred.
+  T 272 is 17 bars and holds 77 percent of them, and at int8 it forces
+  L 48 by H 15 — one channel above the H 16 that works and three above the
+  H 12 that reads 33.6 times the corpus on parallel octaves. **Int4 is what
+  clears that floor**: L 48 by H 24 at T 272, 87 percent of the device. It
+  is NOT for more width at T 128, where H 16 to H 20 bought nothing
+  measurable and the extra MAC costs more than the parameters return.
+  The round then runs at N 256, because one pass of that shape is 3,147 M
+  MAC and N 512 would need 296 lanes of the 238 the device has free — and
+  N 256 is the regime where the mix above pays for itself. Each of the
+  three answers a problem the other two create; none of them is worth
+  doing alone.
 - Whole pieces on the eighth grid, the length mask as un-noised
   conditioning, and the endings: the thesis of the era returns in the next
   round, on top of this stack.
@@ -341,8 +403,59 @@ destroys a one-hot row. This round therefore replicates a 2017 paper and
 runs the 2025 method under its original name, on the architecture its
 corruption asks for.
 
-Four advances fit the board and cost little. They are levers of a later
-round, not of this one:
+**SPAN MASKING (MAGNeT, ICLR 2024) WAS ONE OF THESE AND IT IS MEASURED AND
+CUT.** Mask contiguous runs of one voice instead of lone cells, because a
+held note writes its own answer into the neighbours of a masked cell — at a
+masked share of 0.1, where the walk settles, 94.2 percent of masked cells
+have their class standing in a live neighbour, and a span of 4 takes that to
+35.9. Measured 2026-08-25 at the board rung, 100,000 steps, each arm on its
+own probed rate:
+
+- **A pure span of 4 costs 0.149 nats of framewise NLL, six times its error
+  and more than the whole climb from rung 1 to the board rung.** Its
+  parallels do fall, and it buys that by writing blander music — onsets 0.65
+  against the corpus 0.88, hold 83.5 against 77.3, and the frames nobody
+  sings growing over the walk to 6.4 percent, ten times the corpus.
+- **A mix of half span and half lone cells cures the smoothing and the
+  parallel win goes with it** — one error on the fifths and none on the
+  octaves at N 512. The two are ONE AXIS.
+- What the mix does buy is quality for each Gibbs pass, 12 to 17 percent
+  fewer parallel fifths at N 32 to 128. **That is not a currency this board
+  is short of**: N is bought with MAC lanes, N 512 costs 75 percent of the
+  240 DSPs, and the board rung at N 512 beats the mix at N 128 outright.
+- Training on spans buys 1.8 percent on the span task itself, against a
+  baseline that never saw one. A trunk that learned the conditional from
+  lone cells already fills a span.
+
+The flags and the two draws were removed after the measurement. The leak is
+real and the lever does not pay for it AT THIS BUDGET.
+
+**THE ONE CONDITION THAT BRINGS IT BACK, and it is not hypothetical.**
+The mix's whole return is quality for each Gibbs pass, thus it is worth
+exactly what a pass is worth. Measured on the board rung, halving N from 512
+to 256 costs 22 percent on the fifths and 17 on the octaves, and the mix buys
+back 13 percent of each — **the mix at N 256 stands level with the lone-cell
+draw at N 512**, 0.7 and 0.2 of an error apart. So the lever pays whenever N
+is capped at 256, and N is capped whenever the MAC for one pass passes about
+1,200 M: the device holds 238 free DSPs, and N 512 inside a 25.6-second
+window needs one lane for each 4.7 M MAC. **Int4 at T 128 and int4 at T 272
+both land there** — L48/H30 needs 462 lanes at N 512 and L48/H24 at T 272
+needs 296. A round that goes to int4 should carry the mix with it.
+
+The draw, so that round need not rediscover it. A cell is masked when any of
+the `span` start positions that reach it fired; the start rate
+1 − (1 − share)^(1/span) puts the masked share back where the paper's draw
+put it. The starts stand on an axis of `steps + span − 1`, thus exactly
+`span` of them reach every cell and no cell near an edge is masked less
+often, and ONE start is forced because the loss divides by the masked count
+and a Bernoulli draw at the smallest share comes up empty three times in
+four. The mix is a coin FOR EACH CANVAS between that draw and the paper's,
+never a mix over cells: a canvas asks one question or the other, and the
+masked share of each stays the paper's. The valid probe keeps the lone-cell
+draw whatever the run trains on, or two runs are two numbers of two
+different tasks.
+
+Three advances remain, and they are levers of a later round:
 
 - **The Halton order** (Besnier et al., 2025). A precomputed
   low-discrepancy sequence states the unmask order, in place of confidence
@@ -351,10 +464,6 @@ round, not of this one:
   of the four: the order is a ROM read, there is no sort, and the seed
   keeps its determinism. It joins the MaskGIT reserve of the deferred
   list, and it is the cheaper half of it.
-- **Span masking** (MAGNeT, ICLR 2024). Mask spans of time, not lone
-  cells. On this roll a held note leaks its pitch to a masked neighbour,
-  thus a lone-cell mask asks a question the context half answers; a span
-  closes the leak, and the training signal grows.
 - **Sampler-matched training** ("Revise, Don't Freeze", arXiv 2606.01026;
   "Learn from Your Mistakes", arXiv 2602.11590). Tune the trained model on
   contexts the sampler made, not only on masked ground truth. It closes

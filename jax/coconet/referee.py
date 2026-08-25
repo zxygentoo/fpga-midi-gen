@@ -56,9 +56,21 @@ DISSONANT = (1, 2, 6, 10, 11)
 # method; adding it moves the corpus row to 67.9, thus it is a labelling choice and not a
 # finding either way.
 TRIADS = ((0, 4, 7), (0, 3, 7))
+# THE TAIL OF THE HARMONY. A frame holding three dissonant pairs or more is rare in the
+# corpus -- 3.2 percent of its frames -- where TWO is 20.6 percent and merely a seventh
+# chord. A mean can therefore hold while these multiply, and it is the mean that the ear
+# disagrees with: one strange chord in a phrase is heard, and it moves the average of 128
+# frames by nothing.
+CLASH = 3
 # seat 0 is the bass and seat 3 the soprano, as the packed stream and the chained head of
 # the earlier eras both read them
 VOICE_NAMES = ("bass", "tenor", "alto", "soprano")
+# THE REGISTER OF EACH SEAT: the lowest and the highest pitch it sings anywhere in this
+# corpus. Measured 2026-08-25 over every step of every piece, and the three splits agree
+# EXACTLY -- thus this is a fact of the genre and not of a draw. The roll holds 36 to 81,
+# which is the union of the four, thus no seat can leave the vocabulary and every violation
+# this finds is a voice standing in another voice's register.
+RANGES = ((36, 66), (46, 69), (52, 74), (60, 81))
 # The pairs of voices, in the order of the seats between them: the three neighbours, then
 # the two that skip a voice, then the outer pair. That order is nearly the order of their
 # span in the corpus, thus [voice_pairs] reads left to right as the pitch reach runs out.
@@ -127,6 +139,117 @@ def voice_pairs(spans, intervals, pairs_sound):
     return rows
 
 
+def parallel_motion(classes, pitches, sounding):
+    """Parallel fifths and octaves, for each thousand pairs that live across a step.
+
+    THE FAULT THAT LIVES BETWEEN FRAMES, and the only instrument here that reads across
+    time at all. Two voices a fifth or an octave apart, both moving, landing on the same
+    interval. It is the most audible error in four-part writing, because an octave collapses
+    two voices into one and the texture thins where nothing else changed.
+
+    Measured 2026-08-25, it is what separates this era's models from the corpus where every
+    vertical instrument says they have arrived. Bach writes 0.26 fifths and 0.10 octaves for
+    each thousand; the board rung writes 2.0 and 1.9, and the paper's own size 0.8 and 1.3.
+    More Gibbs passes take it down two or three times and then stop -- both sizes saturate,
+    one by N 256 and one by N 512 -- and sixty-two times the parameters halves it and stops.
+    NEITHER REACHES THE CORPUS.
+
+    The reason is structural, and it is the finding of the round. The loss scores the
+    MARGINAL of each cell under its context, and the walk draws those marginals
+    INDEPENDENTLY; a joint configuration of two voices across two steps is therefore
+    evaluated by neither. A term that stands in no objective cannot be sampled away.
+
+    TWO CORRECTIONS OF 2026-08-25, both found by reading the corpus row and not the models.
+
+    THE MOTION MUST BE SIMILAR. A parallel is two voices moving THE SAME WAY from a perfect
+    interval to the same perfect interval. The first version asked only that the interval
+    class stand before and after, thus contrary motion onto a fifth -- which is how a fifth
+    is correctly approached -- counted as a fault. It read 53 percent of the corpus's own
+    fifths that way, 10 events of 19. The octaves were untouched, 4 of 4 already similar.
+
+    THE PAIR MUST KEEP ITS ORDER. The gap was an absolute value, thus a pair that crossed
+    could hold its interval class while its interval turned upside down. 3.7 percent of the
+    corpus's moving pairs swap order across a step.
+
+    THE DIVISOR IS THE PAIRS THAT MOVE, and it was the pairs that merely SOUND until
+    2026-08-25. A parallel needs both voices to move, thus a model that holds its notes
+    writes fewer of them for no musical reason at all, and the earlier divisor paid it for
+    that. The span round caught this: it took the old number from 1.87 to 0.89 while its
+    onsets fell from 0.89 for each step to 0.69 and its held cells rose above the corpus.
+    [moving] is reported beside the rates for the same reason -- it is the term that was
+    hiding, and a rung whose motion has left the corpus is not to be read on the rates
+    alone."""
+    moved = (classes[:, 1:] != classes[:, :-1]) & sounding[:, 1:] & sounding[:, :-1]
+    fifths = octaves = moving = alive = 0
+    for low, high in PAIRS:
+        held = (
+            sounding[:, :-1, low]
+            & sounding[:, :-1, high]
+            & sounding[:, 1:, low]
+            & sounding[:, 1:, high]
+        )
+        both = moved[..., low] & moved[..., high] & held
+        gap_before = pitches[:, :-1, high] - pitches[:, :-1, low]
+        gap_after = pitches[:, 1:, high] - pitches[:, 1:, low]
+        # SIMILAR MOTION is what makes a parallel a parallel. Contrary motion that lands on
+        # a fifth is how a fifth is correctly approached, and counting it read 53 percent of
+        # the corpus's own fifths as faults.
+        together = np.sign(pitches[:, 1:, low] - pitches[:, :-1, low]) == np.sign(
+            pitches[:, 1:, high] - pitches[:, :-1, high]
+        )
+        # and the pair must keep its order. A fifth whose voices cross becomes a fourth,
+        # thus the interval did not hold, and the absolute gap cannot see that. A unison
+        # has no side, thus a zero on either end keeps its place.
+        straight = np.sign(gap_before) * np.sign(gap_after) >= 0
+        parallel = both & together & straight
+        before = np.abs(gap_before) % 12
+        after = np.abs(gap_after) % 12
+        fifths += int((parallel & (before == 7) & (after == 7)).sum())
+        octaves += int((parallel & (before == 0) & (after == 0)).sum())
+        moving += int(both.sum())
+        alive += int(held.sum())
+    return {
+        "fifths": 1000.0 * fifths / max(moving, 1),
+        "octaves": 1000.0 * octaves / max(moving, 1),
+        "moving": 100.0 * moving / max(alive, 1),
+    }
+
+
+def tessitura(pitches, sounding):
+    """Where each voice SITS, and how often it leaves the register of its seat.
+
+    THE THING NOTHING ELSE HERE COVERS. [voice_pairs] reads DIFFERENCES of pitch and the
+    order instrument reads the stacking, thus a texture that slid four semitones as a body
+    would move neither of them. The trunk invites exactly that: a three-by-three
+    convolution over the pitch axis is EQUIVARIANT in pitch, so a cell knows where it
+    stands only when its reach touches an edge of the roll, and at L 16 a cell in the
+    middle of 48 rows touches neither. Register error should therefore fall with DEPTH and
+    settle at L 48, where every cell reaches both edges.
+
+    The seats overlap by 14 to 18 semitones, which is why the order instrument is weak and
+    reads 97 to 99 percent everywhere: a voice can stand in good order and still sing in
+    the wrong part of its range.
+
+    The mean says a voice has DRIFTED and the spread says it RANGES too widely; the two are
+    different faults and a single number would confuse them. [outside] is the tail -- the
+    share of sounding cells beyond their own seat's [RANGES] -- and the corpus reads zero
+    on it by construction, as the spare row does."""
+    seats = []
+    outside = alive = 0
+    for seat, (low, high) in enumerate(RANGES):
+        heard = pitches[..., seat][sounding[..., seat]]
+        seats.append(
+            {
+                "name": VOICE_NAMES[seat],
+                "mean": float(heard.mean()) if len(heard) else 0.0,
+                "spread": float(heard.std()) if len(heard) else 0.0,
+            }
+        )
+        outside += int(((heard < low) | (heard > high)).sum())
+        alive += len(heard)
+    return {"seats": seats, "outside": 100.0 * outside / max(alive, 1)}
+
+
 def structure(classes):
     """The battery over a set of canvases: [canvases, steps, VOICES] of class indices.
 
@@ -157,6 +280,7 @@ def structure(classes):
     spans = np.stack([np.abs(pitches[..., a] - pitches[..., b]) for a, b in PAIRS], -1)
     intervals = spans % 12
     ordered = np.stack([pitches[..., a] <= pitches[..., b] for a, b in PAIRS], -1)
+    clashes = (np.isin(intervals, DISSONANT) & pairs_sound).sum(axis=-1)
     music = [data.decode(canvas) for canvas in classes]
     ons = sum(1 for piece in music for step in piece for kind, _ in step if kind == "on")
     return {
@@ -170,7 +294,12 @@ def structure(classes):
         * float(np.mean(np.all(ordered | ~pairs_sound, axis=-1)[voices >= 2]))
         if (voices >= 2).any()
         else 0.0,
+        "clash": 100.0 * float(np.mean(clashes[sounding.any(axis=-1)] >= CLASH))
+        if sounding.any()
+        else 0.0,
         "spare": 100.0 * float(np.mean(classes == model.ROWS - 1)),
+        "parallels": parallel_motion(classes, pitches, sounding),
+        "register": tessitura(pitches, sounding),
         "pairs": voice_pairs(spans, intervals, pairs_sound),
     }
 
@@ -180,7 +309,7 @@ def structure_lines(label, row):
     instruments = (
         f"{label:<22} hold {row['hold']:5.1f}%   onsets {row['onsets']:4.2f}   "
         f"triads {row['triads']:5.1f}%   dissonant {row['dissonant']:5.1f}%   "
-        f"order {row['order']:5.1f}%"
+        f"clash {row['clash']:4.1f}%   order {row['order']:5.1f}%"
     )
     counts = "  ".join(
         f"{count} {share:5.1f}%" for count, share in enumerate(row["voices"])
@@ -189,10 +318,24 @@ def structure_lines(label, row):
         f"{pair['name']} {pair['span']:4.1f}st {pair['dissonant']:4.1f}%"
         for pair in row["pairs"]
     ]
+    parallels = row["parallels"]
+    motion = (
+        f"{'':<22} parallel 5ths {parallels['fifths']:5.2f}   "
+        f"octaves {parallels['octaves']:5.2f}   (each 1000 pairs that MOVE together; "
+        f"{parallels['moving']:4.1f}% of the pairs move)"
+    )
+    register = row["register"]
+    seats = "   ".join(
+        f"{seat['name'][:2]} {seat['mean']:4.1f}+-{seat['spread']:3.1f}"
+        for seat in register["seats"]
+    )
+    where = f"{'':<22} register {seats}   outside {register['outside']:4.2f}%"
     half = len(pairs) // 2
     return [
         instruments,
         f"{'':<22} voices sounding {counts}   spare {row['spare']:.3f}%",
+        where,
+        motion,
         f"{'':<22} " + "   ".join(pairs[:half]),
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
@@ -234,7 +377,9 @@ def forward_in_chunks(forward, classes, hidden, chunk):
     wants it cut"""
     return np.concatenate(
         [
-            np.asarray(forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk]))
+            np.asarray(
+                forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk])
+            )
             for at in range(0, len(classes), chunk)
         ]
     )
@@ -281,7 +426,11 @@ def framewise_lls(forward, classes, ordering, chunk):
 
 
 def piece_nll(forward, classes, rng, orderings, chunk):
-    """Algorithm 1's return for one canvas: nats for each frame.
+    """Algorithm 1 for one canvas, frame by frame: the nats of every frame of it.
+
+    The caller means these, which is Algorithm 1's return, AND keeps them. A mean cannot
+    see a rare bad moment and the ear can, thus the frames are the tail and the tail is a
+    measurement of its own.
 
     The orderings are combined IN PROBABILITY SPACE, one frame at a time -- logsumexp over
     the ensemble, less the log of its size. A mean of log-likelihoods would be an
@@ -293,15 +442,15 @@ def piece_nll(forward, classes, rng, orderings, chunk):
             for _ in range(orderings)
         ]
     )
-    return -float(np.mean(np.logaddexp.reduce(lls, axis=0) - np.log(len(lls))))
+    return -(np.logaddexp.reduce(lls, axis=0) - np.log(len(lls)))
 
 
 def framewise_nll(params, stats, canvases, *, orderings, chunk, seed, report=None):
-    """The referee over a set of canvases: the mean nats for each frame, its standard error
-    over the pieces, and the per-piece numbers.
+    """The referee over a set of canvases: Algorithm 1's mean nats for each frame, its
+    standard error, and the frames themselves.
 
     The standard error is over the PIECES, which is what the paper's Table 1 reports beside
-    its means."""
+    its means. The frames are kept for [tail_line]."""
     # the log softmax runs on the device beside the trunk: the referee then indexes a
     # probability and never normalises one, and the argmax of the two is the same cell
     forward = jax.jit(
@@ -310,13 +459,78 @@ def framewise_nll(params, stats, canvases, *, orderings, chunk, seed, report=Non
         )
     )
     rng = np.random.default_rng(seed)
-    pieces = []
+    frames = []
     for at, canvas in enumerate(canvases):
-        pieces.append(piece_nll(forward, canvas, rng, orderings, chunk))
+        frames.append(piece_nll(forward, canvas, rng, orderings, chunk))
         if report is not None:
-            report(at, pieces[-1])
-    pieces = np.asarray(pieces)
-    return float(pieces.mean()), float(pieces.std() / np.sqrt(len(pieces))), pieces
+            report(at, float(frames[-1].mean()))
+    pieces = np.asarray([piece.mean() for piece in frames])
+    return {
+        "mean": float(pieces.mean()),
+        "error": float(pieces.std() / np.sqrt(len(pieces))),
+        "pieces": pieces,
+        # [pieces, frames] and not one flat run of them: the tail resamples PIECES, thus
+        # its error stands beside the mean's and reads against the same population
+        "frames": np.stack(frames),
+    }
+
+
+# nats for one frame above which the ear would call it a wrong moment. A frame is four
+# voices, thus 2 nats is a joint probability of 0.14 for the whole sonority.
+LOUD = 2.0
+# resamples of the pieces behind each percentile. A percentile carries no standard error of
+# its own, and two models an eighth of a nat apart cannot be told from each other without
+# one -- the round has already been caught by that once, on the parallels.
+RESAMPLES = 1000
+MARKS = (50, 90, 99)
+
+
+def tail_shape(frames, seed=0):
+    """The tail of the framewise nats: the percentiles of [MARKS], the share of frames over
+    [LOUD], and a bootstrap error for each of them.
+
+    [frames] is [pieces, frames]. THE RESAMPLE IS OVER PIECES and not over frames, for the
+    reason the mean's own error is: the frames of one chorale are one draw of a composer
+    and not 128 of them, thus resampling frames would state an error several times too
+    small and every model would separate from every other."""
+    rng = np.random.default_rng(seed)
+    draws = frames[rng.integers(len(frames), size=(RESAMPLES, len(frames)))]
+    draws = draws.reshape(RESAMPLES, -1)
+    marks = np.percentile(frames, MARKS)
+    loud = 100.0 * np.mean(frames >= LOUD)
+    return {
+        "marks": marks,
+        "mark errors": np.percentile(draws, MARKS, axis=-1).std(axis=-1),
+        "loud": loud,
+        "loud error": float((100.0 * np.mean(draws >= LOUD, axis=-1)).std()),
+    }
+
+
+def tail_line(frames, seed=0):
+    """THE RARE BAD MOMENT, which the mean of [framewise_nll] cannot see.
+
+    One strange chord in a phrase is heard, and it moves the average of 128 frames by
+    nothing at all. This is the instrument the ear asked for on 2026-08-25, after it heard
+    the ceiling iron out a weirdness that cost the mean 0.008 nats.
+
+    A model with a shorter tail at the same mean is a model that is wrong less often and
+    not less badly, which is the trade the ear elects.
+
+    READ IT AGAINST WHAT IT MEASURES. These are corpus canvases, thus a frame of high nats
+    is a frame where BACH surprised the model, and not one where the model wrote something
+    strange. The two are not the same question, and the second one is [structure]'s clash,
+    which reads the model's own draws."""
+    read = tail_shape(frames, seed)
+    marks = "   ".join(
+        f"{name} {value:5.3f} +- {error:.3f}"
+        for name, value, error in zip(
+            ("median", "90th", "99th"), read["marks"], read["mark errors"]
+        )
+    )
+    return (
+        f"{'the tail':<22} {marks}   above {LOUD:.0f} nats "
+        f"{read['loud']:4.1f} +- {read['loud error']:.1f}%"
+    )
 
 
 # ==================================================================== #
@@ -346,7 +560,9 @@ def corpus(corpus_path, split, crop, seed):
 @click.option("--split", default="test", type=click.Choice(data.SPLITS))
 @click.option("--crop", default=model.CROP)
 @click.option("--orderings", default=ORDERINGS, help="the paper's M")
-@click.option("--pieces", default=0, help="how many pieces of the split; 0 is all of them")
+@click.option(
+    "--pieces", default=0, help="how many pieces of the split; 0 is all of them"
+)
 @click.option("--chunk", default=16, help="canvases of one forward pass")
 @click.option("--seed", default=0)
 def nll(ckpt, corpus_path, split, crop, orderings, pieces, chunk, seed):
@@ -363,13 +579,20 @@ def nll(ckpt, corpus_path, split, crop, orderings, pieces, chunk, seed):
             f"{done / (at + 1):5.1f} s each"
         )
 
-    mean, error, _ = framewise_nll(
-        params, stats, canvases, orderings=orderings, chunk=chunk, seed=seed, report=report
+    read = framewise_nll(
+        params,
+        stats,
+        canvases,
+        orderings=orderings,
+        chunk=chunk,
+        seed=seed,
+        report=report,
     )
     click.echo(
         f"framewise NLL on {split}, {len(canvases)} pieces, {orderings} orderings: "
-        f"{mean:.4f} +- {error:.4f} nats for each frame"
+        f"{read['mean']:.4f} +- {read['error']:.4f} nats for each frame"
     )
+    click.echo(tail_line(read["frames"]))
     click.echo(f"the paper's Table 1 on the sixteenth grid: {PAPER_NLL:.2f} +- 0.01")
 
 

@@ -40,6 +40,22 @@ def play(music, *, device, step_ms, channel, velocity):
                 wire.write(bytes([NOTE_OFF | channel, pitch, RELEASE_VELOCITY]))
 
 
+def rest(steps, *, step_ms):
+    """The silence between two pieces of an audition, in steps of the grid.
+
+    [play] drains its notes as it leaves, thus this is a wait and not a message. The ear
+    asks for it: a batch is several INDEPENDENT draws and each one is a whole piece, so
+    back to back the second opens on the first one's last chord with no breath between
+    them, which no performance does.
+
+    THE DEFAULT IS ONE BAR, and the ear set it on 2026-08-25: a quarter note helps and a
+    bar is what it wanted. IT DOES NOT FIX THE ENDING. A canvas is a crop of eight measures
+    and it stops where the corpus was cut -- it does not arrive -- and no silence after a
+    phrase that never closed will make it sound closed. That is the deferred round, the
+    whole piece with its cadence, and not this wait."""
+    time.sleep(steps * step_ms / 1000.0)
+
+
 def save(music, path, *, step_ms, channel, velocity):
     """one walk as a standard MIDI file: one step is one tick, and the tempo carries the
     step period"""
