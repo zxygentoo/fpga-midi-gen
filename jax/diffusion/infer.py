@@ -98,6 +98,20 @@ def seeded_canvas(canvases, steps, seed):
     ).astype(np.int32)
 
 
+@jax.jit
+def turn(params, stats, key, classes, hidden, heat):
+    """One pass of the walk: the net reads the whole canvas and every masked cell redraws
+    from its own softmax, independently of the others.
+
+    It takes the weights as ARGUMENTS and stands at the module level, thus its compiled
+    form is keyed on the shapes and every walk of a run reuses the first compile. A jit
+    closed over [params] inside [gibbs] compiles again at every call, and [curve] calls
+    one walk for each N of its sweep -- inside the seconds it reports."""
+    said, _ = model.logits(params, stats, model.planes(classes, hidden))
+    drawn = jax.random.categorical(key, said / heat, axis=-2)
+    return jnp.where(hidden, drawn, classes)
+
+
 def gibbs(params, stats, given, free, *, walk, temperature, seed):
     """Independent blocked Gibbs with the annealed schedule of Yao et al.
 
@@ -115,19 +129,19 @@ def gibbs(params, stats, given, free, *, walk, temperature, seed):
     is what buys back."""
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
-
-    @jax.jit
-    def turn(key, classes, hidden, heat):
-        said, _ = model.logits(params, stats, model.planes(classes, hidden))
-        drawn = jax.random.categorical(key, said / heat, axis=-2)
-        return jnp.where(hidden, drawn, classes)
-
     classes = jnp.asarray(given)
     for step in range(walk):
         masking = model.anneal(step, walk)
         hidden = free & (rng.random(free.shape) < masking)
         key, turn_key = jax.random.split(key)
-        classes = turn(turn_key, classes, jnp.asarray(hidden), jnp.float32(temperature))
+        classes = turn(
+            params,
+            stats,
+            turn_key,
+            classes,
+            jnp.asarray(hidden),
+            jnp.float32(temperature),
+        )
     return np.asarray(classes)
 
 
@@ -143,25 +157,27 @@ def audition_path(path, at, count):
     return str(name.with_name(f"{name.stem}-{at}{name.suffix}"))
 
 
-def opening(corpus_path, split, crop, canvases, harmonize, seed):
+def opening(corpus, crop, canvases, harmonize, seed):
     """The canvas the walk opens on: notes drawn from the seed, or the first [canvases]
-    corpus crops when a soprano is given.
+    rows of [corpus] when a soprano is given.
 
     Either way the walk opens on NOTES; [seeded_canvas] states why silence would lie.
     Under --harmonize the free region opens as the corpus's own lower voices, and none of
     that answer survives to be read as the model's: a free cell escapes every mask of an
-    N 512 walk with probability under 10^-100."""
+    N 512 walk with probability under 10^-100.
+
+    It takes the corpus AS AN ARRAY. The command reads the split one time for its own
+    battery row, and a walk for each N of a sweep would otherwise read it again."""
     if not harmonize:
         return seeded_canvas(canvases, crop, seed)
-    return canvas.corpus_canvases(corpus_path, split, crop, seed)[:canvases].copy()
+    return corpus[:canvases].copy()
 
 
 def draw(
     params,
     stats,
     *,
-    corpus_path,
-    split,
+    corpus,
     crop,
     canvases,
     harmonize,
@@ -170,7 +186,7 @@ def draw(
     seed,
 ):
     """one batch of canvases, and the seconds the walk cost"""
-    given = opening(corpus_path, split, crop, canvases, harmonize, seed)
+    given = opening(corpus, crop, canvases, harmonize, seed)
     free = free_cells(len(given), crop, harmonize)
     started = time.perf_counter()
     classes = gibbs(
@@ -245,23 +261,30 @@ def sampling_options(command):
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
 def sample(
-    ckpt, walk, to_synth, to_file, device, step_ms, gap, fade, channel, velocity, **flags
+    ckpt,
+    walk,
+    to_synth,
+    to_file,
+    device,
+    step_ms,
+    gap,
+    fade,
+    channel,
+    velocity,
+    corpus_path,
+    split,
+    **flags,
 ):
     params, stats = model.load_params(ckpt)
-    classes, seconds = draw(params, stats, walk=walk, **flags)
-    corpus = canvas.corpus_canvases(
-        flags["corpus_path"], flags["split"], flags["crop"], flags["seed"]
-    )
-    label = f"N {walk}, {len(classes)} canvases"
-    for line in measure.structure_lines("the corpus", measure.structure(corpus)):
-        click.echo(line)
-    for line in measure.structure_lines(label, measure.structure(classes)):
-        click.echo(line)
+    corpus = canvas.corpus_canvases(corpus_path, split, flags["crop"], flags["seed"])
+    classes, seconds = draw(params, stats, corpus=corpus, walk=walk, **flags)
+    canvas.echo_structure("the corpus", corpus)
+    canvas.echo_structure(f"N {walk}, {len(classes)} canvases", classes)
     click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} canvases")
 
     # a canvas is a whole piece, thus several of them are several pieces: the synth hears
     # them in turn and the disk takes one file for each
-    music = [data.decode(canvas) for canvas in classes]
+    music = [data.decode(drawn) for drawn in classes]
     for at, piece in enumerate(music):
         if len(music) > 1:
             click.echo(f"# canvas {at}")
@@ -298,7 +321,7 @@ def sample(
 @main.command()
 @sampling_options
 @click.option("--walks", default=CURVE, help="the N of each row, a comma list")
-def curve(ckpt, walks, **flags):
+def curve(ckpt, walks, corpus_path, split, **flags):
     """Quality against N: the same canvases drawn at each step budget, read by the
     structure battery against the corpus row.
 
@@ -306,15 +329,11 @@ def curve(ckpt, walks, **flags):
     quality. The board affords tens of passes and not hundreds, thus what this round needs
     to know is the shape of that cost and not its existence."""
     params, stats = model.load_params(ckpt)
-    corpus = canvas.corpus_canvases(
-        flags["corpus_path"], flags["split"], flags["crop"], flags["seed"]
-    )
-    for line in measure.structure_lines("the corpus", measure.structure(corpus)):
-        click.echo(line)
+    corpus = canvas.corpus_canvases(corpus_path, split, flags["crop"], flags["seed"])
+    canvas.echo_structure("the corpus", corpus)
     for walk in [int(n) for n in walks.split(",")]:
-        classes, seconds = draw(params, stats, walk=walk, **flags)
-        for line in measure.structure_lines(f"N {walk:4d}", measure.structure(classes)):
-            click.echo(line)
+        classes, seconds = draw(params, stats, corpus=corpus, walk=walk, **flags)
+        canvas.echo_structure(f"N {walk:4d}", classes)
         click.echo(f"{'':<22} {seconds:.1f} s for {len(classes)} canvases")
 
 

@@ -45,6 +45,16 @@ def corpus_canvases(corpus_path, split, crop, seed):
     return data.Crops(data.load_pieces(corpus_path)[split], crop).every_piece(seed)
 
 
+def echo_structure(label, canvases):
+    """one row of the battery of jax/measure.py, printed under [label]
+
+    Every command of this round prints rows, and each of them prints the corpus row
+    first. The reading is measure.py's and the printing is one line, thus it stands here
+    once instead of at each command."""
+    for line in measure.structure_lines(label, measure.structure(canvases)):
+        click.echo(line)
+
+
 # ==================================================================== #
 # THE LIKELIHOOD — the paper's Algorithm 1                             #
 # ==================================================================== #
@@ -72,15 +82,16 @@ def frame_ordering(rng, steps):
 def forward_in_chunks(forward, classes, hidden, chunk):
     """the log probabilities of a stack of canvases, [chunk] at a time: one canvas of the
     stack is one frame of the piece, thus the stack is as tall as the crop and a 12 GB card
-    wants it cut"""
-    return np.concatenate(
-        [
-            np.asarray(
-                forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk])
-            )
-            for at in range(0, len(classes), chunk)
-        ]
-    )
+    wants it cut
+
+    The chunks cross back to the host one time and not one by one: a read of a chunk
+    blocks until that chunk lands, and the next one then cannot be dispatched behind
+    it."""
+    said = [
+        forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk])
+        for at in range(0, len(classes), chunk)
+    ]
+    return np.asarray(jnp.concatenate(said))
 
 
 def framewise_lls(forward, classes, ordering, chunk):
@@ -247,11 +258,9 @@ def main():
 @click.option("--crop", default=model.CROP)
 @click.option("--seed", default=0, help="the crop draw; fixed, thus the row is fixed")
 def corpus(corpus_path, split, crop, seed):
-    canvases = corpus_canvases(corpus_path, split, crop, seed)
-    for line in measure.structure_lines(
-        f"the corpus, {split}", measure.structure(canvases)
-    ):
-        click.echo(line)
+    echo_structure(
+        f"the corpus, {split}", corpus_canvases(corpus_path, split, crop, seed)
+    )
 
 
 @main.command(help=framewise_nll.__doc__)

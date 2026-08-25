@@ -159,18 +159,15 @@ def make_step(clip, weight_decay, remat):
     return jax.jit(step_fn)
 
 
-def make_eval():
+@jax.jit
+def eval_fn(params, stats, classes, hidden):
     """The same loss on a fixed probe, under the POPULATION statistics.
 
     The probe reads the model the sampler and the referees will read, and not the model
     that a batch of sixteen crops happens to normalize."""
-
-    def eval_fn(params, stats, classes, hidden):
-        canvas = model.planes(classes, hidden)
-        said, _ = model.logits(params, stats, canvas)
-        return masked_nll(said, classes, hidden)
-
-    return jax.jit(eval_fn)
+    canvas = model.planes(classes, hidden)
+    said, _ = model.logits(params, stats, canvas)
+    return masked_nll(said, classes, hidden)
 
 
 def probe_batches(crops, batch):
@@ -196,13 +193,16 @@ def probe_batches(crops, batch):
 
 def eval_loss(eval_fn, params, stats, batches):
     """the mean over the probe canvases; the last batch is short, thus the mean is a sum
-    over a count and never a mean of means"""
+    over a count and never a mean of means
+
+    The sums stay on the device until the loop ends, for the reason the training loop
+    keeps its losses there: a read at every batch blocks the dispatch of the next one."""
     total = 0.0
     canvases = 0
     for classes, hidden in batches:
-        total += float(eval_fn(params, stats, classes, hidden)) * len(classes)
+        total = total + eval_fn(params, stats, classes, hidden) * len(classes)
         canvases += len(classes)
-    return total / max(canvases, 1)
+    return float(total) / max(canvases, 1)
 
 
 def train(
@@ -234,7 +234,6 @@ def train(
     params, stats = draw_params(draw_key, layers, width)
     state = nn.optimizer_init(params)
     step_fn = make_step(clip, weight_decay, remat)
-    eval_fn = make_eval()
     click.echo(
         f"corpus: {len(crops.rows)} train pieces of {len(pieces['train'].lengths)} hold a "
         f"crop of {crop}; probes {sum(len(c) for c, _ in probe)} valid canvases"

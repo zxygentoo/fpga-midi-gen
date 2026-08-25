@@ -124,15 +124,19 @@ ANNEAL_HIGH = 0.9
 ANNEAL_SPAN = 0.7
 
 
-def anneal(step, total, low=ANNEAL_LOW, high=ANNEAL_HIGH, span=ANNEAL_SPAN):
+def anneal(step, total):
     """The masking probability at step [step] of [total] Gibbs steps:
 
-        alpha_n = max(low, high - n (high - low) / (span * total))
+        alpha_n = max(LOW, HIGH - n (HIGH - LOW) / (SPAN * total))
 
     High at the opening, where the chain mixes fast and independent resampling is a poor
-    approximation, and settled on [low] after a [span] share of the walk, where blocked
-    Gibbs has become nearly the one-variable-at-a-time chain it approximates."""
-    return max(low, high - (high - low) * step / (span * total))
+    approximation, and settled on [ANNEAL_LOW] after an [ANNEAL_SPAN] share of the walk,
+    where blocked Gibbs has become nearly the one-variable-at-a-time chain it
+    approximates."""
+    return max(
+        ANNEAL_LOW,
+        ANNEAL_HIGH - (ANNEAL_HIGH - ANNEAL_LOW) * step / (ANNEAL_SPAN * total),
+    )
 
 
 # ---------------------------------------------------------------------
@@ -233,8 +237,12 @@ def nll_of_logits(said, classes):
 # the checkpoint: one flat list, and its reader
 # ---------------------------------------------------------------------
 
-# the kernel, the two norm terms and the two population statistics
-LAYER_TENSORS = 5
+# The order of one layer's tensors on disk, stated one time: [flat_tensors] writes it and
+# [load_params] reads it, and neither spells it out again.
+PARAM_FIELDS = ("kernel", "scale", "shift")
+STAT_FIELDS = ("mean", "variance")
+LAYER_FIELDS = PARAM_FIELDS + STAT_FIELDS
+LAYER_TENSORS = len(LAYER_FIELDS)
 
 
 def flat_tensors(params, stats):
@@ -249,13 +257,8 @@ def flat_tensors(params, stats):
     so that they cannot drift apart."""
     flat = []
     for layer, stat in zip(params["layers"], stats):
-        flat += [
-            layer["kernel"],
-            layer["scale"],
-            layer["shift"],
-            stat["mean"],
-            stat["variance"],
-        ]
+        flat += [layer[field] for field in PARAM_FIELDS]
+        flat += [stat[field] for field in STAT_FIELDS]
     return flat
 
 
@@ -270,12 +273,12 @@ def load_params(path):
         raise ValueError(f"{path}: {len(tensors)} tensors is no canvas model")
     params, stats = [], []
     for layer in range(layers):
-        kernel, scale, shift, mean, variance = (
-            jnp.asarray(tensors[str(LAYER_TENSORS * layer + at)])
-            for at in range(LAYER_TENSORS)
-        )
-        params.append({"kernel": kernel, "scale": scale, "shift": shift})
-        stats.append({"mean": mean, "variance": variance})
+        held = {
+            field: jnp.asarray(tensors[str(LAYER_TENSORS * layer + at)])
+            for at, field in enumerate(LAYER_FIELDS)
+        }
+        params.append({field: held[field] for field in PARAM_FIELDS})
+        stats.append({field: held[field] for field in STAT_FIELDS})
     return {"layers": params}, stats
 
 
