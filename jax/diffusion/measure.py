@@ -1,8 +1,8 @@
-"""What the masked canvas of docs/coconet.md measures with its OWN model: the paper's
+"""What the masked canvas of docs/diffusion.md measures with its OWN model: the paper's
 Algorithm 1, and the tail of it.
 
-    uv run python -m coconet.measure nll     --ckpt ../_train/coconet/NAME.ckpt
-    uv run python -m coconet.measure corpus
+    uv run python -m diffusion.measure nll     --ckpt ../_train/diffusion/NAME.ckpt
+    uv run python -m diffusion.measure corpus
 
 The structure battery is NOT here. It is arithmetic over a stack of class indices and it
 knows nothing of a canvas or a mask, thus it stands in the common home, jax/measure.py,
@@ -20,7 +20,7 @@ space and not in log space.
 THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER and NOTHING HERE RANKS A MODEL, which are
 the standing rules of jax/measure.py and are earned ten times over in this project.
 
-Nothing here draws a canvas: coconet/infer.py draws and calls in here.
+Nothing here draws a canvas: diffusion/infer.py draws and calls in here.
 """
 
 import time
@@ -33,7 +33,7 @@ import numpy as np
 import data
 import measure
 import nn
-from coconet import model
+from diffusion import model
 
 JAX_ROOT = nn.JAX_ROOT
 CORPUS = str(JAX_ROOT / "_data" / "pieces.safetensors")

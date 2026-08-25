@@ -4,7 +4,7 @@
    packing, the rotation and the shifts all come from the committed OCaml, and the JAX
    side only reads arrays.
 
-   The pieces subcommand writes the other corpus, the one the canvas of docs/coconet.md
+   The pieces subcommand writes the other corpus, the one the canvas of docs/diffusion.md
    reads: whole pieces on the grid the caller names, one row for each, with the true
    length and the legal shift range beside the cells. A stream has no pieces and a canvas
    holds nothing else, thus these are two files and not two views of one.
@@ -54,7 +54,7 @@ let tensors_of_split streams =
   ]
 ;;
 
-(* The canvas of docs/coconet.md: whole pieces on one grid, one row for each.
+(* The canvas of docs/diffusion.md: whole pieces on one grid, one row for each.
 
    The cells stay as the corpus states them — the pitch that a voice sings, or -1 for a
    rest — because the class map of a model is the JAX side's own, as it is for the frames.

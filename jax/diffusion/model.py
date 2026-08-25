@@ -1,4 +1,4 @@
-"""The masked canvas of docs/coconet.md: the roll, the mask, and the paper's net.
+"""The masked canvas of docs/diffusion.md: the roll, the mask, and the paper's net.
 
 This is Coconet (Huang et al., arXiv 1903.07227) at the paper's size, on this corpus. One
 canvas is a crop of 128 sixteenth steps -- eight measures, the excerpt length the paper's

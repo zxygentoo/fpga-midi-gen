@@ -1,8 +1,8 @@
 """The audition of the masked canvas: independent blocked Gibbs, eight measures at a time.
 
-    uv run python -m coconet.infer sample --ckpt C --canvases 8 --seed 7 --play
-    uv run python -m coconet.infer sample --ckpt C --harmonize --canvases 4
-    uv run python -m coconet.infer curve  --ckpt C
+    uv run python -m diffusion.infer sample --ckpt C --canvases 8 --seed 7 --play
+    uv run python -m diffusion.infer sample --ckpt C --harmonize --canvases 4
+    uv run python -m diffusion.infer curve  --ckpt C
 
 THE CURVE IS THE DELIVERABLE OF THE ROUND. `curve` draws the same canvases at N of 32, 64,
 128, 256 and 512 and prints the structure battery of each against the corpus row, with the
@@ -37,8 +37,8 @@ import numpy as np
 import data
 import measure
 import midi
-from coconet import measure as canvas
-from coconet import model
+from diffusion import measure as canvas
+from diffusion import model
 
 # seat 3, as data.py and the chained head of the earlier eras read the seats
 SOPRANO = model.VOICES - 1

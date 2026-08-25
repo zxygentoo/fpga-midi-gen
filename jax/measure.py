@@ -4,7 +4,7 @@ This is the COMMON HOME of the measurement, as jax/nn.py is of the network. Ever
 here is arithmetic over a [canvases, steps, SEATS] array of class indices and nothing here
 knows which era drew it -- a Gibbs canvas, a walk of the packed stream and a corpus crop
 all read the same way, and a single walk is a stack of one. What an era measures with its
-OWN model lives beside that model: jax/coconet/measure.py holds the paper's Algorithm 1,
+OWN model lives beside that model: jax/diffusion/measure.py holds the paper's Algorithm 1,
 and jax/mamba/measure.py holds the forced pass and the walk of era five.
 
 THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER. A triad share of 40 percent says nothing

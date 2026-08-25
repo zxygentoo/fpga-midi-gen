@@ -1,8 +1,8 @@
-"""The trainer of the masked canvas of docs/coconet.md.
+"""The trainer of the masked canvas of docs/diffusion.md.
 
 Run it from the jax directory as a module:
 
-    uv run python -m coconet.train --steps 200 --ckpt ../_train/coconet/probe.ckpt
+    uv run python -m diffusion.train --steps 200 --ckpt ../_train/diffusion/probe.ckpt
 
 One row of a batch is one crop of 128 sixteenth steps, taken uniformly inside one uniformly
 drawn chorale. A piece shorter than the crop is dropped, thus the round trains on 228 of
@@ -43,7 +43,7 @@ import numpy as np
 
 import data
 import nn
-from coconet import model
+from diffusion import model
 
 JAX_ROOT = nn.JAX_ROOT
 

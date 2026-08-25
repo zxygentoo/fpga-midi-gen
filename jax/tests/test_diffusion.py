@@ -1,4 +1,4 @@
-"""The masked canvas of the coconet era: the roll, the mask, the loss and the measure.
+"""The masked canvas of the diffusion era: the roll, the mask, the loss and the measure.
 
 Four things here can fail silently, and each one would still train, still sample and still
 play -- it would play the wrong piece, or read a number that means nothing:
@@ -27,8 +27,8 @@ from click.testing import CliRunner
 import data
 import measure
 import nn
-from coconet import infer, model, train
-from coconet import measure as canvas
+from diffusion import infer, model, train
+from diffusion import measure as canvas
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
 PIECES = JAX_ROOT / "_data" / "pieces.safetensors"

@@ -67,7 +67,7 @@ val transpose : by:int -> chorale -> chorale
 
 (** [on_grid ~every chorale] is the same piece on a coarser grid: every [every]-th step of
     the sixteenth grid, and nothing else. A grid of 1 is the identity, thus the sixteenth
-    grid of the corpus — the grid of docs/coconet.md — costs the caller no special case.
+    grid of the corpus — the grid of docs/diffusion.md — costs the caller no special case.
 
     A grid of 2 is the eighth grid, which halves a canvas. It loses the onset that stands
     on an odd sixteenth: the even step before it holds its pitch through. That is 1.4

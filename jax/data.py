@@ -195,7 +195,7 @@ class Pieces:
     round of feat/diffusion-proto, where the tail WAS the training signal and owned 53.2
     percent of the columns of a canvas.
 
-    [shifts] is unread this round -- the paper of docs/coconet.md states no transposition
+    [shifts] is unread this round -- the paper of docs/diffusion.md states no transposition
     augmentation and the pitch axis of the trunk carries the equivariance instead. It stays
     because it is the third tensor of the export, and a reader that dropped it would make
     the file and its reader disagree."""
@@ -212,7 +212,7 @@ def load_pieces(path):
 
 
 class Crops:
-    """The canvas draw of docs/coconet.md: a uniform piece, then a uniform crop of it.
+    """The canvas draw of docs/diffusion.md: a uniform piece, then a uniform crop of it.
 
     A crop is [length] steps taken inside the true length of a piece, thus it never reads
     the padded tail. A piece shorter than the crop is dropped -- one of the 229 train

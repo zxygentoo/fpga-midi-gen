@@ -1,26 +1,45 @@
-# The Coconet model
+# The diffusion model
 
 ## Scope
 
-This round replicates "Counterpoint by Convolution" (arXiv 1903.07227) on
-this corpus, as faithfully as the corpus permits. The question it answers:
-the quality a masked canvas model reaches, calibrated two ways — by the
-paper's published likelihood on this same corpus lineage, and by the ear.
-The paper's raters could not tell its samples from Bach on eight-measure
-excerpts, thus the ceiling is known to be high; this round measures how much
-of it this stack reaches, and at what sampling cost.
+This document gives the design of the model of era six: a MASKED CANVAS.
+Eight measures of four voices stand as one piano roll, some of its cells are
+hidden, and the model states a distribution over the pitch of every cell at
+once. Nothing here is causal and nothing is written left to right — a piece
+is composed knowing its own ending, which is the thesis of the era and the
+opposite of every era before it.
 
-The round CLIMBS A LADDER OF SIZES. It starts at the smallest rung that fits
-the board and it goes up; it does not start at the top and subtract. Each
-rung is trained, refereed and heard, thus the round learns what each step of
-size buys while it climbs, and a rung that fails says which axis it failed
-on. The paper's size is the last rung and it is the reference: it never goes
-on the board, and its number is what says this stack is right.
+**The era is named for the method and not for the paper.** Masked diffusion
+is what the field calls this now: corrupt a discrete field by hiding cells,
+train a network to restore them, and sample by hiding and restoring in turn.
+COCONET (Huang et al., arXiv 1903.07227) is the 2017 instance of it, under
+another name and eight years before the name existed. This round replicates
+that paper as faithfully as the corpus permits, because its published
+likelihood on this same corpus lineage is the one calibration this project
+can get from outside itself. "The lineage since the paper" below states what
+the field learned in between, and which of it the era takes.
 
-Not in this round: whole pieces, endings, the length mask, the RTL. The next
-round takes the findings of `feat/diffusion-proto` — the piano roll reads
-pitch, the padded tail starves the canvas, the trunk completes and does not
-invent — and builds them onto this replication.
+**THE DELIVERABLE IS THE CURVE OF QUALITY AGAINST N.** The board draws one
+canvas while the last one plays, thus the passes it can afford are counted
+and the curve alone says whether the masked era reaches the RTL. Everything
+else here serves that number: the ladder finds the shape, the referees say
+what a shape is worth, and the ear elects.
+
+**The round CLIMBS A LADDER OF SIZES.** It starts at the smallest rung that
+fits the board and it goes up; it does not start at the top and subtract.
+Each rung is trained, refereed and heard, thus the round learns what each
+step of size buys while it climbs, and a rung that fails says which axis it
+failed on. The paper's size is the last rung and it is the reference: it
+never goes on the board, and its number is what says this stack is right.
+
+Not in this round: whole pieces, endings, the length mask, the RTL. The
+canvas is 128 sixteenth steps and one chorale in a hundred fits inside it,
+thus a canvas is a crop and it stops where the corpus was cut instead of
+ARRIVING. That is the open musical problem the era inherits, it is the
+reason for the fade and the rest on the audition wire, and the round that
+answers it is in "Deferred". The findings of `feat/diffusion-proto` are
+built into this one: the piano roll reads pitch, the padded tail starves the
+canvas, and the trunk completes where it does not invent.
 
 ## Why the masked objective
 
@@ -343,6 +362,135 @@ reaches the RTL.
    the deferred whole-piece round below, and it is the open musical
    problem the transformer era logged before this one.
 
+## What the round measured
+
+The design above carries the numbers that settled it where each one stands.
+These are the findings that belong to no single decision.
+
+### The golden candidate is L 48 by H 20
+
+169,648 parameters, 90 percent of the device at int8, 31 ms for a training
+step. L 48 is the FIRST DEPTH WHOSE REACH COVERS THE WHOLE PITCH AXIS from
+any row, and H 20 is the widest that depth affords — H 20 allows L 49, thus
+the two walls meet and neither holds slack the other could spend.
+
+| | valid | nats for each frame | triads | octaves |
+|---|---|---|---|---|
+| L 64 H 16, 147k | 0.4446 | 0.6145 ± 0.0153 | 66.4% | 20.4× |
+| L 64 H 18, 185k | 0.4429 | 0.6126 ± 0.0159 | — | — |
+| **L 48 H 20, 170k** | **0.4422** | **0.6139 ± 0.0151** | **62.1%** | **19.3×** |
+| L 106 H 12, 139k | 0.4391 | 0.6276 ± 0.0159 | 61.9% | 33.6× |
+| corpus | — | — | 62.7% | 1.0× |
+
+The three shapes near 170k parameters read the same likelihood inside a
+tenth of an error, thus ABOVE L 48 DEPTH HAS STOPPED PAYING. What separates
+them is harmonic content: L 48 by H 20 lands on the corpus's triad share
+where L 64 by H 16 is markedly over-triadic, and it holds the best octaves
+of any board-feasible rung.
+
+### Depth is the reach; width is a floor and not an axis
+
+The cleanest experiment of the round is in the ladder, at the widest voice
+pair. The corpus is near 10 percent dissonant at every span:
+
+| rung | ba-te, 8.6 st | ba-al, 14.1 st | ba-so, 19.6 st |
+|---|---|---|---|
+| L 16 H 16 | 11.8% | 17.0% | **24.7%** |
+| L 16 **H 24** | 13.1% | 17.9% | **25.3%** |
+| **L 24** H 24 | 9.8% | 13.5% | **16.6%** |
+
+At a fixed L 16, more WIDTH does nothing for the distant pair. At a fixed
+H 24, more DEPTH halves its error. Width cannot buy what the receptive field
+never saw.
+
+Width was called "the resolution" until 2026-08-25, when the disambiguating
+run said otherwise. On parallel octaves H 12 reads 33.6 times the corpus,
+H 16 reads 20.4 and **H 20 reads 19.3, which is 0.7 of an error from H 16**.
+H 12 is a floor to clear and above H 16 width buys nothing measurable; the
+ceiling's 9.9× is its 62 times the parameters and not its H 128.
+
+### The defect is parallel motion, and nothing reaches it
+
+Every vertical instrument says these models have arrived — the ceiling reads
+triads 62.6 against the corpus's 62.7, dissonance 10.5 against 10.7, hold
+76.5 against 77.3. What happens BETWEEN two chords has not arrived at all.
+At N 512 over 256 canvases, for each thousand pairs that move together:
+
+| | 5ths | octaves |
+|---|---|---|
+| the board rung | 8.9× | 20.4× |
+| the ceiling, 62× the parameters | 4.6× | 9.9× |
+| **the corpus** | **1.08** | **0.60** |
+
+**Four independent levers do not touch it.** Sixty-two times the parameters
+buys two and stops. No board-feasible shape improves it — every rung from
+H 16 to H 20 sits at 19 to 20 times the corpus on octaves whatever its
+depth. No training mask reaches it: the span lever and its mix are measured
+and cut above. And no affordable N reaches it — the rate falls about 0.85
+for each doubling with no flattening, thus arriving at Bach would need
+N ≈ 660,000, which is a wrong mechanism and not too few passes.
+
+The reason stands in the objective. **The loss scores the MARGINAL of each
+cell under its context and the walk draws those marginals INDEPENDENTLY**,
+thus a joint configuration of two voices across two steps is evaluated by
+neither. A term that stands in no objective cannot be sampled away. What
+remains is sampler-side — draw a block jointly instead of independently — or
+an objective that scores the joint at all.
+
+### Every model sings sharp in the upper three voices
+
+Register was unmeasured until the instrument existed, because the voice
+pairs read DIFFERENCES of pitch and the order instrument reads the stacking:
+a texture that slid bodily moves neither. Measured at N 512, every rung of
+the ladder reads its tenor, alto and soprano ABOVE the corpus — tenor 59.9
+to 61.6 against 59.5, alto 65.8 to 67.2 against 65.1, soprano 71.0 to 72.3
+against 70.5 — while the bass straddles 51.0. Depth fixes the MAGNITUDE of
+register error and nothing fixes its DIRECTION: not depth, not width, not
+complete pitch reach, not the golden candidate. It is an open item beside
+the parallels.
+
+### The tail of the likelihood is the mean in other clothes, except once
+
+On the capacity ladder the median and the 90th percentile rank the six rungs
+exactly as the mean does and separate them no better. The 99th does not move
+with capacity at all: the CEILING — the ear's own first choice — holds the
+best mean, median and 90th and **the heaviest 99th of the whole ladder**,
+and the ratio of the 99th to the median climbs 9.97 → 11.19 → 14.66 as the
+rungs grow. These are CORPUS canvases, thus a frame of high nats is one
+where BACH surprised the model and not one where the model wrote something
+strange.
+
+It earns its place on a pair that capacity did not separate: the span arm
+and rung 1 stand 0.14 of an error apart on the mean and **2.6 errors apart
+on the frames above 2 nats**, with the span arm holding the better median.
+Wrong less often and more badly is a trade the mean cannot see.
+
+## The traps
+
+- **THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER, and forgetting it cost
+  three corrections to one instrument in one day.** Parallel motion divided
+  by the pairs that merely SOUND, so a model that held its notes was paid
+  for it; it counted contrary motion onto a fifth, which read 53 percent of
+  the CORPUS's own fifths as faults; and its absolute gap let a crossed pair
+  hold an interval class its interval had turned upside down. Every one was
+  found by reading the instrument against the corpus and none by comparing
+  two models.
+- **Valid nats and framewise nats do not map across shapes.** L 106 by H 12
+  holds the best valid of any rung outside the ceiling and is 0.59 of an
+  error BEHIND the board rung on Algorithm 1. Elect on the referee.
+- **A parallel is a rare event.** At 64 canvases its Poisson error is near a
+  sixth of the count; draw 256 before quoting a comparison between two
+  models.
+- **The bar phase of a training canvas is uniformly randomised.** 65.2
+  percent of chorales are a whole number of bars plus a quarter-note
+  anacrusis, and `Crops.crop` draws its start uniformly — so a canvas begins
+  on a random beat and THE MODEL CAN LEARN NO METRE FROM POSITION. Aligning
+  crops to the real downbeats is a cheap untested lever.
+- **The likelihood referee at the paper's size writes nothing for 39
+  minutes.** Its per-piece progress lines begin with `piece`, which the log
+  filters of the round's scripts drop; a 40-second board rung does not need
+  them and the ceiling does.
+
 ## The cost
 
 Measured 2026-08-24 on the RTX 3060 (12 GB), at the paper's shape:
@@ -368,7 +516,7 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
 
 ## The files
 
-- `docs/coconet.md` — this document.
+- `docs/diffusion.md` — this document.
 - `lib/corpus/jsb.ml`, `bin/corpus_tool.ml` — the piece export of the proto
   round, taken from `feat/diffusion-proto` and generalized: `Jsb.on_grid
   ~every` takes the grid as a parameter and a grid of 1 is the identity, and
@@ -378,11 +526,19 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
 - `jax/data.py` — the piece reader, and `Crops`, the uniform crop taken
   inside the true length. It drops the one train chorale that is shorter
   than the crop, thus the round trains on 228.
-- `jax/coconet/model.py`, `train.py`, `infer.py`, `referee.py` — the round.
-  The referees have a module of their own: they measure a set of canvases
-  and never draw one, thus `infer.py` draws and calls in to them.
-- `jax/tests/test_coconet.py` — the loss reweighting, the mask draw, the
-  anneal, the mask planes, the checkpoint, the battery and Algorithm 1.
+- `jax/diffusion/model.py`, `train.py`, `infer.py` — the canvas, the trainer
+  and the walk. `infer.py` draws and measures nothing itself.
+- `jax/measure.py` — THE COMMON HOME of the instruments, as `jax/nn.py` is of
+  the network. Everything in it is arithmetic over a `[canvases, steps,
+  SEATS]` array of class indices and none of it knows which era drew them: a
+  Gibbs canvas, a walk of the packed stream and a corpus crop all read the
+  same way, and a single walk is a stack of one.
+- `jax/diffusion/measure.py` — what this era measures with its OWN model,
+  which is the paper's Algorithm 1 and the tail of it. Its sibling
+  `jax/mamba/measure.py` holds era five's forced pass and walk.
+- `jax/tests/test_diffusion.py`, `jax/tests/test_midi.py` — the loss
+  reweighting, the mask draw, the anneal, the mask planes, the checkpoint,
+  the battery, Algorithm 1, and the two gestures of the audition wire.
 
 ## Deferred
 

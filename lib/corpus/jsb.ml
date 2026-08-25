@@ -119,7 +119,7 @@ let transpose ~by { cells; legal_shifts } =
    shifts — thus the sixteenth grid of the corpus needs no special case anywhere.
 
    The grid decides what a canvas holds. The sixteenth grid is the corpus as it stands and
-   the grid of docs/coconet.md; the eighth grid halves the canvas, at the price of the
+   the grid of docs/diffusion.md; the eighth grid halves the canvas, at the price of the
    onset that stands on an odd sixteenth — 1.4 percent of the onsets of this corpus, the
    ornamental passing tones — which the even step before it swallows.
 
@@ -323,7 +323,7 @@ let%expect_test "the grid of one piece" =
     ; [ 77; 69; 62; 50 ]
     ]
   in
-  (* the sixteenth grid is the identity, and the round of docs/coconet.md rests on it *)
+  (* the sixteenth grid is the identity, and the round of docs/diffusion.md rests on it *)
   show (on_grid ~every:1 (piece head));
   [%expect
     {|
