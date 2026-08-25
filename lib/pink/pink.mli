@@ -76,8 +76,8 @@ val window : Params.t -> int * int
     the row set, thus the RTL elaboration reads it. *)
 val total_rows : Voice.t list -> int
 
-(** The state of one run: the row values, the PRNG and the step count. [Player] drives it,
-    and the RTL tests compare [Source] against it. *)
+(** The state of one run: the row values, the PRNG and the step count. [bin/play_pink.ml]
+    drives it with [next_frame], and the RTL tests compare [Source] against it. *)
 type walk
 
 (** The pitch and the due flag of one voice at one step. [due] is true at the steps where
