@@ -309,8 +309,16 @@ reaches the RTL.
    completion task, the regime the trunk is strongest in, and the mask
    planes give it for one flag.
 
-   `--gap` puts a silence between two canvases on the wire, one bar by
-   default. A batch is several INDEPENDENT draws and each one is a whole
+   `--gap` puts a silence between two canvases on the wire and `--fade`
+   takes the velocity down over the last bar of one, two bars and one bar
+   by default. The fade reaches only the notes that BEGIN inside its
+   window — velocity is a fact of the onset, and the S-1 makes a control
+   change audible only on the next note — thus its length is measured and
+   not chosen: a crop's last note has been sounding 4.5 steps in the mean,
+   so a bar catches 99 percent of the final notes where four steps catches
+   67 and finds no onset at all in 18 percent of crops. The gap doubled
+   when the fade arrived, because a canvas that ends quiet has less to
+   part from. A batch is several INDEPENDENT draws and each one is a whole
    piece; with nothing between them the second opens on the first one's
    last chord, which no performance does. The ear set the bar on
    2026-08-25 and reported what the silence CANNOT do: a canvas is a crop
