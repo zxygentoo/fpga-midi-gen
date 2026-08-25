@@ -110,15 +110,7 @@ let command =
                let model =
                  Quantized.Model.of_checkpoint ~temperature ~min_p config checkpoint
                in
-               List.folding_map
-                 (List.range 0 steps)
-                 ~init:(Quantized.Engine.init model ~seed)
-                 ~f:(fun engine (_ : int) ->
-                   let next, (step : Quantized.Engine.step) =
-                     Quantized.Engine.next_step engine
-                   in
-                   next, step.frame)
-               |> Array.of_list)
+               Quantized.Engine.frames (Quantized.Engine.init model ~seed) ~steps)
              else (
                let params = Transformer.Params.load config ~path:checkpoint in
                Transformer.sample config params ~seed ~steps ~temperature ~min_p)

@@ -42,7 +42,6 @@
   core
   core_unix
   core_unix.command_unix
-  mgen_core
   mgen_corpus
   mgen_transformer))
 
@@ -58,13 +57,7 @@
  (modules check_mamba)
  (preprocess
   (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  mgen_core
-  mgen_corpus
-  mgen_mamba))
+ (libraries core core_unix core_unix.command_unix mgen_corpus mgen_mamba))
 
 (executable
  (name play_diffusion)
@@ -78,10 +71,4 @@
  (modules check_diffusion)
  (preprocess
   (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  mgen_core
-  mgen_corpus
-  mgen_diffusion))
+ (libraries core core_unix core_unix.command_unix mgen_corpus mgen_diffusion))

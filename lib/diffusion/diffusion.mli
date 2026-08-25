@@ -33,27 +33,8 @@ val rows : int
 (** the seats of a step: the voices of [Frame] *)
 val voices : int
 
-(** the reach of one convolution: three by three over time and pitch *)
-val kernel : int
-
 (** the batch_norm_variance_epsilon of the trainer *)
 val norm_epsilon : float
-
-(** The register of each seat: the lowest and the highest pitch it sings anywhere in this
-    corpus, seat 0 the bass — [Jsb.voice_ranges] turned around, thus the corpus library's
-    own test pins it. The seeded opening of the walk draws inside these, thus a cell the
-    first Bernoulli leaves standing states a note a chorale could hold. They are the
-    RANGES of [jax/measure.py], stated as pitches. *)
-val seat_ranges : (int * int) array
-
-(** [classes_of_chorale chorale] is the canvas of one piece of [Jsb]: [steps] rows of
-    [voices] class indices, seat 0 the bass — the file gives the soprano first, thus the
-    step turns around, as every reader of the corpus turns it. A rest is the silence
-    class. A pitch outside the corpus's 36 to 81 raises [Invalid_argument]: the spare
-    class of the vocabulary is the draw's to state and never the corpus's, thus a file
-    that names its pitch is corrupt, and the twin reader of [jax/data.py] refuses the same
-    range. *)
-val classes_of_chorale : Jsb.chorale -> int array array
 
 (** The shape of the model: the two numbers that size every tensor. The reference takes
     any shape a checkpoint states; the elected shape of the era is L 48 by H 20. *)
@@ -79,11 +60,6 @@ end
     inside the checkpoint and inside this structure. *)
 module Params : sig
   type t
-
-  (** the shapes of the tensors in the flat order of the checkpoint, from the
-      configuration: the quantization of [Quantized] reads the same table, thus the two
-      models cannot disagree about what a checkpoint holds *)
-  val shapes : Config.t -> int array list
 
   (** [init config ~seed] draws initial parameters through [Prng], thus a test needs no
       checkpoint file and the same seed gives the same weights. The draw follows the SHAPE
@@ -123,6 +99,14 @@ end
     norm and no activation — because Gate A holds the two forwards to a tolerance and
     every rearrangement spends some of it. *)
 val logits : Params.t -> classes:int array array -> hidden:bool array array -> tensor
+
+(** [column said ~step ~voice] is the column of one cell: the [rows] values that row 0 to
+    row [rows - 1] hold for the cell at [step, voice], read out of the flat array of a
+    [steps; rows; voices] tensor.
+
+    The index rule stands here alone. The float logits and the integer logits of the twin
+    are the same tensor in two formats, thus both read their cells with this. *)
+val column : 'a array -> step:int -> voice:int -> 'a array
 
 (** [masked_nll params ~classes ~hidden] is the orderless-NADE loss of one canvas: the
     negative log-likelihood of the hidden cells under the softmax over the rows, in nats
@@ -203,14 +187,3 @@ val gate_canvases : Jsb.chorale list -> steps:int -> int array array array
     exactly when [u * 2^24 < 2^23]. The JAX side draws the same masks from the batched
     twin of the generator. *)
 val gate_mask : index:int -> steps:int -> bool array array
-
-(** The checkpoint seam, for the gates that cross it. *)
-module For_test : sig
-  (** [with_checkpoint tensors ~f]: [Checkpoint.with_checkpoint], the one writer of the
-      file the JAX trainer writes *)
-  val with_checkpoint : tensor list -> f:(string -> 'a) -> 'a
-
-  (** [refusal ~path f] is the message of the [Invalid_argument] that [f] raises, with
-      [path] scrubbed, and ["no raise"] when [f] raises nothing *)
-  val refusal : path:string -> (unit -> unit) -> string
-end

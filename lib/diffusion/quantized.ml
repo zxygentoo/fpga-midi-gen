@@ -283,11 +283,6 @@ let forward counters (model : Model.t) canvas hidden ~steps =
   layer_forward counters layers.(last) ~steps ~relu:false trunk
 ;;
 
-(* the logits of one cell over the rows, in the activation format *)
-let column said ~step ~voice =
-  Array.init rows ~f:(fun row -> said.((((step * rows) + row) * voices) + voice))
-;;
-
 (* the draw of one cell: the logits temper against their peak, exp2 gives Q15 weights, and
    the shared 24-bit pick takes the class — era four's pipeline, rule for rule *)
 let draw_cell (model : Model.t) raw prng =
@@ -361,7 +356,7 @@ module Engine = struct
       if not hidden.(step).(voice)
       then prng, draws
       else (
-        let logits = column said ~step ~voice in
+        let logits = Diffusion.column said ~step ~voice in
         let next, uniform, drawn = draw_cell t.model logits prng in
         canvas.(step).(voice) <- drawn;
         next, { step; voice; logits; uniform; drawn } :: draws)
@@ -417,10 +412,7 @@ module Drift = struct
     (* one cell of a pass against the float logits of the same cell, on the very uniform
        the engine took *)
     let count_cell float_said tally { Engine.step; voice; logits; uniform; drawn } =
-      let raw =
-        Array.init rows ~f:(fun row ->
-          float_said.((((step * rows) + row) * voices) + voice))
-      in
+      let raw = Diffusion.column float_said ~step ~voice in
       let float_class = Policy.draw_class raw ~temperature:1.0 ~min_p:0.0 ~uniform in
       { cells = tally.cells + 1
       ; same_peak = (tally.same_peak + if Nn.Tensor.same_peak logits raw then 1 else 0)

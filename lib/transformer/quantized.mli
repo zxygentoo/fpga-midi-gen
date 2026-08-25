@@ -195,6 +195,11 @@ module Engine : sig
       2^24, thus it is below the total, thus some running total passes it and the class it
       names always holds the weight the floor left standing. *)
   val next_step : t -> t * step
+
+  (** [frames t ~steps] is the frame of each of [steps] steps of the walk from [t]: the
+      integer twin of [Transformer.sample], and what a player draws. The lead-in counts
+      inside [steps], as it does there. *)
+  val frames : t -> steps:int -> int array
 end
 
 (** What the quantization costs, measured on the walk the board takes. *)

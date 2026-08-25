@@ -120,9 +120,6 @@ module Clamps : sig
         when the checkpoint changes, thus the format question never again waits on a probe
         that no longer exists. *)
     }
-
-  (** [share hit seen] is the share, and 0 when nothing was seen *)
-  val share : int -> int -> float
 end
 
 (** One running walk, as a value: a pass gives the engine after it. *)
@@ -159,9 +156,6 @@ module Engine : sig
   (** [next_pass t] takes one Gibbs pass: the masks, one integer forward, the redraws.
       Past the last pass it raises [Invalid_argument]. *)
   val next_pass : t -> t * pass
-
-  (** the canvas as it stands *)
-  val canvas : t -> int array array
 
   (** [run t] takes every remaining pass and gives the finished canvas *)
   val run : t -> int array array

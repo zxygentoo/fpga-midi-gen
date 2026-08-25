@@ -10,6 +10,8 @@ type tensor = Checkpoint.tensor
 
 let rows = Vocab.classes
 let voices = Frame.voices
+
+(* the reach of one convolution: three by three over time and pitch *)
 let kernel = 3
 let norm_epsilon = 1e-7
 
@@ -17,7 +19,13 @@ let norm_epsilon = 1e-7
    integer [k] and a threshold compare over it is exact in a double *)
 let grid = Float.of_int (1 lsl 24)
 
-(* seat 0 is the bass; the corpus table gives the soprano first, as the file does *)
+(* The register of each seat: the lowest and the highest pitch it sings anywhere in this
+   corpus, seat 0 the bass — [Jsb.voice_ranges] turned around, thus the corpus library's
+   own test pins it. The corpus table gives the soprano first, as the file does.
+
+   [opening_canvas] draws inside these, thus a cell the first Bernoulli leaves standing
+   states a note a chorale could hold. They are the RANGES of [jax/measure.py], stated as
+   pitches. *)
 let seat_ranges = Array.of_list (List.rev (Array.to_list Jsb.voice_ranges))
 
 (* the top of the corpus: the classes 1 to 46 cover [Vocab.pitch_low] to here, and the
@@ -43,6 +51,12 @@ let class_of_cell pitch =
   else pitch - Vocab.pitch_low + 1
 ;;
 
+(* The canvas of one piece of [Jsb]: [steps] rows of [voices] class indices, seat 0 the
+   bass — the file gives the soprano first, thus the step turns around, as every reader of
+   the corpus turns it. A rest is the silence class. A pitch outside the corpus's 36 to 81
+   raises [Invalid_argument]: the spare class of the vocabulary is the draw's to state and
+   never the corpus's, thus a file that names its pitch is corrupt, and the twin reader of
+   [jax/data.py] refuses the same range. *)
 let classes_of_chorale { Jsb.cells; legal_shifts = _ } =
   (* the file gives the soprano first; the reverse lands the bass at seat 0 *)
   Array.map cells ~f:(fun step -> Array.of_list (List.rev_map step ~f:class_of_cell))
@@ -120,6 +134,7 @@ module Params = struct
       (if at = 0 then 2 * voices else width), if at = layers - 1 then voices else width)
   ;;
 
+  (* the shapes of the tensors in the flat order of the checkpoint *)
   let shapes config =
     List.concat_map (channels config) ~f:(fun (inputs, outputs) ->
       [ [| kernel; kernel; inputs; outputs |]
@@ -279,8 +294,6 @@ let logits (params : Params.t) ~classes ~hidden =
   normed_conv trunk params.(last)
 ;;
 
-(* the logit of row [p] for the cell at [step, voice]: the flat array of the
-   [steps; rows; voices] tensor *)
 let column said ~step ~voice =
   Array.init rows ~f:(fun p -> said.((((step * rows) + p) * voices) + voice))
 ;;

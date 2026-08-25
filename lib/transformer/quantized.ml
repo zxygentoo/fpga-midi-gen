@@ -426,6 +426,15 @@ module Engine = struct
     in
     forward t ~frame:step.frame ~phase, step
   ;;
+
+  (* the integer twin of [Transformer.sample]: the walk a player draws, and the lead-in
+     counts inside [steps] as it does there *)
+  let frames t ~steps =
+    List.folding_map (List.range 0 steps) ~init:t ~f:(fun t (_ : int) ->
+      let t, (taken : step) = next_step t in
+      t, taken.frame)
+    |> Array.of_list
+  ;;
 end
 
 module Drift = struct
