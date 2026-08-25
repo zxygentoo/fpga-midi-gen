@@ -19,7 +19,15 @@
     ORCHESTRATION ABOVE ONE PIECE STAYS IN THE PLAYER. A batch of seeds, a rest between
     two pieces, a banner over each: these are the playback behavior of the board of era
     six, and that prototype keeps one home in its own player. This module plays one piece
-    on one open device. *)
+    on one open device.
+
+    [bin/play_pink.ml] DOES NOT TAKE THIS MODULE, AND THAT IS THE DESIGN — DO NOT MIGRATE
+    IT. Era one's player has no piece to play: it streams a walk with no end, frame by
+    frame, and leaves by sending one silent frame. It prints nothing, thus it shares no
+    step line; it holds no music, thus it shares no loop. What it carries that reads like
+    a copy of [ranged] and [sleep_ms] IS a copy, and it stays one. The three players that
+    draw a piece first — the transformer, the state space and the canvas — are the callers
+    this module has, and the ones it is for. *)
 
 (** The rawmidi device of the synthesizer, as the host names it. The JAX audition takes
     the same default, thus one path names the synthesizer on both sides of the seam. *)
@@ -27,16 +35,20 @@ val default_device : string
 
 (** [ranged name address] is the argument check of a flag that carries the value of the
     control cell at [address]: the range of the register is the range of the flag. A value
-    outside it prints [name] with the bounds and leaves with 2. It raises if the register
-    table gives that address no range.
+    outside it prints [name] with the bounds and leaves with 2.
+
+    A cell that the table gives no range takes any value that fits its width — SEED is
+    such a cell, because the slide switches can set every one of its 32 bits and the board
+    accepts them all — thus the width is the range where the table states none. The check
+    is therefore total over the register table and raises on no cell in it.
 
     The check is on the argument, thus it stands before the tool opens the device. A value
     that passes it can raise out of no library — [Prng.create] for a seed,
     [Char.of_int_exn] for a velocity above a byte — and can make no wrong status byte, and
     neither of those is a diagnostic for a person at a command line.
 
-    It stays public because a player builds its own flags from it: the seed flag of
-    [bin/play_pink.ml] is this check over [Control_intf.Reg.seed]. *)
+    It stays public as the general form of the two checks below, for a player that gives
+    another control cell a flag. *)
 val ranged : string -> int -> int Core.Command.Arg_type.t
 
 (** [channel_arg] is [ranged] over [Control_intf.Reg.channel]: MIDI channel 0 to 15. *)

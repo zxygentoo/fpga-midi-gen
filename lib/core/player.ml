@@ -15,10 +15,17 @@ let default_device = "/dev/snd/midiC2D0"
    command line. The check is on the argument, thus it comes before the tool opens the
    device. *)
 let ranged name address =
+  (* A cell the table gives no range takes any value that fits its width: SEED is such a
+     cell, because the slide switches can set every one of its 32 bits and the board
+     accepts them all, 0 included. The width is therefore the range where the table states
+     none, and this check is total over the register table. *)
   let { Control_intf.Reg.lower; upper } =
-    Option.value_exn
-      (Control_intf.Reg.bounds_of address)
-      ~message:(name ^ " has no range in Control_intf.Reg")
+    match Control_intf.Reg.bounds_of address with
+    | Some bounds -> bounds
+    | None ->
+      { Control_intf.Reg.lower = 0
+      ; upper = (1 lsl (8 * Control_intf.Reg.width_of address)) - 1
+      }
   in
   Command.Arg_type.create (fun s ->
     let value = Int.of_string s in
