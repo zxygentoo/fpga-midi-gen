@@ -20,11 +20,26 @@ let grid = Float.of_int (1 lsl 24)
 (* seat 0 is the bass; the corpus table gives the soprano first, as the file does *)
 let seat_ranges = Array.of_list (List.rev (Array.to_list Jsb.voice_ranges))
 
+(* the top of the corpus: the classes 1 to 46 cover [Vocab.pitch_low] to here, and the
+   spare class stands one above it *)
+let pitch_high = Vocab.pitch_low + rows - 3
+
+(* The pitch of one corpus cell becomes its class, and the reader is DELIBERATELY NARROWER
+   THAN [Vocab]: the window holds one spare class above the corpus — pitch 82, the draw's
+   to state and never the corpus's — thus a file that names it is corrupt and refuses
+   loudly rather than filing the fault under the spare. The twin reader of [jax/data.py]
+   refuses the same range with the same reason. *)
 let class_of_cell pitch =
   if pitch < 0
   then Vocab.silence
-  else if pitch < Vocab.pitch_low || pitch > Vocab.pitch_low + rows - 3
-  then invalid_argf "the pitch %d is outside the %d-class vocabulary" pitch rows ()
+  else if pitch < Vocab.pitch_low || pitch > pitch_high
+  then
+    invalid_argf
+      "the pitch %d is outside the corpus's %d to %d"
+      pitch
+      Vocab.pitch_low
+      pitch_high
+      ()
   else pitch - Vocab.pitch_low + 1
 ;;
 
@@ -116,28 +131,29 @@ module Params = struct
   ;;
 
   let init ?(norm_scale = 0.1) config ~seed =
-    let state = ref (Prng.create_folded ~seed) in
-    let draw f =
-      let next, value = Prng.run f !state in
-      state := next;
-      value
+    (* the He normal of the trainer, one draw for each kernel: sqrt (2 / fan_in) over the
+       reach and the input channels. [Prng.all] runs left to right, thus the stream is the
+       layer order and no state travels by hand. *)
+    let draws =
+      List.map (channels config) ~f:(fun (inputs, outputs) ->
+        Prng.normals
+          ~count:(kernel * kernel * inputs * outputs)
+          ~scale:(Float.sqrt (2.0 /. Float.of_int (kernel * kernel * inputs))))
     in
-    let layer (inputs, outputs) =
-      (* the He normal of the trainer: sqrt (2 / fan_in) over the reach and the input
-         channels; the norm scale opens at the trainer's tenth unless a gate asks for the
-         trained regime, and the population opens at the prior *)
-      let deviation = Float.sqrt (2.0 /. Float.of_int (kernel * kernel * inputs)) in
-      let weights =
-        draw (Prng.normals ~count:(kernel * kernel * inputs * outputs) ~scale:deviation)
-      in
-      { kernel = Nx.create Nx.float32 [| kernel; kernel; inputs; outputs |] weights
+    let (_ : Prng.state), weights =
+      Prng.run (Prng.all draws) (Prng.create_folded ~seed)
+    in
+    (* the norm scale opens at the trainer's tenth unless a gate asks for the trained
+       regime, and the population opens at the prior *)
+    let layer (inputs, outputs) drawn =
+      { kernel = Nx.create Nx.float32 [| kernel; kernel; inputs; outputs |] drawn
       ; scale = Nx.full Nx.float32 [| outputs |] norm_scale
       ; shift = Nx.full Nx.float32 [| outputs |] 0.0
       ; mean = Nx.full Nx.float32 [| outputs |] 0.0
       ; variance = Nx.full Nx.float32 [| outputs |] 1.0
       }
     in
-    Array.of_list (List.map (channels config) ~f:layer)
+    Array.of_list (List.map2_exn (channels config) weights ~f:layer)
   ;;
 
   let to_list params =
@@ -302,11 +318,11 @@ let anneal_threshold ~step ~walk =
       low
       (high -. ((high -. low) *. Float.of_int step /. (0.7 *. Float.of_int walk)))
   in
-  Float.round_down (alpha *. grid)
+  Int.of_float (Float.round_down (alpha *. grid))
 ;;
 
 (* a threshold compare on the 24-bit grid: exact, because [u * grid] is an integer *)
-let under ~threshold u = Float.(u *. grid < threshold)
+let under ~threshold u = Float.(u *. grid < of_int threshold)
 
 (* one uniform for each cell in the cell order, folded into [f] *)
 let over_cells state ~steps ~f =
@@ -387,11 +403,7 @@ let gate_canvases chorales ~steps =
 
 (* a Bernoulli half on the grid: hidden exactly when u * 2^24 < 2^23 *)
 let gate_mask ~index ~steps =
-  snd
-    (hidden_cells
-       (Prng.create ~seed:(index + 1))
-       ~steps
-       ~threshold:(Float.of_int (1 lsl 23)))
+  snd (hidden_cells (Prng.create ~seed:(index + 1)) ~steps ~threshold:(1 lsl 23))
 ;;
 
 module For_test = struct
@@ -504,19 +516,17 @@ let%expect_test "the opening puts every voice inside the register of its seat" =
 let%expect_test "the anneal thresholds: the paper's schedule on the 24-bit grid" =
   let walk = 512 in
   let at step = anneal_threshold ~step ~walk in
-  printf "step 0: %.0f = floor of 0.9 * 2^24\n" (at 0);
-  printf "the floor: %.0f = floor of 0.1 * 2^24\n" (at (walk - 1));
+  printf "step 0: %d = floor of 0.9 * 2^24\n" (at 0);
+  printf "the floor: %d = floor of 0.1 * 2^24\n" (at (walk - 1));
   let thresholds = Array.init walk ~f:(fun step -> at step) in
   let falling =
     Array.for_alli thresholds ~f:(fun step value ->
-      let before = if step = 0 then value else thresholds.(step - 1) in
-      Float.(value <= before))
+      value <= if step = 0 then value else thresholds.(step - 1))
   in
   printf "the schedule only falls: %b\n" falling;
   (* it reaches the floor after the span share of the walk, not at its end *)
   let settles = Int.of_float (Float.round_up (0.7 *. Float.of_int walk)) in
-  let floor_value = at (walk - 1) in
-  printf "settled at step %d: %b\n" settles Float.(at settles = floor_value);
+  printf "settled at step %d: %b\n" settles (at settles = at (walk - 1));
   [%expect
     {|
     step 0: 15099494 = floor of 0.9 * 2^24
@@ -547,7 +557,7 @@ let%expect_test "the chorale turns around: the file gives the soprano first" =
        ignore
          (classes_of_chorale
             { Jsb.cells = [| [ 20; -1; -1; -1 ] |]; legal_shifts = [ 0 ] })));
-  [%expect {| the pitch 20 is outside the 48-class vocabulary |}]
+  [%expect {| the pitch 20 is outside the corpus's 36 to 81 |}]
 ;;
 
 let%expect_test "the canvases and the masks of Gate A are deterministic" =

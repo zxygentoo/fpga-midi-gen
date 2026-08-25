@@ -17,8 +17,10 @@
       at 184 on half-masked corpus canvases and at 313 on the seeded openings the walk
       really visits. Q6 holds 512 with a 1.6 margin. The input planes enter exact — a cell
       is 0 or one.
-    - The accumulator is int32 and cannot overflow: at most 216 products of int8 by int16
-      stand under 2^30, thus the sum is exact and the order of the taps cannot matter.
+    - The accumulator is int32 and cannot overflow below 58 input channels — 9 C products
+      of int8 by int16 stand under 2^31 — thus the sum is exact and the order of the taps
+      cannot matter. [Model.check_shape] refuses a wider layer, thus the bound is a rule
+      and not a comment; the elected shapes stand far under it.
     - The norm folds at quantization: [gain = scale * rsqrt (variance + eps)] becomes a
       per-channel multiplier that also retires the weight exponent, and
       [bias = shift - mean * gain] becomes Q[activation_q] in int16. Then ReLU; the head
@@ -46,7 +48,8 @@ module Model : sig
   (** One layer as the machine holds it. The five float tensors become three facts: the
       kernel, and the two per-channel constant rows the norm folded into. The gains are
       [Mgen_nn.Quantized.Constants.scale] values whose shift retires the weight exponent,
-      thus the accumulator goes to Q12 in one multiply; the biases are Q12 int16. *)
+      thus the accumulator goes to the activation format in one multiply; the biases are
+      int16 in the same format. *)
   type layer =
     { kernel : quantized
     ; gain : Mgen_nn.Quantized.Constants.scale array
@@ -64,10 +67,11 @@ module Model : sig
     }
 
   (** [check_shape t] raises when the model breaks a rule its consumers assume: the layers
-      chain input to output, the stem reads the planes and the head states the voices,
-      every kernel holds its count, and every constant row holds one entry for each output
-      channel. The record is open, thus a model no constructor here made can break a rule;
-      the elaboration of the next round calls this where a bad shape must fail loudly. *)
+      chain input to output, no layer reads more channels than the int32 accumulator is
+      exact for, the stem reads the planes and the head states the voices, every kernel
+      holds its count, and every constant row holds one entry for each output channel. The
+      record is open, thus a model no constructor here made can break a rule; the
+      elaboration of the next round calls this where a bad shape must fail loudly. *)
   val check_shape : t -> unit
 
   (** [of_params ?temperature params] quantizes the float model: the kernels under the
@@ -107,8 +111,14 @@ end
     says which format is wrong, thus it is counted and never assumed away. *)
 module Clamps : sig
   type t =
-    { activations : int (** the Q12 int16 writes that rode the clamp *)
+    { activations : int (** the activation writes that rode the clamp *)
     ; activations_seen : int
+    ; peak : int
+    (** THE HOTTEST WRITE OF THE WALK, in activation units and BEFORE the clamp: the
+        number the format election stands on. The Q6 election read peaks of 184 and 313
+        with a throwaway probe; this counter is what makes that measurement repeatable
+        when the checkpoint changes, thus the format question never again waits on a probe
+        that no longer exists. *)
     }
 
   (** [share hit seen] is the share, and 0 when nothing was seen *)
@@ -168,7 +178,11 @@ module Drift : sig
     ; same_peak : int (** the cells where both models elect the same class *)
     ; same_draw : int (** the cells where both models pick the same class *)
     ; mean_cosine : float
-    ; activations_clamped : float (** the share of Q12 writes that rode the clamp *)
+    ; activations_clamped : float
+    (** the share of activation writes that rode the clamp *)
+    ; activation_peak : float
+    (** the hottest write of the walk in real units — [Clamps.peak] over the format's one.
+        The format holds while it stands under the int16 ceiling, 512.0 at Q6. *)
     }
 
   (** [walk params ~steps ~walk ~seed] draws the quantized walk and scores the float model

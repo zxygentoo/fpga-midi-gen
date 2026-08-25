@@ -49,8 +49,10 @@ val seat_ranges : (int * int) array
 (** [classes_of_chorale chorale] is the canvas of one piece of [Jsb]: [steps] rows of
     [voices] class indices, seat 0 the bass — the file gives the soprano first, thus the
     step turns around, as every reader of the corpus turns it. A rest is the silence
-    class. A pitch outside the vocabulary raises [Invalid_argument], because no table
-    holds a row for it. *)
+    class. A pitch outside the corpus's 36 to 81 raises [Invalid_argument]: the spare
+    class of the vocabulary is the draw's to state and never the corpus's, thus a file
+    that names its pitch is corrupt, and the twin reader of [jax/data.py] refuses the same
+    range. *)
 val classes_of_chorale : Jsb.chorale -> int array array
 
 (** The shape of the model: the two numbers that size every tensor. The reference takes
@@ -135,7 +137,7 @@ val masked_nll : Params.t -> classes:int array array -> hidden:bool array array 
     probability [alpha = max (0.1, 0.9 - 0.8 step / (0.7 walk))]. A cell hides exactly
     when its uniform times 2^24 falls under this integer. The float sides and the twin
     compare against the same number, and it is the entry the circuit's table will hold. *)
-val anneal_threshold : step:int -> walk:int -> float
+val anneal_threshold : step:int -> walk:int -> int
 
 (** [opening_canvas state ~steps] is the seeded opening of the walk: one uniform for each
     cell in the cell order, the class [low + floor (u * width)] inside the register of the
@@ -149,7 +151,7 @@ val opening_canvas : Prng.state -> steps:int -> Prng.state * int array array
 val hidden_cells
   :  Prng.state
   -> steps:int
-  -> threshold:float
+  -> threshold:int
   -> Prng.state * bool array array
 
 (** [gibbs params ~steps ~walk ~temperature ~seed] draws one canvas: [steps] steps of four

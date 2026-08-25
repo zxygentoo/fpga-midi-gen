@@ -14,8 +14,8 @@
    THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE. [Params.init ~norm_scale:1.0] holds
    the trunk at the O(1) activations a trained norm holds; at the trainer's opening tenth
    an untrained trunk decays tenfold at every layer, and by the third the report reads the
-   resolution floor of Q12 and not the arithmetic — measured while this gate was built,
-   and the reason the flag exists.
+   resolution floor of the activation format and not the arithmetic — measured while this
+   gate was built, and the reason the flag exists.
 
    Two parts, the rule of the sibling gates. The fixed sweep pins measured numbers in the
    expected file, not thresholds: a diff says the integers moved — judge whether it is a
@@ -55,6 +55,7 @@ let report weight_seed =
         ; same_draw
         ; mean_cosine
         ; activations_clamped = (_ : float)
+        ; activation_peak = (_ : float)
         }
       =
       Quantized.Drift.walk params ~steps ~walk:16 ~seed:walk_seed
@@ -98,29 +99,31 @@ let long_walk () =
         ; same_draw = (_ : int)
         ; mean_cosine
         ; activations_clamped
+        ; activation_peak
         }
       =
       Quantized.Drift.walk params ~steps ~walk:passes ~seed:42
     in
     printf
-      "%4d passes: top-1 %.3f  cosine %.4f  clamped %.4f\n"
+      "%4d passes: top-1 %.3f  cosine %.4f  clamped %.4f  peak %.2f\n"
       passes
       (Float.of_int same_peak /. Float.of_int cells)
       mean_cosine
-      activations_clamped)
+      activations_clamped
+      activation_peak)
 ;;
 
 (* The floors, calibrated on this model's own first measured minima over the CLEAN trials,
    the rule the sibling gates were set by: a fail is a break of the scheme and not a
    re-draw of the set, and the counterexample prints its seed pair.
 
-   A TRIAL THAT CLAMPS IS THE FORMAT'S ANSWER AND NOT THE SCHEME'S FAULT. A drawn trunk at
-   width 8 can double its variance at every residual pair, and past a magnitude of 8 the
-   Q12 write rides the clamp: measured at one drawn pair, 5.5 percent of writes clamped
-   and the cosine fell to 0.87 — the format met a model this era does not run. Such a
-   trial is counted and released from the floors; a trial that does not clamp has no
-   excuse, thus the floors still hold the arithmetic. The format's answer on the TRAINED
-   model is the drift tool's, with the clamp share beside it. *)
+   A TRIAL THAT CLAMPS IS THE FORMAT'S ANSWER AND NOT THE SCHEME'S FAULT. A drawn trunk
+   can outgrow any fixed format, thus a trial whose clamps fired is counted and released
+   from the floors, and a trial that does not clamp has no excuse — the floors still hold
+   the arithmetic. At Q6 no drawn trial of this sweep clamps; the release guarded three at
+   the retired Q12, where one pair clamped 5.5 percent of its writes and read a cosine of
+   0.87. The format's answer on the TRAINED model is the drift tool's, with the clamp
+   share and the peak beside it. *)
 let top1_floor = 0.80
 let same_draw_floor = 0.70
 let cosine_floor = 0.985
@@ -137,6 +140,7 @@ let check_floors () =
         ; same_draw
         ; mean_cosine
         ; activations_clamped
+        ; activation_peak = (_ : float)
         }
       =
       Quantized.Drift.walk (drawn weight_seed) ~steps ~walk:8 ~seed:walk_seed

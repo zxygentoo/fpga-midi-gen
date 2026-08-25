@@ -100,6 +100,12 @@ module Model = struct
     of_params ?temperature (Diffusion.Params.load config ~path)
   ;;
 
+  (* The int32 accumulator of the machine is exact below this width: 9 C products of int8
+     by int16 reach 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more
+     can pass it. The elected shapes stand far under; the rule stands so the prose cannot
+     rot. *)
+  let widest_inputs = 57
+
   let check_shape { layers; temper = (_ : Nn.Constants.scale) } =
     let count = Array.length layers in
     if count < 3 then invalid_argf "%d layers is no canvas model" count ();
@@ -130,6 +136,14 @@ module Model = struct
           (Array.length kernel.q)
           (9 * inputs * outputs)
           ();
+      if inputs > widest_inputs
+      then
+        invalid_argf
+          "layer %d reads %d channels and the int32 accumulator holds %d"
+          at
+          inputs
+          widest_inputs
+          ();
       if Array.length gain <> outputs || Array.length bias <> outputs
       then invalid_argf "the constants of layer %d do not cover its channels" at ())
   ;;
@@ -157,22 +171,28 @@ module Clamps = struct
   type t =
     { activations : int
     ; activations_seen : int
+    ; peak : int
     }
 
   let share hit seen = if seen = 0 then 0.0 else Float.of_int hit /. Float.of_int seen
 end
 
-(* the running counters of a walk; a record of two mutable ints, folded into [Clamps.t]
-   when a caller reads them *)
+(* the running counters of a walk, folded into [Clamps.t] when a caller reads them *)
 type counters =
   { mutable hits : int
   ; mutable seen : int
+  ; mutable peak : int
   }
 
-(* every activation write goes through here: the clamp is counted, never assumed away *)
+(* Every activation write goes through here: the clamp is counted and the peak is kept,
+   never assumed away. The peak reads BEFORE the clamp, thus it answers the format
+   question directly — the Q6 election was made on exactly this number, measured then with
+   a throwaway probe, and the counter is what makes it re-measurable when the checkpoint
+   changes. *)
 let write counters out index value =
   if Nn.clamps16 value then counters.hits <- counters.hits + 1;
   counters.seen <- counters.seen + 1;
+  counters.peak <- max counters.peak (abs value);
   out.(index) <- Nn.clamp16 value
 ;;
 
@@ -197,9 +217,10 @@ let plane_activations canvas hidden ~steps =
 (* One layer: the convolution into the int32 accumulator, the folded norm, the optional
    ReLU, and the counted clamp of every write.
 
-   The accumulator is exact — at most 216 products of int8 by int16 stand under 2^30 —
-   thus the tap order cannot matter and the circuit may take its own. The gain multiply
-   rides the wide host int and the RTL will size its own product. *)
+   The accumulator is exact below [Model.widest_inputs] input channels — 9 C products of
+   int8 by int16 stand under 2^31, and [check_shape] refuses a wider layer — thus the tap
+   order cannot matter and the circuit may take its own. The gain multiply rides the wide
+   host int and the RTL will size its own product. *)
 let layer_forward counters (layer : Model.layer) ~steps ~relu x =
   let { Model.kernel = { q = weights; e = (_ : int) }; gain; bias; inputs; outputs } =
     layer
@@ -237,8 +258,8 @@ let layer_forward counters (layer : Model.layer) ~steps ~relu x =
 ;;
 
 (* the trunk: the stem, the residual pairs, the head — the structure of the float model,
-   join for join. The skip adds two Q12 values and the sum is written through the same
-   counted clamp. *)
+   join for join. The skip adds two activation-format values and the sum is written
+   through the same counted clamp. *)
 let forward counters (model : Model.t) canvas hidden ~steps =
   let layers = model.layers in
   let last = Array.length layers - 1 in
@@ -262,7 +283,7 @@ let forward counters (model : Model.t) canvas hidden ~steps =
   layer_forward counters layers.(last) ~steps ~relu:false trunk
 ;;
 
-(* the Q12 logits of one cell, over the rows *)
+(* the logits of one cell over the rows, in the activation format *)
 let column said ~step ~voice =
   Array.init rows ~f:(fun row -> said.((((step * rows) + row) * voices) + voice))
 ;;
@@ -317,7 +338,7 @@ module Engine = struct
     ; pass = 0
     ; canvas
     ; prng
-    ; clamps = { Clamps.activations = 0; activations_seen = 0 }
+    ; clamps = { Clamps.activations = 0; activations_seen = 0; peak = 0 }
     }
   ;;
 
@@ -328,8 +349,10 @@ module Engine = struct
     if t.pass >= t.walk then invalid_arg "the walk is finished";
     let threshold = Diffusion.anneal_threshold ~step:t.pass ~walk:t.walk in
     let prng, hidden = Diffusion.hidden_cells t.prng ~steps:t.steps ~threshold in
-    let before = Array.map t.canvas ~f:Array.copy in
-    let counters = { hits = 0; seen = 0 } in
+    (* the engine never writes a canvas in place, thus the record shares it and one copy
+       serves the successor *)
+    let before = t.canvas in
+    let counters = { hits = 0; seen = 0; peak = 0 } in
     let said = forward counters t.model before hidden ~steps:t.steps in
     let canvas = Array.map before ~f:Array.copy in
     let prng = ref prng in
@@ -352,6 +375,7 @@ module Engine = struct
       ; clamps =
           { Clamps.activations = t.clamps.activations + counters.hits
           ; activations_seen = t.clamps.activations_seen + counters.seen
+          ; peak = max t.clamps.peak counters.peak
           }
       }
     , { before; hidden; draws = List.rev !draws } )
@@ -368,6 +392,7 @@ module Drift = struct
     ; same_draw : int
     ; mean_cosine : float
     ; activations_clamped : float
+    ; activation_peak : float
     }
 
   let walk params ~steps ~walk ~seed =
@@ -404,6 +429,7 @@ module Drift = struct
     ; same_draw = !same_draw
     ; mean_cosine = (if !cells = 0 then 1.0 else !cosines /. Float.of_int !cells)
     ; activations_clamped = Clamps.share clamps.activations clamps.activations_seen
+    ; activation_peak = Float.of_int clamps.peak /. Float.of_int activation_one
     }
   ;;
 end
@@ -477,21 +503,30 @@ let%expect_test "the engine walk is the seed and nothing else" =
 let%expect_test "the drift of a drawn model: the twin tracks the float reference" =
   (* an init model at norm scale 1.0, thus no checkpoint enters and the drawn trunk holds
      the O(1) activations a trained norm holds — at the trainer's opening tenth a drawn
-     trunk decays tenfold at every layer and the report reads the resolution floor of Q12
-     instead of the arithmetic. The era's numbers on the elected checkpoint are the drift
-     tool's; these pin the mechanics. *)
+     trunk decays tenfold at every layer and the report reads the resolution floor of the
+     activation format instead of the arithmetic. The era's numbers on the elected
+     checkpoint are the drift tool's; these pin the mechanics. *)
   let params = Diffusion.Params.init ~norm_scale:1.0 Model.For_test.config ~seed:3 in
-  let { Drift.passes; cells; same_peak; same_draw; mean_cosine; activations_clamped } =
+  let { Drift.passes
+      ; cells
+      ; same_peak
+      ; same_draw
+      ; mean_cosine
+      ; activations_clamped
+      ; activation_peak
+      }
+    =
     Drift.walk params ~steps:16 ~walk:4 ~seed:7
   in
   let share count = Float.of_int count /. Float.of_int (max 1 cells) in
   printf "%d passes redrew %d cells\n" passes cells;
   printf
-    "top1 %.3f same_draw %.3f cosine %.4f clamped %.4f\n"
+    "top1 %.3f same_draw %.3f cosine %.4f clamped %.4f peak %.2f\n"
     (share same_peak)
     (share same_draw)
     mean_cosine
-    activations_clamped;
+    activations_clamped
+    activation_peak;
   (* MEASURED NUMBERS AND NOT THRESHOLDS, the rule of the drift gates: a diff here says
      the integers moved — judge whether it is a re-measurement or a bug. The larger sweep
      is [test/test_diffusion_drift.ml]; the era's numbers on the elected checkpoint are
@@ -499,6 +534,6 @@ let%expect_test "the drift of a drawn model: the twin tracks the float reference
   [%expect
     {|
     4 passes redrew 120 cells
-    top1 0.967 same_draw 0.958 cosine 0.9980 clamped 0.0000
+    top1 0.967 same_draw 0.958 cosine 0.9980 clamped 0.0000 peak 3.95
     |}]
 ;;

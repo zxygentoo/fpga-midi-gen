@@ -76,6 +76,7 @@ let drift ~checkpoint ~steps ~walk ~seed =
       ; same_draw
       ; mean_cosine
       ; activations_clamped
+      ; activation_peak
       }
     =
     Quantized.Drift.walk params ~steps ~walk ~seed
@@ -87,7 +88,10 @@ let drift ~checkpoint ~steps ~walk ~seed =
     (share same_peak)
     mean_cosine
     (share same_draw);
-  printf "activations on the clamp: %.4f%%\n" (100.0 *. activations_clamped)
+  printf
+    "activations on the clamp: %.4f%%  the hottest write: %.1f of the format's 512.0\n"
+    (100.0 *. activations_clamped)
+    activation_peak
 ;;
 
 let drift_command =
