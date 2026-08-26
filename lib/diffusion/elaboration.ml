@@ -4,7 +4,7 @@
 
 open Core
 module Bits = Hardcaml.Bits
-module Nn = Mgen_nn.Quantized
+module Nn_quantized = Mgen_nn.Quantized
 
 type layer_role =
   | Stem
@@ -18,7 +18,7 @@ type layer =
   ; outputs : int
   ; groups : int
   ; weight_base : int
-  ; channel_base : int
+  ; constant_base : int
   }
 
 type t =
@@ -28,10 +28,10 @@ type t =
   ; walk : int
   ; store_channels : int
   ; layers : layer array
-  ; rom : Bits.t array
-  ; constants : Bits.t array
-  ; alpha : Bits.t array
-  ; temper : Nn.Constants.scale
+  ; weight_rom : Bits.t array
+  ; constant_rom : Bits.t array
+  ; alpha_rom : Bits.t array
+  ; temper : Nn_quantized.Constants.scale
   }
 
 (* the taps of one 3 by 3 kernel *)
@@ -120,14 +120,14 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
     let weight_bases =
       bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
-    let channel_bases = bases_of (Array.map twin ~f:(fun l -> l.outputs)) in
+    let constant_bases = bases_of (Array.map twin ~f:(fun l -> l.outputs)) in
     Array.mapi twin ~f:(fun at (l : Quantized.Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs
       ; outputs = l.outputs
       ; groups = groups_of l
       ; weight_base = weight_bases.(at)
-      ; channel_base = channel_bases.(at)
+      ; constant_base = constant_bases.(at)
       })
   in
   (* The weight image in the DWELL order. The twin gives the checkpoint order — for each
@@ -159,8 +159,10 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
         List.concat_map (List.range 0 l.inputs) ~f:(fun cin ->
           List.init taps ~f:(fun tap -> word ~cin ~tap ~group)))
   in
-  let rom = Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words)) in
-  let constant_word (gain : Nn.Constants.scale) bias =
+  let weight_rom =
+    Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words))
+  in
+  let constant_word (gain : Nn_quantized.Constants.scale) bias =
     if gain.q < 0 || gain.q >= 1 lsl shift_bits
     then invalid_argf "a gain shift of %d does not fit %d bits" gain.q shift_bits ();
     Bits.concat_lsb
@@ -169,11 +171,11 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
       ; Bits.of_signed_int ~width:gain_bits gain.q_value
       ]
   in
-  let constants =
+  let constant_rom =
     Array.concat_map twin ~f:(fun (l : Quantized.Model.layer) ->
       Array.mapi l.gain ~f:(fun channel gain -> constant_word gain l.bias.(channel)))
   in
-  let alpha =
+  let alpha_rom =
     Array.init walk ~f:(fun pass ->
       Bits.of_unsigned_int ~width:alpha_bits (Diffusion.anneal_threshold ~step:pass ~walk))
   in
@@ -191,9 +193,9 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; walk
   ; store_channels
   ; layers
-  ; rom
-  ; constants
-  ; alpha
+  ; weight_rom
+  ; constant_rom
+  ; alpha_rom
   ; temper = model.temper
   }
 ;;
@@ -217,7 +219,7 @@ let to_string t =
       layer.groups
       (dwell layer)
       layer.weight_base
-      layer.channel_base
+      layer.constant_base
       (layer_cycles t layer)
   in
   let head =
@@ -243,12 +245,12 @@ let to_string t =
   in
   let foot =
     [ sprintf
-        "rom %d words of %d bits; constants %d words of %d bits; alpha %d of %d bits"
-        (Array.length t.rom)
+        "the weight ROM %d words of %d bits, the constants %d of %d, the anneal %d of %d"
+        (Array.length t.weight_rom)
         (t.lanes * 8)
-        (Array.length t.constants)
+        (Array.length t.constant_rom)
         constant_bits
-        (Array.length t.alpha)
+        (Array.length t.alpha_rom)
         alpha_bits
     ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
     ; sprintf "a store is %d columns of %d bits" (t.steps * t.store_channels) (t.rows * 16)
@@ -290,7 +292,7 @@ let%expect_test "the elaboration of the elected rung" =
      13  X -> Y         16   16   4   144    7200    208      73776
      14  Y + X -> X     16   16   4   144    7776    224      73776
      15  X -> logits    16    4   1   144    8352    240      18480
-    rom 8496 words of 32 bits; constants 244 words of 38 bits; alpha 512 of 24 bits
+    the weight ROM 8496 words of 32 bits, the constants 244 of 38, the anneal 512 of 24
     the array is 48 by 4, thus 192 lanes
     a store is 2048 columns of 768 bits
     forward 1088256 cycles, the cell walk 1536, a pass 1089792 less the draw
@@ -324,7 +326,7 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
     for group = 0 to layer.groups - 1 do
       for cin = 0 to layer.inputs - 1 do
         for tap = 0 to taps - 1 do
-          let word = t.rom.(!address) in
+          let word = t.weight_rom.(!address) in
           Int.incr address;
           for lane = 0 to t.lanes - 1 do
             let byte = lane_byte word lane in
@@ -345,7 +347,7 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
   let counts = Array.concat_map seen ~f:Fn.id in
   printf
     "%d words, the counter ended at %d; %d layer bases out of step\n"
-    (Array.length t.rom)
+    (Array.length t.weight_rom)
     !address
     !out_of_step;
   printf
@@ -373,19 +375,19 @@ let%expect_test "a constant word carries the twin's gain, shift and bias" =
   Array.iteri t.layers ~f:(fun at layer ->
     let twin = model.layers.(at) in
     for channel = 0 to layer.outputs - 1 do
-      let word = t.constants.(layer.channel_base + channel) in
+      let word = t.constant_rom.(layer.constant_base + channel) in
       let bias = Bits.to_signed_int (field word ~low:0 ~width:bias_bits) in
       let shift = Bits.to_unsigned_int (field word ~low:bias_bits ~width:shift_bits) in
       let gain =
         Bits.to_signed_int (field word ~low:(bias_bits + shift_bits) ~width:gain_bits)
       in
-      let { Nn.Constants.q_value; q } = twin.gain.(channel) in
+      let { Nn_quantized.Constants.q_value; q } = twin.gain.(channel) in
       if bias <> twin.bias.(channel) || shift <> q || gain <> q_value
       then Int.incr disagree
     done);
   printf
     "%d constant words of %d bits, %d disagree with the twin\n"
-    (Array.length t.constants)
+    (Array.length t.constant_rom)
     constant_bits
     !disagree;
   [%expect {| 22 constant words of 38 bits, 0 disagree with the twin |}]

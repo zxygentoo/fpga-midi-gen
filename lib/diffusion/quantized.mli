@@ -67,6 +67,13 @@ module Model : sig
         carry it *)
     }
 
+  (** THE WIDEST LAYER THE INT32 ACCUMULATOR IS EXACT FOR: 9 C products of int8 by int16
+      reach under 2^31 at this many input channels and one channel more can pass it.
+      [check_shape] refuses a wider layer, thus the bound is a rule and not a comment. The
+      circuit reads it here — its accumulator is sized on this promise, and the gate of
+      its array drives the promise to its edge. *)
+  val widest_inputs : int
+
   (** [check_shape t] raises when the model breaks a rule its consumers assume: the layers
       chain input to output, no layer reads more channels than the int32 accumulator is
       exact for, the stem reads the planes and the head states the voices, every kernel

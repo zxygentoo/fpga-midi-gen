@@ -3,7 +3,7 @@
    round will read rather than restate. *)
 
 open Core
-module Nn = Mgen_nn.Quantized
+module Nn_quantized = Mgen_nn.Quantized
 module Policy = Mgen_nn.Policy
 
 let rows = Diffusion.rows
@@ -27,7 +27,7 @@ module Model = struct
 
   type layer =
     { kernel : quantized
-    ; gain : Nn.Constants.scale array
+    ; gain : Nn_quantized.Constants.scale array
     ; bias : int array
     ; inputs : int
     ; outputs : int
@@ -35,20 +35,20 @@ module Model = struct
 
   type t =
     { layers : layer array
-    ; temper : Nn.Constants.scale
+    ; temper : Nn_quantized.Constants.scale
     }
 
   (* The 16-bit form of the exponent rule of the eras: the largest exponent that keeps the
      rounded gain in int16. The shift of the scale retires the weight exponent in the same
      move, thus the accumulator goes from Q(activation_q + e) to Q(activation_q) in one
      multiply. 30 caps the all-zero gain, as 14 caps the all-zero tensor in
-     [Nn.max_exponent]. *)
+     [Nn_quantized.max_exponent]. *)
   let gain_scale value ~weight_exponent =
     let magnitude = Float.abs value in
     let fits e = Float.iround_nearest_exn (Float.ldexp magnitude e) <= 32767 in
     let rec largest e = if fits e then e else largest (e - 1) in
     let e = if Float.(magnitude <= 0.0) then 30 else largest 30 in
-    { Nn.Constants.q_value = Float.iround_nearest_exn (Float.ldexp value e)
+    { Nn_quantized.Constants.q_value = Float.iround_nearest_exn (Float.ldexp value e)
     ; q = e + weight_exponent
     }
   ;;
@@ -59,7 +59,7 @@ module Model = struct
      what [Drift] measures. A bias outside the activation format clamps; a trained norm
      that puts one there is a format fault the drift report would shout about. *)
   let fold_layer kernel_t scale_t shift_t mean_t variance_t =
-    let kernel = Nn.quantize (Nx.to_array kernel_t) in
+    let kernel = Nn_quantized.quantize (Nx.to_array kernel_t) in
     let shape = Nx.shape kernel_t in
     let scale = Nx.to_array scale_t
     and shift = Nx.to_array shift_t
@@ -74,7 +74,7 @@ module Model = struct
           gain_scale (gain_of channel) ~weight_exponent:kernel.e)
     ; bias =
         Array.init (Array.length scale) ~f:(fun channel ->
-          Nn.clamp16
+          Nn_quantized.clamp16
             (Float.iround_nearest_exn
                ((shift.(channel) -. (mean.(channel) *. gain_of channel))
                 *. Float.of_int activation_one)))
@@ -93,7 +93,7 @@ module Model = struct
         | group -> invalid_argf "a layer holds 5 tensors, not %d" (List.length group) ())
       |> Array.of_list
     in
-    { layers; temper = fst (Nn.policy ~temperature ~min_p:0.0) }
+    { layers; temper = fst (Nn_quantized.policy ~temperature ~min_p:0.0) }
   ;;
 
   let of_checkpoint ?temperature config path =
@@ -106,7 +106,7 @@ module Model = struct
      rot. *)
   let widest_inputs = 57
 
-  let check_shape { layers; temper = (_ : Nn.Constants.scale) } =
+  let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
     let count = Array.length layers in
     if count < 3 then invalid_argf "%d layers is no canvas model" count ();
     if count % 2 <> 0 then invalid_argf "%d layers hold no whole residual pairs" count ();
@@ -148,11 +148,11 @@ module Model = struct
       then invalid_argf "the constants of layer %d do not cover its channels" at ())
   ;;
 
-  let rom_tensors { layers; temper = (_ : Nn.Constants.scale) } =
+  let rom_tensors { layers; temper = (_ : Nn_quantized.Constants.scale) } =
     Array.to_list (Array.map layers ~f:(fun { kernel; _ } -> kernel))
   ;;
 
-  let rom_bits model = Nn.rom_bits (rom_tensors model)
+  let rom_bits model = Nn_quantized.rom_bits (rom_tensors model)
 
   let rom_bases model =
     let sizes =
@@ -190,10 +190,10 @@ type counters =
    a throwaway probe, and the counter is what makes it re-measurable when the checkpoint
    changes. *)
 let write counters out index value =
-  if Nn.clamps16 value then counters.hits <- counters.hits + 1;
+  if Nn_quantized.clamps16 value then counters.hits <- counters.hits + 1;
   counters.seen <- counters.seen + 1;
   counters.peak <- max counters.peak (abs value);
-  out.(index) <- Nn.clamp16 value
+  out.(index) <- Nn_quantized.clamp16 value
 ;;
 
 (* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
@@ -248,7 +248,7 @@ let layer_forward counters (layer : Model.layer) ~steps ~relu x =
                 done)
             done
         done;
-        let value = Nn.Constants.apply gain.(channel) !acc + bias.(channel) in
+        let value = Nn_quantized.Constants.apply gain.(channel) !acc + bias.(channel) in
         let value = if relu then max value 0 else value in
         write counters out ((((step * rows) + row) * outputs) + channel) value
       done
@@ -294,9 +294,12 @@ let draw_cell (model : Model.t) raw prng =
          difference read at the wrong Q is silently wrong music: unshifted, every weight
          stands within a fraction of a nat of the peak and the draw is uniform — the fault
          the drift report caught at 3.4 percent same-draw. *)
-      Nn.exp2_q (Nn.Constants.apply model.temper ((logit - peak) lsl (12 - activation_q))))
+      Nn_quantized.exp2_q
+        (Nn_quantized.Constants.apply
+           model.temper
+           ((logit - peak) lsl (12 - activation_q))))
   in
-  Nn.draw ~weights prng
+  Nn_quantized.draw ~weights prng
 ;;
 
 module Engine = struct
@@ -415,9 +418,10 @@ module Drift = struct
       let raw = Diffusion.column float_said ~step ~voice in
       let float_class = Policy.draw_class raw ~temperature:1.0 ~min_p:0.0 ~uniform in
       { cells = tally.cells + 1
-      ; same_peak = (tally.same_peak + if Nn.Tensor.same_peak logits raw then 1 else 0)
+      ; same_peak =
+          (tally.same_peak + if Nn_quantized.Tensor.same_peak logits raw then 1 else 0)
       ; same_draw = (tally.same_draw + if float_class = drawn then 1 else 0)
-      ; cosine_sum = tally.cosine_sum +. Nn.Tensor.cosine logits raw
+      ; cosine_sum = tally.cosine_sum +. Nn_quantized.Tensor.cosine logits raw
       }
     in
     let take_pass w (_ : int) =

@@ -41,8 +41,8 @@ type layer =
   ; inputs : int (** the input channels; the kernel reads as [3; 3; inputs; outputs] *)
   ; outputs : int (** the output channels *)
   ; groups : int (** the output groups the dwell walks: [ceil (outputs / lanes)] *)
-  ; weight_base : int (** the first word of this layer in [rom] *)
-  ; channel_base : int (** the first word of this layer in [constants] *)
+  ; weight_base : int (** the first word of this layer in [weight_rom] *)
+  ; constant_base : int (** the first word of this layer in [constant_rom] *)
   }
 
 (** One model at one geometry: the four numbers of the geometry, the table, and the tables
@@ -51,21 +51,21 @@ type t =
   { steps : int (** T: the steps of one canvas *)
   ; rows : int (** P: the pitch rows of a column, and the classes of one cell *)
   ; lanes : int (** G: the output channels of one group, thus [rows * lanes] lanes *)
-  ; walk : int (** N: the passes of the walk, and the depth of [alpha] *)
+  ; walk : int (** N: the passes of the walk, and the depth of [alpha_rom] *)
   ; store_channels : int
   (** H: the channels that each of the two activation stores holds *)
   ; layers : layer array
-  ; rom : Hardcaml.Bits.t array
+  ; weight_rom : Hardcaml.Bits.t array
   (** the weight words, [lanes] bytes each and lane 0 in the low byte, in the dwell order:
       the group, then the input channel, then the tap. One column's dwell therefore walks
       a layer's whole range straight through, thus the circuit's ROM address is ONE
       COUNTER that reloads once for each column; any other order makes it a stride. *)
-  ; constants : Hardcaml.Bits.t array
+  ; constant_rom : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
       low [bias_bits], the shift in the [shift_bits] above it, and the value of the gain
       in the top [gain_bits]. The three stand at one address because the epilogue wants
       the three at one time, thus no two of them can fall out of step. *)
-  ; alpha : Hardcaml.Bits.t array
+  ; alpha_rom : Hardcaml.Bits.t array
   (** the anneal thresholds of [Diffusion.anneal_threshold], one for each pass, on the
       24-bit grid of the generator *)
   ; temper : Mgen_nn.Quantized.Constants.scale
@@ -75,7 +75,7 @@ type t =
 (** the taps of one 3 by 3 kernel: 9. A dwell counts them. *)
 val taps : int
 
-(** the bits of one [alpha] entry: 24, the grid of the generator *)
+(** the bits of one [alpha_rom] entry: 24, the grid of the generator *)
 val alpha_bits : int
 
 (** The fields of a constant word, low to high: the bias, the shift, the value of the
