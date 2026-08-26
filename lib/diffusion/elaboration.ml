@@ -131,9 +131,12 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
       })
   in
   (* The weight image in the DWELL order. The twin gives the checkpoint order — for each
-     layer the flat kernel [3; 3; inputs; outputs] — and the dwell walks the input
-     channel, then the tap, then the group. The permutation stands here, thus the twin
-     stays the authority on every value and the circuit reads one counter. *)
+     layer the flat kernel [3; 3; inputs; outputs] — and the dwell walks the group, then
+     the input channel, then the tap. The permutation stands here, thus the twin stays the
+     authority on every value and THE CIRCUIT READS ONE COUNTER: a group holds its taps
+     and channels back to back, and the groups stand in order, thus one column's dwell
+     walks a layer's whole range straight through and the address reloads once for each
+     column. Any other order makes the address a stride and not a count. *)
   let image = Quantized.Model.rom_bits model in
   let image_bases = Quantized.Model.rom_bases model in
   let layer_words at (l : Quantized.Model.layer) =
@@ -150,9 +153,11 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
     let word ~cin ~tap ~group =
       Bits.concat_lsb (List.init lanes ~f:(byte ~cin ~tap ~group))
     in
-    List.concat_map (List.range 0 l.inputs) ~f:(fun cin ->
-      List.concat_map (List.range 0 taps) ~f:(fun tap ->
-        List.init (groups_of l) ~f:(fun group -> word ~cin ~tap ~group)))
+    List.concat_map
+      (List.range 0 (groups_of l))
+      ~f:(fun group ->
+        List.concat_map (List.range 0 l.inputs) ~f:(fun cin ->
+          List.init taps ~f:(fun tap -> word ~cin ~tap ~group)))
   in
   let rom = Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words)) in
   let constant_word (gain : Nn.Constants.scale) bias =
@@ -292,31 +297,37 @@ let%expect_test "the elaboration of the elected rung" =
     |}]
 ;;
 
-let%expect_test "the ROM image is the twin's image in the dwell order" =
-  (* The packing must be a BIJECTION onto the twin's kernels: every weight stands at one
-     dwell address, no two weights share one, and a lane past the channels reads zero. H 6
-     at G 4 makes the ragged group the elected shapes never make, thus the padding is
-     under test and not only described. *)
+let%expect_test "the ROM walks as one counter in the dwell order" =
+  (* THE TEST WALKS THE ROM WITH A PLAIN COUNTER, as the circuit does, and demands at each
+     step the weight that step of the dwell needs. A packing that is a valid permutation
+     but a bad walk therefore fails here and not on the board: a bijection test alone
+     passes on any order, and the order is the whole point of the permutation.
+
+     It also holds the two other properties: every weight stands at one address and no two
+     share one, and a lane past the channels reads zero. H 6 at G 4 makes the ragged group
+     the elected shapes never make, thus the padding is under test and not only described. *)
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let kernels = Array.of_list (Quantized.Model.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
+  let lane_byte word lane =
+    Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
+  in
+  let address = ref 0 in
   let pad = ref 0 in
   let pad_not_zero = ref 0 in
   let disagree = ref 0 in
+  let out_of_step = ref 0 in
   Array.iteri t.layers ~f:(fun at layer ->
     let kernel = kernels.(at) in
-    let word ~cin ~tap ~group =
-      t.rom.(layer.weight_base + ((((cin * taps) + tap) * layer.groups) + group))
-    in
-    let lane_byte word lane =
-      Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
-    in
-    for cin = 0 to layer.inputs - 1 do
-      for tap = 0 to taps - 1 do
-        for group = 0 to layer.groups - 1 do
+    if !address <> layer.weight_base then Int.incr out_of_step;
+    for group = 0 to layer.groups - 1 do
+      for cin = 0 to layer.inputs - 1 do
+        for tap = 0 to taps - 1 do
+          let word = t.rom.(!address) in
+          Int.incr address;
           for lane = 0 to t.lanes - 1 do
-            let byte = lane_byte (word ~cin ~tap ~group) lane in
+            let byte = lane_byte word lane in
             let channel = (group * t.lanes) + lane in
             if channel >= layer.outputs
             then (
@@ -333,8 +344,12 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
     done);
   let counts = Array.concat_map seen ~f:Fn.id in
   printf
-    "%d words, %d weights, each seen %s\n"
+    "%d words, the counter ended at %d; %d layer bases out of step\n"
     (Array.length t.rom)
+    !address
+    !out_of_step;
+  printf
+    "%d weights, each seen %s\n"
     (Array.length counts)
     (if Array.for_all counts ~f:(fun n -> n = 1) then "one time" else "WRONG");
   printf
@@ -344,7 +359,8 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
     !disagree;
   [%expect
     {|
-    414 words, 1296 weights, each seen one time
+    414 words, the counter ended at 414; 0 layer bases out of step
+    1296 weights, each seen one time
     360 padded lanes, 0 of them not zero; 0 bytes disagree with the twin
     |}]
 ;;

@@ -283,9 +283,11 @@ Five layers, and the middle one is where the retired program stood:
   ROM, the address maps and the cycle cost. It states no signal, thus an
   expect test prints it and the cost model cannot rot.
 - **L2, the column array**: the three-column window, the pitch shifts, the
-  two broadcast trees, and the P by G lanes.
-- **L3, the epilogue**: the drain chain, the folded norm, the ReLU, the
-  clamp, the residual add, and the column packing.
+  two broadcast trees, the P by G lanes, AND THE DRAIN CHAIN. The chain is
+  the array's output port: without it that port is P by G by 32 bits, which
+  is neither wireable nor testable alone.
+- **L3, the epilogue**: the folded norm, the ReLU, the clamp, the residual
+  add, and the column packing.
 - **L4, the walk**: the outer FSM, the canvas, the draw, and the score port.
 
 ### The dwell
@@ -319,11 +321,21 @@ address pins of every primitive and rebuild the address cone inside each one.
 
 One linear memory of G-byte words, one read each cycle, and the address is one
 counter. **The image is packed in the DWELL order and not the checkpoint
-order.** The twin stays the authority on every value; the permutation belongs
-to the elaboration, and it buys an address that only counts. Where G does not
-divide Cout, the elaboration pads each `(tap, cin)` row to a whole word with
-zeros: the padded lanes multiply by zero and the drain does not read them.
-Each layer has its base.
+order: the group, then the input channel, then the tap.** The twin stays the
+authority on every value; the permutation belongs to the elaboration, and it
+buys an address that only counts — one column's dwell walks a layer's whole
+range straight through, thus the address reloads one time for each column.
+
+**ANY OTHER ORDER MAKES THE ADDRESS A STRIDE AND NOT A COUNT.** With the group
+innermost the address steps by the group count at each tap cycle, which is a
+valid permutation of the same weights and a worse walk. The elaboration's gate
+therefore walks the image with a plain counter and demands the weight that
+step of the dwell needs, because a bijection test alone passes on either
+order.
+
+Where G does not divide Cout, the elaboration pads each `(cin, tap)` row of
+Cout channels to a whole number of words with zeros: the padded lanes multiply
+by zero and the drain does not read them. Each layer has its base.
 
 ### The drain
 

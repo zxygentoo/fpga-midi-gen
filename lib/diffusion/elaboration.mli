@@ -57,7 +57,9 @@ type t =
   ; layers : layer array
   ; rom : Hardcaml.Bits.t array
   (** the weight words, [lanes] bytes each and lane 0 in the low byte, in the dwell order:
-      the input channel, then the tap, then the group *)
+      the group, then the input channel, then the tap. One column's dwell therefore walks
+      a layer's whole range straight through, thus the circuit's ROM address is ONE
+      COUNTER that reloads once for each column; any other order makes it a stride. *)
   ; constants : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
       low [bias_bits], the shift in the [shift_bits] above it, and the value of the gain
