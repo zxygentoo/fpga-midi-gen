@@ -1,0 +1,963 @@
+(* The walk — see source.mli for the contract and docs/diffusion_rtl.md, "The walk" and
+   "The seam to the sequencer", for the design. What stands here is the WHY of each rule.
+
+   THE RISK OF THIS UNIT IS ORDER AND NOT TIMING. What it adds of its own is serial
+   machinery at 2.7 percent of a pass, which the walk bench below measures: three cycles
+   for each uniform, one cycle for each standing cell, and one draw for each hidden one.
+   Nothing here is near the critical path. What is near the whole piece is the CONSUMPTION
+   ORDER — one generator, one order, and a walk that takes one uniform out of place draws
+   another canvas with no local symptom.
+
+   TWO FRAMES, TWO CYCLES APART, AS THE ENGINE HAS. The LEAD frame of a cell walk steps
+   the generator; the NOW frame — the lead through two registers — is where the cell is
+   written, because the third byte of a uniform lands one cycle behind its step and the
+   shift register states the whole 24 one cycle behind that. The step rides the LEAD
+   frame, thus the two cycles of tail write without drawing and the generator moves
+   exactly three times for each cell. *)
+
+open Core
+open Hardcaml
+open Signal
+module I = Source_intf.I
+module O = Source_intf.O
+
+(* the activation format of the twin: what a logit column carries in each row *)
+let activation_bits = 16
+
+(* one uniform is three bytes of the generator, high byte first *)
+let uniform_bits = 24
+let byte_bits = 8
+
+(* the ticks of one cell of a cell walk: three steps of the generator *)
+let cell_ticks = 3
+
+(* The service of one hidden cell, before the draw: three steps, the cycle their last byte
+   lands, and the cycle the whole uniform stands and starts the draw. The draw reads
+   [uniform] after its total and states no cycle for it, thus the walk hands over a value
+   that has already stopped moving rather than one that stops moving behind it. *)
+let uniform_ticks = 5
+
+module State = struct
+  type t =
+    | Idle (* the rest, and the PLAY phase: the score face answers [step] *)
+    | Open (* the opening: one class for each cell *)
+    | Mask (* the mask of one pass: one bit for each cell *)
+    | Serve (* the forward runs; the walk rides [step_ready] *)
+    | Seat (* the level stands: read the mask bit of one seat *)
+    | Uniform (* the three steps of a redraw's uniform *)
+    | Drawing (* the draw runs; the cycle it ends writes the class *)
+    | Ack (* the offered step is taken *)
+  [@@deriving compare ~localize, enumerate, sexp_of]
+end
+
+let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
+  let module Engine =
+    Forward.Make (struct
+      let e = e
+    end)
+  in
+  let module Cells =
+    Canvas.Make (struct
+      let steps = e.steps
+      let rows = e.rows
+    end)
+  in
+  let module Drawer =
+    Draw.Make (struct
+      let classes = e.rows
+    end)
+  in
+  let steps = e.steps in
+  let rows = e.rows in
+  let voices = Frame.voices in
+  (* THE CANVAS MUST HOLD WHAT THE OPENING DRAWS. A probe geometry may narrow P — the
+     elaboration takes [rows] so that the twin can follow later — and the registers of the
+     seats are the corpus's, thus a narrow P states a class no cell can hold. It is a
+     refusal and not a clamp: a clamped opening is another walk. *)
+  if Array.length e.openings <> voices
+  then
+    invalid_argf
+      "the elaboration opens %d seats and a step holds %d"
+      (Array.length e.openings)
+      voices
+      ();
+  Array.iteri e.openings ~f:(fun seat { Diffusion.low; width } ->
+    if low + width > rows
+    then
+      invalid_argf
+        "seat %d opens inside the classes %d to %d and a canvas of %d rows cannot hold it"
+        seat
+        low
+        (low + width - 1)
+        rows
+        ());
+  let step_bits = address_bits_for steps in
+  let seat_bits = address_bits_for voices in
+  let class_bits = address_bits_for rows in
+  let pass_bits = address_bits_for e.walk in
+  let tick_bits = address_bits_for (uniform_ticks + 1) in
+  let frame_bits = Frame.code_bits * voices in
+  (* A COUNTER HOLDS ITS COUNT AND NOT ONLY ITS LAST INDEX: the opening multiplies by the
+     width of a register, thus the field holds [width] itself. *)
+  let width_bits =
+    address_bits_for
+      (1 + Array.fold e.openings ~init:1 ~f:(fun widest o -> max widest o.width))
+  in
+  let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
+  (* the datapath holds no clear: what is real is what the strobes mark *)
+  let dspec = Reg_spec.create ~clock:i.clock () in
+  let open Always in
+  let sm = State_machine.create (module State) spec in
+  (* The state carries its own name, and NOT the [state] the engine already answers to:
+     the two machines stand in one simulation, thus the walk bench would probe whichever
+     of them the name mangler reached first. *)
+  let _ = sm.current -- "walk_state" in
+  (* the LEAD frame of a cell walk: the cell whose three bytes are being drawn *)
+  let lead_step = Variable.reg spec ~width:step_bits in
+  let lead_seat = Variable.reg spec ~width:seat_bits in
+  let lead_tick = Variable.reg spec ~width:(address_bits_for cell_ticks) in
+  let lead_running = Variable.reg spec ~width:1 in
+  let u = Variable.reg dspec ~width:uniform_bits in
+  let pass = Variable.reg spec ~width:pass_bits in
+  (* THE OFFER ORDER IS COUNTED AND NOT TAGGED, which is the seam's own rule: the head
+     offers the steps in order and each one exactly one time, thus the walk's count of its
+     own acknowledgements IS the step it names at the cell port. *)
+  let served = Variable.reg spec ~width:step_bits in
+  let seat = Variable.reg spec ~width:seat_bits in
+  let tick = Variable.reg spec ~width:tick_bits in
+  let play_step = Variable.reg spec ~width:step_bits in
+  (* the canvas is played one time: past the last step the frame is four zero bytes *)
+  let spent = Variable.reg spec ~width:1 in
+  let held = Variable.reg spec ~width:frame_bits in
+  let valid = Variable.reg spec ~width:1 in
+  let prng_step = Variable.wire ~default:gnd () in
+  let draw_start = Variable.wire ~default:gnd () in
+  let step_taken = Variable.wire ~default:gnd () in
+  let forward_start = Variable.wire ~default:gnd () in
+  let idle = sm.is Idle in
+  (* ---------------------------------------------------------------- *)
+  (* the generator, and the uniform it assembles *)
+  (* ---------------------------------------------------------------- *)
+  let prng =
+    Prng.Rtl.create
+      { Prng.Rtl.I.clock = i.clock
+      ; clear = i.clear
+      ; load = i.rewind &: idle
+      ; seed
+      ; step = prng_step.value
+      }
+  in
+  let prng_byte = sel_bottom prng.value ~width:byte_bits in
+  let _ = prng_step.value -- "prng_step" in
+  let _ = step_taken.value -- "step_taken" in
+  let _ = u.value -- "uniform" in
+  (* ONE CAPTURE RULE FOR EVERY PHASE: a step states its byte in the cycle that follows
+     it, thus the shift register takes a byte exactly when the cycle before stepped. *)
+  let take_byte = reg spec prng_step.value in
+  (* ---------------------------------------------------------------- *)
+  (* the two frames of a cell walk *)
+  (* ---------------------------------------------------------------- *)
+  let lead_word =
+    concat_lsb [ lead_running.value; lead_tick.value; lead_seat.value; lead_step.value ]
+  in
+  let now_word = reg spec (reg spec lead_word) in
+  let at low width = select now_word ~high:(low + width - 1) ~low in
+  let tick_width = width lead_tick.value in
+  let now_valid = bit now_word ~pos:0 in
+  let now_tick = at 1 tick_width in
+  let now_seat = at (1 + tick_width) seat_bits in
+  let now_step = at (1 + tick_width + seat_bits) step_bits in
+  let now_writes = now_valid &: (now_tick ==:. cell_ticks - 1) in
+  let phase_done =
+    now_writes &: (now_seat ==:. voices - 1) &: (now_step ==:. steps - 1)
+  in
+  (* ---------------------------------------------------------------- *)
+  (* the units the walk drives *)
+  (* ---------------------------------------------------------------- *)
+  let plane_column = wire (rows * activation_bits) in
+  let forward =
+    Engine.create
+      { Engine.I.clock = i.clock
+      ; clear = i.clear
+      ; start = forward_start.value
+      ; plane_column
+      ; logit_seat = seat.value
+      ; step_taken = step_taken.value
+      }
+  in
+  let _ = forward.step_ready -- "step_ready" in
+  let _ = forward.busy -- "forward_busy" in
+  let drawer =
+    Drawer.create
+      ~temper:e.temper
+      { Drawer.I.clock = i.clock
+      ; clear = i.clear
+      ; start = draw_start.value
+      ; logits = forward.logits
+      ; uniform = u.value
+      }
+  in
+  let _ = drawer.busy -- "draw_busy" in
+  (* THE ANNEAL ENTRY IS READ THROUGH ERA FOUR'S RULE — the address register before the
+     memory and the data register behind it — thus it stands two cycles after the pass
+     counter moves, and the first mask write of a phase cannot want it before its fourth
+     cycle. No attribute states a memory kind: one entry each pass is a read the tools may
+     hold in whatever they have spare. *)
+  let alpha =
+    let size = Array.length e.alpha_rom in
+    (multiport_memory
+       ~initialize_to:e.alpha_rom
+       size
+       ~write_ports:
+         [| { Write_port.write_clock = i.clock
+            ; write_address = zero (address_bits_for size)
+            ; write_enable = gnd
+            ; write_data = zero Elaboration.alpha_bits
+            }
+         |]
+       ~read_addresses:[| reg spec pass.value |]).(0)
+    |> reg spec
+  in
+  (* ---------------------------------------------------------------- *)
+  (* the opening: one multiply, no divide, and no DSP *)
+  (* ---------------------------------------------------------------- *)
+  let of_seat ~width f =
+    mux
+      now_seat
+      (List.map (Array.to_list e.openings) ~f:(fun o -> of_unsigned_int ~width (f o)))
+  in
+  let opened_class =
+    let low = of_seat ~width:class_bits (fun o -> o.Diffusion.low) in
+    let register = of_seat ~width:width_bits (fun o -> o.Diffusion.width) in
+    (* THE ARRAY OWNS THE DSPS, thus the rule is an attribute and not a hope — the same
+       one [Draw] states, for the same reason. *)
+    let product =
+      add_attribute (u.value *: register) (Rtl_attribute.Vivado.use_dsp false)
+    in
+    let index = select product ~high:(uniform_bits + width_bits - 1) ~low:uniform_bits in
+    low +: uresize index ~width:class_bits
+  in
+  (* ---------------------------------------------------------------- *)
+  (* THE CELL PORT: one address, three users, and no contention BY STATE. The names are
+     the per-phase gate's contract. *)
+  (* ---------------------------------------------------------------- *)
+  let walking = sm.is Open |: sm.is Mask in
+  let draw_lands = sm.is Drawing &: ~:(drawer.busy) in
+  let cell_step = mux2 walking now_step served.value -- "cell_step" in
+  let cell_seat = mux2 walking now_seat seat.value -- "cell_seat" in
+  let write_class = (sm.is Open &: now_writes |: draw_lands) -- "write_class" in
+  let cell_class = mux2 (sm.is Open) opened_class drawer.drawn -- "cell_class" in
+  let write_mask = (sm.is Mask &: now_writes) -- "write_mask" in
+  let cell_hidden = (u.value <: alpha) -- "cell_hidden" in
+  let canvas =
+    Cells.create
+      { Cells.I.clock = i.clock
+      ; cell_step
+      ; cell_seat
+      ; write_class
+      ; cell_class
+      ; write_mask
+      ; cell_hidden
+      ; plane_step = forward.plane_step
+      ; plane = forward.plane
+      ; score_step = play_step.value
+      }
+  in
+  Signal.assign plane_column canvas.plane_column;
+  let _ = canvas.hidden -- "hidden" in
+  (* ---------------------------------------------------------------- *)
+  (* the machine *)
+  (* ---------------------------------------------------------------- *)
+  let enter_walk =
+    [ lead_step <--. 0; lead_seat <--. 0; lead_tick <--. 0; lead_running <-- vdd ]
+  in
+  let next_seat =
+    [ if_
+        (seat.value ==:. voices - 1)
+        [ sm.set_next Ack ]
+        [ seat <-- seat.value +:. 1; sm.set_next Seat ]
+    ]
+  in
+  compile
+    [ (* the answer is a strobe of one cycle *)
+      valid <-- gnd
+    ; when_
+        take_byte
+        [ u <-- sel_bottom u.value ~width:(uniform_bits - byte_bits) @: prng_byte ]
+    ; (* THE LEAD FRAME. It runs in the cell walks alone, thus this block is inert
+         everywhere else and the generator cannot take a step no phase asked for. *)
+      when_
+        lead_running.value
+        [ prng_step <-- vdd
+        ; if_
+            (lead_tick.value ==:. cell_ticks - 1)
+            [ lead_tick <--. 0
+            ; if_
+                (lead_seat.value ==:. voices - 1)
+                [ lead_seat <--. 0
+                ; if_
+                    (lead_step.value ==:. steps - 1)
+                    [ lead_running <-- gnd ]
+                    [ lead_step <-- lead_step.value +:. 1 ]
+                ]
+                [ lead_seat <-- lead_seat.value +:. 1 ]
+            ]
+            [ lead_tick <-- lead_tick.value +:. 1 ]
+        ]
+    ; sm.switch
+        [ ( State.Idle
+          , [ if_
+                i.rewind
+                ([ pass <--. 0; play_step <--. 0; spent <-- gnd ]
+                 @ enter_walk
+                 @ [ sm.set_next Open ])
+                [ (* PLAY. The score face answers combinationally from the cells, thus one
+                     register holds the answer and the walk keeps no copy. *)
+                  when_
+                    i.step
+                    [ held <-- mux2 spent.value (zero frame_bits) canvas.frame
+                    ; valid <-- vdd
+                    ; if_
+                        (play_step.value ==:. steps - 1)
+                        [ spent <-- vdd ]
+                        [ play_step <-- play_step.value +:. 1 ]
+                    ]
+                ]
+            ] )
+        ; Open, [ when_ phase_done (enter_walk @ [ sm.set_next Mask ]) ]
+        ; ( Mask
+          , [ when_ phase_done [ forward_start <-- vdd; served <--. 0; sm.set_next Serve ]
+            ] )
+        ; ( Serve
+          , [ if_
+                forward.step_ready
+                [ seat <--. 0; sm.set_next Seat ]
+                [ (* the pass ends where the engine ends: [busy] covers the head's waits,
+                     thus the walk holds one wire and counts nothing *)
+                  when_
+                    ~:(forward.busy)
+                    [ if_
+                        (pass.value ==:. e.walk - 1)
+                        [ sm.set_next Idle ]
+                        ([ pass <-- pass.value +:. 1 ] @ enter_walk @ [ sm.set_next Mask ])
+                    ]
+                ]
+            ] )
+          (* a standing cell costs this one cycle and nothing more *)
+        ; Seat, [ if_ canvas.hidden [ tick <--. 0; sm.set_next Uniform ] next_seat ]
+        ; ( Uniform
+          , [ tick <-- tick.value +:. 1
+            ; when_ (tick.value <:. cell_ticks) [ prng_step <-- vdd ]
+            ; when_
+                (tick.value ==:. uniform_ticks - 1)
+                [ draw_start <-- vdd; sm.set_next Drawing ]
+            ] )
+          (* [drawn] is whole in the cycle [busy] falls, thus the class writes in it *)
+        ; Drawing, [ when_ ~:(drawer.busy) next_seat ]
+        ; Ack, [ step_taken <-- vdd; served <-- served.value +:. 1; sm.set_next Serve ]
+        ]
+    ];
+  { O.frame = held.value; valid = valid.value; idle }
+;;
+
+(* ==================================================================== *)
+(* The bench *)
+(* ==================================================================== *)
+
+(* INSTRUMENT 2, AND ITS NAMES ARE A CONTRACT. The gate probes the cell port by name —
+   [cell_step], [cell_seat], [write_class], [cell_class], [write_mask], [cell_hidden] —
+   thus a rename cannot silently blind it. It is the ONE port all three phases share, and
+   a walk whose masks stand one pass out of phase, or whose draws take a uniform out of
+   order, writes the wrong thing THERE and nowhere else: the finished canvas alone would
+   pass such a walk, which is era five's lesson for the third time. *)
+module Bench = struct
+  module Sim = Cyclesim.With_interface (I) (O)
+
+  (* one write of the cell port, as the probe sees it *)
+  type write =
+    { mask : bool (** the mask face, and not the class face *)
+    ; step : int
+    ; seat : int
+    ; value : int (** the class a face wrote, or the mask bit *)
+    }
+  [@@deriving equal ~localize, sexp_of]
+
+  (* The walk, driven. [rewind] runs one whole walk from the rest to the rest and clears
+     the write log behind it; [play] strobes one step and gives the frame it answers. *)
+  type t =
+    { rewind : unit -> unit
+    ; play : unit -> int
+    ; writes : unit -> write list
+    ; spent : State.t -> int (** the cycles the last walk stood in one state *)
+    ; cycles : unit -> int
+    ; entered : State.t -> int option (** the first cycle of the last walk in one state *)
+    ; waves : Hardcaml_waveterm.Waveform.t option
+    }
+
+  let harness ?(trace = false) ~e ~seed () =
+    let module Drawer =
+      Draw.Make (struct
+        let classes = e.Elaboration.rows
+      end)
+    in
+    (* THE TRACE IS THE NAMED SIGNALS AND NOT EVERY SIGNAL. A walk is thousands of cycles
+       over an array of [rows] by [lanes] lanes, thus a full trace would cost what the
+       machine could show and not what it computes. *)
+    let sim =
+      Sim.create
+        ~config:(Cyclesim.Config.trace `All_named)
+        (create ~e ~seed:(of_unsigned_int ~width:32 seed))
+    in
+    let waves, sim =
+      if trace
+      then (
+        let waves, sim = Cyclesim.Waveform.create sim in
+        Some waves, sim)
+      else None, sim
+    in
+    let inp = Cyclesim.inputs sim in
+    (* the traced nodes answer with the cycle that has just run, thus the ports are read
+       on the same edge *)
+    let out = Cyclesim.outputs ~clock_edge:Before sim in
+    let node name =
+      Option.value_exn (Cyclesim.lookup_node_by_name sim name) ~message:name
+    in
+    let cell_step = node "cell_step" in
+    let cell_seat = node "cell_seat" in
+    let write_class = node "write_class" in
+    let cell_class = node "cell_class" in
+    let write_mask = node "write_mask" in
+    let cell_hidden = node "cell_hidden" in
+    (* the state is a register and not a node, thus it is looked up as either *)
+    let state =
+      Option.value_exn
+        (Cyclesim.lookup_node_or_reg_by_name sim "walk_state")
+        ~message:"walk_state"
+    in
+    let index which =
+      fst (List.findi_exn State.all ~f:(fun (_ : int) s -> State.compare s which = 0))
+    in
+    let spent = Array.create ~len:(List.length State.all) 0 in
+    let entered = Array.create ~len:(List.length State.all) None in
+    let writes = ref [] in
+    let cycles = ref 0 in
+    (* THE STATE REGISTER READS ONE CYCLE AHEAD. A combinational node answers with the
+       cycle that has just run; a register answers with the value the edge has just put
+       into it, which is the state of the cycle to come. The bench therefore carries the
+       reading one cycle, and the writes it counts beside it stay in step — a bench that
+       did not would name every span in the wrong place and no gate would say so. *)
+    let standing = ref (index Idle) in
+    let cycle () =
+      Cyclesim.cycle sim;
+      let at = !standing in
+      standing := Cyclesim.Node.to_int state;
+      spent.(at) <- spent.(at) + 1;
+      if Option.is_none entered.(at) then entered.(at) <- Some !cycles;
+      Int.incr cycles;
+      let take ~mask value =
+        writes
+        := { mask
+           ; step = Cyclesim.Node.to_int cell_step
+           ; seat = Cyclesim.Node.to_int cell_seat
+           ; value = Cyclesim.Node.to_int value
+           }
+           :: !writes
+      in
+      if Cyclesim.Node.to_int write_class = 1 then take ~mask:false cell_class;
+      if Cyclesim.Node.to_int write_mask = 1 then take ~mask:true cell_hidden
+    in
+    (* A BUDGET AND NOT A WAIT: a machine that stalls must fail the gate and not hang it.
+       The walk's own cost model states the pass, and the draws it cannot state are
+       counted at their worst — every cell hidden. *)
+    let budget =
+      let cells = e.steps * Frame.voices in
+      (e.walk * (Elaboration.pass_cycles e + (cells * (Drawer.busy_cycles + 16))))
+      + Elaboration.cell_walk_cycles e
+      + 4096
+    in
+    let rewind () =
+      Array.fill spent ~pos:0 ~len:(Array.length spent) 0;
+      Array.fill entered ~pos:0 ~len:(Array.length entered) None;
+      writes := [];
+      cycles := 0;
+      standing := index Idle;
+      inp.rewind := Bits.vdd;
+      cycle ();
+      inp.rewind := Bits.gnd;
+      (* the walk leaves the rest on the edge behind the strobe, thus the wait cycles
+         before it reads [idle] *)
+      cycle ();
+      let left = ref budget in
+      while (not (Bits.to_bool !(out.idle))) && !left > 0 do
+        cycle ();
+        Int.decr left
+      done;
+      if !left <= 0 then failwithf "the walk did not finish inside %d cycles" budget ()
+    in
+    let play () =
+      inp.step := Bits.vdd;
+      cycle ();
+      inp.step := Bits.gnd;
+      let left = ref 8 in
+      while (not (Bits.to_bool !(out.valid))) && !left > 0 do
+        cycle ();
+        Int.decr left
+      done;
+      if !left <= 0 then failwith "the step was not answered";
+      Bits.to_int_trunc !(out.frame)
+    in
+    { rewind
+    ; play
+    ; writes = (fun () -> List.rev !writes)
+    ; spent = (fun which -> spent.(index which))
+    ; cycles = (fun () -> !cycles)
+    ; entered = (fun which -> entered.(index which))
+    ; waves
+    }
+  ;;
+
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
+  let collect n f =
+    List.rev (List.fold (List.range 0 n) ~init:[] ~f:(fun acc (_ : int) -> f () :: acc))
+  ;;
+
+  (* THE REFERENCE IS THE TWIN'S OWN ENGINE, WALKED BESIDE THE CIRCUIT. [init] draws the
+     opening, [next_pass] gives the canvas the forward saw, the mask it drew and the
+     redraws in the cell order — cell, uniform and class. No export is added for the gate:
+     what the engine already states IS every phase. *)
+  let passes model ~steps ~walk ~seed =
+    let rec take engine at got =
+      if at = walk
+      then engine, List.rev got
+      else (
+        let engine, pass = Quantized.Engine.next_pass engine in
+        take engine (at + 1) (pass :: got))
+    in
+    take (Quantized.Engine.init model ~steps ~walk ~seed) 0 []
+  ;;
+
+  (* Every write the walk must make, in the order it must make them, and the phase that
+     owns each one: the opening, then for each pass its mask and its redraws. A
+     disagreement therefore names its phase and not only its index. *)
+  let wanted (passes : Quantized.Engine.pass list) ~steps =
+    let cells = Diffusion.cell_order ~steps in
+    let opening = (List.hd_exn passes).before in
+    let opened =
+      List.map cells ~f:(fun (step, seat) ->
+        "the opening", { mask = false; step; seat; value = opening.(step).(seat) })
+    in
+    let of_pass at (pass : Quantized.Engine.pass) =
+      let masked =
+        List.map cells ~f:(fun (step, seat) ->
+          ( Printf.sprintf "the mask of pass %d" at
+          , { mask = true; step; seat; value = Bool.to_int pass.hidden.(step).(seat) } ))
+      in
+      let drawn =
+        List.map pass.draws ~f:(fun (d : Quantized.Engine.draw) ->
+          ( Printf.sprintf "a draw of pass %d" at
+          , { mask = false; step = d.step; seat = d.voice; value = d.drawn } ))
+      in
+      masked @ drawn
+    in
+    opened @ List.concat (List.mapi passes ~f:of_pass)
+  ;;
+
+  (* the disagreements, in order, with the phase that owns each one *)
+  let apart ~got ~want =
+    let rec walk got want at apart =
+      match got, want with
+      | [], [] -> List.rev apart
+      | got, [] ->
+        List.rev
+          (Printf.sprintf "%d writes past the last one wanted" (List.length got) :: apart)
+      | [], want -> List.rev (Printf.sprintf "%d writes short" (List.length want) :: apart)
+      | g :: got, (phase, w) :: want ->
+        let apart =
+          if equal_write g w
+          then apart
+          else
+            Printf.sprintf
+              "%s, write %d: %s against %s"
+              phase
+              at
+              (Sexp.to_string ([%sexp_of: write] g))
+              (Sexp.to_string ([%sexp_of: write] w))
+            :: apart
+        in
+        walk got want (at + 1) apart
+    in
+    walk got want 0 []
+  ;;
+end
+
+let%expect_test "the canvas is the engine's, phase for phase" =
+  (* INSTRUMENT 2. The walk stands beside [Quantized.Engine] and the two are compared
+     WHERE EACH PHASE HAPPENS: the opening's classes against the canvas the first forward
+     saw, each mask's bits against the mask that pass drew, each redraw against the cell
+     it names and the class it wrote, in the offer order the walk counts — and then the
+     finished canvas THROUGH THE FRAME FACE, thus the Vocab decode, the score counter and
+     the silence past T - 1 stand in the same gate.
+
+     The finished canvas alone would pass a walk whose masks are one pass out of phase, or
+     one that spends a uniform on a standing cell: both draw a canvas, and both draw the
+     WRONG one with no local symptom. That is why the comparison is per phase.
+
+     SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 — the panel can state it,
+     [Prng.create] carries it and this engine stands still on it — thus every uniform is
+     0, every cell hides and every draw takes the top of the grid. The walk that stands
+     still is the design, and the gate holds the circuit to the engine's stillness like
+     any other walk. *)
+  let case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay =
+    let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
+    let model = Quantized.Model.For_test.init config ~seed:model_seed in
+    let e = Elaboration.create model ~steps ~lanes ~walk in
+    let h = Bench.harness ~e ~seed () in
+    h.rewind ();
+    let last, passes = Bench.passes model ~steps ~walk ~seed in
+    let want = Bench.wanted passes ~steps in
+    let got = h.writes () in
+    let apart = Bench.apart ~got ~want in
+    let frames = Diffusion.frames_of_canvas (Quantized.Engine.run last) in
+    let silent = 2 in
+    let played = Bench.collect (steps + silent) h.play in
+    let wanted_frames = Array.to_list frames @ List.init silent ~f:(fun (_ : int) -> 0) in
+    let again =
+      if replay
+      then (
+        h.rewind ();
+        Some (Bench.collect (steps + silent) h.play))
+      else None
+    in
+    printf
+      "%s, N %d, seed %d: %d writes — %d open, %s mask, %s draws\n"
+      name
+      walk
+      seed
+      (List.length got)
+      (steps * Frame.voices)
+      (String.concat
+         ~sep:"+"
+         (List.map passes ~f:(fun (_ : Quantized.Engine.pass) ->
+            Int.to_string (steps * Frame.voices))))
+      (String.concat
+         ~sep:"+"
+         (List.map passes ~f:(fun (p : Quantized.Engine.pass) ->
+            Int.to_string (List.length p.draws))));
+    (match apart with
+     | [] -> printf "  every write is the engine's, in the engine's order\n"
+     | apart ->
+       printf "  %d WRITES APART:\n" (List.length apart);
+       List.iter (List.take apart 8) ~f:(fun line -> printf "    %s\n" line));
+    printf
+      "  %d frames: %s%s\n"
+      (List.length played)
+      (if [%compare.equal: int list] played wanted_frames
+       then "the engine's canvas, and the two past T - 1 silent"
+       else "APART FROM THE ENGINE'S CANVAS")
+      (match again with
+       | None -> ""
+       | Some again ->
+         if [%compare.equal: int list] again played
+         then "; a rewind draws it again from the same seed"
+         else "; A REWIND DREW ANOTHER CANVAS")
+  in
+  let shape name ~width ~lanes ~pairs ~steps ~walk ~model_seed =
+    List.iteri [ 1; 2; 0 ] ~f:(fun at seed ->
+      case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay:(at = 0))
+  in
+  shape
+    "H 8, G 2, two pairs, T 6"
+    ~width:8
+    ~lanes:2
+    ~pairs:2
+    ~steps:6
+    ~walk:3
+    ~model_seed:1;
+  shape
+    "H 7, G 3, one pair,  T 5"
+    ~width:7
+    ~lanes:3
+    ~pairs:1
+    ~steps:5
+    ~walk:4
+    ~model_seed:2;
+  [%expect
+    {|
+    H 8, G 2, two pairs, T 6, N 3, seed 1: 138 writes — 24 open, 24+24+24 mask, 23+12+7 draws
+      every write is the engine's, in the engine's order
+      8 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
+    H 8, G 2, two pairs, T 6, N 3, seed 2: 137 writes — 24 open, 24+24+24 mask, 23+13+5 draws
+      every write is the engine's, in the engine's order
+      8 frames: the engine's canvas, and the two past T - 1 silent
+    H 8, G 2, two pairs, T 6, N 3, seed 0: 168 writes — 24 open, 24+24+24 mask, 24+24+24 draws
+      every write is the engine's, in the engine's order
+      8 frames: the engine's canvas, and the two past T - 1 silent
+    H 7, G 3, one pair,  T 5, N 4, seed 1: 145 writes — 20 open, 20+20+20+20 mask, 19+12+9+5 draws
+      every write is the engine's, in the engine's order
+      7 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
+    H 7, G 3, one pair,  T 5, N 4, seed 2: 140 writes — 20 open, 20+20+20+20 mask, 19+10+9+2 draws
+      every write is the engine's, in the engine's order
+      7 frames: the engine's canvas, and the two past T - 1 silent
+    H 7, G 3, one pair,  T 5, N 4, seed 0: 180 writes — 20 open, 20+20+20+20 mask, 20+20+20+20 draws
+      every write is the engine's, in the engine's order
+      7 frames: the engine's canvas, and the two past T - 1 silent
+    |}]
+;;
+
+let%expect_test "the service of one step: the level, a standing seat, a hidden one" =
+  (* THE SERVICE AS A PICTURE, at the era's own P and a canvas of three steps. The seat
+     registers are the corpus's, thus this unit refuses a narrower P and the picture
+     cannot shrink the draw the way the engine's picture shrinks the dwell: what a window
+     holds is the ORDER of the service, and the draw's 147 cycles stand between the two.
+
+     WINDOW ONE is the level rising and the two seats behind it. [step_ready] stands, and
+     the walk reads [hidden] at seat 0 for ONE CYCLE: that seat stands, thus it costs the
+     cycle and nothing more. Seat 1 hides, and the five cycles of a uniform open — three
+     steps of the generator, then the cycle its last byte lands in and the cycle the whole
+     24 stands in, which is the cycle that starts the draw. [draw_busy] rises behind it.
+
+     WINDOW TWO is the close of the step. The draw of seat 3 ends; [write_class] puts the
+     class it drew into the cell the port names, in the very cycle [draw_busy] falls; the
+     walk strobes [step_taken]; and the level falls on the edge behind that strobe, thus
+     the engine opens the next step. *)
+  let config = { Diffusion.Config.layers = 4; width = 8 } in
+  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let e = Elaboration.create model ~steps:3 ~lanes:2 ~walk:1 in
+  let h = Bench.harness ~trace:true ~e ~seed:5 () in
+  h.rewind ();
+  let waves = Option.value_exn h.waves ~message:"a traced run gives a waveform" in
+  let served = Option.value_exn (h.entered Seat) ~message:"the walk served a step" in
+  let taken = Option.value_exn (h.entered Ack) ~message:"the walk took a step" in
+  let window ~start_cycle =
+    Hardcaml_waveterm.Waveform.expect
+      ~display_rules:
+        [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Bit
+            [ "step_ready"; "hidden" ]
+        ; Hardcaml_waveterm.Display_rule.port_name_is
+            "walk_state"
+            ~wave_format:
+              (Wave_format.Index
+                 [ "Idl"; "Opn"; "Msk"; "Srv"; "Sea"; "Uni"; "Drw"; "Ack" ])
+        ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Unsigned_int
+            [ "cell_seat" ]
+        ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Bit
+            [ "prng_step" ]
+        ; Hardcaml_waveterm.Display_rule.port_name_is
+            "uniform"
+            ~wave_format:Wave_format.Hex
+        ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Bit
+            [ "draw_busy"; "write_class" ]
+        ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Unsigned_int
+            [ "cell_class" ]
+        ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+            ~wave_format:Wave_format.Bit
+            [ "step_taken" ]
+        ]
+      ~show_digest:false
+      ~wave_width:0
+      ~display_width:80
+      ~start_cycle
+      waves
+  in
+  printf "the level rose at cycle %d and the step was taken at %d\n" (served - 1) taken;
+  window ~start_cycle:(served - 2);
+  window ~start_cycle:(taken - 8);
+  [%expect
+    {|
+    the level rose at cycle 3084 and the step was taken at 3548
+    ┌Signals───────────┐┌Waves─────────────────────────────────────────────────────┐
+    │step_ready        ││  ┌───────────────────────────────────────────────────────│
+    │                  ││──┘                                                       │
+    │hidden            ││      ┌───────────────────────────────────────────────────│
+    │                  ││──────┘                                                   │
+    │                  ││────┬───┬─────────┬───────────────────────────────────────│
+    │walk_state        ││ Srv│Sea│Uni      │Drw                                    │
+    │                  ││────┴───┴─────────┴───────────────────────────────────────│
+    │                  ││──────┬───────────────────────────────────────────────────│
+    │cell_seat         ││ 0    │1                                                  │
+    │                  ││──────┴───────────────────────────────────────────────────│
+    │prng_step         ││        ┌─────┐                                           │
+    │                  ││────────┘     └───────────────────────────────────────────│
+    │                  ││────────────┬─┬─┬─────────────────────────────────────────│
+    │uniform           ││ 868D6F     │.│.│C2F25D                                   │
+    │                  ││────────────┴─┴─┴─────────────────────────────────────────│
+    │draw_busy         ││                  ┌───────────────────────────────────────│
+    │                  ││──────────────────┘                                       │
+    │write_class       ││                                                          │
+    │                  ││──────────────────────────────────────────────────────────│
+    │                  ││──────────────────────────────────────────────────────────│
+    │cell_class        ││ 0                                                        │
+    │                  ││──────────────────────────────────────────────────────────│
+    │step_taken        ││                                                          │
+    │                  ││──────────────────────────────────────────────────────────│
+    └──────────────────┘└──────────────────────────────────────────────────────────┘
+    ┌Signals───────────┐┌Waves─────────────────────────────────────────────────────┐
+    │step_ready        ││──────────────────┐                                       │
+    │                  ││                  └───────────────────────────────────────│
+    │hidden            ││──────────────────────────────────────────────────────────│
+    │                  ││                                                          │
+    │                  ││────────────────┬─┬───────────────────────────────────────│
+    │walk_state        ││ Drw            │.│Srv                                    │
+    │                  ││────────────────┴─┴───────────────────────────────────────│
+    │                  ││──────────────────────────────────────────────────────────│
+    │cell_seat         ││ 3                                                        │
+    │                  ││──────────────────────────────────────────────────────────│
+    │prng_step         ││                                                          │
+    │                  ││──────────────────────────────────────────────────────────│
+    │                  ││──────────────────────────────────────────────────────────│
+    │uniform           ││ 5C1232                                                   │
+    │                  ││──────────────────────────────────────────────────────────│
+    │draw_busy         ││──────────────┐                                           │
+    │                  ││              └───────────────────────────────────────────│
+    │write_class       ││              ┌─┐                                         │
+    │                  ││──────────────┘ └─────────────────────────────────────────│
+    │                  ││──────────────────────────────────────────────────────────│
+    │cell_class        ││ 17                                                       │
+    │                  ││──────────────────────────────────────────────────────────│
+    │step_taken        ││                ┌─┐                                       │
+    │                  ││────────────────┘ └───────────────────────────────────────│
+    └──────────────────┘└──────────────────────────────────────────────────────────┘
+    |}]
+;;
+
+let%expect_test "where a pass spends its cycles, against the cost model" =
+  (* INSTRUMENT 4'S LAST HOLE. [Elaboration] prices the engine and the cell walks; S3's
+     bench measured the engine against that price. What no number covered until here is
+     the machine around it — the opening, the masks and the SERVICE — thus the cost model
+     of the document and the walk could part with nothing saying so.
+
+     The measurement is at a shape a test can run and the CLAIM is about the elected rung,
+     thus the bench measures the CONSTANTS and states the rung: a standing cell costs one
+     cycle, a hidden cell costs the same one and then its uniform and its draw, and both
+     numbers are P 48's — the test shape and the rung hold the same P, thus the constant
+     carries with no scaling.
+
+     The expected hidden cells of the rung come from the anneal table itself: a pass hides
+     [alpha] of its cells, and [alpha_rom] holds the thresholds on the generator's grid.
+
+     WHAT THE NUMBERS SAY.
+
+     - **A cell walk costs its uniforms and two cycles more**, and the two are the write
+       frame's lag: the model counts the three steps of each cell, and the machine also
+       has to write the last of them.
+     - **The engine inside the walk is the engine S3 measured, and the walk adds nothing
+       to it.** S3's cycle bench reads 10 200 cycles for one forward at this very shape,
+       with its [step_taken] tied to [step_ready]; the walk reads 10 199 in [Serve], and
+       the one cycle is the tie's — it answers the level in the cycle the level rises and
+       the walk leaves for [Seat] in it. Every cycle of the service is therefore the
+       walk's own, and none of it is the engine waiting for something new.
+     - **The service is about three percent of a pass at the rung**, which is the claim of
+       the design chapter, measured. It is what Phase II's overlap would buy back beside
+       the head's wait; Phase I spends it. *)
+  let cells_of steps = steps * Frame.voices in
+  let config = { Diffusion.Config.layers = 6; width = 8 } in
+  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let steps = 6 in
+  let walk = 3 in
+  let seed = 1 in
+  let e = Elaboration.create model ~steps ~lanes:2 ~walk in
+  let module Drawer =
+    Draw.Make (struct
+      let classes = e.rows
+    end)
+  in
+  let h = Bench.harness ~e ~seed () in
+  h.rewind ();
+  let (_ : Quantized.Engine.t), passes = Bench.passes model ~steps ~walk ~seed in
+  let hidden =
+    List.sum (module Int) passes ~f:(fun (p : Quantized.Engine.pass) ->
+      List.length p.draws)
+  in
+  let spent = h.spent in
+  let service = spent Seat + spent Uniform + spent Drawing + spent Ack in
+  (* what one cell of the service costs, measured: the seat read that every cell pays, and
+     the uniform and the draw that only a hidden one does *)
+  let hidden_cell = 1 + ((spent Uniform + spent Drawing) / hidden) in
+  printf
+    "H 8, G 2, two pairs, T %d, N %d, seed %d: %d cycles, %d hidden cells of %d\n"
+    steps
+    walk
+    seed
+    (h.cycles ())
+    hidden
+    (walk * cells_of steps);
+  printf
+    "  the opening %d cycles against the model's cell walk %d\n"
+    (spent Open)
+    (Elaboration.cell_walk_cycles e);
+  printf
+    "  the masks %d, thus %d a pass against the same %d\n"
+    (spent Mask)
+    (spent Mask / walk)
+    (Elaboration.cell_walk_cycles e);
+  printf
+    "  the engine %d, thus %d a pass against forward_cycles %d\n"
+    (spent Serve)
+    (spent Serve / walk)
+    (Elaboration.forward_cycles e);
+  printf
+    "  the service %d: %d seat reads, %d uniform, %d draw, %d acknowledgements\n"
+    service
+    (spent Seat)
+    (spent Uniform)
+    (spent Drawing)
+    (spent Ack);
+  printf
+    "  a standing cell 1 cycle, a hidden cell %d — the draw states %d of them\n"
+    hidden_cell
+    Drawer.busy_cycles;
+  (* THE CLAIM, AT THE RUNG THE COST MODEL STATES. *)
+  let rung =
+    Elaboration.create
+      (Quantized.Model.For_test.init { Diffusion.Config.layers = 16; width = 16 } ~seed:1)
+      ~steps:128
+      ~lanes:4
+      ~walk:512
+  in
+  let rung_cells = cells_of rung.steps in
+  let hides pass =
+    Hardcaml.Bits.to_unsigned_int rung.alpha_rom.(pass) * rung_cells / (1 lsl 24)
+  in
+  let rung_hidden = List.sum (module Int) (List.range 0 rung.walk) ~f:hides in
+  let rung_service =
+    (rung.walk * rung_cells) + (rung.walk * rung.steps) + (rung_hidden * (hidden_cell - 1))
+  in
+  let pass =
+    Elaboration.forward_cycles rung
+    + Elaboration.cell_walk_cycles rung
+    + (rung_service / rung.walk)
+  in
+  printf
+    "the rung T %d, N %d, P %d, G %d: %d hidden cells over the walk, %d a pass\n"
+    rung.steps
+    rung.walk
+    rung.rows
+    rung.lanes
+    rung_hidden
+    (rung_hidden / rung.walk);
+  printf
+    "  a pass %d cycles: the engine %d, the mask %d, the service %d — the service is \
+     %.1f percent\n"
+    pass
+    (Elaboration.forward_cycles rung)
+    (Elaboration.cell_walk_cycles rung)
+    (rung_service / rung.walk)
+    (100.0 *. Float.of_int (rung_service / rung.walk) /. Float.of_int pass);
+  [%expect
+    {|
+    H 8, G 2, two pairs, T 6, N 3, seed 1: 37411 cycles, 42 hidden cells of 72
+      the opening 74 cycles against the model's cell walk 72
+      the masks 222, thus 74 a pass against the same 72
+      the engine 30597, thus 10199 a pass against forward_cycles 9792
+      the service 6516: 72 seat reads, 210 uniform, 6216 draw, 18 acknowledgements
+      a standing cell 1 cycle, a hidden cell 154 — the draw states 147 of them
+    the rung T 128, N 512, P 48, G 4: 99604 hidden cells over the walk, 194 a pass
+      a pass 1120196 cycles: the engine 1088256, the mask 1536, the service 30404 — the service is 2.7 percent
+    |}]
+;;

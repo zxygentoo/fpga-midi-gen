@@ -68,6 +68,11 @@ type t =
   ; alpha_rom : Hardcaml.Bits.t array
   (** the anneal thresholds of [Diffusion.anneal_threshold], one for each pass, on the
       24-bit grid of the generator *)
+  ; openings : Diffusion.opening array
+  (** the register of each seat as classes, [Diffusion.seat_openings] carried: the walk's
+      OPEN multiplies its uniform by [width] and adds [low]. It rides here so that the
+      circuit reads ONE value for everything it holds, as it reads its widths and its
+      bases here. *)
   ; temper : Mgen_nn.Quantized.Constants.scale
   (** the sampling temper of the model, [log2e / T]: the draw multiplies by it *)
   }
@@ -144,12 +149,15 @@ val layer_cycles : t -> layer -> int
 val forward_cycles : t -> int
 
 (** [cell_walk_cycles t] is one uniform for each cell in the cell order: what the opening
-    costs, and what the mask of one pass costs. *)
+    costs, and what the mask of one pass costs. The machine spends TWO CYCLES MORE on each
+    of them — the frame that writes a cell stands two cycles behind the frame that draws
+    it — and [Source]'s walk bench measures that tail. *)
 val cell_walk_cycles : t -> int
 
 (** [pass_cycles t] is one pass LESS THE DRAW: the mask and the forward. The draw's cycles
-    belong to the walk and to the bench — the design estimates about [2 * rows] for each
-    hidden cell — and a number this module cannot state exactly it does not state. *)
+    belong to the walk and to the bench — [Source]'s walk bench measures a hidden cell at
+    [3 * rows + 10] cycles and a standing one at 1 — and a number this module cannot state
+    exactly it does not state. *)
 val pass_cycles : t -> int
 
 (** The table as text: the geometry, one line for each layer, the sizes of the memories

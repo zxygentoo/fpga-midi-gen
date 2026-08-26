@@ -489,25 +489,68 @@ computes its own address disagrees with a gate and not with a board.
 
 ### The walk
 
-OPEN, then N rounds of MASK, FORWARD, DRAW, then PLAY. Every uniform comes
-from `Prng.Rtl` in the consumption order of the Scope chapter.
+`Source` is the walk: **Idle, then OPEN, then N rounds of MASK and SERVE,
+then PLAY.** One unit holds the outer FSM, the generator, the uniform shift
+register, the opening multiply, the alpha ROM, the draw service and the
+socket answers; it instantiates `Canvas`, `Forward`, `Draw` and `Prng.Rtl`
+and wires the plane face straight across. Every uniform comes from that one
+generator, in the consumption order of the Scope chapter.
 
-- **OPEN** takes one uniform for each cell in the cell order. The class is
-  `low + ((k * width) >> 24)` over the register of the cell's seat, where k is
-  the 24-bit uniform: one multiply and no divide. Three PRNG steps a cell.
-- **MASK** takes one uniform for each cell and hides the cell when k stands
-  under the pass's alpha entry. Three PRNG steps a cell.
+**THE BYTE ORDER OF A UNIFORM IS HIGH FIRST.** `Prng.uniform` takes the
+first of its three bytes as the top of the 24: `((high * 256 + middle) * 256)
++ low`. The shift register therefore shifts UP — `u <- (u << 8) | byte` — and
+it takes a byte ONE CYCLE BEHIND each step, because a step states its byte in
+the cycle that follows it. One capture rule serves every phase: take a byte
+exactly when the cycle before stepped. An assembly that shifts the other way
+is wrong in every phase at one time, which the walk gate reads on the first
+mask.
+
+- **OPEN and MASK are ONE CELL WALK with two write faces.** Each walks the
+  cells in the cell order and spends three cycles on each of them — three
+  steps of the generator, one uniform. OPEN writes the class
+  `low + ((k * width) >> 24)` over the register of the cell's own seat, where
+  k is the 24-bit uniform: one multiply and no divide, and the multiply is
+  LUTs, because the array owns the DSPs. MASK writes the bit `k < alpha`, the
+  24-bit compare against the pass's entry of the alpha ROM.
+
+  **THE FRAME THAT WRITES STANDS TWO CYCLES BEHIND THE FRAME THAT DRAWS**,
+  which is the engine's own discipline. The third byte of a cell lands one
+  cycle behind its step, and the shift register states the whole uniform one
+  cycle behind that. A phase therefore costs its uniforms and two cycles
+  more, and the generator steps three times for each cell and no more: the
+  step rides the LEAD frame, thus a tail that wrote without drawing cannot
+  take a fourth.
+
+  The alpha entry is read at the start of the pass through the registered
+  read of era four's rule — the address before the memory and the data behind
+  it — thus it stands two cycles later and the first mask write cannot want
+  it before that.
+
 - **FORWARD** walks the layer table with a counter. One record states Cin,
   Cout, the source and destination tensors, the ReLU and residual flags, and
   the weight and constant bases. There is no program and no op vocabulary.
-- **DRAW rides the head.** The head's drain fills the logit file of step t,
-  and the draw then takes the hidden cells of that step in the seat order the
-  group order already gives. THE DRAW TAKES ITS OWN PEAK, thus a cell is three
-  walks of the file: the peak, then the exp2 weights and their total, then the
-  pick on the 24-bit uniform. The head's drain could track the peak for nothing
-  and save one walk, and it does not, because a peak handed in is a
-  precondition the unit cannot check: a caller that states one that is not the
-  peak states another distribution, and nothing says so.
+
+- **SERVE rides the head, and the service is SEQUENTIAL AND SIMPLE.** The
+  walk strobes `start` and then rides `step_ready`. At each level it takes
+  the seats of the offered step in order: one cycle reads `hidden` at the
+  cell port, and A STANDING CELL COSTS NOTHING MORE. A hidden cell spends
+  five cycles to assemble its uniform whole — three steps of the generator,
+  and the two behind them in which the last byte lands and the whole 24
+  stands — then `start` to `Draw` over that seat's `logits`, and the drawn
+  class writes back through the same cell port in the cycle `busy` falls. After seat 3 the walk strobes
+  `step_taken` and waits for the next level; the pass ends when `busy` falls.
+
+  The overlap of the uniform under the draw's own peak walk would save three
+  cycles of a draw that is 2.7 percent of a pass, measured. It is not taken:
+  the walk holds one draw at a time and states it in one order, and that is
+  what the per-phase gate reads.
+
+  **THE DRAW TAKES ITS OWN PEAK**, thus a cell is three walks of the file:
+  the peak, then the exp2 weights and their total, then the pick on the
+  24-bit uniform. The head's drain could track the peak for nothing and save
+  one walk, and it does not, because a peak handed in is a precondition the
+  unit cannot check: a caller that states one that is not the peak states
+  another distribution, and nothing says so.
 
   **THE TABLE IS A FORK, AND THE FORK IS WHY A CELL COSTS 3 P AND NOT 5 P.**
   The shared `Exp2` registers its table entry but takes the shift and the zero
@@ -529,18 +572,33 @@ from `Prng.Rtl` in the consumption order of the Scope chapter.
   after the last drain row of the step lands, and at a ragged shape after the
   band of the LAST group fills; it falls on the edge after `step_taken`. **The
   head offers the steps in order, 0 to T - 1, each one exactly one time**, and
-  the level falls before it rises again, thus the walk's count of its own
-  acknowledgements IS the step. The tag-travels rule earns its keep where a
-  caller must model the depth of a pipe; this seam is a full interlock and has
-  no depth to model. `logits` stands still exactly while the level stands,
-  which is the draw's own precondition, satisfied by construction.
+  the level falls before it rises again, thus THE WALK'S COUNT OF ITS OWN
+  ACKNOWLEDGEMENTS IS THE STEP it names at the cell port. The tag-travels rule
+  earns its keep where a caller must model the depth of a pipe; this seam is a
+  full interlock and has no depth to model. `logits` stands still exactly
+  while the level stands, which is the draw's own precondition, satisfied by
+  construction.
 
   **Phase I holds the head and the draws apart.** The dwells of step t + 1 do
   not start before `step_taken`, because a capture would write over the file.
   The overlap is safe on the data — the draws write the canvas and the head
   reads X — thus it stays a local cut, for when the cycle bench prices the
   wait.
-- **PLAY** answers the socket.
+
+- **PLAY answers the socket, and it is what the Idle state does.** The walk
+  has one rest, thus `rewind` is read where `idle` stands and the generator's
+  `load` rides that one condition — the idiom of the eras. A step counter
+  walks the canvas: `step` reads its frame through the score face, `valid`
+  answers ONE CYCLE BEHIND the strobe with the frame the face stated, and the
+  counter then advances. **Past step T - 1 the frame is four zero bytes, for
+  ever**, until the next `rewind` puts the counter back at 0. The face is
+  combinational from the cells, thus PLAY holds no copy of the canvas and the
+  answer costs one register.
+
+**One cell port, three users, and no contention BY STATE.** OPEN writes
+classes, MASK writes bits, and SERVE reads `hidden` and writes classes, in
+disjoint states of one FSM. The frame face is the sequencer's own and never
+the walk's, thus a piece plays while nothing writes.
 
 **The canvas is written IN PLACE during the head, and it is exact.** The head
 reads the trunk tensor, and the forward computed that tensor from the canvas
@@ -550,17 +608,20 @@ because a value engine must; the circuit does not have to.
 
 ### The seam to the sequencer
 
-`Source_intf`, unchanged, and the top level does not move: `Top` names
-`Source.create ~model ~seed` and nothing narrower, thus one line of
-`board/nexys-4/dune` seats era six.
+`Source_intf`, unchanged, and the top level does not move: `Top` holds the
+elaboration of the elected checkpoint and names `Source.create ~e ~seed` and
+nothing narrower, thus one line of `board/nexys-4/dune` seats era six. The
+elaboration is the one argument here as it is at `Forward` — every width,
+every depth, every base and the register of every seat has one authority —
+thus a new checkpoint moves that line and nothing else.
 
 - **`rewind`** is the run start. It captures SEED, drops `idle`, and runs OPEN
   and the N passes. `idle` rises when the canvas stands. The sequencer's
   `WaitRewind` state waits for exactly this already, thus the seconds of the
   draw need no rule of their own.
 - **`step`** reads `canvas[t]`, maps each class through `Vocab.Rtl`, packs the
-  frame and answers `valid`. The map is the vocabulary's rule and this era
-  does not restate it.
+  frame and answers `valid` one cycle behind the strobe. The map is the
+  vocabulary's rule and this era does not restate it.
 - **Past step T - 1 the frame is silence**, for ever, until the next
   `rewind`. The sequencer plays the canvas one time and the reset button gives
   the next run, as Phase I states.
@@ -613,7 +674,8 @@ divides the H 16 shapes exactly. `l64-h16` holds 8 percent of slack against
 the window for the real overheads.
 
 **THE OVERHEADS ARE MEASURED NOW, and the window loads are not among them.**
-The cycle bench beside `Forward` counts one pass against `forward_cycles`:
+The cycle bench beside `Forward` counts one forward against `forward_cycles`,
+and the walk bench beside `Source` counts everything around it:
 
 - **Nine cycles at each layer, for the preamble, and nothing else grows.**
   The number does not follow the columns, the groups or the channels, thus
@@ -625,11 +687,22 @@ The cycle bench beside `Forward` counts one pass against `forward_cycles`:
   and it grows with T and with nothing else. This is PHASE I'S
   SERIALIZATION, priced: the head does not open step `t + 1` until the draw
   has taken step `t`, because a capture would write over the logit file.
+- **The walk's own machinery is 2.7 percent of a pass**, and the walk bench
+  beside `Source` measures the constants it stands on: a cell walk costs its
+  uniforms and two cycles more, a STANDING cell costs one cycle, and a HIDDEN
+  cell costs 154 at P 48 — one for the seat, five for the uniform and the
+  draw's own 147 with the cycle that writes the class it drew. The rung's
+  anneal table hides 194 cells of 512 in the mean pass, thus the service is
+  30 404 cycles against 1 088 256. The same bench reads the ENGINE inside the
+  walk at 10 199 cycles a pass where S3's bench read 10 200 for that shape
+  alone: the walk adds nothing to the engine, and every cycle of the service
+  is its own.
 
 At the elected rung that is 144 cycles of preamble and 7 296 of head wait
-against 1 088 256, thus a pass measures about 0.7 percent over the model and
-the playback window does not move. What Phase II's overlap buys back is the
-second number and not the first. Even 48
+against 1 088 256, thus a pass measures about 0.7 percent over the model, and
+the service above it takes the whole to about 1 120 200 — the playback window
+does not move. What Phase II's overlap buys back is the head's wait and the
+service, and not the preamble. Even 48
 lanes (G 1) plays rung 1 at N 512 inside the window: the climb has rungs
 in lanes as well as layers, if the first build fights.
 

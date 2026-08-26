@@ -51,6 +51,21 @@ let class_of_cell pitch =
   else pitch - Vocab.pitch_low + 1
 ;;
 
+type opening =
+  { low : int
+  ; width : int
+  }
+
+(* The register of each seat as classes: [seat_ranges] read through [class_of_cell]
+   itself, thus the map has ONE home and a circuit that restated [low - pitch_low + 1]
+   could not part from it. [opening_canvas] draws inside these and the elaboration of the
+   circuit carries them, thus the opening of the walk and the opening of the board are one
+   rule. *)
+let seat_openings =
+  Array.map seat_ranges ~f:(fun (low, high) ->
+    { low = class_of_cell low; width = high - low + 1 })
+;;
+
 (* the canvas of one piece of [Jsb]: [steps] rows of [voices] class indices, seat 0 the
    bass, and a rest is the silence class. [class_of_cell] states what a pitch outside the
    corpus does, and why. *)
@@ -352,16 +367,12 @@ let over_cells state ~steps ~f =
 ;;
 
 let opening_canvas state ~steps =
-  (* the register of each seat as classes: the low class and the width of the range. The
-     product [u * width] is exact on the grid, thus the twin states the same class. *)
-  let openings =
-    Array.map seat_ranges ~f:(fun (low, high) ->
-      low - Vocab.pitch_low + 1, high - low + 1)
-  in
   let canvas = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
+  (* the product [u * width] is exact on the grid, thus the twin and the circuit state the
+     same class from the same uniform *)
   let state =
     over_cells state ~steps ~f:(fun ~step ~voice u ->
-      let low, width = openings.(voice) in
+      let { low; width } = seat_openings.(voice) in
       canvas.(step).(voice)
       <- low + Int.of_float (Float.round_down (u *. Float.of_int width)))
   in

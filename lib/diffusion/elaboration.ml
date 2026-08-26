@@ -31,6 +31,7 @@ type t =
   ; weight_rom : Bits.t array
   ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
+  ; openings : Diffusion.opening array
   ; temper : Nn_quantized.Constants.scale
   }
 
@@ -224,6 +225,9 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; weight_rom
   ; norm_rom
   ; alpha_rom
+    (* the walk's opening, carried and never restated: the circuit reads one value for
+       everything it holds, and [Diffusion] stays the authority on what a seat may sing *)
+  ; openings = Diffusion.seat_openings
   ; temper = model.temper
   }
 ;;
@@ -282,6 +286,12 @@ let to_string t =
         alpha_bits
     ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
     ; sprintf
+        "the seats open inside the classes %s"
+        (String.concat
+           ~sep:", "
+           (List.map (Array.to_list t.openings) ~f:(fun { Diffusion.low; width } ->
+              sprintf "%d to %d" low (low + width - 1))))
+    ; sprintf
         "a store is %d columns of %d bits, t-major: step * %d + channel"
         (store_depth t)
         (t.rows * 16)
@@ -326,6 +336,7 @@ let%expect_test "the elaboration of the elected rung" =
      15  X -> logits    16    4   1   144    8352    240      18480
     the weight ROM 8496 words of 32 bits, the norms 244 of 38, the anneal 512 of 24
     the array is 48 by 4, thus 192 lanes
+    the seats open inside the classes 1 to 31, 11 to 34, 17 to 39, 25 to 46
     a store is 2048 columns of 768 bits, t-major: step * 16 + channel
     forward 1088256 cycles, the cell walk 1536, a pass 1089792 less the draw
     |}]

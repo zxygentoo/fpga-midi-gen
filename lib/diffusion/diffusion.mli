@@ -131,6 +131,18 @@ val anneal_threshold : step:int -> walk:int -> int
     taking the same order, and the circuit will read this rule rather than restate it. *)
 val cell_order : steps:int -> (int * int) list
 
+(** The register of each seat as classes: what [opening_canvas] draws inside, stated one
+    time. The circuit reads these through its elaboration, thus the opening of the walk
+    and the opening of the board are one rule and never a second reading of it. *)
+type opening =
+  { low : int (** the lowest class of the seat's register *)
+  ; width : int (** the classes of the register: [high - low + 1] *)
+  }
+
+(** the opening of each seat, seat 0 the bass: [Jsb.voice_ranges] turned around and read
+    through the class map of this module *)
+val seat_openings : opening array
+
 (** [opening_canvas state ~steps] is the seeded opening of the walk: one uniform for each
     cell in the cell order, the class [low + floor (u * width)] inside the register of the
     cell's own seat. [gibbs] opens here and the engine of [Quantized] opens here, thus the
