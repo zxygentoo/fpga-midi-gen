@@ -9,8 +9,10 @@ canvas and the sequencer plays it.
 **The contract of the round is QUANTIZED-RTL EXACTNESS.** The integer twin
 (`lib/diffusion/quantized.ml`) is the specification. The circuit must equal
 `Quantized.Engine` operation for operation: the same seed gives the same
-canvas, bit for bit. This is Gate B. The circuit reads its memory layout
-from the twin (`rom_bits`, `rom_bases`) and restates none of it. The float
+canvas, bit for bit. This is Gate B. The circuit takes its ROM image and
+bases from the twin (`rom_bits`, `rom_bases`) — the twin is the authority
+on every value, and the dwell-order packing is the elaboration's
+permutation of it, as "The weight ROM" states. The float
 reference is not the specification of the circuit; the drift report already
 measured what the quantization costs.
 
@@ -89,8 +91,8 @@ The formats of the twin, which the datapath holds:
 | weights | int8, one power-of-two exponent for each tensor |
 | activations | Q6 in int16, clamped and counted |
 | accumulator | int32; at most 216 products, no overflow, any tap order |
-| folded norm | gain as `Constants.scale`, bias Q12 int16, then ReLU, then the clamp |
-| logits | Q12 int16, no ReLU |
+| folded norm | gain as `Constants.scale`, bias Q6 int16 — the activation format — then ReLU, then the clamp |
+| logits | Q6 in int16 like every activation, no ReLU; the draw shifts the differences to Q12 |
 | the draw | era four's pipeline: shift to Q12, temper, `exp2` to Q15, pick on a 24-bit uniform |
 
 The order-free accumulator is the twin's gift to this round: the schedule
@@ -211,8 +213,8 @@ rounds of MASK, FORWARD, DRAW, then PLAY. OPEN, MASK and DRAW are small
 serial machinery in the pinned PRNG order — the masks are one uniform for
 each of the 512 cells, the draws ride era four's pipeline over the head's
 streamed logit columns — and together they cost about two percent of a
-pass: three cycles for each masked cell, and about 2 P cycles for each
-hidden cell that draws, which the cycle bench settles. FORWARD walks the
+pass: three cycles for each cell of the mask draw, and about 2 P cycles
+for each hidden cell that draws, which the cycle bench settles. FORWARD walks the
 layer table: one record for each layer, stating Cin, Cout, the source and
 destination tensors, the ReLU and residual flags, and the weight and
 constant bases. A counter walks it; no program, no op vocabulary.
