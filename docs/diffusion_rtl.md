@@ -282,13 +282,16 @@ Five layers, and the middle one is where the retired program stood:
   gives the layer table, the weight ROM image, the constant ROMs, the alpha
   ROM, the address maps and the cycle cost. It states no signal, thus an
   expect test prints it and the cost model cannot rot.
-- **L2, the column array**: the three-column window, the pitch shifts, the
-  two broadcast trees, the P by G lanes, AND THE DRAIN CHAIN. The chain is
-  the array's output port: without it that port is P by G by 32 bits, which
-  is neither wireable nor testable alone.
+- **L2, the column array**: the pitch shifts, the two broadcast trees, the
+  P by G lanes, AND THE DRAIN CHAIN. The chain is the array's output port:
+  without it that port is P by G by 32 bits, which is neither wireable nor
+  testable alone. THE WINDOW IS NOT HERE; it stands at L4, with the store it
+  caches.
 - **L3, the epilogue**: the folded norm, the ReLU, the clamp, the residual
   add, and the column packing.
-- **L4, the walk**: the outer FSM, the canvas, the draw, and the score port.
+- **L4, the walk**: the outer FSM, the two activation stores and the
+  three-column window that caches them, the canvas, the draw, and the score
+  port.
 
 ### The dwell
 
@@ -304,9 +307,20 @@ for t   in 0 .. T - 1
 ```
 
 Thus the memory gives one column each three cycles and the tap cycles are the
-work. The three columns stand in registers. The three pitch taps are wire
-shifts of those registers — zeros shift in at row 0 and row P - 1 — and the
-columns before t 0 and after t T - 1 are the zero column, muxed.
+work. The three pitch taps are wire shifts of the registered column — zeros
+shift in at row 0 and row P - 1 — and the columns before t 0 and after t T - 1
+are the zero column, muxed.
+
+**THE WINDOW STANDS WITH THE STORE AND NOT INSIDE THE ARRAY.** A window is a
+read cache for the column port, thus what fills it, when a slot is free, and
+what the zero column is at the ends of the roll are all questions of the
+memory and of the walk that reads it. Registers in the array and the policy in
+the walk would put a load strobe on one side of an interface and the dwell it
+must be timed against on the other. A term names the column it takes, and the
+array shifts it. The path is the same either way — the window register, the
+time mux, the pitch mux, the operand register — thus the cut costs no logic
+and no stage, and it takes three fields and two rules out of the array's
+interface.
 
 One tap cycle broadcasts one operand pair. Lane (r, c) takes the activation of
 row `r + dx - 1` of the column of `dy`, and the weight byte of
