@@ -136,6 +136,30 @@ module For_test : sig
       of one step and one plane, row 0 first. The tensor's index rule stands beside the
       tensor, thus a gate reads a column and never an index. *)
   val plane_column : int array -> step:int -> plane:int -> int array
+
+  (** [tensor_column x ~step ~channel ~channels] is one column of ANY tensor of the twin:
+      the [rows] values that one step and one channel hold. Every tensor here reads as
+      [steps; rows; channels] — the stem's planes, a layer's output, the head's logits —
+      thus one index rule serves them all and a gate slices no tensor by hand. *)
+  val tensor_column : int array -> step:int -> channel:int -> channels:int -> int array
+
+  (** [layer_writes model classes hidden ~steps] is the destination tensor of every layer
+      AS WRITTEN, in the layer order: the stem's, then for each pair the tensor its
+      opening wrote and the JOINED tensor its close wrote, and the head's logits last.
+      Each one reads as [steps; rows; that layer's output channels].
+
+      IT IS EXPORTED FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. The gate holds
+      the store writes of the circuit against the twin's, write for write, and
+      [layer_forward] alone cannot state them: a pair-closing layer writes the JOINED
+      tensor through the counted clamp, and only the fold of the trunk produces it.
+      [forward] is the last of this list, thus the list is the arithmetic itself and never
+      a second reading of it. The clamp counters of the walk are not touched. *)
+  val layer_writes
+    :  Model.t
+    -> int array array
+    -> bool array array
+    -> steps:int
+    -> int array list
 end
 
 (** The clamps a walk met, and the chances each one had. The formats are chosen with

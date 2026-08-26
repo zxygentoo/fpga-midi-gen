@@ -18,7 +18,7 @@
     - **A layer's role states its two ends, its ReLU and its residual together.** There
       are no independent flags that can disagree with each other.
     - **The cycle counts are exact and not bounds.** [create] refuses a layer whose dwell
-      is shorter than its drain, thus no dwell ever waits for the chain to empty and
+      is shorter than its drain and the band loads behind it, thus no dwell ever waits and
       [layer_cycles] is the number the cycle bench must measure.
     - The tables are [Hardcaml.Bits.t] arrays because the bitstream carries them: they
       initialize the memories of the circuit as they stand. *)
@@ -99,6 +99,16 @@ val norm_bits : int
     not fit [shift_bits]. *)
 val norm_word : Mgen_nn.Quantized.Constants.scale -> bias:int -> Hardcaml.Bits.t
 
+(** [column_address t ~step ~channel] is where a store holds the column:
+    [step * store_channels + channel]. THE MAP IS A FACT OF THIS FUNCTION AND OF NOTHING
+    ELSE — the circuit's ports and the stream instrument slice one rule, the argument
+    [norm_word] already makes. The map is t-major, thus the writes of one group land
+    consecutive; nothing else distinguishes the orders. *)
+val column_address : t -> step:int -> channel:int -> int
+
+(** the words of one activation store: [steps * store_channels] *)
+val store_depth : t -> int
+
 (** [create ?rows model ~steps ~lanes ~walk] elaborates [model] at the geometry those
     numbers state.
 
@@ -110,8 +120,11 @@ val norm_word : Mgen_nn.Quantized.Constants.scale -> bias:int -> Hardcaml.Bits.t
     It raises [Invalid_argument], and the message names what it refused:
 
     - whatever [Quantized.Model.check_shape] refuses;
-    - a layer whose dwell [9 * inputs] is shorter than its [rows]-stage drain chain, thus
-      the chain always empties before the next capture;
+    - a layer whose dwell [9 * inputs] is shorter than [rows + lanes + 2], thus the
+      [rows]-stage drain chain always empties before the next capture AND the residual
+      columns and norm words of the next group always land before the drain that reads
+      them — the engine holds one band for every group and loads it in the window the
+      drain before it just freed;
     - a gain shift that does not fit [shift_bits];
     - a canvas of no steps, a column of no rows, a group of no lanes, or a walk of no
       passes. *)

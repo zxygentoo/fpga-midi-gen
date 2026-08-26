@@ -216,12 +216,15 @@ let plane_activations canvas hidden ~steps =
   x
 ;;
 
-(* One column of that tensor: the [rows] activations of one step and one plane. The index
-   rule of the tensor stands beside the tensor and nowhere else, thus the circuit's gate
-   reads a column and never an index. *)
-let plane_column x ~step ~plane =
-  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * planes) + plane))
+(* One column of any tensor of this twin: the [rows] values that one step and one channel
+   hold. EVERY TENSOR HERE HAS THE ONE SHAPE — the stem's planes, a layer's output, the
+   head's logits — thus the index rule stands beside them and nowhere else, and the
+   circuit's gates read a column and never an index. *)
+let tensor_column x ~step ~channel ~channels =
+  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
 ;;
+
+let plane_column x ~step ~plane = tensor_column x ~step ~channel:plane ~channels:planes
 
 (* One layer: the convolution into the int32 accumulator, the folded norm, the optional
    ReLU, and the counted clamp of every write.
@@ -266,10 +269,16 @@ let layer_forward counters (layer : Model.layer) ~steps ~relu x =
   out
 ;;
 
-(* the trunk: the stem, the residual pairs, the head — the structure of the float model,
+(* The trunk: the stem, the residual pairs, the head — the structure of the float model,
    join for join. The skip adds two activation-format values and the sum is written
-   through the same counted clamp. *)
-let forward counters (model : Model.t) canvas hidden ~steps =
+   through the same counted clamp.
+
+   The fold gives the destination tensor of EVERY layer as written, in the layer order,
+   and [forward] is the last of them. THE PAIR-CLOSING WRITE IS THE JOINED TENSOR AND NOT
+   THE CONVOLUTION'S: the residual add rides the same counted clamp, thus a reader of the
+   write stream must take it from this fold and never from [layer_forward] alone. The
+   circuit's stream gate is that reader. *)
+let layer_writes counters (model : Model.t) canvas hidden ~steps =
   let layers = model.layers in
   let last = Array.length layers - 1 in
   let stem =
@@ -280,16 +289,22 @@ let forward counters (model : Model.t) canvas hidden ~steps =
       ~relu:true
       (plane_activations canvas hidden ~steps)
   in
-  let trunk =
-    List.fold (List.range ~stride:2 1 last) ~init:stem ~f:(fun x at ->
-      let first = layer_forward counters layers.(at) ~steps ~relu:true x in
-      let second = layer_forward counters layers.(at + 1) ~steps ~relu:false first in
-      let joined = Array.create ~len:(Array.length x) 0 in
-      Array.iteri x ~f:(fun index held ->
-        write counters joined index (max 0 (held + second.(index))));
-      joined)
+  let pair (written, x) at =
+    let first = layer_forward counters layers.(at) ~steps ~relu:true x in
+    let second = layer_forward counters layers.(at + 1) ~steps ~relu:false first in
+    let joined = Array.create ~len:(Array.length x) 0 in
+    Array.iteri x ~f:(fun index held ->
+      write counters joined index (max 0 (held + second.(index))));
+    joined :: first :: written, joined
   in
-  layer_forward counters layers.(last) ~steps ~relu:false trunk
+  let written, trunk =
+    List.fold (List.range ~stride:2 1 last) ~init:([ stem ], stem) ~f:pair
+  in
+  List.rev (layer_forward counters layers.(last) ~steps ~relu:false trunk :: written)
+;;
+
+let forward counters model canvas hidden ~steps =
+  List.last_exn (layer_writes counters model canvas hidden ~steps)
 ;;
 
 (* the draw of one cell: the logits temper against their peak, exp2 gives Q15 weights, and
@@ -315,6 +330,11 @@ module For_test = struct
   let draw_cell = draw_cell
   let plane_activations = plane_activations
   let plane_column = plane_column
+  let tensor_column = tensor_column
+
+  let layer_writes model canvas hidden ~steps =
+    layer_writes { hits = 0; seen = 0; peak = 0 } model canvas hidden ~steps
+  ;;
 end
 
 module Engine = struct

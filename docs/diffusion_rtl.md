@@ -147,8 +147,9 @@ cycles = T * ceil(Cout / G) * 9 * Cin
 ```
 
 The drain adds one tail of P at the end of a layer. The count is EXACT and not
-a bound, because the elaboration refuses a layer whose dwell is shorter than
-its drain — the rule of "The circuit" chapter.
+a bound, because the elaboration refuses a layer whose dwell is too short to
+cover its drain and the band loads behind it — the rule "What the elaboration
+refuses" states in full.
 
 **The weight word is the canonical block-RAM word.** At G 4 one word is
 four int8 weights — 32 of 36 bits, the eight-of-nine packing the model
@@ -294,9 +295,13 @@ Five layers, and the middle one is where the retired program stood:
 - **L3, the epilogue**: the folded norm, the ReLU, the clamp and the residual
   add — one drained row into one row of activations, and nothing wider than
   a row.
-- **L4, the walk**: the outer FSM, the two activation stores and the three
-  bands that cache them — the column window, the residual columns and the
-  output columns — the canvas, the draw, and the score port.
+- **L4, the walk**: the outer FSM, the canvas, the draw and the score port —
+  and `Forward`, the unit that runs the FORWARD state. `Forward` holds the two
+  activation stores, the three bands that cache them — the column window, the
+  residual columns and the output columns — the weight and norm ROMs, the
+  counters and the layer turn, and one instance each of the array and the
+  epilogue. It takes the elaboration itself as its functor argument, thus
+  every width, depth and base has one authority.
 
 **EVERY WIDE BUFFER THAT TOUCHES THE STORE LIVES WITH THE STORE.** The
 three-column window is a read cache for the column port, a residual column is
@@ -332,6 +337,30 @@ of "The shape of the code": a term names the column it takes, and the array
 shifts it. The path is the same either way — the window register, the time
 mux, the pitch mux, the operand register — thus the cut takes three fields and
 two rules out of the array's interface and costs nothing for them.
+
+**THE WINDOW IS AN IN-PLACE ROTATION OF THREE REGISTERS, AND THE TAP ORDER IS
+WELDED TO IT.** Three column registers and no bank. The taps run dy-major and
+`row_shift` is dx: the array's interface keeps the freedom to take the taps in
+any order, and this caller spends it, because the rotation leans on it.
+
+- Slot A holds `(t - 1, c)`, slot B holds `(t, c)` and slot C holds
+  `(t + 1, c)`. Their last reads stand at the dwell cycles 2, 5 and 8.
+- The fetches of the next dwell go out at the cycles 0, 3 and 6 and land at 2,
+  5 and 8, through the registered read. Each slot takes its new column on the
+  edge of its own last-use cycle: the operand register takes the old value on
+  that edge as the slot takes the new one.
+
+Thus every turn — the input channel, the group and the column — hides its
+fetches under the running dwell, and the only cost that stays is ONE SHORT
+PREAMBLE FOR EACH LAYER, at its first dwell. The cycle bench prints it, and if
+a fetch fails to hide at some turn the bench says so and this design moves.
+
+**The zero column and the stem enter at the slot load.** Beyond the ends of
+the roll the slot loads zero; on the stem it loads the canvas's plane column.
+One mux, one place, and the array never knows. The residual band and the norm
+bank load in the port slack of the same dwell: the taps take three read slots
+of nine, and on a pair-closing layer the taps read Y while the residual rides
+the free port of X.
 
 One tap cycle broadcasts one operand pair. Lane (r, c) takes the activation of
 row `r + dx - 1` of the column of `dy`, and the weight byte of
@@ -379,11 +408,14 @@ of the routing; this design refuses it.
 
 Two rules follow, and the elaboration holds the first one:
 
-- **The chain must empty before the next capture: `9 * Cin >= P`.** The
-  elaboration REFUSES a layer that breaks the rule and names the layer. It is
-  a check and not a comment, and the cost model prints it. Every real rung
+- **The chain must empty before the next capture: `9 * Cin >= P`.** It is a
+  check and not a comment, and the cost model prints it. Every real rung
   stands far inside it — a trunk layer is 144 against 48, and the stem is 72 —
-  and so does each test shape, thus the refusal is a guard and not a limit.
+  and so does each test shape, thus it is a guard and not a limit. **THE
+  REFUSAL IS WIDER THAN THIS RULE**: the band loads behind the drain want
+  `P + G + 2`, and "What the elaboration refuses" states the whole of it.
+  A shape that met this rule alone and broke that one would read a half-loaded
+  residual band.
 - **The rows leave the chain in row order, which IS the column order.** The
   epilogue packs the G output words as the rows come out and writes each
   column one time. The drain's memory traffic is whole columns, as every other
@@ -448,6 +480,13 @@ they go to the logit file. That is what "the head stores nothing" means
 exactly: it stores one step. The draw empties the file before the head goes to
 step t + 1.
 
+**THE ELABORATION OWNS THE STORE ADDRESS MAP.** `column_address` states where
+a store holds a column — `step * store_channels + channel` — and the map is
+t-major, thus the G writes of a group land consecutive. Nothing else
+distinguishes the orders. The circuit's ports and the stream instrument slice
+ONE rule, which is the argument `norm_word` already makes: a consumer that
+computes its own address disagrees with a gate and not with a board.
+
 ### The walk
 
 OPEN, then N rounds of MASK, FORWARD, DRAW, then PLAY. Every uniform comes
@@ -481,6 +520,26 @@ from `Prng.Rtl` in the consumption order of the Scope chapter.
   TO BACKPORT IT TO `lib/nn` IS A DECISION FOR WHEN ERA SIX SETTLES** — a unit
   two shipped eras carry does not move for a round that has not shipped — and
   that gate is the evidence for it.
+
+  **THE SEAM TO THE DRAW IS A LEVEL AND A STROBE, AND NO TAG CROSSES IT.**
+  `step_ready` is a LEVEL: "the file stands whole" is a state of the forward's
+  own registers, and the wire exports that state. A strobe would export the
+  event and ask every consumer to rebuild the state with a latch of its own —
+  the same flip-flop, on the wrong side of the seam. The level rises the cycle
+  after the last drain row of the step lands, and at a ragged shape after the
+  band of the LAST group fills; it falls on the edge after `step_taken`. **The
+  head offers the steps in order, 0 to T - 1, each one exactly one time**, and
+  the level falls before it rises again, thus the walk's count of its own
+  acknowledgements IS the step. The tag-travels rule earns its keep where a
+  caller must model the depth of a pipe; this seam is a full interlock and has
+  no depth to model. `logits` stands still exactly while the level stands,
+  which is the draw's own precondition, satisfied by construction.
+
+  **Phase I holds the head and the draws apart.** The dwells of step t + 1 do
+  not start before `step_taken`, because a capture would write over the file.
+  The overlap is safe on the data — the draws write the canvas and the head
+  reads X — thus it stays a local cut, for when the cycle bench prices the
+  wait.
 - **PLAY** answers the socket.
 
 **The canvas is written IN PLACE during the head, and it is exact.** The head
@@ -516,7 +575,17 @@ refuses loudly, and the message names what it refused:
 
 - `Model.check_shape` first: the chain of the channels, the accumulator bound,
   the kernel counts and the constant rows.
-- `9 * Cin >= P` for each layer: the drain rule above.
+- `9 * Cin >= P + G + 2` for each layer: the drain rule above AND THE BAND
+  LOADS BEHIND IT. The chain of P stages must empty before the next capture,
+  and behind that the residual columns and the norm words of the next group
+  are fetched the moment the drain has read its last residual row — one
+  address for each lane, two cycles of read latency behind them — because one
+  band serves every group and nothing is doubled. **The array's rule alone
+  leaves a gap one lane wide**: H 6 at G 5 dwells 54 against 55, the chain of
+  48 empties inside that, and the engine would read a half-loaded band with
+  nothing below it saying so. G 5 is the fused rung's geometry, thus the gap
+  is a shape the ladder could really elaborate; the elaboration states the
+  whole rule and a test stands on the gap.
 - a walk of no passes, a canvas of no steps, and a group of no lanes: N, T
   and G each stand at 1 or above.
 
@@ -540,9 +609,27 @@ The climb, at T 128, N 512, inside the 25.6-second playback window
 
 The cycle numbers are the formula's ideal at 192 lanes (240 for the fused
 G 5 row) and land within a percent of `MAC / lanes`, because the geometry
-divides the H 16 shapes exactly. The real overheads — the window loads,
-the group drains, the layer turns — are what the cycle bench measures, and
-`l64-h16` holds 8 percent of slack against the window for them. Even 48
+divides the H 16 shapes exactly. `l64-h16` holds 8 percent of slack against
+the window for the real overheads.
+
+**THE OVERHEADS ARE MEASURED NOW, and the window loads are not among them.**
+The cycle bench beside `Forward` counts one pass against `forward_cycles`:
+
+- **Nine cycles at each layer, for the preamble, and nothing else grows.**
+  The number does not follow the columns, the groups or the channels, thus
+  every fetch of the rotation but the first of a layer hides under a running
+  dwell. That is the claim of "The dwell", measured.
+- **The layer turn stands at or under the drain tails the model already
+  counts.** It is not an overhead on top of them; it IS them.
+- **The head's wait is about `P + 9` cycles at every step** — 57 at P 48 —
+  and it grows with T and with nothing else. This is PHASE I'S
+  SERIALIZATION, priced: the head does not open step `t + 1` until the draw
+  has taken step `t`, because a capture would write over the logit file.
+
+At the elected rung that is 144 cycles of preamble and 7 296 of head wait
+against 1 088 256, thus a pass measures about 0.7 percent over the model and
+the playback window does not move. What Phase II's overlap buys back is the
+second number and not the first. Even 48
 lanes (G 1) plays rung 1 at N 512 inside the window: the climb has rungs
 in lanes as well as layers, if the first build fights.
 
@@ -597,11 +684,52 @@ Two rules for reading this table:
   device, no congestion, a flat 2 ns charged at the ports. The finding to
   carry forward is that the array is not the problem; never that 2.9 ns
   exist for the machine to spend.
-- **The probe is a ladder, as the drift is.** The next ring stands where the
-  risk moved: the weight ROM through the broadcast trees into the array —
-  era four's retiming trap on its home ground — and after it the column
-  store's cascade read. Each ring is measured before the machine around it
-  exists, at probe cost and not build cost.
+- **The probe is a ladder, as the drift is.** Each ring is measured before
+  the machine around it exists, at probe cost and not build cost. The next
+  ring is below.
+
+### The column engine, measured
+
+Ring 2: the whole of `Forward` at the elected `l16-h16`, T 128 and G 4,
+through Vivado out of context on the part at 100 MHz. The weights are DRAWN
+under `Params.init` and not a checkpoint's — a timing reading needs no
+correct data, and every width of this design follows a RULE and not a
+model's own peak, which is the argument `shift_bits` already makes — thus a
+drawn model elaborates the netlist a trained one does.
+
+| | measured | against |
+|---|---|---|
+| WNS | **+0.050** | MET, 0 failing of 54 405 endpoints |
+| WHS | +0.096 | MET |
+| DSP48E1 | 192 (80%) | exactly one for each lane |
+| block RAM | 103 (76%) | the cost model's ~100 (74%) |
+| LUTs | 13 498 (21%) | — |
+| registers | 18 778 (15%) | — |
+
+**Era four's trap holds on its home ground.** The synthesis log states the
+absorption for every lane — the operand pair, the product and the sum — and
+the weight ROM reaches the array's B port with ZERO logic levels between
+them, at +0.122. The address registers before the memory and the data
+registers after it are what buy that.
+
+**THE CRITICAL PATH MOVED, AND IT IS NOT THE ARRAY.** Ring 1 read the array
+alone at +2.761 register to register; the whole engine reads +0.050, and the
+five worst paths are one structure: 19 logic levels, twelve of them CARRY4,
+ending on the SET pins of a 16-bit register. That is the epilogue's second
+stage — the variable shift, the bias and the first `clamp16` in one cycle —
+and the set pins are the saturate-to-32767 arm of the clamp. It is 9.437 ns,
+63 percent of it route.
+
+The design does not move for it: it meets, and this project measures before
+it optimizes. What the reading buys is the next known weak point and its
+answer — the epilogue's stage 2 splits in two, and the cost is one more
+cycle of a pipeline whose tag already travels, thus no caller counts it.
+Held, like the capture-select reserve, until a full build asks. **The
+capture net did not come to the top in this ring**, thus that reserve stands
+where it was.
+
+The next ring is the machine around this one: the walk, the canvas, the draw
+and the socket, in context and on the real part.
 
 ## The iteration strategy
 

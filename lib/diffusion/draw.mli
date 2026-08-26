@@ -52,31 +52,6 @@
     A table walk takes one cycle more than its classes because the weight of the last
     class stands one cycle behind its magnitude.
 
-    **THE MAGNITUDE SATURATES BEFORE THE TABLE, AND THE SATURATION IS EXACT.** A
-    difference of two int16 logits reaches 65535, and the temper of temperature 1.0
-    carries it past 23 bits where [Exp2] reads 22. Saturating there states no wrong
-    weight: [Exp2] already gives zero for any magnitude of 16 or above, and every value
-    the saturation touches stands far past 16.
-
-    **THE UNIFORM ARRIVES FROM THE CALLER AND THE UNIT HOLDS NO GENERATOR.** THE
-    CONSUMPTION ORDER IS THE CONTRACT of [docs/diffusion_rtl.md]: one generator serves the
-    opening, every mask and every draw of a walk, in one order. A generator here would be
-    a second stream, thus the walk takes the three steps of the uniform itself and hands
-    the 24 bits over.
-
-    **THE PEAK IS TAKEN HERE AND NOT HANDED IN.** The head's drain could track it for
-    nothing while the columns assemble, and that is one walk of [classes] cycles saved.
-    What it would cost is a precondition this unit cannot check: a caller that hands in a
-    peak that is not the peak states a different distribution and nothing says so. The
-    unit takes its own.
-
-    **THE TWO WALKS THAT READ THE TABLE SPEND TWO CYCLES ON A CLASS.** [Exp2] registers
-    its table entry but takes the shift and the zero test from its [nn] as it stands, thus
-    its contract is that [nn] holds for two cycles and the weight is whole on the second.
-    A magnitude a cycle would read one class's entry under another class's shift. The peak
-    walk reads no table and spends one cycle, thus a draw is [classes] + 2 [classes] + 1 +
-    2 [classes] cycles.
-
     What a caller must know:
 
     - **[logits] must stand still for the whole draw**, from [start] to the fall of

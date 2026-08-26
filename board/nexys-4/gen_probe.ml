@@ -48,7 +48,26 @@ let circuit unit lanes =
     let module Probe = Hardcaml.Circuit.With_interface (Unit.I) (Unit.O) in
     let temper = fst (Mgen_nn.Quantized.policy ~temperature:1.0 ~min_p:0.0) in
     Probe.create_exn ~name:"probe" (Unit.create ~temper)
-  | other -> invalid_argf "no unit is named %s: array, epilogue or draw" other ()
+  | "forward" ->
+    (* RING 2: the whole column engine — the weight ROM through the broadcast trees into
+       the array, and the store's read into the window. It is the ring where era four's
+       retiming trap lives on home ground, thus the synthesis log is read for the absorbed
+       DSP registers as well as the numbers.
+
+       The weights are DRAWN and not a checkpoint's: a timing reading needs no correct
+       data, and the widths of this design follow the RULES and not a model's own peak —
+       [Elaboration.shift_bits] states that argument — thus a drawn model elaborates the
+       netlist a trained one does. *)
+    let config = { Mgen_diffusion.Diffusion.Config.layers = 16; width = 16 } in
+    let model = Mgen_diffusion.Quantized.Model.For_test.init config ~seed:1 in
+    let module Unit =
+      Mgen_diffusion.Forward.Make (struct
+        let e = Mgen_diffusion.Elaboration.create model ~steps:128 ~lanes ~walk:512
+      end)
+    in
+    let module Probe = Hardcaml.Circuit.With_interface (Unit.I) (Unit.O) in
+    Probe.create_exn ~name:"probe" Unit.create
+  | other -> invalid_argf "no unit is named %s: array, epilogue, draw or forward" other ()
 ;;
 
 let () =

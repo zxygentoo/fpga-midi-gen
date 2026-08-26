@@ -102,6 +102,12 @@ let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
     ]
 ;;
 
+(* WHERE A STORE HOLDS A COLUMN IS A FACT OF THIS FUNCTION AND OF NOTHING ELSE. The map is
+   t-major, thus the G writes of a group land consecutive; nothing else distinguishes the
+   orders, and the circuit's ports and the stream instrument therefore slice ONE rule. *)
+let column_address t ~step ~channel = (step * t.store_channels) + channel
+let store_depth t = t.steps * t.store_channels
+
 let bases_of sizes =
   Array.of_list
     (List.folding_map (Array.to_list sizes) ~init:0 ~f:(fun base size ->
@@ -117,17 +123,25 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   let twin = model.layers in
   let count = Array.length twin in
   let groups_of (l : Quantized.Model.layer) = (l.outputs + lanes - 1) / lanes in
-  (* The drain rule: the chain is [rows] stages and it must empty before the next dwell
-     captures the array. It is a check and not a comment, thus [layer_cycles] states an
-     exact count and never a bound. *)
+  (* THE DWELL MUST COVER THE DRAIN AND THE BAND LOADS BEHIND IT, and the tighter of the
+     two rules is the one stated. The chain is [rows] stages and must empty before the
+     next dwell captures the array. Behind it, the residual columns and the norm words of
+     the next group are fetched the moment the drain has read its last residual row — one
+     address for each lane, two cycles of read latency behind them — because one buffer
+     serves every group and nothing is doubled. A dwell shorter than the sum leaves the
+     band half-loaded when the next drain reads it, and NOTHING DOWNSTREAM SAYS SO: the
+     arithmetic is silently wrong and the write stream would have to catch it. It is a
+     check and not a comment, thus [layer_cycles] states an exact count and never a bound. *)
+  let dwell_floor = rows + lanes + 2 in
   Array.iteri twin ~f:(fun at (l : Quantized.Model.layer) ->
-    if taps * l.inputs < rows
+    if taps * l.inputs < dwell_floor
     then
       invalid_argf
-        "layer %d dwells %d cycles and its drain takes %d: the chain cannot empty"
+        "layer %d dwells %d cycles and its drain and band loads need %d: the dwell is \
+         short"
         at
         (taps * l.inputs)
-        rows
+        dwell_floor
         ());
   let layers =
     let weight_bases =
@@ -267,7 +281,11 @@ let to_string t =
         (Array.length t.alpha_rom)
         alpha_bits
     ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
-    ; sprintf "a store is %d columns of %d bits" (t.steps * t.store_channels) (t.rows * 16)
+    ; sprintf
+        "a store is %d columns of %d bits, t-major: step * %d + channel"
+        (store_depth t)
+        (t.rows * 16)
+        t.store_channels
     ; sprintf
         "forward %d cycles, the cell walk %d, a pass %d less the draw"
         (forward_cycles t)
@@ -308,7 +326,7 @@ let%expect_test "the elaboration of the elected rung" =
      15  X -> logits    16    4   1   144    8352    240      18480
     the weight ROM 8496 words of 32 bits, the norms 244 of 38, the anneal 512 of 24
     the array is 48 by 4, thus 192 lanes
-    a store is 2048 columns of 768 bits
+    a store is 2048 columns of 768 bits, t-major: step * 16 + channel
     forward 1088256 cycles, the cell walk 1536, a pass 1089792 less the draw
     |}]
 ;;
@@ -431,12 +449,20 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
   (* the drain rule: at P 60 the H 6 layers dwell 54 cycles and the chain is 60 stages *)
   refuse "a chain that cannot empty" (fun () ->
     create model ~rows:60 ~steps:8 ~lanes:4 ~walk:4);
+  (* THE BAND RULE, AND THE GAP IT CLOSES. At P 48 and G 5 the H 6 layers dwell 54 cycles
+     and the chain of 48 empties inside that: the array's rule alone admits this shape.
+     The band loads behind the drain need 55, thus the engine would read a half-loaded
+     residual band and no gate below it would say so. G 5 is the fused rung's geometry,
+     thus this is a shape the ladder could really elaborate. *)
+  refuse "a band load the dwell outruns" (fun () ->
+    create model ~steps:8 ~lanes:5 ~walk:4);
   refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
   refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
   refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);
   [%expect
     {|
-    a chain that cannot empty: layer 1 dwells 54 cycles and its drain takes 60: the chain cannot empty
+    a chain that cannot empty: layer 1 dwells 54 cycles and its drain and band loads need 66: the dwell is short
+    a band load the dwell outruns: layer 1 dwells 54 cycles and its drain and band loads need 55: the dwell is short
     a walk of no passes: a walk of 0 passes
     a canvas of no steps: a canvas of 0 steps
     a group of no lanes: a group of 0 lanes
