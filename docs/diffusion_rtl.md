@@ -133,16 +133,20 @@ bits. From that one choice the whole geometry follows:
   and the columns beyond t 0 and t 127 are the zero column, muxed.
 - **The drain** applies the folded norm (the gain multiply and the Q12
   bias), the ReLU where the layer table states it, the Q6 clamp, and the
-  residual add on the pair-closing layers. It runs at `48 G / (9 Cin)`
-  results each cycle — 1.33 at the H 16 geometry — through a small
-  pipelined epilogue beside the array, and packs the results back into
-  columns.
+  residual add on the pair-closing layers. All 48 G accumulators finish in
+  the SAME cycle, thus one cycle captures them into a chain of 48 stages and
+  a G-lane epilogue empties the chain one row a cycle, beside the array. "The
+  circuit" chapter states the chain, its rule and its reasons.
 
 The cycle count of one layer is exact and the schedule test prints it:
 
 ```
 cycles = T * ceil(Cout / G) * 9 * Cin
 ```
+
+The drain adds one tail of P at the end of a layer. The count is EXACT and not
+a bound, because the elaboration refuses a layer whose dwell is shorter than
+its drain — the rule of "The circuit" chapter.
 
 **The weight word is the canonical block-RAM word.** At G 4 one word is
 four int8 weights — 32 of 36 bits, the eight-of-nine packing the model
@@ -170,7 +174,8 @@ full array, which is the point of starting there.
 - **The head stores nothing.** Its output columns ARE the logit columns —
   the 48 rows of seat v at step t are exactly the 48 logits of that cell —
   and they stream to the draw pipeline in the step-major order the PRNG
-  contract already demands. No logit tensor exists.
+  contract already demands. No logit tensor exists; the circuit holds ONE
+  STEP, and "The circuit" chapter states where.
 - **The weight ROM** is one linear memory of G-byte words, read once each
   cycle, initialized by the bitstream. The gains and biases are small
   per-channel constants beside it.
@@ -205,11 +210,12 @@ The outer FSM is the proto's four states grown to five: OPEN, then N
 rounds of MASK, FORWARD, DRAW, then PLAY. OPEN, MASK and DRAW are small
 serial machinery in the pinned PRNG order — the masks are one uniform for
 each of the 512 cells, the draws ride era four's pipeline over the head's
-streamed logit columns — and together they cost about one percent of a
-pass. FORWARD walks the layer table: one record for each layer, stating
-Cin, Cout, the source and destination tensors, the ReLU and residual
-flags, and the weight and constant bases. A counter walks it; no program,
-no op vocabulary.
+streamed logit columns — and together they cost about two percent of a
+pass: three cycles for each masked cell, and about 2 P cycles for each
+hidden cell that draws, which the cycle bench settles. FORWARD walks the
+layer table: one record for each layer, stating Cin, Cout, the source and
+destination tensors, the ReLU and residual flags, and the weight and
+constant bases. A counter walks it; no program, no op vocabulary.
 
 ### The prior art
 
@@ -256,12 +262,218 @@ changed nothing and validated one escalation path.
   the arithmetic and break Gate B against the plain-MAC twin, int8
   Winograd costs precision, and MACs are not the binding constraint.
 
+## The circuit
+
+The chapter above is the geometry. This one is the circuit that holds it: the
+shape of the code, the dwell, the drain, the memories and their ports, the
+walk, and the seam to the sequencer. `lib/diffusion/source.ml` holds the
+design and its reasons, as the era before it did.
+
+### The shape of the code
+
+Five layers, and the middle one is where the retired program stood:
+
+- **L0, the shared units**: `Prng.Rtl`, `Exp2`, the pick rules of
+  `Mgen_nn.Quantized`, and `Vocab.Rtl` for the score port. Era four and era
+  five built them and this era changes none of them.
+- **L1, the elaboration**: a value, computed from `Quantized.Model.t`. It
+  gives the layer table, the weight ROM image, the constant ROMs, the alpha
+  ROM, the address maps and the cycle cost. It states no signal, thus an
+  expect test prints it and the cost model cannot rot.
+- **L2, the column array**: the three-column window, the pitch shifts, the
+  two broadcast trees, and the P by G lanes.
+- **L3, the epilogue**: the drain chain, the folded norm, the ReLU, the
+  clamp, the residual add, and the column packing.
+- **L4, the walk**: the outer FSM, the canvas, the draw, and the score port.
+
+### The dwell
+
+The loop order is the column, then the output group, then the input channel,
+then the tap:
+
+```
+for t   in 0 .. T - 1
+  for g   in 0 .. ceil (Cout / G) - 1
+    for cin in 0 .. Cin - 1
+      read the columns (t - 1, cin), (t, cin), (t + 1, cin)
+      for tap in 0 .. 8                              -- nine cycles of work
+```
+
+Thus the memory gives one column each three cycles and the tap cycles are the
+work. The three columns stand in registers. The three pitch taps are wire
+shifts of those registers — zeros shift in at row 0 and row P - 1 — and the
+columns before t 0 and after t T - 1 are the zero column, muxed.
+
+One tap cycle broadcasts one operand pair. Lane (r, c) takes the activation of
+row `r + dx - 1` of the column of `dy`, and the weight byte of
+`(tap, cin, g * G + c)`. **One activation serves the G lanes of a row and one
+weight serves the P lanes of a channel**, thus the broadcast is two trees and
+never a mesh. Both trees are pipelined, and **the ROM address is registered
+before the memory and the data is registered after it** — era four's trap,
+where a combinational address lets the tools retime the data register onto the
+address pins of every primitive and rebuild the address cone inside each one.
+
+### The weight ROM
+
+One linear memory of G-byte words, one read each cycle, and the address is one
+counter. **The image is packed in the DWELL order and not the checkpoint
+order.** The twin stays the authority on every value; the permutation belongs
+to the elaboration, and it buys an address that only counts. Where G does not
+divide Cout, the elaboration pads each `(tap, cin)` row to a whole word with
+zeros: the padded lanes multiply by zero and the drain does not read them.
+Each layer has its base.
+
+### The drain
+
+At the end of a dwell **all P by G accumulators finish in the SAME cycle**,
+and the array must start the next dwell on the next cycle. The DSP48E1 holds
+one P register and no shadow, thus the sums leave the array in one cycle or
+they are lost.
+
+They leave into a chain. One cycle captures the array into P stages of G by 32
+bits. Each cycle after it, every stage gives its G values to the stage below,
+and the epilogue takes the bottom stage. **No value crosses a mux and no
+register reaches farther than its neighbour**, thus the chain lays out as a
+column beside the array — the regularity the timing risk asks for. The
+alternative, a central mux, costs the same registers and makes a P-source star
+of the routing; this design refuses it.
+
+Two rules follow, and the elaboration holds the first one:
+
+- **The chain must empty before the next capture: `9 * Cin >= P`.** The
+  elaboration REFUSES a layer that breaks the rule and names the layer. It is
+  a check and not a comment, and the cost model prints it. Every real rung
+  stands far inside it — a trunk layer is 144 against 48, and the stem is 72 —
+  and so does each test shape, thus the refusal is a guard and not a limit.
+- **The rows leave the chain in row order, which IS the column order.** The
+  epilogue packs the G output words as the rows come out and writes each
+  column one time. The drain's memory traffic is whole columns, as every other
+  traffic of this machine is.
+
+### The epilogue
+
+G lanes, one for each output channel of the group, thus a group drains in P
+cycles. Not fewer lanes: at G / 2 the drain is 2 P cycles, and the stem —
+whose dwell is `9 * 2 * voices`, 72 cycles — would then stall.
+
+One lane is the tail of the twin's `layer_forward`, operation for operation:
+
+1. the gain multiply, int32 by the channel's int16 scale;
+2. the arithmetic shift by that channel's own q — a VARIABLE shift, because a
+   scale carries its own q and the q is per channel;
+3. the bias;
+4. the ReLU, where the layer table states it;
+5. the clamp to int16.
+
+**A pair-closing layer clamps TWICE.** The twin writes the convolution result
+through the counted clamp, and then writes the sum through it again:
+`clamp16 (max 0 (x + clamp16 second))`. A circuit that clamps one time is
+silently wrong on each write that rides the clamp, and Gate B is bit for bit.
+
+**THE ARRAY OWNS THE DSPS; EVERYTHING OUTSIDE IT IS LUTS** — the epilogue
+gain, the draw's temper, and the pick's product. The reason is the top of the
+ladder and not today's headroom: G follows H and not L, thus `l64-h16` runs on
+the same 192 lanes as `l16-h16` and costs no DSP, but the golden candidate
+fused at G 5 is 48 by 5, which is 240 of the device's 240. An epilogue that
+took DSPs would have to move at the moment the design is tightest.
+
+The accumulator stays int32. The measured peaks stand far under it, but the
+twin guarantees int32 exactness and Gate B is bit for bit, thus a narrower
+accumulator is a guess that one rung happens to survive.
+
+### The memories and their ports
+
+| memory | shape | traffic |
+|---|---|---|
+| X and Y | `T * H` columns by `P * 16` bits | one column read each three cycles; G column writes each group |
+| the weight ROM | the packed image, G bytes each word | one word each cycle |
+| the constants | gain and bias, one entry for each output channel | G entries each group |
+| the canvas | `T` by `voices` classes | registers |
+| the mask | `T * voices` bits | registers |
+| the alpha ROM | N entries of 24 bits | one entry each pass |
+| the logit file | `voices` files of P by 16 bits | the head's drain writes it, the draw reads it |
+
+**The stem decodes and does not read.** Its input column for `(t, plane)`
+comes from the canvas and the mask: a class plane is one-hot at
+`canvas[t][v]`, in activation units, when the cell stands, and zero when the
+cell hides; a mask plane is all ones when the cell hides and zero when it
+stands. No input tensor exists.
+
+**The pair-closing layer reads Y and X and writes X.** Y gives the three taps,
+X gives the residual column `(t, c)`, and the output goes back to `(t, c)`.
+The read stands before the write, thus X and Y are the whole activation store.
+
+**The head writes one step and not a tensor.** At the head Cout is `voices`,
+thus the drain's G columns are the logit columns of the cells of step t, and
+they go to the logit file. That is what "the head stores nothing" means
+exactly: it stores one step. The draw empties the file before the head goes to
+step t + 1.
+
+### The walk
+
+OPEN, then N rounds of MASK, FORWARD, DRAW, then PLAY. Every uniform comes
+from `Prng.Rtl` in the consumption order of the Scope chapter.
+
+- **OPEN** takes one uniform for each cell in the cell order. The class is
+  `low + ((k * width) >> 24)` over the register of the cell's seat, where k is
+  the 24-bit uniform: one multiply and no divide. Three PRNG steps a cell.
+- **MASK** takes one uniform for each cell and hides the cell when k stands
+  under the pass's alpha entry. Three PRNG steps a cell.
+- **FORWARD** walks the layer table with a counter. One record states Cin,
+  Cout, the source and destination tensors, the ReLU and residual flags, and
+  the weight and constant bases. There is no program and no op vocabulary.
+- **DRAW rides the head.** The head's drain fills the logit file of step t,
+  and the draw then takes the hidden cells of that step in the seat order the
+  group order already gives. The peak of each cell costs nothing — the
+  epilogue tracks it as the rows come out. Then one walk of the file gives the
+  exp2 weights and their total, and a second walk picks on the 24-bit uniform:
+  about 2 P cycles for each hidden cell.
+- **PLAY** answers the socket.
+
+**The canvas is written IN PLACE during the head, and it is exact.** The head
+reads the trunk tensor, and the forward computed that tensor from the canvas
+as it stood at the start of the pass. Nothing after the stem reads the canvas,
+thus a draw at step t cannot reach a later column. The twin copies the canvas
+because a value engine must; the circuit does not have to.
+
+### The seam to the sequencer
+
+`Source_intf`, unchanged, and the top level does not move: `Top` names
+`Source.create ~model ~seed` and nothing narrower, thus one line of
+`board/nexys-4/dune` seats era six.
+
+- **`rewind`** is the run start. It captures SEED, drops `idle`, and runs OPEN
+  and the N passes. `idle` rises when the canvas stands. The sequencer's
+  `WaitRewind` state waits for exactly this already, thus the seconds of the
+  draw need no rule of their own.
+- **`step`** reads `canvas[t]`, maps each class through `Vocab.Rtl`, packs the
+  frame and answers `valid`. The map is the vocabulary's rule and this era
+  does not restate it.
+- **Past step T - 1 the frame is silence**, for ever, until the next
+  `rewind`. The sequencer plays the canvas one time and the reset button gives
+  the next run, as Phase I states.
+
+The score port stands behind its own interface, thus Phase II's second canvas
+memory is a local change.
+
+### What the elaboration refuses
+
+The elaboration reads the checkpoint and every dimension follows it. It
+refuses loudly, and the message names what it refused:
+
+- `Model.check_shape` first: the chain of the channels, the accumulator bound,
+  the kernel counts and the constant rows.
+- `9 * Cin >= P` for each layer: the drain rule above.
+- a walk of no passes, a canvas of no steps, and a group of no lanes: N, T
+  and G each stand at 1 or above.
+
 ## The cost model
 
 A lane is one DSP48 taking one product each cycle at 100 MHz. The device
 has 240; this board is a new top level and carries no other era's units,
-thus all 240 are the model's to spend. At 192 lanes, 48 stay free for the
-epilogue and the draw.
+thus all 240 are the model's to spend. At 192 lanes, 48 stand free — and
+they STAY free: the epilogue and the draw are LUTs, because the fused rung
+wants all 240 for the array. "The circuit" chapter gives the reason.
 
 The climb, at T 128, N 512, inside the 25.6-second playback window
 (2.56 G cycles):
@@ -306,8 +518,12 @@ honest:
   drawn weights reads the format floor, a known trap) and never for a
   rung.
 - **Every elaboration parameter has a test shape.** P — the 48 pitch rows
-  — is a parameter like the rest, pinned to 48 by the board and left free
-  so Cyclesim runs Gate B end to end at tiny shapes.
+  — is a parameter of the CIRCUIT like the rest, pinned to 48 by the board.
+  The twin holds P at `Diffusion.rows`, thus Gate B compares at P 48 and the
+  tiny shapes come from T, L, H, G and N. **Parameterizing the twin is
+  DEFERRED and not refused**: it moves a frozen reference, and nothing moves
+  the reference before a circuit works. When one works, the twin takes P as
+  well and the test shapes get smaller.
 
 ## The two phases
 
