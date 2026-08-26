@@ -9,6 +9,9 @@ module Policy = Mgen_nn.Policy
 let rows = Diffusion.rows
 let voices = Diffusion.voices
 
+(* the planes the stem reads: one class plane and one mask plane for each seat *)
+let planes = 2 * voices
+
 (* THE ACTIVATION FORMAT IS Q6 IN INT16, AND IT IS MEASURED. The trunk is a residual stack
    with no norm on the stream, thus a trained model's activations GROW with depth: the
    golden candidate peaks at 184 on half-masked corpus canvases and at 313 on the seeded
@@ -198,7 +201,6 @@ let write counters out index value =
 
 (* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
 let plane_activations canvas hidden ~steps =
-  let planes = 2 * voices in
   let x = Array.create ~len:(steps * rows * planes) 0 in
   for step = 0 to steps - 1 do
     for voice = 0 to voices - 1 do
@@ -212,6 +214,13 @@ let plane_activations canvas hidden ~steps =
     done
   done;
   x
+;;
+
+(* One column of that tensor: the [rows] activations of one step and one plane. The index
+   rule of the tensor stands beside the tensor and nowhere else, thus the circuit's gate
+   reads a column and never an index. *)
+let plane_column x ~step ~plane =
+  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * planes) + plane))
 ;;
 
 (* One layer: the convolution into the int32 accumulator, the folded norm, the optional
@@ -304,6 +313,8 @@ let draw_cell (model : Model.t) raw prng =
 
 module For_test = struct
   let draw_cell = draw_cell
+  let plane_activations = plane_activations
+  let plane_column = plane_column
 end
 
 module Engine = struct

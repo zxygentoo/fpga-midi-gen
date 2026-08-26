@@ -124,6 +124,18 @@ module For_test : sig
       equal this function and not a second reading of it, thus the gate calls the
       arithmetic itself. It reads [model.temper] alone. *)
   val draw_cell : Model.t -> int array -> Prng.state -> Prng.state * float * int
+
+  (** [plane_activations classes hidden ~steps] is the stem's input tensor: the
+      [steps; rows; 2 * Diffusion.voices] activations that the class planes and the mask
+      planes carry over one masked canvas. The engine builds its own stem input with this
+      function, thus it is the decode itself and not a second reading of it — which is
+      what [Canvas] of the circuit must equal. *)
+  val plane_activations : int array array -> bool array array -> steps:int -> int array
+
+  (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
+      of one step and one plane, row 0 first. The tensor's index rule stands beside the
+      tensor, thus a gate reads a column and never an index. *)
+  val plane_column : int array -> step:int -> plane:int -> int array
 end
 
 (** The clamps a walk met, and the chances each one had. The formats are chosen with
