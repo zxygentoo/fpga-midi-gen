@@ -31,9 +31,9 @@ end
    the depth is the primitive's own and not a choice. *)
 let accumulate_latency = 2
 
-(* Cycles from [term_last] to the first [valid]. The accumulator settles one cycle behind
-   its last term, the chain takes it on that cycle's edge, and the bottom stage stands one
-   cycle later. *)
+(* Cycles from [term_last] to the first [drained]. The accumulator settles one cycle
+   behind its last term, the chain takes it on that cycle's edge, and the bottom stage
+   stands one cycle later. *)
 let first_row_latency = accumulate_latency + 2
 
 (* the activation format of the stream, and the accumulator the twin states *)
@@ -62,7 +62,7 @@ module Make (Shape : Shape) = struct
 
   module O = struct
     type 'a t =
-      { valid : 'a
+      { drained : 'a
       ; row : 'a [@bits row_bits]
       ; sums : 'a [@bits lanes * accumulator_bits]
       }
@@ -161,31 +161,13 @@ module Make (Shape : Shape) = struct
         ~init:[]
         ~f:(fun below at -> stage_of at (List.hd below) :: below)
     in
-    { O.valid = draining.value; row = row.value; sums = List.hd_exn chain }
+    { O.drained = draining.value; row = row.value; sums = List.hd_exn chain }
   ;;
 end
 
 (* ==================================================================== *)
 (* The bench *)
 (* ==================================================================== *)
-
-(* [draw state ~limit] is one signed value inside [limit], and [draw_between] one value in
-   a range. Both come from the generator of the project, thus a fuzz that a seed
-   reproduces — the rule of every random thing in this repository. *)
-let draw state ~limit =
-  let state, u = Prng.run Prng.uniform state in
-  state, Int.of_float (u *. Float.of_int ((2 * limit) + 1)) - limit
-;;
-
-let draw_between state ~low ~high =
-  let state, u = Prng.run Prng.uniform state in
-  state, low + Int.of_float (u *. Float.of_int (high - low + 1))
-;;
-
-let draw_array state ~len ~limit =
-  Array.fold_map (Array.create ~len 0) ~init:state ~f:(fun state (_ : int) ->
-    draw state ~limit)
-;;
 
 (* One shape, the dwells driven into it, and the rows the chain gives back. THE REFERENCE
    IS THE TWIN'S INNER SUM restricted to one (column, group): the array holds no more than
@@ -243,7 +225,7 @@ module Bench (Shape : Shape) = struct
     let drained = ref [] in
     let cycle () =
       Cyclesim.cycle sim;
-      if Bits.to_bool !(out.valid)
+      if Bits.to_bool !(out.drained)
       then (
         let value lane =
           Bits.to_signed_int
@@ -293,12 +275,12 @@ module Bench (Shape : Shape) = struct
     let state, columns =
       Array.fold_map (Array.create ~len:inputs 0) ~init:state ~f:(fun state (_ : int) ->
         Array.fold_map (Array.create ~len:3 0) ~init:state ~f:(fun state (_ : int) ->
-          draw_array state ~len:rows ~limit:511))
+          Fuzz.draw_array state ~len:rows ~limit:511))
     in
     let state, weights =
       Array.fold_map (Array.create ~len:inputs 0) ~init:state ~f:(fun state (_ : int) ->
         Array.fold_map (Array.create ~len:9 0) ~init:state ~f:(fun state (_ : int) ->
-          draw_array state ~len:lanes ~limit:127))
+          Fuzz.draw_array state ~len:lanes ~limit:127))
     in
     state, { columns; weights }
   ;;
@@ -370,7 +352,7 @@ let%expect_test "the waveform of one dwell and its drain" =
   (* Three rows, one lane, one input channel: NINE CYCLES AND NOTHING ELSE — the window
      stands outside, thus a dwell is exactly its terms. [term_first] opens the sum and
      [term_last] closes it; the accumulator takes a term two cycles behind its strobe,
-     thus [valid] stands four cycles behind [term_last] and the rows leave in row order,
+     thus [drained] stands four cycles behind [term_last] and the rows leave in row order,
      which is the order a column is packed in. *)
   let module B =
     Bench (struct
@@ -392,7 +374,7 @@ let%expect_test "the waveform of one dwell and its drain" =
     ~display_rules:
       [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
           ~wave_format:Wave_format.Bit
-          [ "clock"; "term"; "term_first"; "term_last"; "valid" ]
+          [ "clock"; "term"; "term_first"; "term_last"; "drained" ]
       ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
           ~wave_format:Wave_format.Unsigned_int
           [ "row" ]
@@ -421,7 +403,7 @@ let%expect_test "the waveform of one dwell and its drain" =
     │                ││  └─────────────────────────────                      │
     │term_last       ││                ┌─┐                                   │
     │                ││────────────────┘ └─────────────                      │
-    │valid           ││                        ┌─────┐                       │
+    │drained         ││                        ┌─────┐                       │
     │                ││────────────────────────┘     └─                      │
     │                ││──────────────────────────┬─┬───                      │
     │row             ││ 0                        │1│2                        │
@@ -462,12 +444,12 @@ let%expect_test "the array agrees over a sweep of shapes" =
      legal work and never the fault the test below states. One seed reproduces every case
      of it. *)
   let case state =
-    let state, rows = draw_between state ~low:2 ~high:14 in
-    let state, lanes = draw_between state ~low:1 ~high:5 in
-    let state, drawn = draw_between state ~low:1 ~high:6 in
+    let state, rows = Fuzz.draw_between state ~low:2 ~high:14 in
+    let state, lanes = Fuzz.draw_between state ~low:1 ~high:5 in
+    let state, drawn = Fuzz.draw_between state ~low:1 ~high:6 in
     (* the drain rule: a dwell of [9 * inputs] cycles against a chain of [rows] stages *)
     let inputs = Int.max drawn ((rows + 8) / 9) in
-    let state, dwells = draw_between state ~low:1 ~high:3 in
+    let state, dwells = Fuzz.draw_between state ~low:1 ~high:3 in
     let module B =
       Bench (struct
         let rows = rows

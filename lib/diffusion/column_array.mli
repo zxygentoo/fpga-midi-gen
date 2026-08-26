@@ -58,9 +58,9 @@ end
     primitive's and not a choice. *)
 val accumulate_latency : int
 
-(** Cycles from [term_last] to the first [valid]: the accumulator settles one cycle behind
-    its last term, the chain takes it on that cycle's edge, and the bottom stage stands
-    one cycle later. *)
+(** Cycles from [term_last] to the first [drained]: the accumulator settles one cycle
+    behind its last term, the chain takes it on that cycle's edge, and the bottom stage
+    stands one cycle later. *)
 val first_row_latency : int
 
 module Make (Shape : Shape) : sig
@@ -93,9 +93,10 @@ module Make (Shape : Shape) : sig
 
   module O : sig
     type 'a t =
-      { valid : 'a
+      { drained : 'a
       (** 1 while [row] and [sums] hold a drained row; it stands for [rows] cycles from
-          [first_row_latency] behind [term_last] *)
+          [first_row_latency] behind [term_last]. The epilogue takes this wire under the
+          same name, thus one strobe is one word across the seam. *)
       ; row : 'a (** the row [sums] holds; the rows leave in row order, 0 upward *)
       ; sums : 'a
       (** the accumulators of that row: [lanes] int32 sums, lane 0 in the low bits *)
