@@ -1,37 +1,19 @@
-(* The masked canvas as a circuit: the note source of era six — see docs/diffusion_rtl.md
-   for the design and its reasons.
-
-   The shape, in five layers. L0 is the shared units — [Prng.Rtl] in the core, and [Exp2],
-   the pick rules and the clamp of [Mgen_nn]. L1 is the elaboration: one model at one
-   geometry as a value — the layer table, the ROM image, the constants and the cost. L2 is
-   the column array, L3 the epilogue behind its drain chain, and L4 the walk that drives
-   them and answers the socket.
-
-   THE ELABORATION IS THE ONLY PLACE THAT READS THE MODEL. Every width, every depth and
-   every base comes out of it, thus the circuit states no dimension of its own and a new
-   checkpoint moves nothing but the elaboration. *)
+(* L1 of the diffusion source — see elaboration.mli for the contract and
+   docs/diffusion_rtl.md for the design. What stands here is the WHY of each rule; the
+   interface states what each one is. *)
 
 open Core
 module Bits = Hardcaml.Bits
 module Nn = Mgen_nn.Quantized
 
-(* ==================================================================== *)
-(* L1 — the elaboration *)
-(* ==================================================================== *)
-
-(** A layer's role in the trunk. It states the two ends, the ReLU and the residual
-    together: the stem decodes the planes into X, a pair opens X into Y and closes Y back
-    into X, and the head reads X and states the logits of one step. Four roles and no
-    independent flags, thus no table can say that a layer closes a pair and skips the
-    residual. *)
-type role =
+type layer_role =
   | Stem
   | Pair_open
   | Pair_close
   | Head
 
 type layer =
-  { role : role
+  { role : layer_role
   ; inputs : int
   ; outputs : int
   ; groups : int
@@ -39,7 +21,7 @@ type layer =
   ; channel_base : int
   }
 
-type elaboration =
+type t =
   { steps : int
   ; rows : int
   ; lanes : int
@@ -67,8 +49,8 @@ let alpha_bits = 24
    [e + weight_exponent], and the two exponent rules cap at 30 and at 14, thus 44 is the
    largest q a quantizer can state and six bits hold it. A field sized on the elected
    model's own peak would save a bit or two and would make a drawn-weight timing probe
-   elaborate a DIFFERENT netlist from the trained build; the bits are worth less than
-   that. [elaborate] refuses a q the field cannot hold. *)
+   create a DIFFERENT netlist from the trained build; the bits are worth less than that.
+   [create] refuses a q the field cannot hold. *)
 let bias_bits = 16
 let shift_bits = 6
 let gain_bits = 16
@@ -92,26 +74,20 @@ let role_at ~count index =
 let dwell layer = taps * layer.inputs
 
 (* One layer, exactly: the dwells of every column and group, and one drain tail behind the
-   last of them. The count is exact and not a bound, because [elaborate] refuses a layer
+   last of them. The count is exact and not a bound, because [create] refuses a layer
    whose dwell is shorter than its drain — no dwell ever waits for the chain to empty.
    What the layer turn itself costs is the cycle bench's to measure. *)
-let layer_cycles elaboration layer =
-  (elaboration.steps * layer.groups * dwell layer) + elaboration.rows
-;;
-
-let forward_cycles elaboration =
-  Array.sum (module Int) elaboration.layers ~f:(layer_cycles elaboration)
-;;
-
-let canvas_cells elaboration = elaboration.steps * Frame.voices
+let layer_cycles t layer = (t.steps * layer.groups * dwell layer) + t.rows
+let forward_cycles t = Array.sum (module Int) t.layers ~f:(layer_cycles t)
+let canvas_cells t = t.steps * Frame.voices
 
 (* one uniform for each cell in the cell order: the opening, and the mask of each pass *)
-let cell_walk_cycles elaboration = canvas_cells elaboration * uniform_cycles
+let cell_walk_cycles t = canvas_cells t * uniform_cycles
 
 (* One pass, LESS THE DRAW: the mask and the forward. The draw's cycles are L4's and the
    bench's — the design estimates about 2 [rows] for each hidden cell — and a number this
    module cannot state exactly it does not state. *)
-let pass_cycles elaboration = cell_walk_cycles elaboration + forward_cycles elaboration
+let pass_cycles t = cell_walk_cycles t + forward_cycles t
 
 let bases_of sizes =
   Array.of_list
@@ -119,7 +95,7 @@ let bases_of sizes =
        base + size, base))
 ;;
 
-let elaborate ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~walk =
+let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~walk =
   Quantized.Model.check_shape model;
   if steps < 1 then invalid_argf "a canvas of %d steps" steps ();
   if rows < 1 then invalid_argf "a column of %d rows" rows ();
@@ -217,9 +193,9 @@ let elaborate ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes
   }
 ;;
 
-(* The elaboration as a table. The schedule prints — the discipline of the eras — thus the
-   cost model of the document and the machine cannot part without a test saying so. *)
-let elaboration_to_string elaboration =
+(* The table. The schedule prints — the discipline of the eras — thus the cost model of
+   the document and the machine cannot part without a test saying so. *)
+let to_string t =
   let ends = function
     | Stem -> "planes -> X"
     | Pair_open -> "X -> Y"
@@ -237,16 +213,16 @@ let elaboration_to_string elaboration =
       (dwell layer)
       layer.weight_base
       layer.channel_base
-      (layer_cycles elaboration layer)
+      (layer_cycles t layer)
   in
   let head =
     [ sprintf
         "T %d, P %d, H %d, G %d, N %d"
-        elaboration.steps
-        elaboration.rows
-        elaboration.store_channels
-        elaboration.lanes
-        elaboration.walk
+        t.steps
+        t.rows
+        t.store_channels
+        t.lanes
+        t.walk
     ; sprintf
         "%3s  %-12s %4s %4s %3s %5s %7s %6s %10s"
         "at"
@@ -263,29 +239,22 @@ let elaboration_to_string elaboration =
   let foot =
     [ sprintf
         "rom %d words of %d bits; constants %d words of %d bits; alpha %d of %d bits"
-        (Array.length elaboration.rom)
-        (elaboration.lanes * 8)
-        (Array.length elaboration.constants)
+        (Array.length t.rom)
+        (t.lanes * 8)
+        (Array.length t.constants)
         constant_bits
-        (Array.length elaboration.alpha)
+        (Array.length t.alpha)
         alpha_bits
-    ; sprintf
-        "the array is %d by %d, thus %d lanes"
-        elaboration.rows
-        elaboration.lanes
-        (elaboration.rows * elaboration.lanes)
-    ; sprintf
-        "a store is %d columns of %d bits"
-        (elaboration.steps * elaboration.store_channels)
-        (elaboration.rows * 16)
+    ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
+    ; sprintf "a store is %d columns of %d bits" (t.steps * t.store_channels) (t.rows * 16)
     ; sprintf
         "forward %d cycles, the cell walk %d, a pass %d less the draw"
-        (forward_cycles elaboration)
-        (cell_walk_cycles elaboration)
-        (pass_cycles elaboration)
+        (forward_cycles t)
+        (cell_walk_cycles t)
+        (pass_cycles t)
     ]
   in
-  head @ Array.to_list (Array.mapi elaboration.layers ~f:layer_line) @ foot
+  head @ Array.to_list (Array.mapi t.layers ~f:layer_line) @ foot
   |> String.concat ~sep:"\n"
 ;;
 
@@ -295,7 +264,7 @@ let%expect_test "the elaboration of the elected rung" =
      file that git ignores. The rung's real weights arrive at [gen_verilog]. *)
   let config = { Diffusion.Config.layers = 16; width = 16 } in
   let model = Quantized.Model.For_test.init config ~seed:1 in
-  print_endline (elaboration_to_string (elaborate model ~steps:128 ~lanes:4 ~walk:512));
+  print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
   [%expect
     {|
     T 128, P 48, H 16, G 4, N 512
@@ -329,16 +298,16 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
      at G 4 makes the ragged group the elected shapes never make, thus the padding is
      under test and not only described. *)
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
-  let elaboration = elaborate model ~steps:8 ~lanes:4 ~walk:4 in
+  let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let kernels = Array.of_list (Quantized.Model.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
   let pad = ref 0 in
   let pad_not_zero = ref 0 in
   let disagree = ref 0 in
-  Array.iteri elaboration.layers ~f:(fun at layer ->
+  Array.iteri t.layers ~f:(fun at layer ->
     let kernel = kernels.(at) in
     let word ~cin ~tap ~group =
-      elaboration.rom.(layer.weight_base + ((((cin * taps) + tap) * layer.groups) + group))
+      t.rom.(layer.weight_base + ((((cin * taps) + tap) * layer.groups) + group))
     in
     let lane_byte word lane =
       Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
@@ -346,9 +315,9 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
     for cin = 0 to layer.inputs - 1 do
       for tap = 0 to taps - 1 do
         for group = 0 to layer.groups - 1 do
-          for lane = 0 to elaboration.lanes - 1 do
+          for lane = 0 to t.lanes - 1 do
             let byte = lane_byte (word ~cin ~tap ~group) lane in
-            let channel = (group * elaboration.lanes) + lane in
+            let channel = (group * t.lanes) + lane in
             if channel >= layer.outputs
             then (
               Int.incr pad;
@@ -365,7 +334,7 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
   let counts = Array.concat_map seen ~f:Fn.id in
   printf
     "%d words, %d weights, each seen %s\n"
-    (Array.length elaboration.rom)
+    (Array.length t.rom)
     (Array.length counts)
     (if Array.for_all counts ~f:(fun n -> n = 1) then "one time" else "WRONG");
   printf
@@ -382,13 +351,13 @@ let%expect_test "the ROM image is the twin's image in the dwell order" =
 
 let%expect_test "a constant word carries the twin's gain, shift and bias" =
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
-  let elaboration = elaborate model ~steps:8 ~lanes:4 ~walk:4 in
+  let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let field word ~low ~width = Bits.select word ~high:(low + width - 1) ~low in
   let disagree = ref 0 in
-  Array.iteri elaboration.layers ~f:(fun at layer ->
+  Array.iteri t.layers ~f:(fun at layer ->
     let twin = model.layers.(at) in
     for channel = 0 to layer.outputs - 1 do
-      let word = elaboration.constants.(layer.channel_base + channel) in
+      let word = t.constants.(layer.channel_base + channel) in
       let bias = Bits.to_signed_int (field word ~low:0 ~width:bias_bits) in
       let shift = Bits.to_unsigned_int (field word ~low:bias_bits ~width:shift_bits) in
       let gain =
@@ -400,7 +369,7 @@ let%expect_test "a constant word carries the twin's gain, shift and bias" =
     done);
   printf
     "%d constant words of %d bits, %d disagree with the twin\n"
-    (Array.length elaboration.constants)
+    (Array.length t.constants)
     constant_bits
     !disagree;
   [%expect {| 22 constant words of 38 bits, 0 disagree with the twin |}]
@@ -410,15 +379,15 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
   let refuse name f =
     match f () with
-    | (_ : elaboration) -> printf "%s: NOT REFUSED\n" name
+    | (_ : t) -> printf "%s: NOT REFUSED\n" name
     | exception Invalid_argument message -> printf "%s: %s\n" name message
   in
   (* the drain rule: at P 60 the H 6 layers dwell 54 cycles and the chain is 60 stages *)
   refuse "a chain that cannot empty" (fun () ->
-    elaborate model ~rows:60 ~steps:8 ~lanes:4 ~walk:4);
-  refuse "a walk of no passes" (fun () -> elaborate model ~steps:8 ~lanes:4 ~walk:0);
-  refuse "a canvas of no steps" (fun () -> elaborate model ~steps:0 ~lanes:4 ~walk:4);
-  refuse "a group of no lanes" (fun () -> elaborate model ~steps:8 ~lanes:0 ~walk:4);
+    create model ~rows:60 ~steps:8 ~lanes:4 ~walk:4);
+  refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
+  refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
+  refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);
   [%expect
     {|
     a chain that cannot empty: layer 1 dwells 54 cycles and its drain takes 60: the chain cannot empty
