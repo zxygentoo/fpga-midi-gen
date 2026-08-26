@@ -3,9 +3,9 @@
     L1 of the diffusion source. The circuit reads its shape out of the checkpoint the way
     [Diffusion.Config.of_checkpoint] does — no flag states a dimension — thus THIS MODULE
     IS THE ONLY PLACE THAT READS THE MODEL. The layer table, the weight image, the
-    per-channel constants, the anneal table and the cycle cost all come out of [create],
-    and every width, every depth and every base of the circuit is a field of the result. A
-    new checkpoint moves nothing else.
+    per-channel norms, the anneal table and the cycle cost all come out of [create], and
+    every width, every depth and every base of the circuit is a field of the result. A new
+    checkpoint moves nothing else.
 
     The design is [docs/diffusion_rtl.md], "The circuit". What a caller must know:
 
@@ -35,14 +35,14 @@ type layer_role =
   | Head
 
 (** One layer of the table. The counters of the circuit size on these numbers, and its ROM
-    and constant addresses start at these bases. *)
+    and norm addresses start at these bases. *)
 type layer =
   { role : layer_role
   ; inputs : int (** the input channels; the kernel reads as [3; 3; inputs; outputs] *)
   ; outputs : int (** the output channels *)
   ; groups : int (** the output groups the dwell walks: [ceil (outputs / lanes)] *)
   ; weight_base : int (** the first word of this layer in [weight_rom] *)
-  ; constant_base : int (** the first word of this layer in [constant_rom] *)
+  ; norm_base : int (** the first word of this layer in [norm_rom] *)
   }
 
 (** One model at one geometry: the four numbers of the geometry, the table, and the tables
@@ -60,7 +60,7 @@ type t =
       the group, then the input channel, then the tap. One column's dwell therefore walks
       a layer's whole range straight through, thus the circuit's ROM address is ONE
       COUNTER that reloads once for each column; any other order makes it a stride. *)
-  ; constant_rom : Hardcaml.Bits.t array
+  ; norm_rom : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
       low [bias_bits], the shift in the [shift_bits] above it, and the value of the gain
       in the top [gain_bits]. The three stand at one address because the epilogue wants
@@ -78,8 +78,7 @@ val taps : int
 (** the bits of one [alpha_rom] entry: 24, the grid of the generator *)
 val alpha_bits : int
 
-(** The fields of a constant word, low to high: the bias, the shift, the value of the
-    gain.
+(** The fields of a norm word, low to high: the bias, the shift, the value of the gain.
 
     THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT. The q of a gain is
     [e + weight_exponent], and the two exponent rules cap at 30 and at 14, thus 44 is the
@@ -91,7 +90,14 @@ val bias_bits : int
 
 val shift_bits : int
 val gain_bits : int
-val constant_bits : int
+val norm_bits : int
+
+(** [norm_word gain ~bias] is one word of [norm_rom]. THE FIELD ORDER IS A FACT OF THIS
+    FUNCTION AND OF NOTHING ELSE, thus a consumer that slices another way disagrees with
+    the image the bitstream carries — and a gate that packs here and slices there is what
+    says so, rather than a board. It raises [Invalid_argument] when the gain's shift does
+    not fit [shift_bits]. *)
+val norm_word : Mgen_nn.Quantized.Constants.scale -> bias:int -> Hardcaml.Bits.t
 
 (** [create ?rows model ~steps ~lanes ~walk] elaborates [model] at the geometry those
     numbers state.

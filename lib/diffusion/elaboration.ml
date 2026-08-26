@@ -18,7 +18,7 @@ type layer =
   ; outputs : int
   ; groups : int
   ; weight_base : int
-  ; constant_base : int
+  ; norm_base : int
   }
 
 type t =
@@ -29,7 +29,7 @@ type t =
   ; store_channels : int
   ; layers : layer array
   ; weight_rom : Bits.t array
-  ; constant_rom : Bits.t array
+  ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
   ; temper : Nn_quantized.Constants.scale
   }
@@ -41,9 +41,9 @@ let taps = 9
    thus a mask uniform compares against it exactly *)
 let alpha_bits = 24
 
-(* The fields of a constant word, low to high: the bias, the shift of the gain, and the
-   value of the gain. The three stand at one address because the epilogue wants the three
-   at one time, thus no two of them can fall out of step.
+(* The fields of a norm word, low to high: the bias, the shift of the gain, and the value
+   of the gain. The three stand at one address because the epilogue wants the three at one
+   time, thus no two of them can fall out of step.
 
    THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT. The q of a gain is
    [e + weight_exponent], and the two exponent rules cap at 30 and at 14, thus 44 is the
@@ -54,7 +54,7 @@ let alpha_bits = 24
 let bias_bits = 16
 let shift_bits = 6
 let gain_bits = 16
-let constant_bits = bias_bits + shift_bits + gain_bits
+let norm_bits = bias_bits + shift_bits + gain_bits
 
 (* One uniform is three steps of the generator — [Prng.uniform] takes three bytes — and
    the machine takes one cycle for each step. *)
@@ -89,6 +89,19 @@ let cell_walk_cycles t = canvas_cells t * uniform_cycles
    module cannot state exactly it does not state. *)
 let pass_cycles t = cell_walk_cycles t + forward_cycles t
 
+(* THE ONE PACKER OF A NORM WORD. The order is a fact of this function and of nothing
+   else: a consumer that slices another way disagrees with it, and the gate that packs
+   here and slices there is what says so. *)
+let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
+  if gain.q < 0 || gain.q >= 1 lsl shift_bits
+  then invalid_argf "a gain shift of %d does not fit %d bits" gain.q shift_bits ();
+  Bits.concat_lsb
+    [ Bits.of_signed_int ~width:bias_bits bias
+    ; Bits.of_unsigned_int ~width:shift_bits gain.q
+    ; Bits.of_signed_int ~width:gain_bits gain.q_value
+    ]
+;;
+
 let bases_of sizes =
   Array.of_list
     (List.folding_map (Array.to_list sizes) ~init:0 ~f:(fun base size ->
@@ -120,14 +133,14 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
     let weight_bases =
       bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
-    let constant_bases = bases_of (Array.map twin ~f:(fun l -> l.outputs)) in
+    let norm_bases = bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
     Array.mapi twin ~f:(fun at (l : Quantized.Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs
       ; outputs = l.outputs
       ; groups = groups_of l
       ; weight_base = weight_bases.(at)
-      ; constant_base = constant_bases.(at)
+      ; norm_base = norm_bases.(at)
       })
   in
   (* The weight image in the DWELL order. The twin gives the checkpoint order — for each
@@ -162,18 +175,19 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   let weight_rom =
     Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words))
   in
-  let constant_word (gain : Nn_quantized.Constants.scale) bias =
-    if gain.q < 0 || gain.q >= 1 lsl shift_bits
-    then invalid_argf "a gain shift of %d does not fit %d bits" gain.q shift_bits ();
-    Bits.concat_lsb
-      [ Bits.of_signed_int ~width:bias_bits bias
-      ; Bits.of_unsigned_int ~width:shift_bits gain.q
-      ; Bits.of_signed_int ~width:gain_bits gain.q_value
-      ]
-  in
-  let constant_rom =
+  (* The norms pad to whole groups with a zero word, as the weight image pads with zero
+     bytes. THE PADDING IS NOT TIDINESS: without it a ragged group's fetch runs past its
+     layer's range — and off the end of the image at the last layer, which a head of four
+     channels in a group of five really reaches. With it the address is
+     [norm_base + group * lanes + lane] at every layer and every group. *)
+  let norm_rom =
     Array.concat_map twin ~f:(fun (l : Quantized.Model.layer) ->
-      Array.mapi l.gain ~f:(fun channel gain -> constant_word gain l.bias.(channel)))
+      Array.init
+        (groups_of l * lanes)
+        ~f:(fun channel ->
+          if channel >= l.outputs
+          then Bits.zero norm_bits
+          else norm_word l.gain.(channel) ~bias:l.bias.(channel)))
   in
   let alpha_rom =
     Array.init walk ~f:(fun pass ->
@@ -194,7 +208,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; store_channels
   ; layers
   ; weight_rom
-  ; constant_rom
+  ; norm_rom
   ; alpha_rom
   ; temper = model.temper
   }
@@ -219,7 +233,7 @@ let to_string t =
       layer.groups
       (dwell layer)
       layer.weight_base
-      layer.constant_base
+      layer.norm_base
       (layer_cycles t layer)
   in
   let head =
@@ -245,11 +259,11 @@ let to_string t =
   in
   let foot =
     [ sprintf
-        "the weight ROM %d words of %d bits, the constants %d of %d, the anneal %d of %d"
+        "the weight ROM %d words of %d bits, the norms %d of %d, the anneal %d of %d"
         (Array.length t.weight_rom)
         (t.lanes * 8)
-        (Array.length t.constant_rom)
-        constant_bits
+        (Array.length t.norm_rom)
+        norm_bits
         (Array.length t.alpha_rom)
         alpha_bits
     ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
@@ -292,7 +306,7 @@ let%expect_test "the elaboration of the elected rung" =
      13  X -> Y         16   16   4   144    7200    208      73776
      14  Y + X -> X     16   16   4   144    7776    224      73776
      15  X -> logits    16    4   1   144    8352    240      18480
-    the weight ROM 8496 words of 32 bits, the constants 244 of 38, the anneal 512 of 24
+    the weight ROM 8496 words of 32 bits, the norms 244 of 38, the anneal 512 of 24
     the array is 48 by 4, thus 192 lanes
     a store is 2048 columns of 768 bits
     forward 1088256 cycles, the cell walk 1536, a pass 1089792 less the draw
@@ -367,30 +381,44 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
     |}]
 ;;
 
-let%expect_test "a constant word carries the twin's gain, shift and bias" =
+let%expect_test "a norm word carries the twin's gain, shift and bias" =
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let field word ~low ~width = Bits.select word ~high:(low + width - 1) ~low in
   let disagree = ref 0 in
+  let pad = ref 0 in
+  let pad_not_zero = ref 0 in
   Array.iteri t.layers ~f:(fun at layer ->
     let twin = model.layers.(at) in
-    for channel = 0 to layer.outputs - 1 do
-      let word = t.constant_rom.(layer.constant_base + channel) in
-      let bias = Bits.to_signed_int (field word ~low:0 ~width:bias_bits) in
-      let shift = Bits.to_unsigned_int (field word ~low:bias_bits ~width:shift_bits) in
-      let gain =
-        Bits.to_signed_int (field word ~low:(bias_bits + shift_bits) ~width:gain_bits)
-      in
-      let { Nn_quantized.Constants.q_value; q } = twin.gain.(channel) in
-      if bias <> twin.bias.(channel) || shift <> q || gain <> q_value
-      then Int.incr disagree
+    (* the whole group, thus the padded lanes of a ragged one are under test: they must
+       read zero, or a fetch past a layer's range states a norm that is not its own *)
+    for channel = 0 to (layer.groups * t.lanes) - 1 do
+      let word = t.norm_rom.(layer.norm_base + channel) in
+      if channel >= layer.outputs
+      then (
+        Int.incr pad;
+        if Bits.to_unsigned_int word <> 0 then Int.incr pad_not_zero)
+      else (
+        let bias = Bits.to_signed_int (field word ~low:0 ~width:bias_bits) in
+        let shift = Bits.to_unsigned_int (field word ~low:bias_bits ~width:shift_bits) in
+        let gain =
+          Bits.to_signed_int (field word ~low:(bias_bits + shift_bits) ~width:gain_bits)
+        in
+        let { Nn_quantized.Constants.q_value; q } = twin.gain.(channel) in
+        if bias <> twin.bias.(channel) || shift <> q || gain <> q_value
+        then Int.incr disagree)
     done);
   printf
-    "%d constant words of %d bits, %d disagree with the twin\n"
-    (Array.length t.constant_rom)
-    constant_bits
+    "%d norm words of %d bits, %d disagree with the twin\n"
+    (Array.length t.norm_rom)
+    norm_bits
     !disagree;
-  [%expect {| 22 constant words of 38 bits, 0 disagree with the twin |}]
+  printf "%d padded words, %d of them not zero\n" !pad !pad_not_zero;
+  [%expect
+    {|
+    28 norm words of 38 bits, 0 disagree with the twin
+    6 padded words, 0 of them not zero
+    |}]
 ;;
 
 let%expect_test "the elaboration refuses what the machine cannot hold" =
