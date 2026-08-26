@@ -114,6 +114,18 @@ module Model : sig
   end
 end
 
+module For_test : sig
+  (** [draw_cell model logits prng] is one redraw: the peak, the tempered exponentials
+      over the shared table, and the pick a 24-bit uniform lands — the engine's own draw,
+      lifted out of it. It gives the state behind the draw, the uniform as a float, and
+      the class.
+
+      IT IS EXPORTED FOR THE CIRCUIT'S GATE AND FOR NOTHING ELSE: the draw of era six must
+      equal this function and not a second reading of it, thus the gate calls the
+      arithmetic itself. It reads [model.temper] alone. *)
+  val draw_cell : Model.t -> int array -> Prng.state -> Prng.state * float * int
+end
+
 (** The clamps a walk met, and the chances each one had. The formats are chosen with
     margin and not metered on a trained checkpoint; a clamp that fires is the finding that
     says which format is wrong, thus it is counted and never assumed away. *)

@@ -302,6 +302,10 @@ let draw_cell (model : Model.t) raw prng =
   Nn_quantized.draw ~weights prng
 ;;
 
+module For_test = struct
+  let draw_cell = draw_cell
+end
+
 module Engine = struct
   type draw =
     { step : int

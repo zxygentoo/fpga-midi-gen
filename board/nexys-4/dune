@@ -21,4 +21,4 @@
 (executable
  (name gen_probe)
  (modules gen_probe)
- (libraries core core_unix hardcaml jane_rope mgen_diffusion))
+ (libraries core core_unix hardcaml jane_rope mgen_nn mgen_diffusion))

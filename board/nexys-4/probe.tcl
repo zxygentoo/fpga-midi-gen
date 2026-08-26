@@ -1,6 +1,6 @@
 # Reads one unit out of context: its utilization, and its timing at 100 MHz.
 #
-# First: dune exec board/nexys-4/gen_probe.exe -- 4
+# First: dune exec board/nexys-4/gen_probe.exe -- UNIT [lanes]
 # Then, from the repository root:
 #   vivado -mode batch -journal board/_build/probe.jou \
 #          -log board/_build/probe.log -source board/nexys-4/probe.tcl
@@ -16,7 +16,7 @@ set build_dir $root/board/_build
 file mkdir $build_dir
 
 read_verilog $root/board/_generated/probe.v
-synth_design -top column_array -part xc7a100tcsg324-1 -mode out_of_context
+synth_design -top probe -part xc7a100tcsg324-1 -mode out_of_context
 create_clock -name clock -period 10.000 [get_ports clock]
 set_input_delay -clock clock 2.000 \
     [get_ports -filter {DIRECTION == IN && NAME != "clock"}]

@@ -217,12 +217,12 @@ The outer FSM is the proto's four states grown to five: OPEN, then N
 rounds of MASK, FORWARD, DRAW, then PLAY. OPEN, MASK and DRAW are small
 serial machinery in the pinned PRNG order — the masks are one uniform for
 each of the 512 cells, the draws ride era four's pipeline over the head's
-streamed logit columns — and together they cost about two percent of a
-pass: three cycles for each cell of the mask draw, and about 2 P cycles
-for each hidden cell that draws, which the cycle bench settles. FORWARD walks the
-layer table: one record for each layer, stating Cin, Cout, the source and
-destination tensors, the ReLU and residual flags, and the weight and
-constant bases. A counter walks it; no program, no op vocabulary.
+streamed logit columns — and together they cost about three percent of a
+pass: three cycles for each cell of the mask draw, and 3 P + 3 cycles for
+each hidden cell that draws, which the cycle bench settles. FORWARD
+walks the layer table: one record for each layer, stating Cin, Cout, the
+source and destination tensors, the ReLU and residual flags, and the weight
+and constant bases. A counter walks it; no program, no op vocabulary.
 
 ### The prior art
 
@@ -463,10 +463,24 @@ from `Prng.Rtl` in the consumption order of the Scope chapter.
   the weight and constant bases. There is no program and no op vocabulary.
 - **DRAW rides the head.** The head's drain fills the logit file of step t,
   and the draw then takes the hidden cells of that step in the seat order the
-  group order already gives. The peak of each cell costs nothing — the
-  epilogue tracks it as the rows come out. Then one walk of the file gives the
-  exp2 weights and their total, and a second walk picks on the 24-bit uniform:
-  about 2 P cycles for each hidden cell.
+  group order already gives. THE DRAW TAKES ITS OWN PEAK, thus a cell is three
+  walks of the file: the peak, then the exp2 weights and their total, then the
+  pick on the 24-bit uniform. The head's drain could track the peak for nothing
+  and save one walk, and it does not, because a peak handed in is a
+  precondition the unit cannot check: a caller that states one that is not the
+  peak states another distribution, and nothing says so.
+
+  **THE TABLE IS A FORK, AND THE FORK IS WHY A CELL COSTS 3 P AND NOT 5 P.**
+  The shared `Exp2` registers its table entry but takes the shift and the zero
+  test from its magnitude as it stands, thus it asks a caller to hold that
+  magnitude for two cycles — a walk of 48 classes would pay it twice over, and
+  a magnitude a cycle reads one class's entry under another class's shift. The
+  draw's fuzz read that fault as 58 disagreements of 60 before the fork stood.
+  `lib/diffusion/exp2.ml` registers the shift beside the entry: two flip-flops,
+  and a gate that states what a holding caller reads does not move. **WHETHER
+  TO BACKPORT IT TO `lib/nn` IS A DECISION FOR WHEN ERA SIX SETTLES** — a unit
+  two shipped eras carry does not move for a round that has not shipped — and
+  that gate is the evidence for it.
 - **PLAY** answers the socket.
 
 **The canvas is written IN PLACE during the head, and it is exact.** The head

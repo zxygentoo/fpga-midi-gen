@@ -74,6 +74,11 @@ module Make (Shape : Shape) = struct
        tag that clears is what says so *)
     let dspec = Reg_spec.create ~clock:i.clock () in
     let rec delay spec n x = if n = 0 then x else delay spec (n - 1) (reg spec x) in
+    (* THE ARRAY OWNS THE DSPS AND THIS UNIT TAKES NONE, thus the rule is an attribute and
+       not a hope: a 32 by 16 variable product is exactly what the tools infer a DSP48
+       for, and the fused rung at G 5 needs all 240 of them for the lanes. epilogue.mli
+       states the reason; this states it to Vivado. *)
+    let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false) in
     let field word ~low ~bits = select word ~high:(low + bits - 1) ~low in
     let lane at =
       let slice signal bits =
@@ -90,7 +95,7 @@ module Make (Shape : Shape) = struct
       in
       (* STAGE 1 — the gain multiply. The product of an int32 sum and an int16 gain is 48
          bits, and it is LUTs and never a DSP: the array owns those. *)
-      let product = reg dspec (slice i.sums accumulator_bits *+ gain) in
+      let product = reg dspec (no_dsp (slice i.sums accumulator_bits *+ gain)) in
       (* STAGE 2 — [Constants.apply], then the bias, the ReLU and the clamp. The shift is
          VARIABLE because a gain carries its own q, and it goes toward negative infinity
          as the twin's arithmetic shift does. *)
