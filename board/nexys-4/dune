@@ -13,3 +13,12 @@
  (name gen_verilog)
  (modules gen_verilog)
  (libraries core core_unix hardcaml jane_rope mgen_mamba mgen_nexys4))
+
+; The out-of-context probe: one unit alone, for a timing and utilization reading before
+; the machine around it exists. It carries no model — the column array takes its weights
+; as ports — thus it names no checkpoint.
+
+(executable
+ (name gen_probe)
+ (modules gen_probe)
+ (libraries core core_unix hardcaml jane_rope mgen_diffusion))

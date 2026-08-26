@@ -164,6 +164,11 @@ retiming trap), and the array is 48 identical row slices — regularity the
 placer can use. The first build at the smallest rung already exercises the
 full array, which is the point of starting there.
 
+**THE GUESS WAS MEASURED ON 2026-08-26 AND IT NAMED THE WRONG THING.** The
+array, its 768-bit buses and its broadcast are all cheap; the critical path is
+ONE CONTROL NET — the drain chain's capture select, reaching every one of its
+registers from one flop. "The array, measured" below states the numbers.
+
 ### The memories
 
 - **Two activation tensors, X and Y**, each `T * Cin` columns deep by 768
@@ -520,6 +525,46 @@ the group drains, the layer turns — are what the cycle bench measures, and
 `l64-h16` holds 8 percent of slack against the window for them. Even 48
 lanes (G 1) plays rung 1 at N 512 inside the window: the climb has rungs
 in lanes as well as layers, if the first build fights.
+
+### The array, measured
+
+The column array alone, through Vivado out of context on the part, at 100 MHz
+and P 48. It needs no checkpoint: the unit takes its weights and its columns
+as ports, thus the shape is the whole input. `board/nexys-4/gen_probe.ml`
+writes it and `probe.tcl` reads it.
+
+| G | lanes | DSP48E1 | LUTs | registers | WNS | WHS |
+|---|---|---|---|---|---|---|
+| 1 | 48 | 48 (20%) | 1 501 (2.4%) | 1 559 | +5.390 | +0.118 |
+| 4 | 192 | 192 (80%) | 3 769 (5.9%) | 6 167 | +2.950 | +0.132 |
+| 5 | 240 | 240 (100%) | 4 505 (7.1%) | 7 707 | +2.761 | +0.124 |
+
+Every geometry MEETS with no failing endpoint. Three readings agree with the
+cost model above:
+
+- **One DSP for each lane, exactly** — 48, 192 and 240. No adder tree and no
+  extra multiplier stands anywhere, and G 5 lands on 240 of the device's 240,
+  which is the fused rung's whole budget and the reason the epilogue is LUTs.
+- **The DSP absorbs all four registers.** The synthesis log states it for the
+  operand pair, the product and the sum, at mode `((C:0x0) or P)+(A2*B2)` —
+  the primitive's full pipeline. That is what the free-running operand
+  registers buy, thus the register count is the drain chain and almost nothing
+  else: 6 167 against the chain's own 6 144 at G 4.
+- **No block RAM**, as the unit holds none.
+
+**THE CRITICAL PATH IS NOT THE ARRAY. IT IS ONE CONTROL NET.** At G 4 it runs
+from one flop to the chain's mux, fanout 6 019, and it is 6.415 ns of ROUTE
+against 0.580 ns of logic — 92 percent route, one logic level. That flop is
+the capture select, and it reaches every register of the chain. The same shape
+stands at G 5 (fanout 7 523, 6.606 ns) and shrinks at G 1 (fanout 144,
+0.847 ns), thus the net scales with the chain and with nothing else.
+
+The design does not move for it: it meets, and this project measures before it
+optimizes. What the reading buys is the KNOWN WEAK POINT and its answer — one
+copy of the capture register for each chain stage, 48 drivers of 128 registers
+where one drives 6 144 — held until a build asks for it. The slack of the
+whole machine will go here first when the memories arrive and take the routing
+this probe had to itself.
 
 ## The iteration strategy
 
