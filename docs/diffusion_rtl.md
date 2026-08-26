@@ -290,13 +290,24 @@ Five layers, and the middle one is where the retired program stood:
 - **L2, the column array**: the pitch shifts, the two broadcast trees, the
   P by G lanes, AND THE DRAIN CHAIN. The chain is the array's output port:
   without it that port is P by G by 32 bits, which is neither wireable nor
-  testable alone. THE WINDOW IS NOT HERE; it stands at L4, with the store it
-  caches.
-- **L3, the epilogue**: the folded norm, the ReLU, the clamp, the residual
-  add, and the column packing.
-- **L4, the walk**: the outer FSM, the two activation stores and the
-  three-column window that caches them, the canvas, the draw, and the score
-  port.
+  testable alone.
+- **L3, the epilogue**: the folded norm, the ReLU, the clamp and the residual
+  add — one drained row into one row of activations, and nothing wider than
+  a row.
+- **L4, the walk**: the outer FSM, the two activation stores and the three
+  bands that cache them — the column window, the residual columns and the
+  output columns — the canvas, the draw, and the score port.
+
+**EVERY WIDE BUFFER THAT TOUCHES THE STORE LIVES WITH THE STORE.** The
+three-column window is a read cache for the column port, a residual column is
+a read cache for the join, and an output column is a write buffer. What fills
+each one, when a slot is free, and what the zero column is beyond the ends of
+the roll are questions of the memory and of the walk that reads it; registers
+in one unit and the policy in another put a load strobe on one side of an
+interface and the dwell it must be timed against on the other. The rule costs
+nothing to follow — the path is the same either way, thus no logic and no
+stage — and it is what holds the array's interface at eight fields and the
+epilogue's at rows in and rows out.
 
 ### The dwell
 
@@ -316,16 +327,11 @@ work. The three pitch taps are wire shifts of the registered column — zeros
 shift in at row 0 and row P - 1 — and the columns before t 0 and after t T - 1
 are the zero column, muxed.
 
-**THE WINDOW STANDS WITH THE STORE AND NOT INSIDE THE ARRAY.** A window is a
-read cache for the column port, thus what fills it, when a slot is free, and
-what the zero column is at the ends of the roll are all questions of the
-memory and of the walk that reads it. Registers in the array and the policy in
-the walk would put a load strobe on one side of an interface and the dwell it
-must be timed against on the other. A term names the column it takes, and the
-array shifts it. The path is the same either way — the window register, the
-time mux, the pitch mux, the operand register — thus the cut costs no logic
-and no stage, and it takes three fields and two rules out of the array's
-interface.
+**THE WINDOW STANDS WITH THE STORE AND NOT INSIDE THE ARRAY**, under the rule
+of "The shape of the code": a term names the column it takes, and the array
+shifts it. The path is the same either way — the window register, the time
+mux, the pitch mux, the operand register — thus the cut takes three fields and
+two rules out of the array's interface and costs nothing for them.
 
 One tap cycle broadcasts one operand pair. Lane (r, c) takes the activation of
 row `r + dx - 1` of the column of `dy`, and the weight byte of
