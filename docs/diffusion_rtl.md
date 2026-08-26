@@ -566,6 +566,23 @@ where one drives 6 144 — held until a build asks for it. The slack of the
 whole machine will go here first when the memories arrive and take the routing
 this probe had to itself.
 
+The reserve is also the variance fix, not only the slack fix: a net at this
+fanout and 92 percent route is exactly the kind whose length moves from build
+to build — the 0.1 ns lottery the seed round measured. When the full build
+first wobbles, the replication comes BEFORE a re-roll of the lottery.
+
+Two rules for reading this table:
+
+- **An out-of-context number is optimistic by construction** — an empty
+  device, no congestion, a flat 2 ns charged at the ports. The finding to
+  carry forward is that the array is not the problem; never that 2.9 ns
+  exist for the machine to spend.
+- **The probe is a ladder, as the drift is.** The next ring stands where the
+  risk moved: the weight ROM through the broadcast trees into the array —
+  era four's retiming trap on its home ground — and after it the column
+  store's cascade read. Each ring is measured before the machine around it
+  exists, at probe cost and not build cost.
+
 ## The iteration strategy
 
 **THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
