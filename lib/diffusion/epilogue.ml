@@ -20,13 +20,21 @@ end
    clamp, then the residual with the second. A 32 by 16 multiply and a 48-bit variable
    shift do not stand in one cycle at 100 MHz beside each other — and ring 3 read the
    shift, the bias and the clamp together at 19 levels, failing in context — thus the
-   stages are four and the tag rides beside them. The split is the round's licensed
-   reserve: no caller counts the depth, because the tag travels. *)
-let latency = 4
+   stages are five and the tag rides beside them. The split is the round's licensed
+   reserve: no caller counts the depth, because the tag travels.
+
+   THE MULTIPLY ITSELF TOOK TWO OF THE FIVE at the fused rung 3. In LUTs — the array owns
+   every DSP — a 32 by 16 product is the widest cone of this unit, and the census of the
+   golden candidate named it at −0.090 over ten endpoints. It stands in two stages now,
+   split by the GAIN'S BYTES, and the product is the same product. *)
+let latency = 5
 
 (* the activation format the twin states, and the accumulator the array hands over *)
 let activation_bits = Quantized.activation_bits
 let accumulator_bits = Quantized.accumulator_bits
+
+(* the whole gain product: an int32 sum by an int16 gain *)
+let product_bits = accumulator_bits + 16
 
 (* [clamp16] of the twin, as a circuit: the value saturates and never wraps. A wrap here
    would be silently wrong music, and the clamp is what the format election stands on. *)
@@ -85,38 +93,52 @@ module Make (Shape : Shape) = struct
       let { Elaboration.gain; shift; bias } =
         Elaboration.Rtl.norm_fields (slice i.norms Elaboration.norm_bits)
       in
-      (* STAGE 1 — the gain multiply. The product of an int32 sum and an int16 gain is 48
-         bits, and it is LUTs and never a DSP: the array owns those. *)
-      let product =
-        reg dspec (Column_array.no_dsp (slice i.sums accumulator_bits *+ gain))
+      (* STAGES 1 AND 2 — the gain multiply, split by the gain's bytes. The product of an
+         int32 sum and an int16 gain is 48 bits, and it is LUTs and never a DSP: the array
+         owns those.
+
+         THE SPLIT IS EXACT OVER THE INTEGERS. A signed gain is its signed high byte times
+         256 plus its UNSIGNED low byte, thus [s * g] is [s *+ g_high] shifted eight plus
+         [s *+ g_low] — the low half carried as a non-negative signed value, which is what
+         the leading zero states. No value moves; one register does. *)
+      let sum = slice i.sums accumulator_bits in
+      let gain_high = reg dspec (Column_array.no_dsp (sum *+ sel_top gain ~width:8)) in
+      let gain_low =
+        reg dspec (Column_array.no_dsp (sum *+ (gnd @: sel_bottom gain ~width:8)))
       in
-      (* STAGE 2 — [Constants.apply] with the bias. The shift is VARIABLE because a gain
+      let product =
+        reg
+          dspec
+          (sresize (gain_high @: zero 8) ~width:product_bits
+           +: sresize gain_low ~width:product_bits)
+      in
+      (* STAGE 3 — [Constants.apply] with the bias. The shift is VARIABLE because a gain
          carries its own q, and it goes toward negative infinity as the twin's arithmetic
          shift does. *)
-      let scaled = log_shift ~f:sra product ~by:(pipeline dspec ~n:1 shift) in
+      let scaled = log_shift ~f:sra product ~by:(pipeline dspec ~n:2 shift) in
       let biased =
-        reg dspec (scaled +: sresize (pipeline dspec ~n:1 bias) ~width:(width scaled))
+        reg dspec (scaled +: sresize (pipeline dspec ~n:2 bias) ~width:(width scaled))
       in
-      (* STAGE 3 — the ReLU and the first clamp *)
+      (* STAGE 4 — the ReLU and the first clamp *)
       let ramped =
         mux2
-          (pipeline dspec ~n:2 i.relu)
+          (pipeline dspec ~n:3 i.relu)
           (mux2 (biased <+. 0) (zero (width biased)) biased)
           biased
       in
       let conv = reg dspec (clamp16 ramped) in
-      (* STAGE 4 — the join. THE TWIN CLAMPS TWICE: it writes the convolution through its
+      (* STAGE 5 — the join. THE TWIN CLAMPS TWICE: it writes the convolution through its
          counted clamp and then writes the sum through it again, thus a value that rode
          the first clamp and then meets a residual gives a different answer under one
          clamp than under two. Gate B is bit for bit. *)
       let sum =
         sresize conv ~width:(activation_bits + 1)
         +: sresize
-             (pipeline dspec ~n:3 (slice i.residual activation_bits))
+             (pipeline dspec ~n:4 (slice i.residual activation_bits))
              ~width:(activation_bits + 1)
       in
       let joined = clamp16 (mux2 (sum <+. 0) (zero (width sum)) sum) in
-      reg dspec (mux2 (pipeline dspec ~n:3 i.join) joined conv)
+      reg dspec (mux2 (pipeline dspec ~n:4 i.join) joined conv)
     in
     (* the tag clears and the datapath does not: what is real is what [valid] marks *)
     { O.valid = pipeline spec ~n:latency i.drained

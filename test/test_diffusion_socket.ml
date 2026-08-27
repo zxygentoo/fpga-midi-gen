@@ -41,7 +41,14 @@ module Source = Mgen_diffusion.Source
    the era's 48, because the seat registers of the opening are the corpus's. *)
 let steps = 8
 let walk = 2
-let model = Quantized.Model.For_test.(init config ~seed:11)
+
+(* One channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
+   the fused floor asks 61, thus the shape the twin tests with is one this elaboration
+   refuses. Nothing here reads the width. *)
+let model =
+  Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 8 } ~seed:11
+;;
+
 let e = Elaboration.create model ~steps ~lanes:2 ~walk
 let clocks_per_ms = 4
 let step_ms = 400

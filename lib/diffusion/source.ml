@@ -867,7 +867,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   window ~start_cycle:(taken - 8);
   [%expect
     {|
-    the level rose at cycle 3088 and the step was taken at 3573
+    the level rose at cycle 3022 and the step was taken at 3510
     ┌Signals───────────┐┌Waves─────────────────────────────────────────────────────┐
     │step_ready        ││  ┌───────────────────────────────────────────────────────│
     │                  ││──┘                                                       │
@@ -1055,14 +1055,14 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
     (100.0 *. Float.of_int (rung_service / rung.walk) /. Float.of_int pass);
   [%expect
     {|
-    H 8, G 2, two pairs, T 6, N 3, seed 1: 37738 cycles, 42 hidden cells of 72
+    H 8, G 2, two pairs, T 6, N 3, seed 1: 37393 cycles, 42 hidden cells of 72
       the opening 74 cycles against the model's cell walk 72
       the masks 222, thus 74 a pass against the same 72
-      the engine 30630, thus 10210 a pass against forward_cycles 9792
-      the service 6810: 72 seat reads, 210 uniform, 6510 draw, 18 acknowledgements
-      a standing cell 1 cycle, a hidden cell 161 — the draw states 154 of them
+      the engine 30243, thus 10081 a pass against forward_cycles 9696
+      the service 6852: 72 seat reads, 210 uniform, 6552 draw, 18 acknowledgements
+      a standing cell 1 cycle, a hidden cell 162 — the draw states 155 of them
     the rung T 128, N 512, P 48, G 4: 99604 hidden cells over the walk, 194 a pass
-      a pass 1121558 cycles: the engine 1088256, the mask 1536, the service 31766 — the service is 2.8 percent
+      a pass 1121416 cycles: the engine 1087920, the mask 1536, the service 31960 — the service is 2.8 percent
     |}]
 ;;
 
@@ -1119,9 +1119,9 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
     (1 + ((served Uniform + served Redraw) / hidden));
   [%expect
     {|
-    the opening and pass 0 at T 128, H 16, G 4, P 48: 1175164 cycles
+    the opening and pass 0 at T 128, H 16, G 4, P 48: 1175273 cycles
       the opening 1538 and the mask 1538, against the model's cell walk 1536 for each
-      the engine 1096246 against forward_cycles 1088256, thus 7990 for the preambles and the head
-      the service 75840: 470 cells redrawn of 512, at 161 cycles each
+      the engine 1095885 against forward_cycles 1087920, thus 7965 for the preambles and the head
+      the service 76310: 470 cells redrawn of 512, at 162 cycles each
     |}]
 ;;

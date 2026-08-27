@@ -58,6 +58,13 @@ struct
   let tap_bits = address_bits_for taps
   let lane_bits = address_bits_for lanes
   let layer_bits = address_bits_for layer_count
+  let turn_count = Array.length e.turns
+  let turn_bits = address_bits_for turn_count
+
+  (* THE PAIR'S STEP COUNTER RUNS PAST THE CANVAS. B trails A by two, thus [s] walks 0 to
+     T + 1 and its width is not the column's. The semantic column is [s] in phase A and
+     [s - 2] in phase B, and that one is [step_bits] wide as it always was. *)
+  let turn_step_bits = address_bits_for (steps + 2)
   let seat_bits = address_bits_for voices
   let plane_bits = address_bits_for planes
   let column_bits = rows * activation_bits
@@ -109,6 +116,7 @@ struct
      array owns the DSPs, thus every address product is pinned, and the rule is fixed here
      one time rather than at each of the five addresses below. *)
   let column_address = Elaboration.Rtl.column_address ~pin:Column_array.no_dsp e
+  let ring_address = Elaboration.Rtl.ring_address ~pin:Column_array.no_dsp e
   let channel_of = Elaboration.Rtl.channel_of ~pin:Column_array.no_dsp e
 
   (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
@@ -165,88 +173,106 @@ struct
     (* ---------------------------------------------------------------- *)
     (* the layer, and the facts the table states about it *)
     (* ---------------------------------------------------------------- *)
-    let layer = Variable.reg spec ~width:layer_bits in
-    let fact ~width f =
-      mux
-        layer.value
-        (List.map (Array.to_list layers) ~f:(fun l -> of_unsigned_int ~width (f l)))
+    (* THE TURN IS THE REGISTER; THE LAYER TRAVELS IN THE FRAMES. A layer used to end
+       before the next began, thus one register named it and every fact muxed by it.
+       Inside a pair the lead frame can be in B while the now frame is still in A and the
+       flush trails both, thus what the machine holds is the TURN and each frame carries
+       its own phase. [Elaboration.Rtl.layer_of] turns the two into the table's index, and
+       the table's mux is the one it always was. *)
+    let turn = Variable.reg spec ~width:turn_bits in
+    let layer_of ~phase = Elaboration.Rtl.layer_of e ~turn:turn.value ~phase in
+    let fact at ~width f =
+      mux at (List.map (Array.to_list layers) ~f:(fun l -> of_unsigned_int ~width (f l)))
     in
-    let flag f =
-      mux
-        layer.value
-        (List.map (Array.to_list layers) ~f:(fun l -> if f l then vdd else gnd))
+    let flag at f =
+      mux at (List.map (Array.to_list layers) ~f:(fun l -> if f l then vdd else gnd))
     in
-    let cin_count = fact ~width:cin_bits (fun l -> l.inputs) in
-    let group_count = fact ~width:group_bits (fun l -> l.groups) in
-    let out_count = fact ~width:channel_bits (fun l -> l.outputs) in
-    let weight_base = fact ~width:weight_bits (fun l -> l.weight_base) in
-    let norm_base = fact ~width:norm_bits (fun l -> l.norm_base) in
     (* A LAYER'S ROLE STATES ITS TWO ENDS, ITS RELU AND ITS RESIDUAL TOGETHER, thus every
        flag below reads the one field and no two of them can disagree. *)
-    let by_role f = flag (fun l -> f l.Elaboration.role) in
-    let is_stem =
-      by_role (function
-        | Stem -> true
-        | _ -> false)
-    in
-    let is_head =
-      by_role (function
+    let by_role at f = flag at (fun l -> f l.Elaboration.role) in
+    let is_head_of at =
+      by_role at (function
         | Head -> true
         | _ -> false)
     in
-    let is_join =
-      by_role (function
+    let is_join_of at =
+      by_role at (function
         | Pair_close -> true
         | _ -> false)
     in
-    let takes_relu =
-      by_role (function
-        | Stem | Pair_open -> true
-        | _ -> false)
+    (* THE STEM IS ITS OWN TURN, thus its plane select is a fact of the turn alone and
+       needs no phase: a preamble stands between it and everything after it. *)
+    let is_stem =
+      mux
+        turn.value
+        (List.map (Array.to_list e.turns) ~f:(fun tn ->
+           match layers.(tn.Elaboration.first).role with
+           | Stem -> vdd
+           | _ -> gnd))
     in
-    (* the taps read Y on a pair-closing layer, the canvas on the stem and X otherwise;
-       the write goes to Y on a pair-opening layer, to the logit file at the head and to X
-       otherwise *)
-    let taps_read_y = is_join in
-    let writes_y =
-      by_role (function
-        | Pair_open -> true
-        | _ -> false)
+    let is_pair =
+      mux
+        turn.value
+        (List.map (Array.to_list e.turns) ~f:(fun tn ->
+           if Elaboration.is_pair tn then vdd else gnd))
     in
     (* ---------------------------------------------------------------- *)
     (* THE LEAD FRAME: the block being addressed *)
     (* ---------------------------------------------------------------- *)
-    let lead_step = Variable.reg spec ~width:step_bits in
+    let lead_s = Variable.reg spec ~width:turn_step_bits in
+    let lead_phase = Variable.reg spec ~width:1 in
     let lead_group = Variable.reg spec ~width:group_bits in
     let lead_cin = Variable.reg spec ~width:cin_bits in
     let lead_cycle = Variable.reg spec ~width:tap_bits in
     (* the preamble fetches the FIRST block instead of the next one, and holds the nest
-       still while it does: one short preamble at each layer, and the rotation then hides
-       every fetch of the layer under a running dwell *)
+       still while it does: one short preamble at each TURN — not at each layer — and the
+       rotation then hides every fetch of the turn under a running dwell, at a phase
+       change as at a column change *)
     let priming = Variable.reg spec ~width:1 in
+    let lead_layer = layer_of ~phase:lead_phase.value in
+    let cin_count = fact lead_layer ~width:cin_bits (fun l -> l.inputs) in
+    let group_count = fact lead_layer ~width:group_bits (fun l -> l.groups) in
     let last_cycle = lead_cycle.value ==:. taps - 1 in
     let last_cin = lead_cin.value ==: cin_count -:. 1 in
     let last_group = lead_group.value ==: group_count -:. 1 in
-    let last_step = lead_step.value ==:. steps - 1 in
-    (* the block after the lead's, as a value: the fetches take it, and the nest takes it
-       at the close of the block *)
-    let turns_cin = last_cin in
-    let turns_group = last_cin &: last_group in
-    let next_cin = mux2 turns_cin (zero cin_bits) (lead_cin.value +:. 1) in
-    let next_group =
-      mux2
-        turns_group
-        (zero group_bits)
-        (mux2 turns_cin (lead_group.value +:. 1) lead_group.value)
+    (* THE BLOCK AFTER THE LEAD'S, BY THE ELABORATION'S OWN RULE. [next_block] is the
+       circuit half of [blocks_of_turn]: the fetches take it, and the nest takes it at the
+       close of the block. A phase change is a block change like any other. *)
+    let block_closes = last_cin &: last_group in
+    let walk =
+      Elaboration.Rtl.next_block
+        e
+        ~is_pair
+        ~cin_count
+        ~group_count
+        { Elaboration.cin = lead_cin.value
+        ; group = lead_group.value
+        ; step = lead_s.value
+        ; phase = lead_phase.value
+        }
     in
-    let next_step =
-      mux2
-        turns_group
-        (mux2 last_step (zero step_bits) (lead_step.value +:. 1))
-        lead_step.value
-    in
-    let fetch_cin = mux2 priming.value lead_cin.value next_cin in
-    let fetch_step = mux2 priming.value lead_step.value next_step in
+    let next = walk.next in
+    (* THE FETCH FRAME IS THE LEAD ADVANCED BY ONE CHANNEL, and at the close of a block
+       that is the NEXT BLOCK'S — its channel, its column and its PHASE. The phase is what
+       is new: the columns fetched under B's last channel are A's, and they come from a
+       different memory and a different column. *)
+    (* THE FETCH FRAME STANDS BEHIND A REGISTER, AND IT COSTS NO CYCLE. The fetch of slot
+       [s] goes out at lead cycle [3 s + 2] — 2, 5 and 8 — while the lead nest advances at
+       cycle 0, thus these coordinates have two cycles of slack that a combinational
+       [next_block] threw away. Registered, they stand from cycle 1 and every fetch reads
+       them at 2 or later; inside a channel they do not move, thus the delay changes no
+       value anywhere. The cone behind them — [next_block], the [s - 2] of [column_of],
+       [column_address] and a bank's [uresize] — was the fused round's own timing family,
+       eleven levels into a store's address pins at −0.118. *)
+    let fetch_cin = hold (mux2 priming.value lead_cin.value next.cin) in
+    let fetch_s = hold (mux2 priming.value lead_s.value next.step) in
+    let fetch_phase = hold (mux2 priming.value lead_phase.value next.phase) in
+    let fetch_layer = layer_of ~phase:fetch_phase in
+    let fetch_reads_y = is_join_of fetch_layer in
+    (* the semantic column of a block: [s] in phase A, [s - 2] in phase B, and the stem
+       and the head are turns of phase A alone *)
+    let column_of ~s ~phase = sel_bottom (mux2 phase (s -:. 2) s) ~width:step_bits in
+    let fetch_step = column_of ~s:fetch_s ~phase:fetch_phase in
     (* THE TAP ORDER IS DY-MAJOR, AND THE ROTATION LEANS ON IT: tap [k] takes the time
        slot [k / 3] and the pitch shift [k mod 3]. The fetch of slot [s] goes out at the
        lead cycle [3 s + 2] and lands when [now] reaches that same cycle, which is the
@@ -268,10 +294,19 @@ struct
       mux2 out_of_roll (zero step_bits) (sel_bottom roll_step ~width:step_bits)
     in
     let tap_address = column_address ~step:tap_step ~channel:fetch_cin in
+    (* the ring takes the SEMANTIC column and keeps the bits it holds; nothing else states
+       the ring's geometry *)
+    let tap_ring_address = ring_address ~step:tap_step ~channel:fetch_cin in
     (* the fetch travels to the NOW frame beside its data: the zero flag says the slot
        takes zero, and the step and the plane are what the canvas answers *)
+    (* THE SOURCE OF A FETCHED COLUMN TRAVELS WITH THE FETCH. Which memory a column comes
+       from is a fact of the FETCH's layer and not of the slot's: the columns that land
+       under B's last input channel are A's and come from X, and a slot that read the
+       layer register would take Y. The bit rides beside the zero flag, and the slot takes
+       what its own fetch named. *)
     let fetch_word =
-      concat_lsb [ out_of_roll; tap_step; sel_bottom fetch_cin ~width:plane_bits ]
+      concat_lsb
+        [ out_of_roll; tap_step; sel_bottom fetch_cin ~width:plane_bits; fetch_reads_y ]
     in
     let landed = hold (hold fetch_word) in
     let landed_zero = bit landed ~pos:0 in
@@ -279,16 +314,24 @@ struct
     let landed_plane =
       select landed ~high:(step_bits + plane_bits) ~low:(step_bits + 1)
     in
+    let landed_reads_y = bit landed ~pos:(1 + step_bits + plane_bits) in
     (* ---------------------------------------------------------------- *)
     (* THE NOW FRAME: the term that really happens *)
     (* ---------------------------------------------------------------- *)
+    (* THE NOW FRAME CARRIES THE PHASE AND THE SEMANTIC COLUMN. The phase names the layer
+       every rule of this frame reads; the column is what the band load and the state
+       machine mean by a step, and [s] never leaves the lead frame. [ends] rides too: the
+       turn closes on the now frame's own last block and not on a column count. *)
+    let lead_column = column_of ~s:lead_s.value ~phase:lead_phase.value in
     let lead_word =
       concat_lsb
         [ sm.is Dwell
         ; lead_cycle.value
         ; lead_cin.value
         ; lead_group.value
-        ; lead_step.value
+        ; lead_column
+        ; lead_phase.value
+        ; walk.ends
         ]
     in
     let now_word = hold (hold lead_word) in
@@ -298,9 +341,36 @@ struct
     let now_cin = at (1 + tap_bits) cin_bits in
     let now_group = at (1 + tap_bits + cin_bits) group_bits in
     let now_step = at (1 + tap_bits + cin_bits + group_bits) step_bits in
-    let now_last_cin = now_cin ==: cin_count -:. 1 in
+    let now_phase = at (1 + tap_bits + cin_bits + group_bits + step_bits) 1 in
+    let now_ends = at (2 + tap_bits + cin_bits + group_bits + step_bits) 1 in
+    let now_layer = layer_of ~phase:now_phase in
+    let now_last_cin =
+      now_cin ==: fact now_layer ~width:cin_bits (fun l -> l.inputs) -:. 1
+    in
     let now_last_cycle = now_cycle ==:. taps - 1 in
-    let now_last_group = now_group ==: group_count -:. 1 in
+    let now_last_group =
+      now_group ==: fact now_layer ~width:group_bits (fun l -> l.groups) -:. 1
+    in
+    (* THE DRAIN IS A FRAME OF ITS OWN, AND IT CARRIES THE PHASE TOO. The chain of a group
+       empties over [rows] cycles behind the term that captured it, and the epilogue
+       answers three behind that — thus THE LAST GROUP OF A BLOCK DRAINS UNDER THE NEXT
+       BLOCK, which inside a pair is the other layer. A join flag read from the now frame
+       would then add A's residual to nothing and drop B's, and the ReLU would follow the
+       wrong layer; the twin sees a column of zeros where it wants the residual.
+
+       It was invisible while a layer was the unit of the walk: a layer's last group
+       drained under [Turn], where the layer register still stood at its own value. The
+       phase is captured where the array captures the sums, and it holds until the
+       epilogue of that group is done — a whole dwell away, which the dwell floor
+       guarantees. *)
+    let drain_phase = Variable.reg spec ~width:1 in
+    let drain_layer = layer_of ~phase:drain_phase.value in
+    let takes_relu =
+      by_role drain_layer (function
+        | Stem | Pair_open -> true
+        | _ -> false)
+    in
+    let is_join = is_join_of drain_layer in
     (* ---------------------------------------------------------------- *)
     (* the memories: the address registers before them and the data registers behind them,
        which is era four's rule and the reason every read of this unit is two cycles *)
@@ -436,12 +506,16 @@ struct
     (* the names the waveform test and the stream gate read; the parentheses are
        load-bearing, as they are at the store probes below *)
     let _ = lead_cycle.value -- "lead_cycle" in
+    let _ = lead_phase.value -- "lead_phase" in
+    let _ = lead_s.value -- "lead_s" in
+    let _ = lead_column -- "lead_column" in
     let _ = now_cycle -- "now_cycle" in
     let term = now_valid -- "term" in
     let term_first =
       (now_valid &: (now_cin ==:. 0) &: (now_cycle ==:. 0)) -- "term_first"
     in
     let term_last = (now_valid &: now_last_cin &: now_last_cycle) -- "term_last" in
+    let capture_drain_phase = when_ term_last [ drain_phase <-- now_phase ] in
     let column_now = mux (slot_of now_cycle) (List.map slots ~f:bank_value) in
     let drained =
       Lanes.create
@@ -494,15 +568,25 @@ struct
        are running now are fetched the moment the drain BEFORE it has read its last row,
        thus one buffer serves both and a dwell that covers its drain covers this too. *)
     (* ---------------------------------------------------------------- *)
+    (* THE LOAD CARRIES ITS OWN PHASE, as it carries its own column and group. It fires
+       inside a dwell and holds for [lanes] cycles; the now frame is stable across those,
+       but the load's decisions — which norms, and whether X owes it a residual — belong
+       to the block it was fired for and are captured with it. *)
     let loading = Variable.reg spec ~width:1 in
     let load_index = Variable.reg spec ~width:lane_bits in
     let load_step = Variable.reg spec ~width:step_bits in
     let load_group = Variable.reg spec ~width:group_bits in
+    let load_phase = Variable.reg spec ~width:1 in
+    let load_layer = layer_of ~phase:load_phase.value in
+    let load_join = is_join_of load_layer in
     let load_valid = hold (hold loading.value) in
     let load_landed = hold (hold load_index.value) in
     let load_channel = channel_of ~group:load_group.value ~lane:load_index.value in
     let residual_address = column_address ~step:load_step.value ~channel:load_channel in
-    let norm_address = norm_base +: uresize load_channel ~width:norm_bits in
+    let norm_address =
+      fact load_layer ~width:norm_bits (fun l -> l.norm_base)
+      +: uresize load_channel ~width:norm_bits
+    in
     let norms = rom e.norm_rom norm_address in
     (* ---------------------------------------------------------------- *)
     (* THE FLUSH. The output band stands whole one epilogue behind the drain's last row;
@@ -511,42 +595,63 @@ struct
     (* ---------------------------------------------------------------- *)
     let flushing = Variable.reg spec ~width:1 in
     let flush_index = Variable.reg spec ~width:lane_bits in
-    let flush_step = Variable.reg spec ~width:step_bits in
+    let flush_s = Variable.reg spec ~width:turn_step_bits in
+    let flush_phase = Variable.reg spec ~width:1 in
     let flush_group = Variable.reg spec ~width:group_bits in
+    let flush_layer = layer_of ~phase:flush_phase.value in
+    let flush_step = column_of ~s:flush_s.value ~phase:flush_phase.value in
+    let out_count = fact flush_layer ~width:channel_bits (fun l -> l.outputs) in
+    let is_head = is_head_of flush_layer in
+    let writes_y =
+      by_role flush_layer (function
+        | Pair_open -> true
+        | _ -> false)
+    in
     let flush_channel = channel_of ~group:flush_group.value ~lane:flush_index.value in
     let flush_last = flush_index.value ==:. lanes - 1 in
     let flush_done = flushing.value &: flush_last in
     let flush_real = flushing.value &: (flush_channel <: out_count) in
     let flush_column = mux flush_index.value (List.map output_band ~f:bank_value) in
     let store_write = flush_real &: ~:is_head in
-    let store_address = column_address ~step:flush_step.value ~channel:flush_channel in
-    (* THE PROBE NAMES ARE A CONTRACT: the stream gate reads these six by name. The
+    (* THE PROBE NAMES ARE A CONTRACT: the stream gate reads these five by name. The
        parentheses are load-bearing — [--] binds tighter than [&:], thus a name written
-       without them lands on the last operand and the gate reads a signal nobody meant. *)
+       without them lands on the last operand and the gate reads a signal nobody meant.
+
+       ONE FLUSH NEST STATES BOTH DESTINATIONS, thus ONE address probe does. Y no longer
+       holds a tensor and its port takes a ring address, but the COLUMN a write means is
+       the flush nest's own and it is the same for X and for Y; a second name on it would
+       be a signal nothing drives, and Hardcaml prunes those. *)
+    let flush_address =
+      column_address ~step:flush_step ~channel:flush_channel -- "flush_address"
+    in
     let x_write = (store_write &: ~:writes_y) -- "x_write" in
     let y_write = (store_write &: writes_y) -- "y_write" in
-    let x_address = store_address -- "x_address" in
-    let y_address = store_address -- "y_address" in
     let x_data = flush_column -- "x_data" in
     let y_data = flush_column -- "y_data" in
-    (* X answers the taps on a layer that reads it, and the residual load on a layer that
-       does not: a pair-closing layer's taps read Y, thus the two never want the port in
-       the same layer *)
+    (* THE X PORT IS ARBITRATED BY THE CYCLE AND NOT BY THE LAYER. It used to be the
+       layer's: a join layer pointed X at the residual for its whole run, because its taps
+       read Y and nothing else wanted the port. Fused, the fetch of the next A block goes
+       out under B's LAST INPUT CHANNEL and needs X while the now frame is still in B.
+       Thus the residual takes the port only in the cycles the load really addresses it,
+       and the dwell floor of the elaboration is what keeps the two windows apart. *)
     let x_read =
       block_memory
         ~banks:e.store_banks
-        ~address:(mux2 is_join residual_address tap_address)
+        ~address:(mux2 (loading.value &: load_join) residual_address tap_address)
         ~write_enable:x_write
-        ~write_address:x_address
+        ~write_address:flush_address
         ~write_data:x_data
         ()
     in
+    (* Y IS A RING OF FOUR COLUMNS AND NOT A TENSOR. Both its ports take the ring's map of
+       the semantic column; no load ever touches this port, thus its read is the taps'
+       alone. *)
     let y_read =
       block_memory
-        ~banks:e.store_banks
-        ~address:tap_address
+        ~banks:e.ring_banks
+        ~address:tap_ring_address
         ~write_enable:y_write
-        ~write_address:y_address
+        ~write_address:(ring_address ~step:flush_step ~channel:flush_channel)
         ~write_data:y_data
         ()
     in
@@ -557,10 +662,10 @@ struct
       mux2
         landed_zero
         (zero column_bits)
-        (mux2 is_stem i.plane_column (mux2 taps_read_y y_read x_read))
+        (mux2 is_stem i.plane_column (mux2 landed_reads_y y_read x_read))
     in
     let step_ready = Variable.reg spec ~width:1 in
-    let layer_drained = Variable.reg spec ~width:1 in
+    let turn_drained = Variable.reg spec ~width:1 in
     (* the window rotation: each slot takes its new column on the edge of its own last
        read, thus the operand register takes the old value on that very edge *)
     let rotate_window =
@@ -631,19 +736,26 @@ struct
             [ lead_cycle <--. 0
             ; when_
                 ~:(priming.value)
-                [ lead_cin <-- next_cin
-                ; lead_group <-- next_group
-                ; lead_step <-- next_step
+                [ lead_cin <-- next.cin
+                ; lead_group <-- next.group
+                ; lead_s <-- next.step
+                ; lead_phase <-- next.phase
                 ]
             ]
             [ lead_cycle <-- lead_cycle.value +:. 1 ]
-        ; (* the weight address only counts, and reloads at each new column *)
+        ; (* THE WEIGHT ADDRESS ONLY COUNTS, AND RELOADS AT EACH NEW BLOCK — to the base
+             of the block it is about to walk, which at a phase change is the OTHER
+             layer's. The fetch frame already names that layer. *)
           if_
             priming.value
-            [ weight_address <-- weight_base ]
+            [ weight_address
+              <-- fact lead_layer ~width:weight_bits (fun l -> l.weight_base)
+            ]
             [ if_
-                (last_cycle &: turns_group)
-                [ weight_address <-- weight_base ]
+                (last_cycle &: block_closes)
+                [ weight_address
+                  <-- fact fetch_layer ~width:weight_bits (fun l -> l.weight_base)
+                ]
                 [ weight_address <-- weight_address.value +:. 1 ]
             ]
         ]
@@ -662,8 +774,8 @@ struct
         ; load_index <--. 0
         ; if_
             start_load.value
-            [ load_step <--. 0; load_group <--. 0 ]
-            [ load_step <-- now_step; load_group <-- now_group ]
+            [ load_step <--. 0; load_group <--. 0; load_phase <--. 0 ]
+            [ load_step <-- now_step; load_group <-- now_group; load_phase <-- now_phase ]
         ]
         [ when_
             (run &: loading.value)
@@ -678,6 +790,25 @@ struct
          tag has to travel the length of the drain. *)
       when_ band_whole [ flushing <-- vdd; flush_index <--. 0 ]
     in
+    (* THE FLUSH WALKS THE BLOCK ORDER TOO, AND BY THE SAME RULE. The flushes stand in the
+       order the dwells do, thus this nest must turn a phase where the lead nest turned
+       one. It has no input channels of its own — a flush walks lanes — thus it enters
+       [next_block] with its channel already at the last, and every advance is a whole
+       block. *)
+    let flush_cin_count = fact flush_layer ~width:cin_bits (fun l -> l.inputs) in
+    let flush_group_count = fact flush_layer ~width:group_bits (fun l -> l.groups) in
+    let flush_walk =
+      Elaboration.Rtl.next_block
+        e
+        ~is_pair
+        ~cin_count:flush_cin_count
+        ~group_count:flush_group_count
+        { Elaboration.cin = flush_cin_count -:. 1
+        ; group = flush_group.value
+        ; step = flush_s.value
+        ; phase = flush_phase.value
+        }
+    in
     let walk_flush =
       when_
         (flushing.value &: ~:band_whole)
@@ -685,15 +816,10 @@ struct
         ; when_
             flush_last
             [ flushing <-- gnd
-            ; if_
-                (flush_group.value ==: group_count -:. 1)
-                [ flush_group <--. 0
-                ; if_
-                    (flush_step.value ==:. steps - 1)
-                    [ flush_step <--. 0; layer_drained <-- vdd ]
-                    [ flush_step <-- flush_step.value +:. 1 ]
-                ]
-                [ flush_group <-- flush_group.value +:. 1 ]
+            ; flush_group <-- flush_walk.next.group
+            ; flush_s <-- flush_walk.next.step
+            ; flush_phase <-- flush_walk.next.phase
+            ; when_ flush_walk.ends [ turn_drained <-- vdd ]
             ]
         ]
     in
@@ -701,7 +827,7 @@ struct
       (* the head's seam: the level rises when the file stands whole and falls on the edge
          behind the acknowledgement *)
       when_
-        (flush_done &: is_head &: (flush_group.value ==: group_count -:. 1))
+        (flush_done &: is_head &: (flush_group.value ==: flush_group_count -:. 1))
         [ step_ready <-- vdd ]
     in
     let machine =
@@ -709,15 +835,17 @@ struct
         [ ( State.Idle
           , [ when_
                 i.start
-                [ layer <--. 0
-                ; lead_step <--. 0
+                [ turn <--. 0
+                ; lead_s <--. 0
+                ; lead_phase <--. 0
                 ; lead_group <--. 0
                 ; lead_cin <--. 0
                 ; lead_cycle <--. 0
-                ; flush_step <--. 0
+                ; flush_s <--. 0
+                ; flush_phase <--. 0
                 ; flush_group <--. 0
                 ; flushing <-- gnd
-                ; layer_drained <-- gnd
+                ; turn_drained <-- gnd
                 ; step_ready <-- gnd
                 ; priming <-- vdd
                 ; start_load <-- vdd
@@ -726,12 +854,15 @@ struct
             ] )
         ; Prime, [ when_ last_cycle [ priming <-- gnd; sm.set_next Dwell ] ]
         ; ( Dwell
-          , [ when_
+          , [ (* THE TURN CLOSES ON ITS OWN LAST BLOCK, which the nest states and no
+                 column count can: a pair's last block is B at the last column and its
+                 step counter stands two past it. *)
+              when_
                 (term_last &: now_last_group)
                 [ if_
-                    is_head
+                    (is_head_of now_layer)
                     [ sm.set_next Offer ]
-                    [ when_ (now_step ==:. steps - 1) [ sm.set_next Turn ] ]
+                    [ when_ now_ends [ sm.set_next Turn ] ]
                 ]
             ] )
         ; ( Offer
@@ -739,7 +870,7 @@ struct
                 (step_ready.value &: i.step_taken)
                 [ step_ready <-- gnd
                 ; if_
-                    layer_drained.value
+                    turn_drained.value
                     [ sm.set_next Turn ]
                     [ (* the step behind the wait opens at group 0 and the bank still
                          holds the last group's norms, thus the load is stated again *)
@@ -750,17 +881,19 @@ struct
             ] )
         ; ( Turn
           , [ when_
-                layer_drained.value
-                [ layer_drained <-- gnd
+                turn_drained.value
+                [ turn_drained <-- gnd
                 ; if_
-                    (layer.value ==:. layer_count - 1)
+                    (turn.value ==:. turn_count - 1)
                     [ sm.set_next Idle ]
-                    [ layer <-- layer.value +:. 1
-                    ; lead_step <--. 0
+                    [ turn <-- turn.value +:. 1
+                    ; lead_s <--. 0
+                    ; lead_phase <--. 0
                     ; lead_group <--. 0
                     ; lead_cin <--. 0
                     ; lead_cycle <--. 0
-                    ; flush_step <--. 0
+                    ; flush_s <--. 0
+                    ; flush_phase <--. 0
                     ; flush_group <--. 0
                     ; priming <-- vdd
                     ; start_load <-- vdd
@@ -770,7 +903,15 @@ struct
             ] )
         ]
     in
-    compile [ lead_nest; band_load; open_flush; walk_flush; head_seam; machine ];
+    compile
+      [ lead_nest
+      ; capture_drain_phase
+      ; band_load
+      ; open_flush
+      ; walk_flush
+      ; head_seam
+      ; machine
+      ];
     { O.busy = ~:(sm.is Idle)
     ; plane_step = landed_step
     ; plane = landed_plane
@@ -854,10 +995,16 @@ struct
     in
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
-    let node name = Option.value_exn (Cyclesim.lookup_node_by_name sim name) in
-    let probe write address data = node write, node address, node data in
-    let x = probe "x_write" "x_address" "x_data" in
-    let y = probe "y_write" "y_address" "y_data" in
+    let node name =
+      Option.value_exn (Cyclesim.lookup_node_by_name sim name) ~message:name
+    in
+    (* ONE FLUSH NEST, ONE ADDRESS. The column a write means is the flush nest's own and
+       it is the same whichever store takes it; Y's port carries a ring address below it,
+       and the gate holds the SEMANTIC write. *)
+    let address = node "flush_address" in
+    let probe write data = node write, address, node data in
+    let x = probe "x_write" "x_data" in
+    let y = probe "y_write" "y_data" in
     (* What a pass spends outside its dwells. The state's encoding is its index in
        [State.all] — Hardcaml's binary encoding — and a change of that would not read as a
        small error here: [List.nth_exn] refuses an index the enumeration does not hold. *)
@@ -949,9 +1096,9 @@ end
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
   (* THE SCHEDULE'S VISUAL GATE, at a shape a picture can hold: P 6, G 2, T 3 and a trunk
-     of two channels. The stem is the widest dwell of any layer — its input channels are
-     the eight planes, and no shape makes them fewer — thus its first column is the whole
-     of the rotation in one place.
+     of three channels — the narrowest the fused floor admits at P 6. The stem is the
+     widest dwell of any layer — its input channels are the eight planes, and no shape
+     makes them fewer — thus its first column is the whole of the rotation in one place.
 
      WINDOW ONE is the preamble and the first block. The lead cycle counts 0 to 8 with no
      term under it, and the three fetches it sends at 0, 3 and 6 land at [slot_0],
@@ -965,7 +1112,7 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
      writes go out one a cycle when the band stands whole. THE NEXT DWELL IS ALREADY
      RUNNING UNDER ALL OF IT — [term] never falls — which is what "the dwells stand back
      to back" means and what the exact cycle counts lean on. *)
-  let config = { Diffusion.Config.layers = 4; width = 2 } in
+  let config = { Diffusion.Config.layers = 4; width = 3 } in
   let model = Quantized.Model.For_test.init config ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:3 ~lanes:2 ~walk:4 in
   let module B =
@@ -1052,10 +1199,10 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
     │                  ││──────────┘ └───────────────┘ └───────────────┘ └─────────│
     │drained           ││                  ┌───────────┐                           │
     │                  ││──────────────────┘           └───────────────────────────│
-    │band_row          ││                          ┌───────────┐                   │
-    │                  ││──────────────────────────┘           └───────────────────│
-    │x_write           ││                                      ┌───┐               │
-    │                  ││──────────────────────────────────────┘   └───────────────│
+    │band_row          ││                            ┌───────────┐                 │
+    │                  ││────────────────────────────┘           └─────────────────│
+    │x_write           ││                                        ┌───┐             │
+    │                  ││────────────────────────────────────────┘   └─────────────│
     │                  ││──┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─│
     │lead_cycle        ││ 5│6│7│8│0│1│2│3│4│5│6│7│8│0│1│2│3│4│5│6│7│8│0│1│2│3│4│5│6│
     │                  ││──┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─│
@@ -1063,6 +1210,70 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
     │drain_row         ││ 0                  │1│2│3│4│5                            │
     │                  ││────────────────────┴─┴─┴─┴─┴─────────────────────────────│
     └──────────────────┘└──────────────────────────────────────────────────────────┘
+    |}]
+;;
+
+let%expect_test "the pair interleaves, and the picture is the schedule" =
+  (* THE SCHEDULE'S OWN PICTURE. One pair at a shape a window can hold: P 6, G 2, T 4 and
+     a trunk of three channels. What the waves state is the ORDER — [lead_phase] falls for
+     A and rises for B, and [lead_column] is the canvas column each block works on — thus
+     A0, A1, A2 B0, A3 B1, B2, B3 stands in one place, with the lag of two visible as the
+     distance between a rise of [lead_phase] and the column it names.
+
+     [y_write] AND [x_write] SAY WHERE EACH BLOCK'S COLUMNS WENT: an A block writes the
+     ring and a B block writes X, and they alternate from the third block on. The flush
+     trails the dwell by a drain and an epilogue, thus a write stands under the block
+     AFTER the one that made it — which is the whole reason the lag is two and not one. *)
+  let config = { Diffusion.Config.layers = 4; width = 3 } in
+  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let elaboration = Elaboration.create ~rows:6 model ~steps:4 ~lanes:2 ~walk:4 in
+  let module B =
+    Bench (struct
+      let e = elaboration
+    end)
+  in
+  let planes ~step ~plane =
+    Array.init elaboration.rows ~f:(fun row ->
+      if row = (step + plane) % elaboration.rows then 64 else 0)
+  in
+  let waves, (_ : B.pass) = B.run ~trace:true ~planes () in
+  let waves = Option.value_exn waves ~message:"a traced run gives a waveform" in
+  Hardcaml_waveterm.Waveform.expect
+    ~display_rules:
+      [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
+          ~wave_format:Wave_format.Bit
+          [ "lead_phase"; "y_write"; "x_write" ]
+      ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
+          ~wave_format:(Wave_format.Unsigned_int : Wave_format.t)
+          [ "lead_column"; "lead_s" ]
+      ; Hardcaml_waveterm.Display_rule.default
+      ]
+    ~wave_width:(-5)
+    ~display_width:80
+    ~display_height:18
+    ~start_cycle:(Elaboration.turn_cycles elaboration elaboration.turns.(0) + 12)
+    waves;
+  [%expect
+    {|
+    ┌Signals───────────┐┌Waves─────────────────────────────────────────────────────┐
+    │lead_phase        ││                                    ┌──────────┐          │
+    │                  ││────────────────────────────────────┘          └──────────│
+    │y_write           ││            ┌┐    ╥    ╥    ┌┐    ╥    ╥               ┌┐ │
+    │                  ││────────────┘└────╨────╨────┘└────╨────╨───────────────┘└─│
+    │x_write           ││ ╥                                           ╥    ╥       │
+    │                  ││─╨───────────────────────────────────────────╨────╨───────│
+    │                  ││──────────────┬──────────┬──────────┬──────────┬──────────│
+    │lead_column       ││ 0            │1         │2         │0         │3         │
+    │                  ││──────────────┴──────────┴──────────┴──────────┴──────────│
+    │                  ││──┬───────────┬──────────┬─────────────────────┬──────────│
+    │lead_s            ││ 4│0          │1         │2                    │3         │
+    │                  ││──┴───────────┴──────────┴─────────────────────┴──────────│
+    │clear             ││                                                          │
+    │                  ││──────────────────────────────────────────────────────────│
+    │clock             ││╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥│
+    │                  ││╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨│
+    └──────────────────┘└──────────────────────────────────────────────────────────┘
+    6bc98568b57b46d22731f0145f1c1770
     |}]
 ;;
 
@@ -1118,28 +1329,12 @@ let%expect_test "the store writes are the twin's, write for write" =
                      ~channels:voices))
           then Int.incr part))
     in
-    let store_columns (layer : Elaboration.layer) expected =
-      let count = steps * layer.outputs in
-      let mine = List.take !cursor count in
-      cursor := List.drop !cursor count;
-      let to_y =
-        match layer.role with
-        | Pair_open -> true
-        | Stem | Pair_close | Head -> false
-      in
-      let destination = if to_y then y else x in
-      List.iter mine ~f:(fun (w : B.write) ->
-        if Bool.equal w.to_y to_y
-        then destination.(w.address) <- w.column
-        else Int.incr misplaced);
-      let addresses =
-        List.fold
-          mine
-          ~init:(Set.empty (module Int))
-          ~f:(fun seen w -> Set.add seen w.address)
-      in
-      if List.length mine <> count || Set.length addresses <> count
-      then Int.incr misplaced;
+    (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.
+       Inside a pair the blocks run A0, A1, A2 B0, A3 B1, ...: A's columns go to Y and B's
+       to X in one stream, and each write says which store took it. The gate holds the
+       stream by TURN and then reads each layer's tensor whole. *)
+    let check_layer at (layer : Elaboration.layer) destination =
+      let expected = List.nth_exn want at in
       List.iter (List.range 0 steps) ~f:(fun step ->
         List.iter (List.range 0 layer.outputs) ~f:(fun channel ->
           Int.incr checked;
@@ -1157,20 +1352,60 @@ let%expect_test "the store writes are the twin's, write for write" =
             let rows_part =
               Array.counti want ~f:(fun r v -> v <> destination.(address).(r))
             in
-            printf
-              "  L%d step %d channel %d: %d of %d rows part\n"
-              (Array.findi_exn elaboration.layers ~f:(fun _ l -> phys_equal l layer)
-               |> fst)
-              step
-              channel
-              rows_part
-              rows)))
+            if !part <= 2
+            then
+              printf
+                "  L%d step %d channel %d: %d of %d rows part\n    want %s\n    got  %s\n"
+                at
+                step
+                channel
+                rows_part
+                rows
+                (String.concat
+                   ~sep:" "
+                   (List.map (List.take (Array.to_list want) 12) ~f:Int.to_string))
+                (String.concat
+                   ~sep:" "
+                   (List.map
+                      (List.take (Array.to_list destination.(address)) 12)
+                      ~f:Int.to_string)))))
     in
-    Array.iteri elaboration.layers ~f:(fun at (layer : Elaboration.layer) ->
-      let expected = List.nth_exn want at in
-      match layer.role with
-      | Head -> head_columns expected
-      | Stem | Pair_open | Pair_close -> store_columns layer expected);
+    let turn_columns (turn : Elaboration.turn) =
+      let ats = turn.first :: Option.to_list turn.second in
+      let count =
+        List.sum (module Int) ats ~f:(fun at -> steps * elaboration.layers.(at).outputs)
+      in
+      let mine = List.take !cursor count in
+      cursor := List.drop !cursor count;
+      List.iter mine ~f:(fun (w : B.write) ->
+        (if w.to_y then y else x).(w.address) <- w.column);
+      (* every destination column written exactly one time, and each store taking exactly
+         the layer's own count *)
+      (* the destination and the address as one key: X at [address], Y above them *)
+      let depth = Elaboration.store_depth elaboration in
+      let placed =
+        List.fold
+          mine
+          ~init:(Set.empty (module Int))
+          ~f:(fun seen w ->
+            Set.add seen (if w.to_y then depth + w.address else w.address))
+      in
+      if List.length mine <> count || Set.length placed <> count then Int.incr misplaced;
+      List.iter ats ~f:(fun at ->
+        let layer = elaboration.layers.(at) in
+        let to_y =
+          match layer.role with
+          | Pair_open -> true
+          | Stem | Pair_close | Head -> false
+        in
+        if List.count mine ~f:(fun w -> Bool.equal w.to_y to_y) <> steps * layer.outputs
+        then Int.incr misplaced;
+        check_layer at layer (if to_y then y else x))
+    in
+    Array.iter elaboration.turns ~f:(fun (turn : Elaboration.turn) ->
+      match elaboration.layers.(turn.first).role with
+      | Head -> head_columns (List.nth_exn want turn.first)
+      | Stem | Pair_open | Pair_close -> turn_columns turn);
     (* THE TWO PLANS STAND IN THE LINE, thus a shape that stops crossing a bank says so
        here and does not leave a select and an offset untested in silence. *)
     let plan banks =
@@ -1204,12 +1439,18 @@ let%expect_test "the store writes are the twin's, write for write" =
      elected geometry banks its stores at T 128 and H 20, thus a shape that never crosses
      would leave the split untested until a board. *)
   case ~name:"H 8, G 2, one pair,   T 129" ~width:8 ~lanes:2 ~pairs:1 ~steps:129 ~seed:4;
+  (* THE RING WRAPS TWICE. Five columns over four ring slots is one wrap; two pairs and
+     the head behind them read every wrapped column, thus a ring one column short — or a
+     lag of one instead of two — writes over a column that is still live and this case is
+     where it would say so. *)
+  case ~name:"H 8, G 2, two pairs, T 5" ~width:8 ~lanes:2 ~pairs:2 ~steps:5 ~seed:5;
   [%expect
     {|
     H 8, G 2, two pairs, T 6: the weights bank 2048, the stores bank 512; 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
     H 7, G 3, one pair,  T 5: the weights bank 1024, the stores bank 512; 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
     H 8, G 4, three pairs, T 6: the weights bank 1024 + 512, the stores bank 512; 336 columns written, 6 steps offered, 360 columns checked — 0 part, 0 misplaced
     H 8, G 2, one pair,   T 129: the weights bank 1024, the stores bank 1024 + 512; 3096 columns written, 129 steps offered, 3612 columns checked — 0 part, 0 misplaced
+    H 8, G 2, two pairs, T 5: the weights bank 2048, the stores bank 512; 200 columns written, 5 steps offered, 220 columns checked — 0 part, 0 misplaced
     |}]
 ;;
 
@@ -1251,7 +1492,9 @@ let%expect_test "the cycles of one forward, against the cost model" =
       B.run ~read_logits:false ~planes ()
     in
     let model_cycles = Elaboration.forward_cycles elaboration in
-    let count = Array.length elaboration.layers in
+    (* THE TURN IS THE UNIT NOW, not the layer: one preamble and one drain tail for each
+       of them, and a pair holds two layers inside one turn. *)
+    let count = Array.length elaboration.turns in
     let tails = count * elaboration.rows in
     printf
       "%s: %d cycles, the model %d (%+d)\n"
@@ -1260,7 +1503,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
       model_cycles
       (pass.cycles - model_cycles);
     printf
-      "  %d preamble (%d a layer), %d head wait (%d a step), %d turn against the %d the \
+      "  %d preamble (%d a turn), %d head wait (%d a step), %d turn against the %d the \
        model counts, %d elsewhere\n"
       pass.priming
       (pass.priming / count)
@@ -1275,11 +1518,11 @@ let%expect_test "the cycles of one forward, against the cost model" =
   case ~name:"H 8, G 2, two pairs, T 12" ~width:8 ~lanes:2 ~pairs:2 ~steps:12 ~seed:1;
   [%expect
     {|
-    H 8, G 2, two pairs, T 6: 10211 cycles, the model 9792 (+419)
-      54 preamble (9 a layer), 348 head wait (58 a step), 291 turn against the 288 the model counts, 14 elsewhere
-    H 7, G 3, one pair,  T 5: 4119 cycles, the model 3792 (+327)
-      36 preamble (9 a layer), 295 head wait (59 a step), 178 turn against the 192 the model counts, 10 elsewhere
-    H 8, G 2, two pairs, T 12: 20063 cycles, the model 19296 (+767)
-      54 preamble (9 a layer), 696 head wait (58 a step), 291 turn against the 288 the model counts, 14 elsewhere
+    H 8, G 2, two pairs, T 6: 10082 cycles, the model 9696 (+386)
+      36 preamble (9 a turn), 354 head wait (59 a step), 178 turn against the 192 the model counts, 10 elsewhere
+    H 7, G 3, one pair,  T 5: 4056 cycles, the model 3744 (+312)
+      27 preamble (9 a turn), 300 head wait (60 a step), 121 turn against the 144 the model counts, 8 elsewhere
+    H 8, G 2, two pairs, T 12: 19940 cycles, the model 19200 (+740)
+      36 preamble (9 a turn), 708 head wait (59 a step), 178 turn against the 192 the model counts, 10 elsewhere
     |}]
 ;;

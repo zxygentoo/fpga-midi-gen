@@ -20,7 +20,7 @@ measured what the quantization costs.
 ladder of sizes.** First make it work, then make it good: the machine
 elaborates from the checkpoint (see "The iteration strategy"), and the
 climb is `l16-h16` first, then `l64-h16`, then the golden candidate
-`l48-h20` behind a storage optimization this document defers. Every rung
+`l48-h20` behind the fused pair, which "The fused pair" below delivered. Every rung
 is the same machine at H 16 — the ladder proved depth is the cheap axis in
 training, and it is the cheap axis in hardware for the same reason: L sets
 only the layer count and the weight ROM; H sets the geometry and the
@@ -200,17 +200,46 @@ bytes, two live tensors of the golden candidate are 107 tiles, its weights
 42, and the sum is about 152 of the device's 135. No lane geometry fixes
 storage. The H 16 rungs fit — that is why the climb runs on them.
 
-**The answer for the golden candidate is THE FUSED PAIR, and it is the
-"make it good" round, deferred.** Conv2 of a residual pair needs only a
-three-column band of conv1's output, thus the intermediate tensor never
-exists in full: the engine streams a pair for each column, holds a
-five-column band of X and a three-column band of Y, and the pair output
-overwrites X in place, trailing the reads by two columns. One full tensor
-plus bands is about 58 tiles, and the golden candidate lands near 105 of
-135 at G 5 — with the same cycle count, because fusion moves memory, not
-work. The rejected alternative — int8 activations with per-layer exponents
-— respins the twin, re-runs the drift election and moves Gate B's target;
-it returns only if fusion fails or the stretch round wants the tiles.
+**The answer for the golden candidate is THE FUSED PAIR, and it is
+built.** Conv2 of a residual pair needs only a three-column band of conv1's
+output, thus the intermediate tensor never exists in full. Y IS A RING OF
+FOUR COLUMNS. The pair output overwrites X in place, and the ring costs the
+WIDTH of a column and not the length of the canvas: eleven tiles at any T,
+because a 768-bit word fills eleven `512x72` tiles at any depth.
+
+| memory | unfused | fused |
+|---|---|---|
+| X, `T * H` columns, banked 2 048 + 512 | 54 | 54 |
+| Y | 54 | a ring of `4 * H` columns, one bank of 512: **11** |
+| the weight ROM, `32768x40` + `1024x40` | 42 | 42 |
+| the norms, the anneal table, the exp2 table | 2 | 2 |
+| **total** | **152 — OVER** | **109 of 135** |
+
+**THE SCHEDULE, AND WHY B TRAILS A BY TWO.** Write A for the pair's opening
+layer and B for its closing one. A at column `c` reads X at `c - 1`, `c`,
+`c + 1` and writes Y at `c`; B at `c` reads Y at those three and the
+residual X at `c`, and writes X at `c`. With `s` the pair's step counter
+from 0 to `T + 1` the turn runs A at column `s` while `s < T`, then B at
+column `s - 2` while `s >= 2`: **A0, A1, A2 B0, A3 B1, ..., B(T-2),
+B(T-1)**. Three facts fix the lag at two:
+
+- **B at `c` reads Y at `c + 1`, which A wrote two blocks earlier.** A flush
+  lands one epilogue behind its drain, thus one WHOLE block must stand
+  between the write and the read. At a lag of one every column would wait
+  for a flush and "the same cycle count" would be false.
+- **B at `c` overwrites X at `c` in place.** A at `c + 1` was the last
+  reader of X at `c` and it ran before B at `c`; B's own residual read
+  happens at its band load, before its flush.
+- **The ring holds exactly four columns.** When B at `c` runs, Y at
+  `c - 1`, `c` and `c + 1` are live and A at `c + 2` has just written
+  `c + 2`; Y at `c - 2` died with B at `c - 1`. Four is a power of two, thus
+  the ring's step is the low two bits of the semantic column and no modulo
+  stands anywhere.
+
+The stem and the head are not pairs: they walk column by column, one layer
+each. The rejected alternative — int8 activations with per-layer exponents —
+respins the twin, re-runs the drift election and moves Gate B's target; it
+returns only if the stretch round wants the tiles.
 
 **A STORE PADS AS A ROM PADS, AND THE BANKING IS WHAT KEEPS THESE NUMBERS
 TRUE.** The rung-3 measurement build of 2026-08-27 mapped each store of
@@ -232,11 +261,30 @@ rounds of MASK, FORWARD, DRAW, then PLAY. OPEN, MASK and DRAW are small
 serial machinery in the pinned PRNG order — the masks are one uniform for
 each of the 512 cells, the draws ride era four's pipeline over the head's
 streamed logit columns — and together they cost about three percent of a
-pass: three cycles for each cell of the mask draw, and 3 P + 10 cycles for
+pass: three cycles for each cell of the mask draw, and 3 P + 11 cycles for
 each hidden cell that draws, which the cycle bench settles. FORWARD
 walks the layer table: one record for each layer, stating Cin, Cout, the
 source and destination tensors, the ReLU and residual flags, and the weight
 and constant bases. A counter walks it; no program, no op vocabulary.
+
+**A TURN IS THE UNIT OF THE WALK, AND NOT A LAYER.** The stem is a turn,
+each pair is a turn, the head is a turn: one preamble at each, and one drain
+tail behind the last block of each. Inside a pair the two layers INTERLEAVE
+block by block, thus neither of them is a unit the walk can name — and the
+cycle model counts turns. A turn's blocks are `blocks_of_turn`, and
+`Rtl.next_block` is the same rule as a circuit; a gate walks every turn of
+every shape through both and demands the same sequence, because the walk
+cannot be free to drift from the order the cost model counts.
+
+**THE PHASE TRAVELS IN THE FRAMES.** A layer used to end before the next
+began, thus one register named it and every fact of the table muxed by it.
+Inside a pair the lead frame can be in B while the now frame is still in A,
+and the flush trails both — so what the machine holds is the TURN, and each
+frame carries its own phase: the lead frame walks and addresses, the now
+frame runs the terms, the DRAIN frame states the ReLU and the residual, the
+band load carries the phase it was fired for, and the flush nest walks the
+block order a second time. `Elaboration.Rtl.layer_of` turns a turn and a
+phase into the table's index, and the table's mux is the one it always was.
 
 ### The prior art
 
@@ -512,7 +560,8 @@ accumulator is a guess that one rung happens to survive.
 
 | memory | shape | traffic |
 |---|---|---|
-| X and Y | `T * H` columns by `P * 16` bits, in banks of a power of two | one column read each three cycles; G column writes each group |
+| X | `T * H` columns by `P * 16` bits, in banks of a power of two | one column read each three cycles; G column writes each group |
+| the Y ring | `4 * H` columns by `P * 16` bits, one bank | the same traffic; the address is the low bits of the semantic column |
 | the weight ROM | the packed image in banks of a power of two, G bytes each word | one word each cycle |
 | the constants | gain and bias, one entry for each output channel | G entries each group |
 | the canvas | `T` by `voices` classes | registers |
@@ -753,7 +802,7 @@ The climb, at T 128, N 512, inside the 25.6-second playback window
 | `l16-h16` | 34 k | ~9 | ~88 | ~100 (74%) | 1.09 M | 5.6 s |
 | `l64-h16` | 147 k | ~36 | ~88 | ~127 (94%) | 4.63 M | 23.7 s |
 | `l48-h20` unfused | 170 k | ~42 | ~108 | ~151 — OVER | — | — |
-| `l48-h20` fused, G 5 | 170 k | ~42 | ~58 | ~105 (78%) | 4.30 M | 22.0 s |
+| `l48-h20` fused, G 5 | 170 k | 42 | 65 | **109 (81%)** | 4.30 M | 22.0 s |
 
 The cycle numbers are the formula's ideal at 192 lanes (240 for the fused
 G 5 row) and land within a percent of `MAC / lanes`, because the geometry
@@ -1142,6 +1191,12 @@ every build from this round on:
   shift register or a counter is the mortgage, and the build re-rolls.
 - **WHS at or above about 0.010.** The three builds that passed the byte
   gate read +0.026, +0.012 and +0.029; the one that failed read +0.001.
+- **ONE `BUFGCTRL` IN THE UTILIZATION REPORT.** A `Physopt 32-703` moves a
+  register to a second clock tree, thus the COUNT OF TREES is the mortgage
+  made visible in one number, and it needs no log grep. Measured over eight
+  builds of this design: every sound one carries ONE, every mortgaged one
+  carries two or three, and the mux-before-the-data-hold build carried five.
+  Read it beside the census.
 
 **THE FIX IS STRUCTURE AND NOT THE LOTTERY.** An Explore re-roll failed the
 same family honestly — setup −0.014 and twelve mortgages on the same cone —
@@ -1167,7 +1222,7 @@ ask one question of the golden candidate — does an array of 240 DSPs place and
 route — and answered a second one nobody had asked. Its reports stand in
 `board/_build/rung3-unbanked/`.
 
-| | rung 2 (in flash) | `l48-h20` at T 64, G 5 |
+| | rung 2 (in flash then) | `l48-h20` at T 64, G 5 |
 |---|---|---|
 | LUTs / registers | 21 455 / 23 818 | 24 127 / 25 699 |
 | DSPs | 192 | **240 of 240** |
@@ -1276,6 +1331,173 @@ a fabric register at ZERO levels again, and the block RAM's output into the
 slot registers reads +1.017 at three levels, against +1.44 with no mux at all.
 Setup met on the first roll with no clock-skew adjustment anywhere.
 
+### The fused pair — Y stops being a tensor
+
+The design of "The activation budget", built 2026-08-28. The round moves
+MEMORY and not work: every value the engine writes is the value
+`Quantized.layer_writes` writes, thus the twin is untouched, Gate B's target
+stands and the drift lines stand.
+
+**WHAT THE SOFTWARE HALF LEARNED.** A layer is no longer the unit of the
+walk. `Elaboration.turns` states the stem, one turn for each pair, and the
+head; `blocks_of_turn` lists a turn's blocks in the order the engine runs
+them; `Rtl.next_block` is that same rule as a circuit, and a gate walks
+every turn of every shape through both. The elaboration prints the ring and
+the turns, and `turn_cycles` replaces `layer_cycles` — the tail belongs to
+the turn, thus the fused machine spends `pairs * P` cycles fewer than the
+unfused one on the same arithmetic.
+
+**THE THREE TRAPS OF THE INTERLEAVE, and none of them moves a frame.**
+
+- **The drain is a frame of its own.** A group's chain empties `P` cycles
+  behind the term that captured it and the epilogue answers three behind
+  that, thus THE LAST GROUP OF A BLOCK DRAINS UNDER THE NEXT BLOCK — which
+  inside a pair is the other layer. A join flag read from the now frame adds
+  A's residual to nothing and drops B's, and the ReLU follows the wrong
+  layer; the twin sees a column of zeros where it wants the residual. It was
+  invisible while a layer was the unit: a layer's last group drained under
+  `Turn`, where the layer register still stood at its own value. The phase
+  is captured where the array captures the sums.
+- **The X port is arbitrated by the cycle and not by the layer.** A join
+  layer used to point X at the residual for its whole run, because its taps
+  read Y and nothing else wanted the port. Fused, the fetch of the next A
+  block goes out under B's LAST INPUT CHANNEL and needs X while the now
+  frame is still in B. The residual takes the port only in the cycles the
+  load really addresses it.
+- **The source of a fetched column travels with the fetch.** Which memory a
+  column comes from is a fact of the FETCH's layer: the columns that land
+  under B's last channel are A's and come from X, and a slot that read the
+  layer register would take Y. The bit rides beside the zero flag.
+
+**THE DWELL REFUSAL GAINS NINE CYCLES.** The load ends by `P + G + 2` and
+the next block's fetch opens at `dwell - 9`, thus `9 * Cin` must reach
+`P + G + 11`. At P 48 and G 4 that refuses H 6 — dwell 54, which the
+unfused floor accepted exactly — and admits H 7 at 63 against 63. No elected
+shape is in the band: the stem dwells 72, rung 2 144, rung 3 180. THE TWIN'S
+OWN TEST SHAPE IS IN IT, thus the elaboration's gates, the socket test and
+the transaction test carry one channel more than `Model.For_test.config`.
+
+**RUNG 2 FUSED, ON THE BOARD.** Built 2026-08-28 from the tree's
+`gen_verilog` constants, `board/_build/fused-rung2-explore`:
+
+| | rung 2 unfused (in flash then) | rung 2 FUSED |
+|---|---|---|
+| block RAM tiles | 124 | **92 of 135** |
+| LUTs / registers | 21 455 / 23 818 | 21 449 / 23 766 |
+| DSPs | 192 | 192 |
+| WNS / WHS | +0.018 / +0.029 | +0.065 / +0.023 |
+| `Physopt 32-703` | 1 | 0 |
+
+**92 IS THE NUMBER THE TABLE PREDICTED**, 43 + 11 + 36 + 2, and it costs
+nothing anywhere else: the LUTs fall by six and the registers by fifty-two,
+because a ring's address is shorter than a tensor's. The first roll met at
+WNS +0.000 with seven `Physopt 32-703` on one register family — the
+mortgage, refused by the instrument — and the Explore re-roll is the build
+above. THE INSTRUMENT EARNED ITS KEEP: nothing but the hold rule separated a
+bitstream that STA blessed from one that is actually met.
+
+**AND THE BOARD PLAYS THE TWIN.** Programmed volatile at the panel seed
+48877, the flash holding the unfused rung 2. The capture through the S-1's
+soft-thru against
+`play_diffusion -quantized -seeds 48877 -fade 0 -step-ms 200`: **498 bytes
+and 166 messages EACH, byte for byte, in order**, with the order-tolerant
+allowance unused. The fused machine is thereby proven against the reference
+that exists, and Gate B stands whole at rung 2 fused.
+
+**RUNG 3 FUSED FITS, AND ITS TIMING IS NOT THE PAIR'S.** The golden
+candidate `l48-h20` at T 128, G 5, N 512 elaborates at 4 300 464 cycles for
+one forward — the cost model's 4.30 M exactly — and builds at **108.5 tiles
+of 135 and 240 of 240 DSPs**, which is the table's 109 and the whole point
+of the round. The store banks 2 048 + 512 and the ring is 80 columns in one
+bank of 512.
+
+**BUT NEITHER ROLL CLEARS THE HOLD INSTRUMENT.** Default directives read
+WNS −0.140 with 31 failing endpoints and 20 `Physopt 32-703`; the Explore
+re-roll reads +0.003 with 17. Met by three picoseconds with seventeen
+clock-skew adjustments is the mortgage, and the mortgage is refused: no
+bitstream went to the board.
+
+**AND THE FAMILY NAMES THE OWNER.** Eight of the seventeen adjustments are
+`uniform_draw_reg` — the DRAW's shift register, the very family "The
+clock-skew mortgage" convicted before and fixed with `dont_touch` replicas
+of `u`. The worst path is fifteen levels with NINE carry chains, 46 percent
+logic, and it starts and ends outside the array. The fused pair moved
+memory and the memory arrived; what stands between rung 3 and the board is
+the draw's arithmetic at G 5, and that is a round of its own.
+
+**WHAT THE GATES SAY.** The stream instrument holds every column the engine
+writes against the twin, a TURN of writes at a time, over five shapes
+including one where the ring wraps twice: 0 part, 0 misplaced at every one.
+The cycle bench reads **9 cycles a turn** and it does not grow with the
+blocks — the rotation hides the fetch at a phase change as it hides it at a
+column change, which is what "the same cycle count" rests on. A waveform of
+one pair prints the schedule itself: `lead_column` walks 0, 1, 2, 0, 3 with
+`lead_phase` high on that 0.
+
+### The timing round of the fused machine — five families, three cuts
+
+The fused pair fits the golden candidate and rung 3 would not build
+honestly: `l48-h20` at T 128, G 5 read WNS −0.140 with 31 failing endpoints
+and 20 `Physopt 32-703` on default directives, and +0.003 with 17 on the
+Explore re-roll. A third roll was not the answer. **THE CENSUS NAMED FIVE
+FAMILIES INSIDE 0.14 ns**, and the lottery band is 0.1:
+
+| family | worst | levels | owner |
+|---|---|---|---|
+| the draw's threshold: the uniform times the total, one cycle | −0.140 | 15, nine carry | `Draw`, old |
+| the fetch cone: `next_block` → the `s - 2` → `column_address` → a bank's address hold | −0.118 | 11–12 | `Forward`, the fused round's own |
+| the draw's class into the canvas | −0.107 | 11 | `Source`, old |
+| the epilogue's gain multiply, one cycle | −0.090 | 15–17 | `Epilogue`, old |
+| the opening: the uniform times the seat width | −0.077 | 11 | `Source`, old |
+
+The unfused rung 3 met at +0.216 on the same 240 DSPs, thus the DSP count
+was never the pressure: the walk's new logic and the tighter dwell floor
+pushed every long cone at once.
+
+**THREE CUTS, AND EVERY ONE IS A REGISTER.** No arithmetic moved and no
+value moved; each cut adds a pipeline stage inside one unit.
+
+1. **The fetch frame is a register.** The fetch of slot `s` goes out at lead
+   cycle `3 s + 2` while the nest advances at cycle 0, thus those
+   coordinates carried two cycles of slack a combinational `next_block`
+   threw away. **Cost: nothing.**
+2. **The draw's threshold in two stages**, split by the uniform's halves —
+   an exact identity over the integers, thus the theorem that the threshold
+   stands STRICTLY under the total is untouched. `busy_cycles` 154 → 155.
+3. **The epilogue's multiply in two stages**, split by the gain's bytes: the
+   signed high byte times 256 plus the unsigned low. `latency` 4 → 5, and
+   every tag pipeline in the lane follows.
+
+**THE CUTS CLEARED THE OTHER TWO FAMILIES ON THEIR OWN.** Cuts 4 and 5 —
+the opening's product and the cell port — were designed and not taken: with
+the three deeper cones cut, rung 3's census names NOTHING under +0.05.
+
+| | rung 3 fused, before | rung 3 fused, cuts 1-3 |
+|---|---|---|
+| WNS / WHS | +0.003 / +0.014 | **+0.147 / +0.013** |
+| `Physopt 32-703` | 17 | **0** |
+| `BUFGCTRL` | 3 | **1** |
+| census under +0.05 | 5 families | **0 paths** |
+| tiles / DSPs | 108.5 / 240 | 108.5 of 135 / 240 of 240 |
+
+First roll, default directives. **AND BOTH RUNGS PLAY THE TWIN.** Rung 2
+rebuilt with the cuts reads +0.035 / +0.015, one tree, no mortgage, 92
+tiles, and its capture at panel seed 48877 is 498 bytes and 166 messages
+byte for byte. Rung 3, the golden candidate, was then programmed: the draw
+stopwatch reads **22.32 seconds** from RUN to the first note against the
+cost model's 22.0, and the capture against `play_diffusion` on the golden
+checkpoint is **708 bytes and 236 messages, byte for byte, in order**.
+
+Gate B stands whole at the golden candidate.
+
+**THE FLASH HOLDS IT, 2026-08-28.** The tree elects rung 3 in `gen_verilog`
+— `l48-h20-100k`, T 128, G 5, N 512 — and its Verilog is the byte of the
+one that built `board/_build/cut-rung3` (md5 `4e367cef…`), thus the flashed
+bitstream is the tree's own build and no lottery was rolled again. QSPI
+erased, programmed, verified, booted; the cell dump answers over the UART
+behind the boot. The unfused rung 2 that held the flash since 2026-08-27
+stands aside as `board/_build/top-rung2-unfused.bit`.
+
 ## The iteration strategy
 
 **THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
@@ -1325,7 +1547,7 @@ software side already pinned.
 - **The climb starts at `l16-h16-100k`** — first make it work, then make
   it good. The engine, the memories and the walk are the machine above;
   `l64-h16-100k` is the same elaboration with a longer table and a larger
-  ROM. The golden candidate waits behind the fused pair.
+  ROM. The golden candidate came through the fused pair, 2026-08-28.
 - **One canvas on run.** Reset releases, the machine draws one canvas from
   the SEED cell, the sequencer plays it once, the machine stops. The reset
   button gives the next run. Continuation belongs to phase II.

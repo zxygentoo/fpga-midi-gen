@@ -65,6 +65,17 @@ type bank =
   ; depth : int
   }
 
+(** One turn of the walk: the layer of phase A, and the layer of phase B where the turn is
+    a pair. The stem and the head are turns of one phase.
+
+    A TURN IS WHAT THE ENGINE PRIMES ONCE AND DRAINS ONCE. Inside a pair the two layers
+    interleave block by block — A at column [s], then B at column [s - 2] — thus a layer
+    is no longer a unit the walk can name, and the cycle model counts turns. *)
+type turn =
+  { first : int
+  ; second : int option
+  }
+
 (** One model at one geometry: the four numbers of the geometry, the table, and the tables
     the bitstream carries. *)
 type t =
@@ -75,6 +86,9 @@ type t =
   ; store_channels : int
   (** H: the channels that each of the two activation stores holds *)
   ; layers : layer array
+  ; turns : turn array
+  (** the stem, then one turn for each pair, then the head. [create] refuses a model whose
+      roles do not walk that shape. *)
   ; weight_rom : Hardcaml.Bits.t array
   (** the weight words, [lanes] bytes each and lane 0 in the low byte, in the dwell order:
       the group, then the input channel, then the tap. One column's dwell therefore walks
@@ -92,6 +106,11 @@ type t =
       over [store_depth]. One bank of 2048 at rung 2; 2048 and 512 at T 128 and H 20,
       where one memory of 2560 columns would map as 4096 and cost 86 tiles against 54. A
       store holds no image, thus a bank of it is a range of columns and nothing more. *)
+  ; ring_banks : bank array
+  (** how the Y ring is banked: [ring_depth] columns, one bank of 512 at every elected
+      rung. Y never exists as a tensor — the fused pair keeps four columns of it live —
+      thus the ring costs the WIDTH of a column and not the length of the canvas: eleven
+      tiles at any T. *)
   ; norm_rom : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
       low [bias_bits], the shift in the [shift_bits] above it, and the value of the gain
@@ -138,6 +157,23 @@ type 'a norm_fields =
   ; bias : 'a
   }
 
+(** The nest of a turn, as the lead frame carries it: the input channel inside a block,
+    the group inside a phase, the pair's step counter, and the phase. Inside a pair the
+    lead frame can be in B while the now frame is still in A, thus the phase travels in
+    the frames as the step and the group already do. *)
+type 'a nest =
+  { cin : 'a
+  ; group : 'a
+  ; step : 'a
+  ; phase : 'a
+  }
+
+(** what one advance of the nest gives: the state after it, and whether the turn closed *)
+type 'a block_walk =
+  { next : 'a nest
+  ; ends : 'a
+  }
+
 (** [norm_word gain ~bias] is one word of [norm_rom]. THE FIELD ORDER IS A FACT OF THIS
     FUNCTION AND OF NOTHING ELSE, thus a consumer that slices another way disagrees with
     the image the bitstream carries — and a gate that packs here and slices there is what
@@ -154,6 +190,66 @@ val column_address : t -> step:int -> channel:int -> int
 
 (** the words of one activation store: [steps * store_channels] *)
 val store_depth : t -> int
+
+(** the columns of Y the ring holds: 4.
+
+    B at column [c] reads Y at [c - 1], [c] and [c + 1], and A runs two columns ahead of
+    B, thus four columns of Y are live at any moment — [c - 1], [c], [c + 1] and the
+    [c + 2] A has just written. Y at [c - 2] died with B at [c - 1]. FOUR IS A POWER OF
+    TWO AND THAT IS THE WHOLE OF THE ADDRESS: the ring's step is the low bits of the
+    semantic column, thus no modulo and no second counter stands anywhere. *)
+val ring_steps : int
+
+(** the words of the Y ring: [ring_steps * store_channels] *)
+val ring_depth : t -> int
+
+(** the bits a ring address takes: [address_bits_for (ring_depth t)] *)
+val ring_bits : t -> int
+
+(** [ring_address t ~step ~channel] is where the ring holds a column of Y: the store's own
+    map over the low bits of the semantic step. THE MAP IS A FACT OF THIS FUNCTION AND OF
+    NOTHING ELSE, as [column_address] is. *)
+val ring_address : t -> step:int -> channel:int -> int
+
+(** the phases of a turn: A runs the opening layer of a pair, B its closing layer. The
+    stem and the head have phase A alone. *)
+val phase_a : int
+
+val phase_b : int
+
+(** [is_pair turn] is whether the turn interleaves two layers. *)
+val is_pair : turn -> bool
+
+(** [layer_of_phase turn phase] is the layer a phase of a turn runs. It raises when a turn
+    of one phase is asked for its B. *)
+val layer_of_phase : turn -> int -> int
+
+(** One block of a turn: the layer it runs, the column of the canvas it works on, and the
+    group of output channels. A block dwells [taps * inputs] cycles, and the fetch of the
+    NEXT block's columns goes out under the last input channel of this one. *)
+type block =
+  { layer : int
+  ; column : int
+  ; group : int
+  }
+
+(** [blocks_of_turn t turn] is the turn's blocks in the order the engine runs them. For a
+    pair, with [s] the step counter from 0 to [steps + 1]: A at column [s] while
+    [s < steps], then B at column [s - 2] while [s >= 2] — A0, A1, A2 B0, A3 B1, ...,
+    B(T-2), B(T-1). For the stem and the head it is the columns in order.
+
+    THIS IS THE SOFTWARE HALF OF [Rtl.next_block] and the gate beside them holds the two
+    together over every block of every shape: the walk cannot drift from the order the
+    cycle model counts. *)
+val blocks_of_turn : t -> turn -> block list
+
+(** the dwells of one layer over every column and group, with no drain tail: the tail
+    belongs to the TURN and not to a layer inside it *)
+val layer_dwell_cycles : t -> layer -> int
+
+(** [turn_cycles t turn] is one turn, exactly: the dwells of its one or two layers and ONE
+    drain tail behind the last of them. *)
+val turn_cycles : t -> turn -> int
 
 (** [channel_of t ~group ~lane] is the output channel a lane of a group names:
     [group * lanes + lane]. The weight image and the norm image are both walked by it, and
@@ -257,6 +353,33 @@ module Rtl : sig
         A caller carries the answer beside the DATA and not beside the address, and holds
         it as many times as the data is registered before the mux. *)
     val bank_at : bank array -> address:Comb.t -> Comb.t
+
+    (** [ring_address ~pin t ~step ~channel] is [ring_address] as a circuit, at
+        [ring_bits t] bits: the caller drives the SEMANTIC column and this takes the bits
+        the ring keeps. *)
+    val ring_address
+      :  pin:(Comb.t -> Comb.t)
+      -> t
+      -> step:Comb.t
+      -> channel:Comb.t
+      -> Comb.t
+
+    (** [layer_of t ~turn ~phase] is which layer of the table a frame is in. Every fact of
+        the table is muxed by this and not by the turn, thus the table's mux is the one it
+        always was and only its index has learned to travel between the frames. *)
+    val layer_of : t -> turn:Comb.t -> phase:Comb.t -> Comb.t
+
+    (** [next_block t ~is_pair ~cin_count ~group_count nest] advances the lead frame's
+        nest by one cycle and says whether the turn closed. The counts are the LEAD
+        layer's, because it is the lead frame that walks. This is the circuit half of
+        [blocks_of_turn]. *)
+    val next_block
+      :  t
+      -> is_pair:Comb.t
+      -> cin_count:Comb.t
+      -> group_count:Comb.t
+      -> Comb.t nest
+      -> Comb.t block_walk
 
     (** [norm_fields word] slices one word of [norm_rom]: the inverse of [norm_word], and
         the only reader of the field order besides it. *)

@@ -31,6 +31,15 @@ type bank =
   ; depth : int
   }
 
+(* ONE TURN OF THE WALK: the layer of phase A, and the layer of phase B where the turn is
+   a pair. The stem and the head are turns of one phase. A turn is what the engine primes
+   once and drains once; inside a pair the two layers interleave, thus neither of them is
+   a unit the walk can name. *)
+type turn =
+  { first : int
+  ; second : int option
+  }
+
 type t =
   { steps : int
   ; rows : int
@@ -38,9 +47,11 @@ type t =
   ; walk : int
   ; store_channels : int
   ; layers : layer array
+  ; turns : turn array
   ; weight_rom : Bits.t array
   ; weight_banks : bank array
   ; store_banks : bank array
+  ; ring_banks : bank array
   ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
   ; openings : Diffusion.opening array
@@ -83,15 +94,124 @@ let role_at ~count index =
   else Pair_close
 ;;
 
+(* THE TURNS OF A MODEL: the stem alone, then one turn for each pair, then the head alone.
+   The roles already state the shape — [create] builds them with [role_at] — thus this
+   reads them back rather than counting layers a second way, and a model whose roles do
+   not walk stem, pairs, head raises here and not in a waveform. *)
+let turns_of roles =
+  let count = Array.length roles in
+  let rec walk at =
+    if at >= count
+    then []
+    else (
+      match roles.(at) with
+      | Stem | Head -> { first = at; second = None } :: walk (at + 1)
+      | Pair_open ->
+        (match if at + 1 < count then Some roles.(at + 1) else None with
+         | Some Pair_close -> { first = at; second = Some (at + 1) } :: walk (at + 2)
+         | _ ->
+           invalid_argf
+             "layer %d opens a pair that layer %d does not close"
+             at
+             (at + 1)
+             ())
+      | Pair_close -> invalid_argf "layer %d closes a pair that nothing opened" at ())
+  in
+  Array.of_list (walk 0)
+;;
+
 (* the dwell of one (column, group): one cycle for each (tap, input channel) pair *)
 let dwell layer = taps * layer.inputs
 
-(* One layer, exactly: the dwells of every column and group, and one drain tail behind the
-   last of them. The count is exact and not a bound, because [create] refuses a layer
-   whose dwell is shorter than its drain — no dwell ever waits for the chain to empty.
-   What the layer turn itself costs is the cycle bench's to measure. *)
-let layer_cycles t layer = (t.steps * layer.groups * dwell layer) + t.rows
-let forward_cycles t = Array.sum (module Int) t.layers ~f:(layer_cycles t)
+(* THE PHASES OF A TURN. A pair runs its opening layer in phase A and its closing layer in
+   phase B; the stem and the head have phase A alone. The phase is one bit and it travels
+   in the frames, because inside a pair the lead frame can be in B while the now frame is
+   still in A. *)
+let phase_a = 0
+let phase_b = 1
+
+(* A TURN OF ONE PHASE ANSWERS ITS OWN LAYER AT EITHER PHASE, as [Rtl.layer_of] does: the
+   two halves of one rule cannot differ on the edge. *)
+let layer_of_phase turn phase =
+  if phase = phase_b then Option.value turn.second ~default:turn.first else turn.first
+;;
+
+let is_pair turn = Option.is_some turn.second
+
+(* ONE BLOCK OF A TURN: the layer it runs, the column of the canvas it works on, and the
+   group of output channels. A block dwells [dwell layer] cycles. *)
+type block =
+  { layer : int
+  ; column : int
+  ; group : int
+  }
+
+(* THE NEST OF A TURN, as the lead frame carries it: the input channel inside a block, the
+   group inside a phase, the pair's step counter, and the phase. [Rtl.next_block] advances
+   it and [blocks_of_turn] lists what it visits. *)
+type 'a nest =
+  { cin : 'a
+  ; group : 'a
+  ; step : 'a
+  ; phase : 'a
+  }
+
+(* what one advance of the nest gives: the state after it, and whether the turn closed *)
+type 'a block_walk =
+  { next : 'a nest
+  ; ends : 'a
+  }
+
+(* THE ORDER OF A PAIR'S BLOCKS, AND WHY B TRAILS A BY TWO. With [s] the pair's step
+   counter from 0 to T + 1, the turn runs A at column [s] while [s < T] and B at column
+   [s - 2] while [s >= 2]:
+
+   A0, A1, A2 B0, A3 B1, ..., A(T-1) B(T-3), B(T-2), B(T-1).
+
+   B at c reads Y at c + 1, thus A at c + 2 must have written it — and one WHOLE block
+   must stand between that write and this read, because a flush lands one epilogue behind
+   its drain. A lag of one would make every column wait for a flush and "the same cycle
+   count" would be false. The lag also frees X: A at c + 1 was the last reader of X at c,
+   thus B at c may overwrite it in place. And it bounds the ring at four columns.
+
+   THE PAIR NEEDS TWO COLUMNS. At T 1 the counter's [s = 1] holds no block at all — A is
+   past its last column and B has not reached its first — and a nest that advances one
+   step for each block would stall there. [create] refuses it. *)
+let phases_at turn ~steps ~s =
+  let a = if s < steps then [ phase_a ] else [] in
+  let b = if is_pair turn && s >= 2 then [ phase_b ] else [] in
+  a @ b
+;;
+
+let column_of_phase ~s phase = if phase = phase_b then s - 2 else s
+
+let blocks_of_turn t turn =
+  let last_s = if is_pair turn then t.steps + 1 else t.steps - 1 in
+  List.range 0 (last_s + 1)
+  |> List.concat_map ~f:(fun s ->
+    phases_at turn ~steps:t.steps ~s
+    |> List.concat_map ~f:(fun phase ->
+      let at = layer_of_phase turn phase in
+      List.init t.layers.(at).groups ~f:(fun group ->
+        { layer = at; column = column_of_phase ~s phase; group })))
+;;
+
+(* One turn, exactly: the dwells of every column and group of its one or two layers, and
+   ONE drain tail behind the last of them. The count is exact and not a bound, because
+   [create] refuses a layer whose dwell is shorter than the drain and the loads behind it.
+   What the turn itself costs — the preamble, the tail — is the cycle bench's to measure. *)
+let layer_dwell_cycles t layer = t.steps * layer.groups * dwell layer
+
+let turn_cycles t turn =
+  let of_layer at = layer_dwell_cycles t t.layers.(at) in
+  of_layer turn.first
+  + (match turn.second with
+    | Some at -> of_layer at
+    | None -> 0)
+  + t.rows
+;;
+
+let forward_cycles t = Array.sum (module Int) t.turns ~f:(turn_cycles t)
 let canvas_cells t = t.steps * Frame.voices
 
 (* one uniform for each cell in the cell order: the opening, and the mask of each pass *)
@@ -127,6 +247,21 @@ let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
 let column_address t ~step ~channel = (step * t.store_channels) + channel
 let store_depth t = t.steps * t.store_channels
 
+(* THE Y RING. The fused pair never lets Y exist as a tensor: B at column c reads Y at c -
+   1, c and c + 1, and A runs two columns ahead of B, thus FOUR columns of Y are live at
+   any moment — c - 1, c, c + 1 and the c + 2 that A has just written. Y at c - 2 died
+   with B at c - 1.
+
+   FOUR IS A POWER OF TWO AND THAT IS THE WHOLE OF THE ADDRESS. The ring's step is the low
+   two bits of the semantic step, thus no modulo and no compare stands anywhere: the
+   engine drives the semantic column and the map takes it. *)
+let ring_steps = 4
+let ring_depth t = ring_steps * t.store_channels
+
+let ring_address t ~step ~channel =
+  (step land (ring_steps - 1) * t.store_channels) + channel
+;;
+
 (* THE OTHER MAP OF THE IMAGES: which output channel a lane of a group names. The weight
    image and the norm image are both walked by it, and both pad where it runs past a
    layer's channels. It is a function so that [Rtl] can state the same rule to the circuit
@@ -139,6 +274,7 @@ let channel_of t ~group ~lane = (group * t.lanes) + lane
    in a group of three reaches channel five — thus the channel width follows the GROUPS
    and not the outputs. *)
 let store_bits t = Bits.address_bits_for (store_depth t)
+let ring_bits t = Bits.address_bits_for (ring_depth t)
 
 let widest_channel t =
   Array.fold t.layers ~init:1 ~f:(fun widest l ->
@@ -206,6 +342,18 @@ let bank_at banks address =
     if address >= bank.base then at else select)
 ;;
 
+(* how [to_string] says a plan: one bank reads differently from two *)
+let banks_phrase banks =
+  if Array.length banks = 1
+  then sprintf "in one bank of %d" banks.(0).depth
+  else
+    sprintf
+      "in banks of %s"
+      (String.concat
+         ~sep:" + "
+         (List.map (Array.to_list banks) ~f:(fun b -> Int.to_string b.depth)))
+;;
+
 (* the depths of a plan as [to_string] and the gates print them *)
 let bank_depths banks =
   String.concat
@@ -246,6 +394,19 @@ module Rtl = struct
       flat_index ~pin ~width:(store_bits t) ~stride:t.store_channels step channel
     ;;
 
+    (* THE RING'S MAP, AND THE ONLY PLACE ITS GEOMETRY IS STATED. The ring holds
+       [ring_steps] columns and that is a power of two, thus the low bits of the SEMANTIC
+       column are the ring's own step: the engine drives the column it means and this
+       takes the bits it keeps. No modulo, no compare, no second counter. *)
+    let ring_address ~pin t ~step ~channel =
+      flat_index
+        ~pin
+        ~width:(ring_bits t)
+        ~stride:t.store_channels
+        (sel_bottom step ~width:(address_bits_for ring_steps))
+        channel
+    ;;
+
     let channel_of ~pin t ~group ~lane =
       flat_index ~pin ~width:(channel_bits t) ~stride:t.lanes group lane
     ;;
@@ -265,6 +426,54 @@ module Rtl = struct
             (address >=: of_unsigned_int ~width:(width address) bank.base)
             (of_unsigned_int ~width:bits at)
             select)
+    ;;
+
+    (* WHICH LAYER A FRAME IS IN: the turn states one or two, and the phase picks. Every
+       fact of the table is muxed by this and not by the turn, thus the table's mux is the
+       one it always was and only its index has learned to travel. *)
+    let layer_of t ~turn ~phase =
+      let width = address_bits_for (Array.length t.layers) in
+      mux
+        turn
+        (List.map (Array.to_list t.turns) ~f:(fun tn ->
+           let at = of_unsigned_int ~width tn.first in
+           match tn.second with
+           | None -> at
+           | Some second -> mux2 phase (of_unsigned_int ~width second) at))
+    ;;
+
+    (* THE NEST OF A TURN, AS THE CIRCUIT WALKS IT. The state is the input channel, the
+       group, the pair's step counter and the phase; the counts come from the LEAD layer,
+       because it is the lead frame that walks and the lead frame's layer states them.
+
+       The order is [blocks_of_turn]'s and the gate beside it holds the two together over
+       every block of every shape. A block closes when the last channel of its last group
+       retires. Then the phase turns to B where B is live at this step; otherwise the step
+       advances, and the phase opens at A while A is still inside the canvas. A turn ends
+       on the close of its last step's last phase. *)
+    let next_block t ~is_pair ~cin_count ~group_count { cin; group; step; phase } =
+      let at n = of_unsigned_int ~width:(width step) n in
+      let last_cin = cin ==: cin_count -:. 1 in
+      let last_group = group ==: group_count -:. 1 in
+      let closes = last_cin &: last_group in
+      let in_a = ~:phase in
+      (* B is live once the step has reached column two; A is live while the step is still
+         inside the canvas *)
+      let b_live = is_pair &: (step >=: at 2) in
+      (* A TURN OF ONE PHASE NEVER LEAVES A. Only a pair runs past its last column, and
+         only there does the step open at B. *)
+      let a_live_next = ~:is_pair |: (step +:. 1 <: at t.steps) in
+      let turns_to_b = closes &: in_a &: b_live in
+      let turns_step = closes &: ~:turns_to_b in
+      let last_step = mux2 is_pair (at (t.steps + 1)) (at (t.steps - 1)) in
+      { next =
+          { cin = mux2 last_cin (zero (width cin)) (cin +:. 1)
+          ; group = mux2 closes (zero (width group)) (mux2 last_cin (group +:. 1) group)
+          ; step = mux2 turns_step (step +:. 1) step
+          ; phase = mux2 turns_to_b vdd (mux2 turns_step (mux2 a_live_next gnd vdd) phase)
+          }
+      ; ends = turns_step &: (step ==: last_step)
+      }
     ;;
 
     let norm_fields word =
@@ -294,26 +503,43 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   let twin = model.layers in
   let count = Array.length twin in
   let groups_of (l : Quantized.Model.layer) = (l.outputs + lanes - 1) / lanes in
-  (* THE DWELL MUST COVER THE DRAIN AND THE BAND LOADS BEHIND IT, and the tighter of the
-     two rules is the one stated. The chain is [rows] stages and must empty before the
-     next dwell captures the array. Behind it, the residual columns and the norm words of
-     the next group are fetched the moment the drain has read its last residual row — one
-     address for each lane, two cycles of read latency behind them — because one buffer
-     serves every group and nothing is doubled. A dwell shorter than the sum leaves the
-     band half-loaded when the next drain reads it, and NOTHING DOWNSTREAM SAYS SO: the
-     arithmetic is silently wrong and the write stream would have to catch it. It is a
-     check and not a comment, thus [layer_cycles] states an exact count and never a bound. *)
-  let dwell_floor = rows + lanes + 2 in
+  (* THE DWELL MUST COVER THE DRAIN, THE BAND LOADS BEHIND IT, AND THE NEXT BLOCK'S FETCH
+     AHEAD OF IT. The chain is [rows] stages and must empty before the next dwell captures
+     the array. Behind it, the residual columns and the norm words of the group are
+     fetched the moment that drain has read its last residual row — one address for each
+     lane, two cycles of read latency behind them — because one buffer serves every group
+     and nothing is doubled. That is [rows + lanes + 2], and it was the whole rule while a
+     layer was the unit of the walk.
+
+     THE FUSED PAIR ADDS THE LAST INPUT CHANNEL, AND IT COSTS NINE. Inside a pair no
+     preamble stands between the blocks: the next block's three columns are fetched under
+     the LAST input channel of the running one, which is [taps] cycles wide. In a B block
+     the X port carries the residual load, and the block after it is an A whose fetch
+     needs X. The two windows must not overlap, thus the load — which ends by
+     [rows + lanes + 2] — must close before the last channel opens at [dwell - taps].
+
+     NOTHING DOWNSTREAM SAYS SO IF IT DOES NOT. A half-loaded band and a column fetched
+     from the wrong memory are both silently wrong arithmetic, and only the write stream
+     would catch them. It is a check and not a comment, thus [turn_cycles] states an exact
+     count and never a bound. H 6 at G 4 dwells 54 against a floor of 54 under the old
+     rule and 63 under this one: it is the shape the fused engine would read wrong. *)
+  let dwell_floor = rows + lanes + 2 + taps in
   Array.iteri twin ~f:(fun at (l : Quantized.Model.layer) ->
     if taps * l.inputs < dwell_floor
     then
       invalid_argf
-        "layer %d dwells %d cycles and its drain and band loads need %d: the dwell is \
-         short"
+        "layer %d dwells %d cycles; its drain, band loads and the next block's fetch \
+         need %d: the dwell is short"
         at
         (taps * l.inputs)
         dwell_floor
         ());
+  (* A PAIR NEEDS TWO COLUMNS. B trails A by two, thus the pair's step counter walks 0 to
+     T + 1; at T 1 the step 1 holds no block at all — A is past its last column and B has
+     not reached its first — and a nest that advances one step for each block would stall
+     there. Two columns is not a canvas either, but it is a shape the nest can walk. *)
+  if steps < 2 && count > 2
+  then invalid_argf "a canvas of %d steps cannot carry a fused pair" steps ();
   let layers =
     let weight_bases =
       bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
@@ -393,6 +619,8 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; walk
   ; store_channels
   ; layers
+  ; turns = turns_of (Array.map layers ~f:(fun l -> l.role))
+  ; ring_banks = Array.of_list (bank_plan (ring_steps * store_channels))
   ; weight_rom
   ; weight_banks
   ; store_banks = Array.of_list (bank_plan (steps * store_channels))
@@ -425,7 +653,7 @@ let to_string t =
       (dwell layer)
       layer.weight_base
       layer.norm_base
-      (layer_cycles t layer)
+      (layer_dwell_cycles t layer)
   in
   let head =
     [ sprintf
@@ -473,10 +701,21 @@ let to_string t =
         "a store is %d columns of %d bits %s, t-major: step * %d + channel"
         (store_depth t)
         (t.rows * 16)
-        (if Array.length t.store_banks = 1
-         then sprintf "in one bank of %s" (bank_depths t.store_banks)
-         else sprintf "in banks of %s" (bank_depths t.store_banks))
+        (banks_phrase t.store_banks)
         t.store_channels
+    ; sprintf
+        "the Y ring is %d columns of %d bits %s, and B trails A by two"
+        (ring_depth t)
+        (t.rows * 16)
+        (banks_phrase t.ring_banks)
+    ; sprintf
+        "the turns are %s"
+        (String.concat
+           ~sep:", "
+           (List.map (Array.to_list t.turns) ~f:(fun turn ->
+              match turn.second with
+              | None -> sprintf "%d" turn.first
+              | Some second -> sprintf "%d+%d" turn.first second)))
     ; sprintf
         "forward %d cycles, the cell walk %d, a pass %d less the draw"
         (forward_cycles t)
@@ -487,6 +726,13 @@ let to_string t =
   head @ Array.to_list (Array.mapi t.layers ~f:layer_line) @ foot
   |> String.concat ~sep:"\n"
 ;;
+
+(* THE TINY SHAPE THE GATES BELOW ELABORATE, and it is NOT the twin's own
+   [Quantized.Model.For_test.config]. At H 6 a layer dwells 54 cycles and the fused floor
+   asks 63: the model the twin tests with is a model this elaboration refuses, and the
+   refusal gate at the foot of the file is where that shape belongs. One channel wider
+   walks every map the same way. *)
+let tiny_shape = { Diffusion.Config.layers = 4; width = 8 }
 
 let%expect_test "the elaboration of the elected rung" =
   (* THE SHAPE OF `l64-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
@@ -499,76 +745,78 @@ let%expect_test "the elaboration of the elected rung" =
     {|
     T 128, P 48, H 16, G 4, N 512
      at  ends          cin cout  gr dwell  w base c base     cycles
-      0  planes -> X     8   16   4    72       0      0      36912
-      1  X -> Y         16   16   4   144     288     16      73776
-      2  Y + X -> X     16   16   4   144     864     32      73776
-      3  X -> Y         16   16   4   144    1440     48      73776
-      4  Y + X -> X     16   16   4   144    2016     64      73776
-      5  X -> Y         16   16   4   144    2592     80      73776
-      6  Y + X -> X     16   16   4   144    3168     96      73776
-      7  X -> Y         16   16   4   144    3744    112      73776
-      8  Y + X -> X     16   16   4   144    4320    128      73776
-      9  X -> Y         16   16   4   144    4896    144      73776
-     10  Y + X -> X     16   16   4   144    5472    160      73776
-     11  X -> Y         16   16   4   144    6048    176      73776
-     12  Y + X -> X     16   16   4   144    6624    192      73776
-     13  X -> Y         16   16   4   144    7200    208      73776
-     14  Y + X -> X     16   16   4   144    7776    224      73776
-     15  X -> Y         16   16   4   144    8352    240      73776
-     16  Y + X -> X     16   16   4   144    8928    256      73776
-     17  X -> Y         16   16   4   144    9504    272      73776
-     18  Y + X -> X     16   16   4   144   10080    288      73776
-     19  X -> Y         16   16   4   144   10656    304      73776
-     20  Y + X -> X     16   16   4   144   11232    320      73776
-     21  X -> Y         16   16   4   144   11808    336      73776
-     22  Y + X -> X     16   16   4   144   12384    352      73776
-     23  X -> Y         16   16   4   144   12960    368      73776
-     24  Y + X -> X     16   16   4   144   13536    384      73776
-     25  X -> Y         16   16   4   144   14112    400      73776
-     26  Y + X -> X     16   16   4   144   14688    416      73776
-     27  X -> Y         16   16   4   144   15264    432      73776
-     28  Y + X -> X     16   16   4   144   15840    448      73776
-     29  X -> Y         16   16   4   144   16416    464      73776
-     30  Y + X -> X     16   16   4   144   16992    480      73776
-     31  X -> Y         16   16   4   144   17568    496      73776
-     32  Y + X -> X     16   16   4   144   18144    512      73776
-     33  X -> Y         16   16   4   144   18720    528      73776
-     34  Y + X -> X     16   16   4   144   19296    544      73776
-     35  X -> Y         16   16   4   144   19872    560      73776
-     36  Y + X -> X     16   16   4   144   20448    576      73776
-     37  X -> Y         16   16   4   144   21024    592      73776
-     38  Y + X -> X     16   16   4   144   21600    608      73776
-     39  X -> Y         16   16   4   144   22176    624      73776
-     40  Y + X -> X     16   16   4   144   22752    640      73776
-     41  X -> Y         16   16   4   144   23328    656      73776
-     42  Y + X -> X     16   16   4   144   23904    672      73776
-     43  X -> Y         16   16   4   144   24480    688      73776
-     44  Y + X -> X     16   16   4   144   25056    704      73776
-     45  X -> Y         16   16   4   144   25632    720      73776
-     46  Y + X -> X     16   16   4   144   26208    736      73776
-     47  X -> Y         16   16   4   144   26784    752      73776
-     48  Y + X -> X     16   16   4   144   27360    768      73776
-     49  X -> Y         16   16   4   144   27936    784      73776
-     50  Y + X -> X     16   16   4   144   28512    800      73776
-     51  X -> Y         16   16   4   144   29088    816      73776
-     52  Y + X -> X     16   16   4   144   29664    832      73776
-     53  X -> Y         16   16   4   144   30240    848      73776
-     54  Y + X -> X     16   16   4   144   30816    864      73776
-     55  X -> Y         16   16   4   144   31392    880      73776
-     56  Y + X -> X     16   16   4   144   31968    896      73776
-     57  X -> Y         16   16   4   144   32544    912      73776
-     58  Y + X -> X     16   16   4   144   33120    928      73776
-     59  X -> Y         16   16   4   144   33696    944      73776
-     60  Y + X -> X     16   16   4   144   34272    960      73776
-     61  X -> Y         16   16   4   144   34848    976      73776
-     62  Y + X -> X     16   16   4   144   35424    992      73776
-     63  X -> logits    16    4   1   144   36000   1008      18480
+      0  planes -> X     8   16   4    72       0      0      36864
+      1  X -> Y         16   16   4   144     288     16      73728
+      2  Y + X -> X     16   16   4   144     864     32      73728
+      3  X -> Y         16   16   4   144    1440     48      73728
+      4  Y + X -> X     16   16   4   144    2016     64      73728
+      5  X -> Y         16   16   4   144    2592     80      73728
+      6  Y + X -> X     16   16   4   144    3168     96      73728
+      7  X -> Y         16   16   4   144    3744    112      73728
+      8  Y + X -> X     16   16   4   144    4320    128      73728
+      9  X -> Y         16   16   4   144    4896    144      73728
+     10  Y + X -> X     16   16   4   144    5472    160      73728
+     11  X -> Y         16   16   4   144    6048    176      73728
+     12  Y + X -> X     16   16   4   144    6624    192      73728
+     13  X -> Y         16   16   4   144    7200    208      73728
+     14  Y + X -> X     16   16   4   144    7776    224      73728
+     15  X -> Y         16   16   4   144    8352    240      73728
+     16  Y + X -> X     16   16   4   144    8928    256      73728
+     17  X -> Y         16   16   4   144    9504    272      73728
+     18  Y + X -> X     16   16   4   144   10080    288      73728
+     19  X -> Y         16   16   4   144   10656    304      73728
+     20  Y + X -> X     16   16   4   144   11232    320      73728
+     21  X -> Y         16   16   4   144   11808    336      73728
+     22  Y + X -> X     16   16   4   144   12384    352      73728
+     23  X -> Y         16   16   4   144   12960    368      73728
+     24  Y + X -> X     16   16   4   144   13536    384      73728
+     25  X -> Y         16   16   4   144   14112    400      73728
+     26  Y + X -> X     16   16   4   144   14688    416      73728
+     27  X -> Y         16   16   4   144   15264    432      73728
+     28  Y + X -> X     16   16   4   144   15840    448      73728
+     29  X -> Y         16   16   4   144   16416    464      73728
+     30  Y + X -> X     16   16   4   144   16992    480      73728
+     31  X -> Y         16   16   4   144   17568    496      73728
+     32  Y + X -> X     16   16   4   144   18144    512      73728
+     33  X -> Y         16   16   4   144   18720    528      73728
+     34  Y + X -> X     16   16   4   144   19296    544      73728
+     35  X -> Y         16   16   4   144   19872    560      73728
+     36  Y + X -> X     16   16   4   144   20448    576      73728
+     37  X -> Y         16   16   4   144   21024    592      73728
+     38  Y + X -> X     16   16   4   144   21600    608      73728
+     39  X -> Y         16   16   4   144   22176    624      73728
+     40  Y + X -> X     16   16   4   144   22752    640      73728
+     41  X -> Y         16   16   4   144   23328    656      73728
+     42  Y + X -> X     16   16   4   144   23904    672      73728
+     43  X -> Y         16   16   4   144   24480    688      73728
+     44  Y + X -> X     16   16   4   144   25056    704      73728
+     45  X -> Y         16   16   4   144   25632    720      73728
+     46  Y + X -> X     16   16   4   144   26208    736      73728
+     47  X -> Y         16   16   4   144   26784    752      73728
+     48  Y + X -> X     16   16   4   144   27360    768      73728
+     49  X -> Y         16   16   4   144   27936    784      73728
+     50  Y + X -> X     16   16   4   144   28512    800      73728
+     51  X -> Y         16   16   4   144   29088    816      73728
+     52  Y + X -> X     16   16   4   144   29664    832      73728
+     53  X -> Y         16   16   4   144   30240    848      73728
+     54  Y + X -> X     16   16   4   144   30816    864      73728
+     55  X -> Y         16   16   4   144   31392    880      73728
+     56  Y + X -> X     16   16   4   144   31968    896      73728
+     57  X -> Y         16   16   4   144   32544    912      73728
+     58  Y + X -> X     16   16   4   144   33120    928      73728
+     59  X -> Y         16   16   4   144   33696    944      73728
+     60  Y + X -> X     16   16   4   144   34272    960      73728
+     61  X -> Y         16   16   4   144   34848    976      73728
+     62  Y + X -> X     16   16   4   144   35424    992      73728
+     63  X -> logits    16    4   1   144   36000   1008      18432
     the weight ROM 36144 words of 32 bits, the norms 1012 of 38, the anneal 512 of 24
     the weight ROM banks 32768 + 4096, 720 words of pad
     the array is 48 by 4, thus 192 lanes
     the seats open inside the classes 1 to 31, 11 to 34, 17 to 39, 25 to 46
     a store is 2048 columns of 768 bits in one bank of 2048, t-major: step * 16 + channel
-    forward 4629504 cycles, the cell walk 1536, a pass 4631040 less the draw
+    the Y ring is 64 columns of 768 bits in one bank of 512, and B trails A by two
+    the turns are 0, 1+2, 3+4, 5+6, 7+8, 9+10, 11+12, 13+14, 15+16, 17+18, 19+20, 21+22, 23+24, 25+26, 27+28, 29+30, 31+32, 33+34, 35+36, 37+38, 39+40, 41+42, 43+44, 45+46, 47+48, 49+50, 51+52, 53+54, 55+56, 57+58, 59+60, 61+62, 63
+    forward 4628016 cycles, the cell walk 1536, a pass 4629552 less the draw
     |}]
 ;;
 
@@ -581,7 +829,7 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
      It also holds the two other properties: every weight stands at one address and no two
      share one, and a lane past the channels reads zero. H 6 at G 4 makes the ragged group
      the elected shapes never make, thus the padding is under test and not only described. *)
-  let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let kernels = Array.of_list (Quantized.Model.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
@@ -634,9 +882,9 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
     !disagree;
   [%expect
     {|
-    414 words, the counter ended at 414; 0 layer bases out of step
-    1296 weights, each seen one time
-    360 padded lanes, 0 of them not zero; 0 bytes disagree with the twin
+    504 words, the counter ended at 504; 0 layer bases out of step
+    2016 weights, each seen one time
+    0 padded lanes, 0 of them not zero; 0 bytes disagree with the twin
     |}]
 ;;
 
@@ -715,11 +963,7 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
     (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
   case
     ~name:"a shape of one bank"
-    (create
-       Quantized.Model.(For_test.init For_test.config ~seed:7)
-       ~steps:8
-       ~lanes:4
-       ~walk:4);
+    (create (Quantized.Model.For_test.init tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   (* A STORE THAT REALLY BANKS, and the elected rung's does not: 129 steps of 8 channels
      are 1032 columns, thus the plan splits where the two rungs above hold one bank. *)
   case
@@ -734,17 +978,142 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
     the elected rung: 36144 words banked 32768 + 4096, 720 of pad
       36864 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
       a store of 2048 columns banks 2048: 0 banks decoded apart
-    a shape of one bank: 414 words banked 512, 98 of pad
+    a shape of one bank: 504 words banked 512, 8 of pad
       512 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
-      a store of 48 columns banks 512: 0 banks decoded apart
+      a store of 64 columns banks 512: 0 banks decoded apart
     a store of two banks: 1008 words banked 1024, 16 of pad
       1024 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
       a store of 1032 columns banks 1024 + 512: 0 banks decoded apart
     |}]
 ;;
 
+let%expect_test "the circuit walks the turn the block order states" =
+  (* THE WALK CANNOT DRIFT FROM THE ORDER THE COST MODEL COUNTS. [blocks_of_turn] is what
+     [turn_cycles] sums and what the stream gate reads the writes in; [Rtl.next_block] is
+     what the engine's lead frame really does. They are one rule stated twice, thus a gate
+     welds them — the era's answer to two statements of one map, as [Rtl.bank_at] is.
+
+     THE FUSED PAIR IS THE SHAPE THAT REALLY INTERLEAVES: a turn of one phase would pass
+     any phase logic. The lag of two is visible in the print — A0, A1, A2 B0, ... — and a
+     schedule that drifted by a column would move that line. *)
+  let module Map = Rtl.Make (Bits) in
+  let case ~name t =
+    let step_bits = Bits.address_bits_for (t.steps + 2) in
+    let cin_bits =
+      Bits.address_bits_for
+        (1 + Array.fold t.layers ~init:1 ~f:(fun w l -> max w l.inputs))
+    in
+    let group_bits =
+      Bits.address_bits_for
+        (1 + Array.fold t.layers ~init:1 ~f:(fun w l -> max w l.groups))
+    in
+    let apart = ref 0 in
+    let walked = ref 0 in
+    let first = ref "" in
+    Array.iteri t.turns ~f:(fun at turn ->
+      let want = blocks_of_turn t turn in
+      let got = ref [] in
+      let nest =
+        ref
+          { cin = Bits.zero cin_bits
+          ; group = Bits.zero group_bits
+          ; step = Bits.zero step_bits
+          ; phase = Bits.gnd
+          }
+      in
+      let ended = ref false in
+      let guard =
+        ref
+          (10
+           * List.length want
+           * (1 + Array.fold t.layers ~init:1 ~f:(fun w l -> max w l.inputs)))
+      in
+      while (not !ended) && !guard > 0 do
+        Int.decr guard;
+        let n = !nest in
+        let phase = Bits.to_unsigned_int n.phase in
+        let layer = layer_of_phase turn phase in
+        let l = t.layers.(layer) in
+        if Bits.to_unsigned_int n.cin = 0
+        then
+          got
+          := { layer
+             ; column = column_of_phase ~s:(Bits.to_unsigned_int n.step) phase
+             ; group = Bits.to_unsigned_int n.group
+             }
+             :: !got;
+        let walk =
+          Map.next_block
+            t
+            ~is_pair:(if is_pair turn then Bits.vdd else Bits.gnd)
+            ~cin_count:(Bits.of_unsigned_int ~width:cin_bits l.inputs)
+            ~group_count:(Bits.of_unsigned_int ~width:group_bits l.groups)
+            n
+        in
+        Int.incr walked;
+        if Bits.to_bool walk.ends then ended := true else nest := walk.next
+      done;
+      let got = List.rev !got in
+      (* the picture is one name for each BLOCK and not for each group: the lag of two is
+         what the line is for, and the groups inside a block would hide it *)
+      if at = 1
+      then
+        first
+        := String.concat
+             ~sep:" "
+             (List.filter_map
+                (List.take got (8 * t.layers.(turn.first).groups))
+                ~f:(fun b ->
+                  if b.group = 0
+                  then
+                    Some
+                      (sprintf
+                         "%s%d"
+                         (if b.layer = turn.first then "A" else "B")
+                         b.column)
+                  else None));
+      if not
+           (List.equal
+              (fun a b -> a.layer = b.layer && a.column = b.column && a.group = b.group)
+              want
+              got)
+      then Int.incr apart);
+    printf
+      "%s: %d turns, %d blocks, %d cycles walked, %d turns apart\n"
+      name
+      (Array.length t.turns)
+      (Array.sum (module Int) t.turns ~f:(fun turn -> List.length (blocks_of_turn t turn)))
+      !walked
+      !apart;
+    if not (String.is_empty !first) then printf "  the first pair opens %s\n" !first
+  in
+  case
+    ~name:"a shape of two pairs"
+    (create
+       (Quantized.Model.For_test.init { Diffusion.Config.layers = 6; width = 8 } ~seed:1)
+       ~steps:5
+       ~lanes:2
+       ~walk:4);
+  case
+    ~name:"the elected rung"
+    (create
+       (Quantized.Model.For_test.init
+          { Diffusion.Config.layers = 64; width = 16 }
+          ~seed:1)
+       ~steps:128
+       ~lanes:4
+       ~walk:512);
+  [%expect
+    {|
+    a shape of two pairs: 4 turns, 110 blocks, 880 cycles walked, 0 turns apart
+      the first pair opens A0 A1 A2 B0 A3 B1 A4 B2
+    the elected rung: 33 turns, 32384 blocks, 514048 cycles walked, 0 turns apart
+      the first pair opens A0 A1 A2 B0 A3 B1 A4 B2
+    |}]
+;;
+
 let%expect_test "a norm word carries the twin's gain, shift and bias" =
-  let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   (* THE TEST SLICES WITH THE CIRCUIT'S OWN UNPACKER and never with a third reading of the
      field order: [Rtl.Make (Bits)] is the very function the epilogue elaborates. *)
@@ -779,7 +1148,7 @@ let%expect_test "a norm word carries the twin's gain, shift and bias" =
   [%expect
     {|
     28 norm words of 38 bits, 0 disagree with the twin
-    6 padded words, 0 of them not zero
+    0 padded words, 0 of them not zero
     |}]
 ;;
 
@@ -796,7 +1165,7 @@ let%expect_test "the circuit states the maps the software states" =
      where the padding lives. *)
   let module Map = Rtl.Make (Bits) in
   let case ~steps ~lanes =
-    let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+    let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
     let t = create model ~steps ~lanes ~walk:4 in
     let addresses = ref 0
     and channels = ref 0
@@ -859,9 +1228,9 @@ let%expect_test "the circuit states the maps the software states" =
   printf "%d norm words packed and sliced, %d apart\n" !words !apart;
   [%expect
     {|
-    T 8, G 4: 48 store addresses and 8 channels, 0 apart
-    T 5, G 3: 30 store addresses and 6 channels, 0 apart
-    T 12, G 1: 72 store addresses and 6 channels, 0 apart
+    T 8, G 4: 64 store addresses and 8 channels, 0 apart
+    T 5, G 3: 40 store addresses and 9 channels, 0 apart
+    T 12, G 1: 96 store addresses and 8 channels, 0 apart
     125 norm words packed and sliced, 0 apart
     |}]
 ;;
@@ -883,13 +1252,28 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
      thus this is a shape the ladder could really elaborate. *)
   refuse "a band load the dwell outruns" (fun () ->
     create model ~steps:8 ~lanes:5 ~walk:4);
+  (* THE FUSED FLOOR, AND THE SHAPE IT CLOSES. At P 48 and G 4 the H 6 layers dwell 54
+     cycles: the drain and the band loads need 54, thus the unfused machine accepted this
+     shape exactly. Fused, the next block's three columns are fetched under the last input
+     channel — nine cycles — and in a B block the X port is still carrying the residual
+     load, thus the fetch would read the wrong memory and no gate below it would say so.
+     One channel wider clears it: H 7 dwells 63 against 63. *)
+  refuse "a fetch the load outruns" (fun () -> create model ~steps:8 ~lanes:4 ~walk:4);
+  refuse "the channel that clears it" (fun () ->
+    create
+      (Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 7 } ~seed:7)
+      ~steps:8
+      ~lanes:4
+      ~walk:4);
   refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
   refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
   refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);
   [%expect
     {|
-    a chain that cannot empty: layer 1 dwells 54 cycles and its drain and band loads need 66: the dwell is short
-    a band load the dwell outruns: layer 1 dwells 54 cycles and its drain and band loads need 55: the dwell is short
+    a chain that cannot empty: layer 0 dwells 72 cycles; its drain, band loads and the next block's fetch need 75: the dwell is short
+    a band load the dwell outruns: layer 1 dwells 54 cycles; its drain, band loads and the next block's fetch need 64: the dwell is short
+    a fetch the load outruns: layer 1 dwells 54 cycles; its drain, band loads and the next block's fetch need 63: the dwell is short
+    the channel that clears it: NOT REFUSED
     a walk of no passes: a walk of 0 passes
     a canvas of no steps: a canvas of 0 steps
     a group of no lanes: a group of 0 lanes

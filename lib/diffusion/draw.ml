@@ -30,7 +30,8 @@ module State = struct
     | Idle (* the rest, and the one state that reads [start] *)
     | Peak (* walk 1 of 3: the largest logit, taken here and never handed in *)
     | Total (* walk 2: each class's tempered weight, summed — only the total survives *)
-    | Threshold (* one cycle: the uniform times the total, on the generator's grid *)
+    | Threshold (* stage 1 of the pick's rule: the uniform's two halves times the total *)
+    | Settle (* stage 2: the two products join, and the threshold stands *)
     | Pick (* walk 3: the first class the running total passes, and it walks on *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
@@ -51,14 +52,22 @@ module Make (Shape : Shape) = struct
   (* a table walk counts [weight_behind] past its classes, to the retire of the last one *)
   let counter_bits = address_bits_for (classes + weight_behind + 1)
 
+  (* the uniform splits in two for the threshold's multiply — the high half's product
+     carries the shift by [low_bits], and an odd width leaves its odd bit to the high
+     half; the whole product is [uniform_bits + total_bits] wide and the pick reads its
+     top *)
+  let low_bits = uniform_bits / 2
+  let high_bits = uniform_bits - low_bits
+
   (* every weight is a Q15 value at most, thus the total of them all needs this many *)
   let total_bits = Int.ceil_log2 ((classes * (1 lsl 15)) + 1)
+  let product_bits = uniform_bits + total_bits
 
-  (* the peak walk, then the weights and their total, then the pick — and one cycle for
+  (* the peak walk, then the weights and their total, then the pick — and TWO cycles for
      the threshold between the last two. The peak walk takes one cycle more than its
      classes, for the walk register; a table walk takes [weight_behind] more, for the
      whole pipe. *)
-  let busy_cycles = classes + 1 + (classes + weight_behind) + 1 + (classes + weight_behind)
+  let busy_cycles = classes + 1 + (classes + weight_behind) + 2 + (classes + weight_behind)
 
   module I = struct
     type 'a t =
@@ -89,6 +98,13 @@ module Make (Shape : Shape) = struct
     let peak = Variable.reg dspec ~width:activation_bits in
     let total = Variable.reg dspec ~width:total_bits in
     let threshold = Variable.reg dspec ~width:total_bits in
+    (* THE TWO HALVES OF THE UNIFORM, AND THE TWO PRODUCTS THEY MAKE. The high one carries
+       the shift, thus each product is a half by [total_bits] multiply instead of one
+       twice as wide. *)
+    let half_high = Variable.reg dspec ~width:(high_bits + total_bits) in
+    let half_low = Variable.reg dspec ~width:(low_bits + total_bits) in
+    let uniform_high = sel_top i.uniform ~width:high_bits in
+    let uniform_low = sel_bottom i.uniform ~width:low_bits in
     let running = Variable.reg dspec ~width:total_bits in
     let found = Variable.reg spec ~width:1 in
     let drawn = Variable.reg dspec ~width:class_bits in
@@ -179,12 +195,23 @@ module Make (Shape : Shape) = struct
               ; when_ walked [ sm.set_next Threshold ]
               ] )
           ; ( Threshold
-            , [ (* the pick's own rule: the uniform times the total, on the generator's
-                   grid. It stands STRICTLY under the total, thus a class always passes
-                   and no last-class arm stands anywhere below. *)
-                threshold
+            , [ (* THE PICK'S RULE IN TWO STAGES, AND THE PRODUCT IS THE SAME PRODUCT.
+                   [uniform * total] is a 24 by 21 multiply in LUTs — the array owns every
+                   DSP — and at G 5 it was the worst path of the whole design at −0.140,
+                   fifteen levels with nine carry chains. Split by the uniform's halves:
+                   [(hi * 2^12 + lo) * total] is [hi * total] shifted twelve plus
+                   [lo * total], an exact identity over the integers, thus the theorem
+                   above is untouched — the threshold stands STRICTLY under the total, a
+                   class always passes, and no last-class arm stands anywhere below. *)
+                half_high <-- Column_array.no_dsp (uniform_high *: total.value)
+              ; half_low <-- Column_array.no_dsp (uniform_low *: total.value)
+              ; sm.set_next Settle
+              ] )
+          ; ( Settle
+            , [ threshold
                 <-- select
-                      (Column_array.no_dsp (i.uniform *: total.value))
+                      ((half_high.value @: zero low_bits)
+                       +: uresize half_low.value ~width:product_bits)
                       ~high:(uniform_bits + total_bits - 1)
                       ~low:uniform_bits
               ; counter <--. 0
@@ -328,8 +355,8 @@ let%expect_test "the pick lands by the last class, and costs the cycles it state
   printf "busy_cycles states %d\n" B.Drawer.busy_cycles;
   [%expect
     {|
-    a steep column at the top of the grid: class 0 in 154 cycles
-    a flat column at the top of the grid: class 47 in 154 cycles
-    busy_cycles states 154
+    a steep column at the top of the grid: class 0 in 155 cycles
+    a flat column at the top of the grid: class 47 in 155 cycles
+    busy_cycles states 155
     |}]
 ;;
