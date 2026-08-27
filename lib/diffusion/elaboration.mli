@@ -97,6 +97,15 @@ val shift_bits : int
 val gain_bits : int
 val norm_bits : int
 
+(** The fields of one norm word, unpacked. [norm_word] packs them and [Rtl.norm_fields]
+    slices them back, thus the format's two halves stand in one module and the gate below
+    holds them together over every value a quantizer can state. *)
+type 'a norm_fields =
+  { gain : 'a
+  ; shift : 'a
+  ; bias : 'a
+  }
+
 (** [norm_word gain ~bias] is one word of [norm_rom]. THE FIELD ORDER IS A FACT OF THIS
     FUNCTION AND OF NOTHING ELSE, thus a consumer that slices another way disagrees with
     the image the bitstream carries — and a gate that packs here and slices there is what
@@ -113,6 +122,21 @@ val column_address : t -> step:int -> channel:int -> int
 
 (** the words of one activation store: [steps * store_channels] *)
 val store_depth : t -> int
+
+(** [channel_of t ~group ~lane] is the output channel a lane of a group names:
+    [group * lanes + lane]. The weight image and the norm image are both walked by it, and
+    both pad where it runs past a layer's channels, thus it is a fact of this module and
+    the circuit reads it through [Rtl] rather than restating it. *)
+val channel_of : t -> group:int -> lane:int -> int
+
+(** the bits a store address takes: [address_bits_for (store_depth t)] *)
+val store_bits : t -> int
+
+(** the bits a channel index takes. A ragged group runs past its layer's own channels — a
+    head of four seats in a group of three reaches channel five — thus the width follows
+    the GROUPS and not the outputs. The circuit sizes its ports on this and does not
+    derive it again. *)
+val channel_bits : t -> int
 
 (** [create ?rows model ~steps ~lanes ~walk] elaborates [model] at the geometry those
     numbers state.
@@ -158,3 +182,41 @@ val pass_cycles : t -> int
     and the cycles. The schedule prints — the discipline of the eras — thus the cost model
     of the document and the machine cannot part without a test saying so. *)
 val to_string : t -> string
+
+(** The maps the image and the circuit must agree on, over any combinational type.
+
+    Signal land cannot call [column_address], [channel_of] or [norm_word] above — it holds
+    signals and not integers — thus the circuit's answer until now was to state each map a
+    second time and let a run-time gate weld the two. [Vocab.Rtl] already held the better
+    answer for the vocabulary's own map: ONE RULE OVER [Comb], evaluated at [Bits] by a
+    test and elaborated at [Signal] by the circuit. The two halves then stop being two,
+    and the fused rung that moves the store map moves it in one place.
+
+    **THE PIN IS A LABELLED ARGUMENT.** The address maps carry a multiply, and the
+    multiply is kept out of the DSPs the array owns ([Column_array.no_dsp]).
+    [add_attribute] is [Signal]'s alone and means nothing to a [Bits] value, thus the pin
+    cannot live inside [Comb]; as a functor argument it would make [Epilogue] — which
+    wants only the norm fields, and multiplies nothing — name the array's rule for no
+    reason. A caller that pins every address fixes it one time by partial application. *)
+module Rtl : sig
+  module Make (Comb : Hardcaml.Comb.S) : sig
+    (** [column_address ~pin t ~step ~channel] is [column_address] as a circuit, at
+        [store_bits t] bits. *)
+    val column_address
+      :  pin:(Comb.t -> Comb.t)
+      -> t
+      -> step:Comb.t
+      -> channel:Comb.t
+      -> Comb.t
+
+    (** [channel_of ~pin t ~group ~lane] is [channel_of] as a circuit, at [channel_bits t]
+        bits. *)
+    val channel_of : pin:(Comb.t -> Comb.t) -> t -> group:Comb.t -> lane:Comb.t -> Comb.t
+
+    (** [norm_fields word] slices one word of [norm_rom]: the inverse of [norm_word], and
+        the only reader of the field order besides it. *)
+    val norm_fields : Comb.t -> Comb.t norm_fields
+  end
+
+  include module type of Make (Hardcaml.Signal)
+end

@@ -59,18 +59,12 @@ struct
   let seat_bits = address_bits_for voices
   let plane_bits = address_bits_for planes
   let column_bits = rows * activation_bits
-  let store_bits = address_bits_for (Elaboration.store_depth e)
   let weight_bits = address_bits_for (Array.length e.weight_rom)
   let norm_bits = address_bits_for (Array.length e.norm_rom)
 
-  (* The channels a layer's groups name. A ragged group runs past the layer's own channels
-     — a head of four seats in a group of three reaches channel five — thus the width
-     follows the groups and not the outputs. *)
-  let widest_channel =
-    widest (fun l -> max l.Elaboration.outputs (l.Elaboration.groups * lanes))
-  ;;
-
-  let channel_bits = address_bits_for (widest_channel + 1)
+  (* the address widths are the elaboration's, read and not derived again *)
+  let store_bits = Elaboration.store_bits e
+  let channel_bits = Elaboration.channel_bits e
 
   module Lanes = Column_array.Make (struct
       let rows = rows
@@ -109,29 +103,11 @@ struct
   (* the maps and the slicing, which follow the shape alone *)
   (* ---------------------------------------------------------------- *)
 
-  (* [flat_index ~width ~stride major minor] is [major * stride + minor] at [width] bits.
-     THE MULTIPLY IS REAL AND NOT A CONCATENATION — neither stride is a power of two at
-     every shape, and a concatenation would silently stride by [2 ** minor_bits]. *)
-  let flat_index ~width ~stride major minor =
-    let scaled =
-      Column_array.no_dsp
-        (uresize major ~width
-         *: of_unsigned_int ~width:(address_bits_for (stride + 1)) stride)
-    in
-    sel_bottom scaled ~width +: uresize minor ~width
-  ;;
-
-  (* THE STORE'S MAP IS THE ELABORATION'S, AND THE GATE IS WHAT WELDS THE TWO. Signal land
-     cannot call [Elaboration.column_address], thus what stands here is a second statement
-     of the same map and no comment can stop the two from parting. The stream gate is what
-     does: it reads every write at the address the elaboration's own function states, thus
-     a map that parted here would part there and never on a board. *)
-  let column_address ~step ~channel =
-    flat_index ~width:store_bits ~stride:e.store_channels step channel
-  ;;
-
-  (* the channel a lane of a group names: [group * lanes + lane] *)
-  let channel_of ~group ~lane = flat_index ~width:channel_bits ~stride:lanes group lane
+  (* THE TWO MAPS ARE THE ELABORATION'S, ELABORATED — not a second statement of them. The
+     array owns the DSPs, thus every address product is pinned, and the rule is fixed here
+     one time rather than at each of the five addresses below. *)
+  let column_address = Elaboration.Rtl.column_address ~pin:Column_array.no_dsp e
+  let channel_of = Elaboration.Rtl.channel_of ~pin:Column_array.no_dsp e
 
   (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
      families: one decode or one strobe drove the 768 register pins of a whole column, at

@@ -93,6 +93,12 @@ let pass_cycles t = cell_walk_cycles t + forward_cycles t
 (* THE ONE PACKER OF A NORM WORD. The order is a fact of this function and of nothing
    else: a consumer that slices another way disagrees with it, and the gate that packs
    here and slices there is what says so. *)
+type 'a norm_fields =
+  { gain : 'a
+  ; shift : 'a
+  ; bias : 'a
+  }
+
 let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
   if gain.q < 0 || gain.q >= 1 lsl shift_bits
   then invalid_argf "a gain shift of %d does not fit %d bits" gain.q shift_bits ();
@@ -108,6 +114,75 @@ let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
    orders, and the circuit's ports and the stream instrument therefore slice ONE rule. *)
 let column_address t ~step ~channel = (step * t.store_channels) + channel
 let store_depth t = t.steps * t.store_channels
+
+(* THE OTHER MAP OF THE IMAGES: which output channel a lane of a group names. The weight
+   image and the norm image are both walked by it, and both pad where it runs past a
+   layer's channels. It is a function so that [Rtl] can state the same rule to the circuit
+   rather than let the circuit restate it. *)
+let channel_of t ~group ~lane = (group * t.lanes) + lane
+
+(* The widths the circuit sizes its address ports on. They follow from the table, thus
+   they stand here and a unit that derived them again would be free to derive them
+   differently. A ragged group runs past its layer's own channels — a head of four seats
+   in a group of three reaches channel five — thus the channel width follows the GROUPS
+   and not the outputs. *)
+let store_bits t = Bits.address_bits_for (store_depth t)
+
+let widest_channel t =
+  Array.fold t.layers ~init:1 ~f:(fun widest l ->
+    max widest (max l.outputs (l.groups * t.lanes)))
+;;
+
+let channel_bits t = Bits.address_bits_for (widest_channel t + 1)
+
+(* THE MAPS THE IMAGE AND THE CIRCUIT MUST AGREE ON, over any combinational type. Signal
+   land cannot call the software functions above — it holds signals and not integers —
+   thus era five's answer was to state each map twice and let a gate weld them at run
+   time. The vocabulary already had the better answer: one rule over [Comb], evaluated at
+   [Bits] by a test and elaborated at [Signal] by the circuit, which is what [Vocab.Rtl]
+   does for the class-to-code map. The two halves then stop being two.
+
+   THE PIN IS A LABELLED ARGUMENT AND NOT A SECOND FUNCTOR ARGUMENT. The address maps
+   carry a multiply and the multiply is kept out of the DSPs; [add_attribute] is Signal's
+   alone and means nothing to a [Bits] value, thus the pin cannot live inside [Comb]. As a
+   functor argument it would make [Epilogue] — which wants the norm fields, and multiplies
+   nothing — name the array's rule for no reason, and would put this module's own
+   instantiation in debt to one two levels above it. *)
+module Rtl = struct
+  module Make (Comb : Hardcaml.Comb.S) = struct
+    open Comb
+
+    (* [major * stride + minor] at [width] bits. THE MULTIPLY IS REAL AND NOT A
+       CONCATENATION — neither stride is a power of two at every shape, and a
+       concatenation would silently stride by [2 ** minor_bits]. *)
+    let flat_index ~pin ~width ~stride major minor =
+      let scaled =
+        pin
+          (uresize major ~width
+           *: of_unsigned_int ~width:(address_bits_for (stride + 1)) stride)
+      in
+      sel_bottom scaled ~width +: uresize minor ~width
+    ;;
+
+    let column_address ~pin t ~step ~channel =
+      flat_index ~pin ~width:(store_bits t) ~stride:t.store_channels step channel
+    ;;
+
+    let channel_of ~pin t ~group ~lane =
+      flat_index ~pin ~width:(channel_bits t) ~stride:t.lanes group lane
+    ;;
+
+    let norm_fields word =
+      let field ~low ~bits = select word ~high:(low + bits - 1) ~low in
+      { bias = field ~low:0 ~bits:bias_bits
+      ; shift = field ~low:bias_bits ~bits:shift_bits
+      ; gain = field ~low:(bias_bits + shift_bits) ~bits:gain_bits
+      }
+    ;;
+  end
+
+  include Make (Hardcaml.Signal)
+end
 
 let bases_of sizes =
   Array.of_list
@@ -413,7 +488,9 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
 let%expect_test "a norm word carries the twin's gain, shift and bias" =
   let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
-  let field word ~low ~width = Bits.select word ~high:(low + width - 1) ~low in
+  (* THE TEST SLICES WITH THE CIRCUIT'S OWN UNPACKER and never with a third reading of the
+     field order: [Rtl.Make (Bits)] is the very function the epilogue elaborates. *)
+  let module Fields = Rtl.Make (Bits) in
   let disagree = ref 0 in
   let pad = ref 0 in
   let pad_not_zero = ref 0 in
@@ -428,13 +505,11 @@ let%expect_test "a norm word carries the twin's gain, shift and bias" =
         Int.incr pad;
         if Bits.to_unsigned_int word <> 0 then Int.incr pad_not_zero)
       else (
-        let bias = Bits.to_signed_int (field word ~low:0 ~width:bias_bits) in
-        let shift = Bits.to_unsigned_int (field word ~low:bias_bits ~width:shift_bits) in
-        let gain =
-          Bits.to_signed_int (field word ~low:(bias_bits + shift_bits) ~width:gain_bits)
-        in
+        let { gain; shift; bias } = Fields.norm_fields word in
         let { Nn_quantized.Constants.q_value; q } = twin.gain.(channel) in
-        if bias <> twin.bias.(channel) || shift <> q || gain <> q_value
+        if Bits.to_signed_int bias <> twin.bias.(channel)
+           || Bits.to_unsigned_int shift <> q
+           || Bits.to_signed_int gain <> q_value
         then Int.incr disagree)
     done);
   printf
@@ -447,6 +522,89 @@ let%expect_test "a norm word carries the twin's gain, shift and bias" =
     {|
     28 norm words of 38 bits, 0 disagree with the twin
     6 padded words, 0 of them not zero
+    |}]
+;;
+
+let%expect_test "the circuit states the maps the software states" =
+  (* ONE RULE, TWO HALVES, HELD TOGETHER. [Rtl.Make (Bits)] evaluates exactly the
+     functions [Forward] elaborates at [Signal], thus this holds the circuit's arithmetic
+     against the software's over every address either can name — the gate [Vocab.Rtl]
+     already stands for the vocabulary's own map. Before the functor these two were
+     separate statements and only the store-write stream said whether they agreed.
+
+     The pin is the identity here: an attribute means nothing to a value, and it is the
+     multiply's placement and not its arithmetic. The shapes below make a RAGGED group — H
+     6 at G 4 — thus the channel map is under test past a layer's own channels, which is
+     where the padding lives. *)
+  let module Map = Rtl.Make (Bits) in
+  let case ~steps ~lanes =
+    let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+    let t = create model ~steps ~lanes ~walk:4 in
+    let addresses = ref 0
+    and channels = ref 0
+    and apart = ref 0 in
+    let widest = Array.fold t.layers ~init:0 ~f:(fun n l -> max n l.groups) in
+    for step = 0 to t.steps - 1 do
+      for channel = 0 to t.store_channels - 1 do
+        Int.incr addresses;
+        let circuit =
+          Map.column_address
+            ~pin:Fn.id
+            t
+            ~step:(Bits.of_unsigned_int ~width:(Bits.address_bits_for t.steps) step)
+            ~channel:(Bits.of_unsigned_int ~width:(channel_bits t) channel)
+        in
+        if Bits.to_unsigned_int circuit <> column_address t ~step ~channel
+        then Int.incr apart
+      done
+    done;
+    for group = 0 to widest - 1 do
+      for lane = 0 to t.lanes - 1 do
+        Int.incr channels;
+        let circuit =
+          Map.channel_of
+            ~pin:Fn.id
+            t
+            ~group:(Bits.of_unsigned_int ~width:(channel_bits t) group)
+            ~lane:(Bits.of_unsigned_int ~width:(Bits.address_bits_for t.lanes) lane)
+        in
+        if Bits.to_unsigned_int circuit <> channel_of t ~group ~lane then Int.incr apart
+      done
+    done;
+    printf
+      "T %d, G %d: %d store addresses and %d channels, %d apart\n"
+      steps
+      lanes
+      !addresses
+      !channels
+      !apart
+  in
+  case ~steps:8 ~lanes:4;
+  (* a stride that is not a power of two, where a concatenation would pass the one above *)
+  case ~steps:5 ~lanes:3;
+  case ~steps:12 ~lanes:1;
+  (* AND THE NORM WORD, PACKED HERE AND SLICED THERE, over the whole range a quantizer can
+     state: every shift the field holds, against the two rails of the gain and the bias. *)
+  let words = ref 0
+  and apart = ref 0 in
+  List.iter [ 0; 1; 30; 44; 63 ] ~f:(fun q ->
+    List.iter [ 0; 1; -1; 32767; -32768 ] ~f:(fun q_value ->
+      List.iter [ 0; 1; -1; 32767; -32768 ] ~f:(fun bias ->
+        Int.incr words;
+        let { gain; shift; bias = read } =
+          Map.norm_fields (norm_word { Nn_quantized.Constants.q_value; q } ~bias)
+        in
+        if Bits.to_signed_int gain <> q_value
+           || Bits.to_unsigned_int shift <> q
+           || Bits.to_signed_int read <> bias
+        then Int.incr apart)));
+  printf "%d norm words packed and sliced, %d apart\n" !words !apart;
+  [%expect
+    {|
+    T 8, G 4: 48 store addresses and 8 channels, 0 apart
+    T 5, G 3: 30 store addresses and 6 channels, 0 apart
+    T 12, G 1: 72 store addresses and 6 channels, 0 apart
+    125 norm words packed and sliced, 0 apart
     |}]
 ;;
 

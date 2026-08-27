@@ -75,19 +75,15 @@ module Make (Shape : Shape) = struct
     (* the datapath registers have no clear: what is real is what [drained] marks, and the
        tag that clears is what says so *)
     let dspec = Reg_spec.create ~clock:i.clock () in
-    let field word ~low ~bits = select word ~high:(low + bits - 1) ~low in
     let lane at =
       let slice signal bits =
         select signal ~high:((at * bits) + bits - 1) ~low:(at * bits)
       in
-      let norm = slice i.norms Elaboration.norm_bits in
-      let bias = field norm ~low:0 ~bits:Elaboration.bias_bits in
-      let shift = field norm ~low:Elaboration.bias_bits ~bits:Elaboration.shift_bits in
-      let gain =
-        field
-          norm
-          ~low:(Elaboration.bias_bits + Elaboration.shift_bits)
-          ~bits:Elaboration.gain_bits
+      (* THE FIELD ORDER IS THE ELABORATION'S, SLICED BY THE ELABORATION. The packer and
+         this slicing are one rule over [Comb], thus a word that changed shape could not
+         be packed one way and read another. *)
+      let { Elaboration.gain; shift; bias } =
+        Elaboration.Rtl.norm_fields (slice i.norms Elaboration.norm_bits)
       in
       (* STAGE 1 — the gain multiply. The product of an int32 sum and an int16 gain is 48
          bits, and it is LUTs and never a DSP: the array owns those. *)
