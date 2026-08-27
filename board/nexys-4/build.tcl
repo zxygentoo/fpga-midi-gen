@@ -16,7 +16,7 @@ synth_design -top top -part xc7a100tcsg324-1
 opt_design
 place_design
 # Physical synthesis runs after the placement and again after the route. The design stands
-# at 124 block RAM tiles of 135, thus routing is most of every long path and the route can
+# at 108.5 block RAM tiles of 135 and all 240 DSPs, thus routing is most of every long path and the route can
 # give back the whole slack that the placement won; the post-route pass replicates the
 # drivers that the congestion stretched. Each pass costs about one second and is silent
 # while the design has slack. Keep them.

@@ -37,15 +37,15 @@
   </defs>
   <rect x="0" y="0" width="1560" height="1372" fill="var(--bg)"/>
 
-  <text class="h" x="28" y="32">The diffusion machine — era six, rung 2 on the Nexys 4</text>
+  <text class="h" x="28" y="32">The diffusion machine — era six, rung 3 on the Nexys 4</text>
   <text class="s" x="28" y="52">One canvas of T steps by four seats. A rewind draws it whole through N passes of blocked Gibbs; a step plays one of its frames. docs/diffusion_rtl.md is the design.</text>
 
   <!-- L1: the elaboration -->
   <rect class="outacc" x="150" y="70" width="1250" height="58" rx="8"/>
   <text class="b" x="164" y="92" style="fill:var(--accent)">L1 · Elaboration.t<tspan class="s"> — a value, and THE ONLY MODULE THAT READS THE MODEL. A new checkpoint moves one line of gen_verilog and nothing else.</tspan></text>
   <text class="s" x="164" y="112">the layer table, 64 rows · the weight image in DWELL order · the norm words, gain and shift and bias at one address · the anneal table · the seat openings · the temper</text>
-  <text class="s" x="1416" y="92">rung 2</text>
-  <text class="s" x="1416" y="108">l64-h16-100k</text>
+  <text class="s" x="1416" y="92">rung 3</text>
+  <text class="s" x="1416" y="108">l48-h20-100k</text>
   <text class="s" x="1416" y="124">T 128 · P 48</text>
   <text class="s" x="1416" y="140">H 16 · G 4 · N 512</text>
 
@@ -143,7 +143,7 @@
 
   <!-- the memories -->
   <rect class="blk" x="474" y="420" width="266" height="62" rx="4"/>
-  <text class="t" x="486" y="440">X and Y, the stores</text>
+  <text class="t" x="486" y="440">X, the store, and the Y ring</text>
   <text class="s" x="486" y="458">T · H columns of P × 16 bits;</text>
   <text class="s" x="486" y="474">the map is the elaboration's</text>
 
@@ -155,7 +155,7 @@
   <rect class="blk" x="1034" y="420" width="266" height="62" rx="4"/>
   <text class="t" x="1046" y="440">the weight ROM · two banks</text>
   <text class="s" x="1046" y="458">the dwell order, thus the address</text>
-  <text class="s" x="1046" y="474">ONLY COUNTS · 32 768 + 4 096 of 36 144</text>
+  <text class="s" x="1046" y="474">ONLY COUNTS · 32 768 + 1 024 of 33 588</text>
 
   <!-- the bands -->
   <rect class="blk" x="474" y="522" width="266" height="62" rx="4"/>
@@ -281,14 +281,14 @@
   <text class="s" x="164" y="1248">holds — the B port alone now runs</text>
   <text class="s" x="164" y="1262">direct, from the replica bank</text>
 
-  <text class="t" x="440" y="1204">124.0 block RAM (91.9%)</text>
-  <text class="s" x="440" y="1220">under the cost model's ~127: 86 the stores,</text>
-  <text class="s" x="440" y="1234">32 + 4 the weight banks, 1 the norms, and</text>
+  <text class="t" x="440" y="1204">108.5 block RAM (80.4%) · 240 of 240 DSPs</text>
+  <text class="s" x="440" y="1220">108.5 of 135: 54 the X store, 11 the Y ring,</text>
+  <text class="s" x="440" y="1234">40 + 2 the weight banks, 1 the norms, and</text>
   <text class="s" x="440" y="1248">the anneal and exp2 in two RAMB18</text>
-  <text class="s" x="440" y="1262">21 419 LUTs · 23 744 registers</text>
+  <text class="s" x="440" y="1262">25 476 LUTs · 27 888 registers</text>
 
-  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.008 — MET</text>
-  <text class="s" x="740" y="1220">0 failing endpoints of 62 518, hold +0.012</text>
+  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.147 — MET</text>
+  <text class="s" x="740" y="1220">0 failing endpoints of 72 826, hold +0.013</text>
   <text class="s" x="740" y="1234">ring 3 first read −6.125, 11 002 failing;</text>
   <text class="s" x="740" y="1248">the broadcast round answered it, and each</text>
   <text class="s" x="740" y="1262">rung banked met on one roll: +0.007, +0.008</text>
