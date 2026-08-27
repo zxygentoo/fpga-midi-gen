@@ -36,10 +36,27 @@ let accumulate_latency = 2
    stands one cycle later. *)
 let first_row_latency = accumulate_latency + 2
 
-(* the activation format of the stream, and the accumulator the twin states *)
-let activation_bits = 16
+(* the activation format of the stream and the accumulator behind it, read from the twin
+   that states them; the weight byte is the quantizer's own rail *)
+let activation_bits = Quantized.activation_bits
+let accumulator_bits = Quantized.accumulator_bits
 let weight_bits = 8
-let accumulator_bits = 32
+
+(* THE ARRAY OWNS THE DSPS AND EVERY OTHER UNIT PINS ITS PRODUCTS AWAY FROM THEM. The
+   fused rung at G 5 is 48 by 5, which is the device's whole 240, thus a multiply that
+   drifted into a DSP anywhere else would have to move at the moment the design is
+   tightest. The rule is an attribute and not a hope — and it stands HERE, beside the
+   lanes that hold the primitives, rather than once in each unit that obeys it. *)
+let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false)
+
+(* THE REPLICA SLICE — ring 3's rule, and the array's own scale is what imposes it. No net
+   of this scale keeps a single driver: a bank stands as one register slice for each
+   [slice_rows] rows, [dont_touch] so the tools neither merge the copies nor absorb them
+   back into the primitives. The number is a placement fact of the device and not of a
+   model, thus the walk that slices a column band reads it here and never states an 8 of
+   its own. *)
+let slice_rows = 8
+let slices_for ~rows = (rows + slice_rows - 1) / slice_rows
 
 module Make (Shape : Shape) = struct
   let rows = Shape.rows
@@ -75,7 +92,6 @@ module Make (Shape : Shape) = struct
        stale value that no strobe reaches touches nothing. The DSP packs best with no
        reset. The control registers clear. *)
     let dspec = Reg_spec.create ~clock:i.clock () in
-    let rec delay n x = if n = 0 then x else delay (n - 1) (reg spec x) in
     let row_of column at =
       select
         column
@@ -113,8 +129,7 @@ module Make (Shape : Shape) = struct
        into the primitives. The depth of the pipe does not move — the replica replaces the
        absorbed B register — and the B port runs direct into the multiplier, far inside a
        cycle beside a neighbouring flop. *)
-    let slice_rows = 8 in
-    let slices = (rows + slice_rows - 1) / slice_rows in
+    let slices = slices_for ~rows in
     let operand_b =
       Array.init lanes ~f:(fun lane ->
         Array.init slices ~f:(fun (_ : int) ->
@@ -125,8 +140,8 @@ module Make (Shape : Shape) = struct
        marks captures nothing that counts. The tags ride the pipe beside the operands —
        the accumulator takes a term two cycles behind its strobe, thus the flags that gate
        it arrive two cycles behind as well. *)
-    let taking = delay accumulate_latency i.term in
-    let opening = delay accumulate_latency i.term_first in
+    let taking = pipeline spec ~n:accumulate_latency i.term in
+    let opening = pipeline spec ~n:accumulate_latency i.term_first in
     let accumulator =
       Array.init rows ~f:(fun at ->
         let a = operand_a.(at) in
@@ -142,7 +157,7 @@ module Make (Shape : Shape) = struct
        edge that loads the chain — and the chain takes the value the register held BEFORE
        that edge, which is the finished sum. Thus the array never waits between two
        dwells. *)
-    let pre_capture = delay accumulate_latency i.term_last in
+    let pre_capture = pipeline spec ~n:accumulate_latency i.term_last in
     let capture = reg spec pre_capture in
     (* THE CAPTURE BANK — the reserve of ring 1, applied: the capture select reached every
        register of the chain from one flop, fanout 6 019, and its shift enable 6 144. One
@@ -227,10 +242,6 @@ module Bench (Shape : Shape) = struct
           Nn_quantized.sum 9 (fun tap -> term ~at ~lane ~cin ~tap))))
   ;;
 
-  let pack sums ~width =
-    Bits.concat_lsb (List.map (Array.to_list sums) ~f:(Bits.of_signed_int ~width))
-  ;;
-
   (* [run dwells] drives the dwells BACK TO BACK — the next one opens on the cycle behind
      the [term_last] of the one before it, which is the hazard the capture rule stands on
      — and gives the drained rows in the order they left the chain. *)
@@ -271,9 +282,9 @@ module Bench (Shape : Shape) = struct
       inp.term := Bits.vdd;
       inp.term_first := if first then Bits.vdd else Bits.gnd;
       inp.term_last := if last then Bits.vdd else Bits.gnd;
-      inp.column := pack column ~width:16;
+      inp.column := Fuzz.pack column ~width:16;
       inp.row_shift := Bits.of_unsigned_int ~width:2 (tap % 3);
-      inp.weights := pack weights ~width:8;
+      inp.weights := Fuzz.pack weights ~width:8;
       cycle ()
     in
     let channel ~inputs ~cin window weights =

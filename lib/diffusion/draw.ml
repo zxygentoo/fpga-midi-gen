@@ -14,9 +14,9 @@ module type Shape = sig
   val classes : int
 end
 
-(* the Q the exp2 unit reads, and the Q the twin's activations carry *)
+(* the Q the exp2 unit reads, and the format the twin's logits carry *)
 let exp2_q = 12
-let activation_bits = 16
+let activation_bits = Quantized.activation_bits
 
 (* the magnitude port of [Exp2]: a wider value saturates into it, and the saturation is
    exact because the unit already gives zero at a magnitude of 16 and above *)
@@ -24,9 +24,6 @@ let magnitude_bits = 22
 
 (* the grid of the generator: the uniform is [k * 2 ** -24] *)
 let uniform_bits = 24
-
-(* one weight of the pick, in Q15 *)
-let weight_bits = 16
 
 module State = struct
   type t =
@@ -97,11 +94,6 @@ module Make (Shape : Shape) = struct
     let drawn = Variable.reg dspec ~width:class_bits in
     (* THE ONE MUX INTO THE LOGITS. All three walks read the class the counter names, thus
        one [classes]-way multiplexer serves the peak, the weights and the pick. *)
-    (* THE ARRAY OWNS THE DSPS AND THIS UNIT TAKES NONE, thus the rule is an attribute and
-       not a hope: a 24 by 21 variable product is exactly what the tools infer a DSP48
-       for, and the fused rung at G 5 needs all 240 of them for the lanes. draw.mli states
-       the reason; this states it to Vivado. *)
-    let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false) in
     let logit =
       mux
         counter.value
@@ -135,7 +127,9 @@ module Make (Shape : Shape) = struct
       let tempered =
         reg
           dspec
-          (sra (no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value)) ~by:temper.q)
+          (sra
+             (Column_array.no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value))
+             ~by:temper.q)
       in
       let wide = negate tempered in
       let ceiling = (1 lsl magnitude_bits) - 1 in
@@ -146,18 +140,22 @@ module Make (Shape : Shape) = struct
     in
     let { Exp2.O.e } = Exp2.create { Exp2.I.clock = i.clock; nn = magnitude } in
     let weight = uresize e ~width:total_bits in
-    let rec delay n x = if n = 0 then x else delay (n - 1) (reg spec x) in
     let walked = counter.value ==:. classes + weight_behind - 1 in
     (* the class whose weight stands on the wire is the counter of [weight_behind] cycles
        before — and A RETIRE NAMES ITS WALK: the peak walk feeds the pipe too, its last
        classes ride into the first cycles of the weigh, thus a tag that did not carry the
        state would take the peak's tail into the total *)
     let real = counter.value <:. classes in
-    let retiring = sel_bottom (delay weight_behind counter.value) ~width:class_bits in
+    let retiring =
+      sel_bottom (pipeline spec ~n:weight_behind counter.value) ~width:class_bits
+    in
     let compares = reg spec (sm.is Peak &: real) in
-    let retires_weigh = delay weight_behind (sm.is Weigh &: real) in
-    let retires_pick = delay weight_behind (sm.is Pick &: real) in
-    let passes = running.value +: weight >: threshold.value in
+    let retires_weigh = pipeline spec ~n:weight_behind (sm.is Weigh &: real) in
+    let retires_pick = pipeline spec ~n:weight_behind (sm.is Pick &: real) in
+    (* the running total with this class's weight in it: the pick compares it and then
+       takes it, thus one adder stands and not two *)
+    let advanced = running.value +: weight in
+    let passes = advanced >: threshold.value in
     compile
       [ sm.switch
           [ ( State.Idle
@@ -186,7 +184,7 @@ module Make (Shape : Shape) = struct
                    and no last-class arm stands anywhere below. *)
                 threshold
                 <-- select
-                      (no_dsp (i.uniform *: total.value))
+                      (Column_array.no_dsp (i.uniform *: total.value))
                       ~high:(uniform_bits + total_bits - 1)
                       ~low:uniform_bits
               ; counter <--. 0
@@ -197,7 +195,7 @@ module Make (Shape : Shape) = struct
           ; ( Pick
             , [ when_
                   retires_pick
-                  [ running <-- running.value +: weight
+                  [ running <-- advanced
                   ; when_
                       (passes &: ~:(found.value))
                       [ found <-- vdd; drawn <-- retiring ]

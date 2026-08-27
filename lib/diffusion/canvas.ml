@@ -18,7 +18,7 @@ module type Shape = sig
 end
 
 (* the activation format of the twin: what a plane column carries in each row *)
-let activation_bits = 16
+let activation_bits = Quantized.activation_bits
 
 module Make (Shape : Shape) = struct
   let steps = Shape.steps
@@ -169,9 +169,6 @@ module Bench (Shape : Shape) = struct
     ; frame : int
     }
 
-  (* a port takes a number at the width the shape gave it *)
-  let set port value = port := Bits.of_unsigned_int ~width:(Bits.width !port) value
-
   (* The canvas the three writes of a pass leave: a redraw lands on the cells the mask hid
      and nowhere else, which is the walk's own rule. *)
   let redrawn ~opening ~hidden ~redraw =
@@ -200,17 +197,17 @@ module Bench (Shape : Shape) = struct
     in
     let inp = Cyclesim.inputs sim in
     let name (step, seat) =
-      set inp.cell_step step;
-      set inp.cell_seat seat
+      Fuzz.set inp.cell_step step;
+      Fuzz.set inp.cell_seat seat
     in
     let write_class classes (step, seat) =
       name (step, seat);
-      set inp.cell_class classes.(step).(seat);
+      Fuzz.set inp.cell_class classes.(step).(seat);
       Cyclesim.cycle sim
     in
     let write_mask (step, seat) =
       name (step, seat);
-      set inp.cell_hidden (if hidden.(step).(seat) then 1 else 0);
+      Fuzz.set inp.cell_hidden (if hidden.(step).(seat) then 1 else 0);
       Cyclesim.cycle sim
     in
     let order = Diffusion.cell_order ~steps in
@@ -232,11 +229,11 @@ module Bench (Shape : Shape) = struct
   let ask (sim : Sim.t) { cell = step, seat; column = plane_step, plane; score } =
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
-    set inp.cell_step step;
-    set inp.cell_seat seat;
-    set inp.plane_step plane_step;
-    set inp.plane plane;
-    set inp.score_step score;
+    Fuzz.set inp.cell_step step;
+    Fuzz.set inp.cell_seat seat;
+    Fuzz.set inp.plane_step plane_step;
+    Fuzz.set inp.plane plane;
+    Fuzz.set inp.score_step score;
     Cyclesim.cycle sim;
     let activation_of_row row =
       Bits.to_unsigned_int

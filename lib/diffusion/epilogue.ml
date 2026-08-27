@@ -25,8 +25,8 @@ end
 let latency = 4
 
 (* the activation format the twin states, and the accumulator the array hands over *)
-let activation_bits = 16
-let accumulator_bits = 32
+let activation_bits = Quantized.activation_bits
+let accumulator_bits = Quantized.accumulator_bits
 
 (* [clamp16] of the twin, as a circuit: the value saturates and never wraps. A wrap here
    would be silently wrong music, and the clamp is what the format election stands on. *)
@@ -75,12 +75,6 @@ module Make (Shape : Shape) = struct
     (* the datapath registers have no clear: what is real is what [drained] marks, and the
        tag that clears is what says so *)
     let dspec = Reg_spec.create ~clock:i.clock () in
-    let rec delay spec n x = if n = 0 then x else delay spec (n - 1) (reg spec x) in
-    (* THE ARRAY OWNS THE DSPS AND THIS UNIT TAKES NONE, thus the rule is an attribute and
-       not a hope: a 32 by 16 variable product is exactly what the tools infer a DSP48
-       for, and the fused rung at G 5 needs all 240 of them for the lanes. epilogue.mli
-       states the reason; this states it to Vivado. *)
-    let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false) in
     let field word ~low ~bits = select word ~high:(low + bits - 1) ~low in
     let lane at =
       let slice signal bits =
@@ -97,18 +91,20 @@ module Make (Shape : Shape) = struct
       in
       (* STAGE 1 — the gain multiply. The product of an int32 sum and an int16 gain is 48
          bits, and it is LUTs and never a DSP: the array owns those. *)
-      let product = reg dspec (no_dsp (slice i.sums accumulator_bits *+ gain)) in
+      let product =
+        reg dspec (Column_array.no_dsp (slice i.sums accumulator_bits *+ gain))
+      in
       (* STAGE 2 — [Constants.apply] with the bias. The shift is VARIABLE because a gain
          carries its own q, and it goes toward negative infinity as the twin's arithmetic
          shift does. *)
-      let scaled = log_shift ~f:sra product ~by:(delay dspec 1 shift) in
+      let scaled = log_shift ~f:sra product ~by:(pipeline dspec ~n:1 shift) in
       let biased =
-        reg dspec (scaled +: sresize (delay dspec 1 bias) ~width:(width scaled))
+        reg dspec (scaled +: sresize (pipeline dspec ~n:1 bias) ~width:(width scaled))
       in
       (* STAGE 3 — the ReLU and the first clamp *)
       let ramped =
         mux2
-          (delay dspec 2 i.relu)
+          (pipeline dspec ~n:2 i.relu)
           (mux2 (biased <+. 0) (zero (width biased)) biased)
           biased
       in
@@ -120,15 +116,15 @@ module Make (Shape : Shape) = struct
       let sum =
         sresize conv ~width:(activation_bits + 1)
         +: sresize
-             (delay dspec 3 (slice i.residual activation_bits))
+             (pipeline dspec ~n:3 (slice i.residual activation_bits))
              ~width:(activation_bits + 1)
       in
       let joined = clamp16 (mux2 (sum <+. 0) (zero (width sum)) sum) in
-      reg dspec (mux2 (delay dspec 3 i.join) joined conv)
+      reg dspec (mux2 (pipeline dspec ~n:3 i.join) joined conv)
     in
     (* the tag clears and the datapath does not: what is real is what [valid] marks *)
-    { O.valid = delay spec latency i.drained
-    ; activation_row = delay spec latency i.row
+    { O.valid = pipeline spec ~n:latency i.drained
+    ; activation_row = pipeline spec ~n:latency i.row
     ; activations = concat_lsb (List.init lanes ~f:lane)
     }
   ;;
@@ -162,10 +158,6 @@ module Bench (Shape : Shape) = struct
       let value = if relu then Int.max value 0 else value in
       let conv = Nn_quantized.clamp16 value in
       if join then Nn_quantized.clamp16 (Int.max 0 (residual.(at) + conv)) else conv)
-  ;;
-
-  let pack values ~width =
-    Bits.concat_lsb (List.map (Array.to_list values) ~f:(Bits.of_signed_int ~width))
   ;;
 
   (* THE BENCH PACKS WITH THE ELABORATION'S OWN PACKER and never with a copy of it. A
@@ -203,8 +195,8 @@ module Bench (Shape : Shape) = struct
     List.iteri work ~f:(fun at { sums; norms; biases; residual } ->
       inp.drained := Bits.vdd;
       inp.row := Bits.of_unsigned_int ~width:(Bits.width !(inp.row)) (at % rows);
-      inp.sums := pack sums ~width:32;
-      inp.residual := pack residual ~width:16;
+      inp.sums := Fuzz.pack sums ~width:32;
+      inp.residual := Fuzz.pack residual ~width:16;
       inp.norms := pack_norms norms biases;
       cycle ());
     for _ = 1 to latency + 1 do
@@ -245,7 +237,10 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
 
      [relu] with [join] is not among them: a pair-closing convolution runs with no ReLU of
      its own and the head takes neither, thus the pair never stands. *)
-  let case ~lanes ~relu ~join ~rows =
+  (* [work_rows] is how many drained rows the case drives, and it is NOT the shape's
+     [rows] two lines below: the tag walks 0 to 47 and begins again, thus a case may drive
+     more rows than a drain holds. *)
+  let case ~lanes ~relu ~join ~work_rows =
     let module B =
       Bench (struct
         let rows = 48
@@ -276,25 +271,25 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
       state, drawn :: held
     in
     let (_ : Prng.state), drawn =
-      List.fold (List.range 0 rows) ~init:(Prng.create ~seed:5, []) ~f:take
+      List.fold (List.range 0 work_rows) ~init:(Prng.create ~seed:5, []) ~f:take
     in
     printf
       "G %d, relu %b, join %b, %d rows: %s\n"
       lanes
       relu
       join
-      rows
+      work_rows
       (B.check (List.rev drawn) ~relu ~join)
   in
   (* the stem and a pair's opening layer *)
-  case ~lanes:4 ~relu:true ~join:false ~rows:200;
+  case ~lanes:4 ~relu:true ~join:false ~work_rows:200;
   (* a pair's closing layer *)
-  case ~lanes:4 ~relu:false ~join:true ~rows:200;
+  case ~lanes:4 ~relu:false ~join:true ~work_rows:200;
   (* the head *)
-  case ~lanes:4 ~relu:false ~join:false ~rows:200;
+  case ~lanes:4 ~relu:false ~join:false ~work_rows:200;
   (* the geometries beside the elected one *)
-  case ~lanes:1 ~relu:true ~join:false ~rows:60;
-  case ~lanes:5 ~relu:false ~join:true ~rows:60;
+  case ~lanes:1 ~relu:true ~join:false ~work_rows:60;
+  case ~lanes:5 ~relu:false ~join:true ~work_rows:60;
   [%expect
     {|
     G 4, relu true, join false, 200 rows: ok

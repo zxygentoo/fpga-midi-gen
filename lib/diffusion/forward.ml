@@ -18,7 +18,7 @@ open Hardcaml
 open Signal
 
 (* the activation format of the twin: what a column carries in each row *)
-let activation_bits = 16
+let activation_bits = Quantized.activation_bits
 
 module State = struct
   type t =
@@ -104,6 +104,59 @@ struct
       }
     [@@deriving hardcaml]
   end
+
+  (* ---------------------------------------------------------------- *)
+  (* the maps and the slicing, which follow the shape alone *)
+  (* ---------------------------------------------------------------- *)
+
+  (* [flat_index ~width ~stride major minor] is [major * stride + minor] at [width] bits.
+     THE MULTIPLY IS REAL AND NOT A CONCATENATION — neither stride is a power of two at
+     every shape, and a concatenation would silently stride by [2 ** minor_bits]. *)
+  let flat_index ~width ~stride major minor =
+    let scaled =
+      Column_array.no_dsp
+        (uresize major ~width
+         *: of_unsigned_int ~width:(address_bits_for (stride + 1)) stride)
+    in
+    sel_bottom scaled ~width +: uresize minor ~width
+  ;;
+
+  (* THE STORE'S MAP IS THE ELABORATION'S, AND THE GATE IS WHAT WELDS THE TWO. Signal land
+     cannot call [Elaboration.column_address], thus what stands here is a second statement
+     of the same map and no comment can stop the two from parting. The stream gate is what
+     does: it reads every write at the address the elaboration's own function states, thus
+     a map that parted here would part there and never on a board. *)
+  let column_address ~step ~channel =
+    flat_index ~width:store_bits ~stride:e.store_channels step channel
+  ;;
+
+  (* the channel a lane of a group names: [group * lanes + lane] *)
+  let channel_of ~group ~lane = flat_index ~width:channel_bits ~stride:lanes group lane
+
+  (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
+     families: one decode or one strobe drove the 768 register pins of a whole column, at
+     up to 12 ns of route. A bank is [column_slices] register slices, and each slice's
+     take is its own copy of the same condition, [dont_touch] so the tools keep the copies
+     apart — no driver reaches more than [Column_array.slice_rows] rows, and the placer
+     lays each beside its slice. The values and the writes stay whole columns; the slicing
+     is invisible outside these helpers. *)
+  let column_slices = Column_array.slices_for ~rows
+
+  let slice_range s =
+    let span = Column_array.slice_rows * activation_bits in
+    let low = s * span in
+    let high = min column_bits (low + span) - 1 in
+    high, low
+  ;;
+
+  let bank_value bank = concat_lsb (List.map bank ~f:(fun v -> v.Always.Variable.value))
+
+  let replicated_takes make =
+    List.init column_slices ~f:(fun s ->
+      if s = 0
+      then make ()
+      else add_attribute (make ()) (Rtl_attribute.Vivado.dont_touch true))
+  ;;
 
   let create (i : _ I.t) : _ O.t =
     let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -225,34 +278,6 @@ struct
     let tap_step =
       mux2 out_of_roll (zero step_bits) (sel_bottom roll_step ~width:step_bits)
     in
-    (* THE STORE'S MAP IS THE ELABORATION'S, AND THE GATE IS WHAT WELDS THE TWO. Signal
-       land cannot call [Elaboration.column_address], thus what stands below is a second
-       statement of the same map and no comment can stop the two from parting. The stream
-       gate is what does: it reads every write at the address the elaboration's own
-       function states, thus a map that parted here would part there and never on a board. *)
-    let column_address ~step ~channel =
-      let scaled =
-        add_attribute
-          (uresize step ~width:store_bits
-           *: of_unsigned_int
-                ~width:(address_bits_for (e.store_channels + 1))
-                e.store_channels)
-          (Rtl_attribute.Vivado.use_dsp false)
-      in
-      sel_bottom scaled ~width:store_bits +: uresize channel ~width:store_bits
-    in
-    (* the channel a lane of a group names: [group * lanes + lane]. THE MULTIPLY IS REAL
-       AND NOT A CONCATENATION — [lanes] is not a power of two at every shape, and a
-       concatenation would silently address [2 ** lane_bits] channels a group. *)
-    let channel_of ~group ~lane =
-      let scaled =
-        add_attribute
-          (uresize group ~width:channel_bits
-           *: of_unsigned_int ~width:(address_bits_for (lanes + 1)) lanes)
-          (Rtl_attribute.Vivado.use_dsp false)
-      in
-      sel_bottom scaled ~width:channel_bits +: uresize lane ~width:channel_bits
-    in
     let tap_address = column_address ~step:tap_step ~channel:fetch_cin in
     (* the fetch travels to the NOW frame beside its data: the zero flag says the slot
        takes zero, and the step and the plane are what the canvas answers *)
@@ -291,9 +316,23 @@ struct
     (* the memories: the address registers before them and the data registers behind them,
        which is era four's rule and the reason every read of this unit is two cycles *)
     (* ---------------------------------------------------------------- *)
-    let read_write_port ~size ~address ~write_enable ~write_address ~write_data =
+    (* ONE BLOCK MEMORY, READ ERA FOUR'S WAY: [hold] stands on the address and again on
+       the data, thus the tools cannot retime the data register onto the address pins and
+       rebuild the address cone inside each primitive. A ROM is this same port with an
+       image behind it and a write side that is wired off — one statement of the rule, and
+       the two kinds of memory cannot drift apart in it. *)
+    let block_memory
+      ?initialize_to
+      ~size
+      ~address
+      ~write_enable
+      ~write_address
+      ~write_data
+      ()
+      =
       (multiport_memory
          ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
+         ?initialize_to
          size
          ~write_ports:
            [| { Write_port.write_clock = i.clock
@@ -305,22 +344,17 @@ struct
          ~read_addresses:[| hold address |]).(0)
       |> hold
     in
+    (* a ROM is the same port with an image behind it and its write side wired off *)
     let rom image address =
-      let width = Bits.width image.(0) in
       let size = Array.length image in
-      (multiport_memory
-         ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
-         ~initialize_to:image
-         size
-         ~write_ports:
-           [| { Write_port.write_clock = i.clock
-              ; write_address = zero (address_bits_for size)
-              ; write_enable = gnd
-              ; write_data = zero width
-              }
-           |]
-         ~read_addresses:[| hold address |]).(0)
-      |> hold
+      block_memory
+        ~initialize_to:image
+        ~size
+        ~address
+        ~write_enable:gnd
+        ~write_address:(zero (address_bits_for size))
+        ~write_data:(zero (Bits.width image.(0)))
+        ()
     in
     (* THE WEIGHT ADDRESS ONLY COUNTS. The image is packed in the dwell order, thus one
        column's dwell walks a layer's whole range straight through and the address reloads
@@ -330,31 +364,12 @@ struct
     (* ---------------------------------------------------------------- *)
     (* the bands: the window, the residual columns, the output columns and the norm bank *)
     (* ---------------------------------------------------------------- *)
-    (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
-       families: one decode or one strobe drove the 768 register pins of a whole column,
-       at up to 12 ns of route. A bank is [column_slices] register slices, and each
-       slice's take is its own copy of the same condition, [dont_touch] so the tools keep
-       the copies apart — no driver reaches more than [slice_rows] rows, and the placer
-       lays each beside its slice. The values and the writes stay whole columns; the
-       slicing is invisible outside these helpers. *)
-    let slice_rows = 8 in
-    let column_slices = (rows + slice_rows - 1) / slice_rows in
-    let slice_range s =
-      let low = s * slice_rows * activation_bits in
-      let high = min column_bits ((s + 1) * slice_rows * activation_bits) - 1 in
-      high, low
-    in
+    (* the registers of a sliced bank, and the write that fills one: the slicing rule is
+       [slice_range]'s, above, and it is invisible past these two *)
     let column_bank () =
       List.init column_slices ~f:(fun s ->
         let high, low = slice_range s in
         Variable.reg dspec ~width:(high - low + 1))
-    in
-    let bank_value bank = concat_lsb (List.map bank ~f:(fun v -> v.Variable.value)) in
-    let replicated_takes make =
-      List.init column_slices ~f:(fun s ->
-        if s = 0
-        then make ()
-        else add_attribute (make ()) (Rtl_attribute.Vivado.dont_touch true))
     in
     let write_bank bank ~takes ~column =
       proc
@@ -426,7 +441,7 @@ struct
        ring 3's fourth family, one flop at 3 073 pins — one registered copy for each slice
        of each band column. The flush and the seam keep the epilogue's own. *)
     let band_takes =
-      let pre = Fn.apply_n_times ~n:(Epilogue.latency - 1) (reg spec) drained.drained in
+      let pre = pipeline spec ~n:(Epilogue.latency - 1) drained.drained in
       List.init lanes ~f:(fun (_ : int) ->
         List.init column_slices ~f:(fun (_ : int) ->
           add_attribute (reg spec pre) (Rtl_attribute.Vivado.dont_touch true)))
@@ -475,20 +490,22 @@ struct
        does not: a pair-closing layer's taps read Y, thus the two never want the port in
        the same layer *)
     let x_read =
-      read_write_port
+      block_memory
         ~size:(Elaboration.store_depth e)
         ~address:(mux2 is_join residual_address tap_address)
         ~write_enable:x_write
         ~write_address:x_address
         ~write_data:x_data
+        ()
     in
     let y_read =
-      read_write_port
+      block_memory
         ~size:(Elaboration.store_depth e)
         ~address:tap_address
         ~write_enable:y_write
         ~write_address:y_address
         ~write_data:y_data
+        ()
     in
     (* ---------------------------------------------------------------- *)
     (* the wiring of the bands *)
@@ -501,196 +518,216 @@ struct
     in
     let step_ready = Variable.reg spec ~width:1 in
     let layer_drained = Variable.reg spec ~width:1 in
+    (* the window rotation: each slot takes its new column on the edge of its own last
+       read, thus the operand register takes the old value on that very edge *)
+    let rotate_window =
+      proc
+        (List.mapi slots ~f:(fun at slot ->
+           let takes =
+             replicated_takes (fun () -> run &: (now_cycle ==:. (3 * at) + 2))
+           in
+           let (_ : Signal.t) = List.hd_exn takes -- sprintf "slot_%d" at in
+           write_bank slot ~takes ~column:tap_column))
+    in
+    (* the residual band shifts a row out at every drained row, and takes a whole column
+       at a load *)
+    let shift_residual_band =
+      proc
+        (List.mapi residual_band ~f:(fun at column ->
+           proc
+             [ when_ drained.drained [ column <-- srl column.value ~by:activation_bits ]
+             ; when_ (load_valid &: (load_landed ==:. at)) [ column <-- x_read ]
+             ]))
+    in
+    (* the output band shifts a row in at every epilogue row, thus after [rows] of them it
+       holds the column in the store's own order *)
+    let shift_output_band =
+      proc
+        (List.mapi output_band ~f:(fun at column ->
+           let shifted =
+             select
+               (select
+                  tail.activations
+                  ~high:((at * activation_bits) + activation_bits - 1)
+                  ~low:(at * activation_bits)
+                @: bank_value column)
+               ~high:(column_bits + activation_bits - 1)
+               ~low:activation_bits
+           in
+           write_bank column ~takes:(List.nth_exn band_takes at) ~column:shifted))
+    in
+    let take_norms =
+      proc
+        (List.mapi norm_bank ~f:(fun at word ->
+           when_ (load_valid &: (load_landed ==:. at)) [ word <-- norms ]))
+    in
+    (* the head writes one step and not a tensor: the band's columns are the seat files of
+       the step, and a lane past the four seats writes nothing *)
+    let take_logits =
+      proc
+        (List.mapi logit_file ~f:(fun seat column ->
+           let takes =
+             replicated_takes (fun () ->
+               flushing.value &: is_head &: (flush_channel ==:. seat))
+           in
+           write_bank column ~takes ~column:flush_column))
+    in
     compile
-      [ (* the window rotation: each slot takes its new column on the edge of its own last
-           read, thus the operand register takes the old value on that very edge *)
-        proc
-          (List.mapi slots ~f:(fun at slot ->
-             let takes =
-               replicated_takes (fun () -> run &: (now_cycle ==:. (3 * at) + 2))
-             in
-             let (_ : Signal.t) = List.hd_exn takes -- sprintf "slot_%d" at in
-             write_bank slot ~takes ~column:tap_column))
-      ; (* the residual band shifts a row out at every drained row, and takes a whole
-           column at a load *)
-        proc
-          (List.mapi residual_band ~f:(fun at column ->
-             proc
-               [ when_ drained.drained [ column <-- srl column.value ~by:activation_bits ]
-               ; when_ (load_valid &: (load_landed ==:. at)) [ column <-- x_read ]
-               ]))
-      ; (* the output band shifts a row in at every epilogue row, thus after [rows] of
-           them it holds the column in the store's own order *)
-        proc
-          (List.mapi output_band ~f:(fun at column ->
-             let shifted =
-               select
-                 (select
-                    tail.activations
-                    ~high:((at * activation_bits) + activation_bits - 1)
-                    ~low:(at * activation_bits)
-                  @: bank_value column)
-                 ~high:(column_bits + activation_bits - 1)
-                 ~low:activation_bits
-             in
-             write_bank column ~takes:(List.nth_exn band_takes at) ~column:shifted))
-      ; proc
-          (List.mapi norm_bank ~f:(fun at word ->
-             when_ (load_valid &: (load_landed ==:. at)) [ word <-- norms ]))
-      ; (* the head writes one step and not a tensor: the band's columns are the seat
-           files of the step, and a lane past the four seats writes nothing *)
-        proc
-          (List.mapi logit_file ~f:(fun seat column ->
-             let takes =
-               replicated_takes (fun () ->
-                 flushing.value &: is_head &: (flush_channel ==:. seat))
-             in
-             write_bank column ~takes ~column:flush_column))
-      ];
+      [ rotate_window; shift_residual_band; shift_output_band; take_norms; take_logits ];
     (* ---------------------------------------------------------------- *)
     (* the walk of the counters *)
     (* ---------------------------------------------------------------- *)
     let start_load = Variable.wire ~default:gnd () in
-    compile
-      [ (* THE LEAD NEST. It walks the column, the group, the input channel and the tap,
-           and the preamble holds it still for one block. *)
-        when_
-          run
-          [ if_
-              last_cycle
-              [ lead_cycle <--. 0
-              ; when_
-                  ~:(priming.value)
-                  [ lead_cin <-- next_cin
-                  ; lead_group <-- next_group
-                  ; lead_step <-- next_step
-                  ]
-              ]
-              [ lead_cycle <-- lead_cycle.value +:. 1 ]
-          ; (* the weight address only counts, and reloads at each new column *)
-            if_
-              priming.value
-              [ weight_address <-- weight_base ]
-              [ if_
-                  (last_cycle &: turns_group)
-                  [ weight_address <-- weight_base ]
-                  [ weight_address <-- weight_address.value +:. 1 ]
-              ]
-          ]
-      ; (* THE BAND LOAD. The drain before this dwell has just read its last residual row,
-           thus the buffer is free and the columns of this dwell's group may land in it.
-           It walks under [run] like the frames it is timed against, and the resume of a
-           wait states it again rather than carry a half-walked one across. *)
-        if_
-          (start_load.value |: (run &: last_drained))
-          [ (* THE START STANDS OUTSIDE [run]. A layer's first group is asked for while
-               the machine is still idle or still turning, thus a trigger that waited for
-               [run] would leave the first group of every layer with the norms of the last
-               one. *)
-            loading <-- vdd
-          ; load_index <--. 0
-          ; if_
-              start_load.value
-              [ load_step <--. 0; load_group <--. 0 ]
-              [ load_step <-- now_step; load_group <-- now_group ]
-          ]
-          [ when_
-              (run &: loading.value)
-              [ load_index <-- load_index.value +:. 1
-              ; when_ (load_index.value ==:. lanes - 1) [ loading <-- gnd ]
-              ]
-          ]
-      ; (* THE FLUSH, and the nest that walks it. The flushes stand in the order the
-           dwells do, thus a counter of its own states the column and the group of each
-           one and no tag has to travel the length of the drain. *)
-        when_ band_whole [ flushing <-- vdd; flush_index <--. 0 ]
-      ; when_
-          (flushing.value &: ~:band_whole)
-          [ flush_index <-- flush_index.value +:. 1
-          ; when_
-              flush_last
-              [ flushing <-- gnd
-              ; if_
-                  (flush_group.value ==: group_count -:. 1)
-                  [ flush_group <--. 0
-                  ; if_
-                      (flush_step.value ==:. steps - 1)
-                      [ flush_step <--. 0; layer_drained <-- vdd ]
-                      [ flush_step <-- flush_step.value +:. 1 ]
-                  ]
-                  [ flush_group <-- flush_group.value +:. 1 ]
-              ]
-          ]
-      ; (* the head's seam: the level rises when the file stands whole and falls on the
-           edge behind the acknowledgement *)
-        when_
-          (flush_done &: is_head &: (flush_group.value ==: group_count -:. 1))
-          [ step_ready <-- vdd ]
-      ; sm.switch
-          [ ( State.Idle
-            , [ when_
-                  i.start
-                  [ layer <--. 0
-                  ; lead_step <--. 0
-                  ; lead_group <--. 0
-                  ; lead_cin <--. 0
-                  ; lead_cycle <--. 0
-                  ; flush_step <--. 0
-                  ; flush_group <--. 0
-                  ; flushing <-- gnd
-                  ; layer_drained <-- gnd
-                  ; step_ready <-- gnd
-                  ; priming <-- vdd
-                  ; start_load <-- vdd
-                  ; sm.set_next Prime
-                  ]
-              ] )
-          ; Prime, [ when_ last_cycle [ priming <-- gnd; sm.set_next Dwell ] ]
-          ; ( Dwell
-            , [ when_
-                  (now_valid &: now_last_cin &: now_last_cycle &: now_last_group)
-                  [ if_
-                      is_head
-                      [ sm.set_next Wait_step ]
-                      [ when_ (now_step ==:. steps - 1) [ sm.set_next Turn ] ]
-                  ]
-              ] )
-          ; ( Wait_step
-            , [ when_
-                  (step_ready.value &: i.step_taken)
-                  [ step_ready <-- gnd
-                  ; if_
-                      layer_drained.value
-                      [ sm.set_next Turn ]
-                      [ (* the step behind the wait opens at group 0 and the bank still
-                           holds the last group's norms, thus the load is stated again *)
-                        start_load <-- vdd
-                      ; sm.set_next Dwell
-                      ]
-                  ]
-              ] )
-          ; ( Turn
-            , [ when_
-                  layer_drained.value
-                  [ layer_drained <-- gnd
-                  ; if_
-                      (layer.value ==:. layer_count - 1)
-                      [ sm.set_next Idle ]
-                      [ layer <-- layer.value +:. 1
-                      ; lead_step <--. 0
-                      ; lead_group <--. 0
-                      ; lead_cin <--. 0
-                      ; lead_cycle <--. 0
-                      ; flush_step <--. 0
-                      ; flush_group <--. 0
-                      ; priming <-- vdd
-                      ; start_load <-- vdd
-                      ; sm.set_next Prime
-                      ]
-                  ]
-              ] )
-          ]
-      ];
+    let lead_nest =
+      (* THE LEAD NEST. It walks the column, the group, the input channel and the tap, and
+         the preamble holds it still for one block. *)
+      when_
+        run
+        [ if_
+            last_cycle
+            [ lead_cycle <--. 0
+            ; when_
+                ~:(priming.value)
+                [ lead_cin <-- next_cin
+                ; lead_group <-- next_group
+                ; lead_step <-- next_step
+                ]
+            ]
+            [ lead_cycle <-- lead_cycle.value +:. 1 ]
+        ; (* the weight address only counts, and reloads at each new column *)
+          if_
+            priming.value
+            [ weight_address <-- weight_base ]
+            [ if_
+                (last_cycle &: turns_group)
+                [ weight_address <-- weight_base ]
+                [ weight_address <-- weight_address.value +:. 1 ]
+            ]
+        ]
+    in
+    let band_load =
+      (* THE BAND LOAD. The drain before this dwell has just read its last residual row,
+         thus the buffer is free and the columns of this dwell's group may land in it. It
+         walks under [run] like the frames it is timed against, and the resume of a wait
+         states it again rather than carry a half-walked one across. *)
+      if_
+        (start_load.value |: (run &: last_drained))
+        [ (* THE START STANDS OUTSIDE [run]. A layer's first group is asked for while the
+             machine is still idle or still turning, thus a trigger that waited for [run]
+             would leave the first group of every layer with the norms of the last one. *)
+          loading <-- vdd
+        ; load_index <--. 0
+        ; if_
+            start_load.value
+            [ load_step <--. 0; load_group <--. 0 ]
+            [ load_step <-- now_step; load_group <-- now_group ]
+        ]
+        [ when_
+            (run &: loading.value)
+            [ load_index <-- load_index.value +:. 1
+            ; when_ (load_index.value ==:. lanes - 1) [ loading <-- gnd ]
+            ]
+        ]
+    in
+    let open_flush =
+      (* THE FLUSH, and the nest that walks it. The flushes stand in the order the dwells
+         do, thus a counter of its own states the column and the group of each one and no
+         tag has to travel the length of the drain. *)
+      when_ band_whole [ flushing <-- vdd; flush_index <--. 0 ]
+    in
+    let walk_flush =
+      when_
+        (flushing.value &: ~:band_whole)
+        [ flush_index <-- flush_index.value +:. 1
+        ; when_
+            flush_last
+            [ flushing <-- gnd
+            ; if_
+                (flush_group.value ==: group_count -:. 1)
+                [ flush_group <--. 0
+                ; if_
+                    (flush_step.value ==:. steps - 1)
+                    [ flush_step <--. 0; layer_drained <-- vdd ]
+                    [ flush_step <-- flush_step.value +:. 1 ]
+                ]
+                [ flush_group <-- flush_group.value +:. 1 ]
+            ]
+        ]
+    in
+    let head_seam =
+      (* the head's seam: the level rises when the file stands whole and falls on the edge
+         behind the acknowledgement *)
+      when_
+        (flush_done &: is_head &: (flush_group.value ==: group_count -:. 1))
+        [ step_ready <-- vdd ]
+    in
+    let machine =
+      sm.switch
+        [ ( State.Idle
+          , [ when_
+                i.start
+                [ layer <--. 0
+                ; lead_step <--. 0
+                ; lead_group <--. 0
+                ; lead_cin <--. 0
+                ; lead_cycle <--. 0
+                ; flush_step <--. 0
+                ; flush_group <--. 0
+                ; flushing <-- gnd
+                ; layer_drained <-- gnd
+                ; step_ready <-- gnd
+                ; priming <-- vdd
+                ; start_load <-- vdd
+                ; sm.set_next Prime
+                ]
+            ] )
+        ; Prime, [ when_ last_cycle [ priming <-- gnd; sm.set_next Dwell ] ]
+        ; ( Dwell
+          , [ when_
+                (term_last &: now_last_group)
+                [ if_
+                    is_head
+                    [ sm.set_next Wait_step ]
+                    [ when_ (now_step ==:. steps - 1) [ sm.set_next Turn ] ]
+                ]
+            ] )
+        ; ( Wait_step
+          , [ when_
+                (step_ready.value &: i.step_taken)
+                [ step_ready <-- gnd
+                ; if_
+                    layer_drained.value
+                    [ sm.set_next Turn ]
+                    [ (* the step behind the wait opens at group 0 and the bank still
+                         holds the last group's norms, thus the load is stated again *)
+                      start_load <-- vdd
+                    ; sm.set_next Dwell
+                    ]
+                ]
+            ] )
+        ; ( Turn
+          , [ when_
+                layer_drained.value
+                [ layer_drained <-- gnd
+                ; if_
+                    (layer.value ==:. layer_count - 1)
+                    [ sm.set_next Idle ]
+                    [ layer <-- layer.value +:. 1
+                    ; lead_step <--. 0
+                    ; lead_group <--. 0
+                    ; lead_cin <--. 0
+                    ; lead_cycle <--. 0
+                    ; flush_step <--. 0
+                    ; flush_group <--. 0
+                    ; priming <-- vdd
+                    ; start_load <-- vdd
+                    ; sm.set_next Prime
+                    ]
+                ]
+            ] )
+        ]
+    in
+    compile [ lead_nest; band_load; open_flush; walk_flush; head_seam; machine ];
     { O.busy = ~:(sm.is Idle)
     ; plane_step = landed_step
     ; plane = landed_plane
@@ -749,27 +786,22 @@ struct
     ; waiting : int (** the head's waits, which Phase I spends and Phase II would not *)
     }
 
-  let signed v =
-    if v >= 1 lsl (activation_bits - 1) then v - (1 lsl activation_bits) else v
-  ;;
-
+  (* one column as the twin holds it: [rows] signed activations, row 0 first *)
   let column_of bits =
-    Array.init rows ~f:(fun row ->
-      signed
-        (Bits.to_unsigned_int
-           (Bits.select
-              bits
-              ~high:((row * activation_bits) + activation_bits - 1)
-              ~low:(row * activation_bits))))
+    Bits.split_lsb ~part_width:activation_bits bits
+    |> List.map ~f:Bits.to_signed_int
+    |> Array.of_list
   ;;
-
-  let set port value = port := Bits.of_unsigned_int ~width:(Bits.width !port) value
 
   (* [run ~planes] is one forward pass, and [planes] is the canvas: the [rows] activations
      of one step and one plane. The stream gate hands the twin's own decode over; a
      picture at a shape the twin does not hold hands over one of its own. *)
   let run ?(trace = false) ?(read_logits = true) ~planes () =
-    let sim = Sim.create ~config:Cyclesim.Config.trace_all Engine.create in
+    (* THE TRACE IS THE NAMED SIGNALS AND NOT EVERY SIGNAL, the rule [Source]'s harness
+       states: this is the largest circuit of the library and the gates run tens of
+       thousands of cycles through it. Every signal the probes look up and every signal
+       the waveforms display carries a [--] name, thus [`All_named] reaches all of them. *)
+    let sim = Sim.create ~config:(Cyclesim.Config.trace `All_named) Engine.create in
     let waves, sim =
       if trace
       then (
@@ -844,7 +876,7 @@ struct
       else (
         let columns =
           Array.init voices ~f:(fun seat ->
-            set inp.logit_seat seat;
+            Fuzz.set inp.logit_seat seat;
             plain ();
             column_of !(out.logits))
         in

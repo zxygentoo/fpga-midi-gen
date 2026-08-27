@@ -25,6 +25,13 @@ let activation_q = 6
 (* the one in the activation format, and the fixed point of the biases *)
 let activation_one = 1 lsl activation_q
 
+(* The WIDTHS of the format, beside its Q: an activation is int16, and the products of one
+   dwell sum into int32. They stand here because they are the other half of the sentence
+   [activation_q] opens — a unit that stated 16 of its own could part from the twin and no
+   compiler would say so — thus every unit of the circuit reads the format in one place. *)
+let activation_bits = 16
+let accumulator_bits = 32
+
 module Model = struct
   type quantized = Mgen_nn.Quantized.quantized
 

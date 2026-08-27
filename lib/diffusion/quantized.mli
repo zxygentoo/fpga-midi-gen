@@ -40,6 +40,15 @@
     circuit of the next round reads it here. *)
 val activation_q : int
 
+(** the width of the activation format: 16. It is the other half of [activation_q]'s
+    sentence, thus it stands beside it and every unit of the circuit slices on this one
+    value rather than on a 16 of its own. *)
+val activation_bits : int
+
+(** the width of the accumulator one dwell sums into: 32. [Model.widest_inputs] is the
+    promise this width keeps, and the column array is sized on it. *)
+val accumulator_bits : int
+
 (** The weights in the form the bitstream will carry, and the policy folded with them. *)
 module Model : sig
   (** one quantized tensor: the int8 values flat in the row-major order of the float

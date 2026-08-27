@@ -22,7 +22,7 @@ module I = Source_intf.I
 module O = Source_intf.O
 
 (* the activation format of the twin: what a logit column carries in each row *)
-let activation_bits = 16
+let activation_bits = Quantized.activation_bits
 
 (* one uniform is three bytes of the generator, high byte first *)
 let uniform_bits = 24
@@ -229,11 +229,9 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let opened_class =
     let low = of_seat ~width:class_bits (fun o -> o.Diffusion.low) in
     let register = of_seat ~width:width_bits (fun o -> o.Diffusion.width) in
-    (* THE ARRAY OWNS THE DSPS, thus the rule is an attribute and not a hope — the same
-       one [Draw] states, for the same reason. *)
-    let product =
-      add_attribute (u.value *: register) (Rtl_attribute.Vivado.use_dsp false)
-    in
+    (* the array owns the DSPs, thus this product is pinned like every other one outside
+       it *)
+    let product = Column_array.no_dsp (u.value *: register) in
     let index = select product ~high:(uniform_bits + width_bits - 1) ~low:uniform_bits in
     low +: uresize index ~width:class_bits
   in

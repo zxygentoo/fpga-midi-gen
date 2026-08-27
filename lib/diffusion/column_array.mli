@@ -53,6 +53,28 @@ module type Shape = sig
   val lanes : int
 end
 
+(** [no_dsp product] pins a product into LUTs.
+
+    THE ARRAY OWNS THE DSPS AND EVERY OTHER UNIT PINS ITS PRODUCTS AWAY FROM THEM: the
+    fused rung at G 5 is 48 by 5, which is the device's whole 240, thus a multiply that
+    drifted into a DSP elsewhere would have to move at the moment the design is tightest.
+    The rule stands here because this unit is the one that holds the primitives — the
+    epilogue, the draw and the walk each state it to Vivado through this function. *)
+val no_dsp : Signal.t -> Signal.t
+
+(** the rows one replica slice covers: 8.
+
+    Ring 3's rule, and the array's own scale is what imposes it — no net of this scale
+    keeps a single driver, thus a bank stands as one [dont_touch] register slice for each
+    [slice_rows] rows. It is a placement fact of the device and not of a model, thus a
+    caller that banks a column of its own ([Forward]'s window and bands) slices on this
+    value rather than on an 8 of its own. *)
+val slice_rows : int
+
+(** [slices_for ~rows] is the replica slices a column of [rows] takes:
+    [ceil (rows / slice_rows)]. *)
+val slices_for : rows:int -> int
+
 (** Cycles from a [term] strobe to the edge that takes its term into the accumulator. The
     DSP48E1 packs as an operand pair, a product and a sum, thus the depth is the
     primitive's and not a choice. *)
