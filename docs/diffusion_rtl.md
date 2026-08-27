@@ -1073,6 +1073,59 @@ replicas, thus it adds one level to that path and rung 1 reads 3 ps of it.
 timing say the circuit fits; whether `l64-h16` sings is the listening gate's,
 and the board and the flash stay behind it, as the climb states.
 
+### The clock-skew mortgage — a build that STA blesses and silicon refuses
+
+The service-cut round closed with a trap that no instrument before the byte
+gate can see, measured 2026-08-27 on the first cut build.
+
+**THE FAILURE.** The cut's netlist was sound — Cyclesim exact against the
+twin, the phase gate exact write for write — and its build met at WNS +0.004
+with every constraint green. On the board it drew a DIFFERENT coherent canvas
+at a fixed seed on every run: 762, 594 and 618 bytes across three captures at
+one panel seed, a power cycle curing nothing, while the pre-cut bitstream on
+the same rig and seed answered byte for byte. The board plays plausibly
+throughout — right channel, right density, right shape — thus THE SMOKE TEST
+CANNOT CATCH THIS CLASS, and the finished canvas alone convicts nothing. Only
+the byte gate against the twin can.
+
+**THE MECHANISM.** The roll placed badly (post-place −0.143, the worst of the
+day) and the post-route phys_opt rescued setup by ADJUSTING CLOCK SKEW — the
+`Physopt 32-703` move — on six bits of the uniform shift register, a register
+replica and a BUFG replica among them. Each adjustment re-taps one flop's
+leaf clock so it arrives later: the failing setup path gains, and every short
+path into that flop pays. Neighbour bits of the shift register ended on
+different clock trees, and the byte-shift path `uniform_reg[7] →
+uniform_reg[15]` closed at 0.001 ns of hold at the fast corner — met, in the
+report's own words. A corrupted uniform scrambles which cells hide and which
+classes draw, which is exactly a coherent wrong canvas.
+
+**THE RULE: STA met by a picosecond is not met.** The refusal instrument, at
+every build from this round on:
+
+- **No `Physopt 32-703` on a register family.** Grep the build log. One
+  adjustment on an isolated synthesis replica can stand when the margins
+  bound it (the fixed build carries one, at 29 ps); a family of them on a
+  shift register or a counter is the mortgage, and the build re-rolls.
+- **WHS at or above about 0.010.** The three builds that passed the byte
+  gate read +0.026, +0.012 and +0.029; the one that failed read +0.001.
+
+**THE FIX IS STRUCTURE AND NOT THE LOTTERY.** An Explore re-roll failed the
+same family honestly — setup −0.014 and twelve mortgages on the same cone —
+thus the fault was a real path: one `u` register feeding the opening
+multiply, the mask compare and the draw's threshold at a fanout near sixty,
+two thirds of the failing path pure route. The answer is the broadcast
+round's own rule applied to the walk: three `dont_touch` replicas of `u`,
+fed the same next value, one for each consumer's arithmetic. A replica is
+`u` cycle for cycle, thus no gate moves; the placer seats each copy beside
+its own carry chain. The fixed build reads WNS +0.018 and WHS +0.029, the
+healthiest of the day's five, with the uniform family untouched — and the
+byte gate passed twice, byte for byte.
+
+**THE DEBUGGING INSTRUMENT IS THE A/B.** One JTAG program of the last proven
+bitstream, the same rig and the same seed, answers the only question that
+matters — the build or the method — in three minutes. It is what separated
+this trap from a false reference in one step.
+
 ## The iteration strategy
 
 **THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
