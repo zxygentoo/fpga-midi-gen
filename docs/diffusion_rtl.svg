@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1372" viewBox="0 0 1560 1372" role="img" aria-label="Block schematic of the diffusion source: the elaboration, the walk and its one generator, the canvas with three faces, the column engine with its memories bands array and epilogue, the draw, and the five broadcast nets where ring 3 misses timing">
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1372" viewBox="0 0 1560 1372" role="img" aria-label="Block schematic of the diffusion source: the elaboration, the walk and its one generator, the canvas with three faces, the column engine with its memories bands array and epilogue, the draw, and the five broadcast families the round answered">
   <style>
     /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
     :root {
@@ -129,12 +129,12 @@
   <rect class="outline" x="180" y="684" width="250" height="164" rx="5"/>
   <text class="b" x="194" y="706">one pass, measured</text>
   <text class="s" x="194" y="724">at the rung shape, in Cyclesim</text>
-  <text class="t" x="194" y="748">1 171 731 cycles</text>
+  <text class="t" x="194" y="748">1 175 164 cycles</text>
   <text class="s" x="194" y="768">the opening 1 538 · the mask 1 538</text>
-  <text class="s" x="194" y="784">the engine 1 096 103 · service 72 550</text>
+  <text class="s" x="194" y="784">the engine 1 096 246 · service 75 840</text>
   <text class="s" x="194" y="806">pass 0 is the HOTTEST — alpha opens</text>
   <text class="s" x="194" y="822">at 0.9, thus 470 cells of 512 redraw.</text>
-  <text class="s" x="194" y="838">The mean pass costs 1 120 200.</text>
+  <text class="s" x="194" y="838">The mean pass costs 1 121 558.</text>
 
   <!-- the column engine -->
   <rect class="outline" x="460" y="366" width="926" height="570" rx="6"/>
@@ -153,9 +153,9 @@
   <text class="s" x="766" y="474">address, never out of step</text>
 
   <rect class="blk" x="1034" y="420" width="266" height="62" rx="4"/>
-  <text class="t" x="1046" y="440">the weight ROM</text>
-  <text class="s" x="1046" y="458">the dwell order, thus the</text>
-  <text class="s" x="1046" y="474">address ONLY COUNTS</text>
+  <text class="t" x="1046" y="440">the weight ROM · two banks</text>
+  <text class="s" x="1046" y="458">the dwell order, thus the address</text>
+  <text class="s" x="1046" y="474">ONLY COUNTS · 8 192 + 512 of 8 496</text>
 
   <!-- the bands -->
   <rect class="blk" x="474" y="522" width="266" height="62" rx="4"/>
@@ -252,8 +252,8 @@
 
   <rect class="outline" x="1140" y="1006" width="232" height="56" rx="4"/>
   <text class="t" x="1152" y="1026">the pick</text>
-  <text class="s" x="1152" y="1042">3P + 3 = 147 cycles at P 48,</text>
-  <text class="s" x="1152" y="1056">always — a bound is not stated</text>
+  <text class="s" x="1152" y="1042">154 cycles at P 48, always —</text>
+  <text class="s" x="1152" y="1056">a bound is not stated</text>
 
   <line class="wire" x1="760" y1="926" x2="760" y2="952" marker-end="url(#a)"/>
   <text class="s" x="768" y="944">the seat's logits, standing still exactly while the level stands</text>
@@ -273,32 +273,35 @@
 
   <!-- the measured band -->
   <rect class="outline" x="150" y="1156" width="1250" height="200" rx="6"/>
-  <text class="b" x="164" y="1178">Ring 3 — the whole machine on the real part, IN CONTEXT. The resources land on the model and the timing does not.</text>
+  <text class="b" x="164" y="1178">Ring 3, the broadcast round and the ROM round — THE MACHINE MEETS on the real part, and every resource lands on the model.</text>
 
   <text class="t" x="164" y="1204">192 DSP48 (80%)</text>
-  <text class="s" x="164" y="1220">one for each lane, exactly,</text>
-  <text class="s" x="164" y="1234">and all seven elements</text>
-  <text class="s" x="164" y="1248">absorbed into each — era</text>
-  <text class="s" x="164" y="1262">four's trap still holds</text>
+  <text class="s" x="164" y="1220">one for each lane, exactly, and every</text>
+  <text class="s" x="164" y="1234">absorption of era four's trap still</text>
+  <text class="s" x="164" y="1248">holds — the B port alone now runs</text>
+  <text class="s" x="164" y="1262">direct, from the replica bank</text>
 
-  <text class="t" x="440" y="1204">103.5 block RAM (76.7%)</text>
-  <text class="s" x="440" y="1220">against the cost model's ~100</text>
-  <text class="s" x="440" y="1234">18 150 LUTs · 23 274 registers</text>
-  <text class="s" x="440" y="1248">no congestion above level 5</text>
+  <text class="t" x="440" y="1204">96.0 block RAM (71.1%)</text>
+  <text class="s" x="440" y="1220">under the cost model's ~100, once the weight</text>
+  <text class="s" x="440" y="1234">ROM banks and stops paying its full address</text>
+  <text class="s" x="440" y="1248">space · 21 331 LUTs · 23 682 registers</text>
+  <text class="s" x="440" y="1262">no congestion window above level 5</text>
 
-  <text class="t" x="740" y="1204" style="fill:var(--hot)">WNS −6.125 — VIOLATED</text>
-  <text class="hs" x="740" y="1220">11 002 failing endpoints of 59 482</text>
-  <text class="s" x="740" y="1234">ring 2 read the engine ALONE at +0.050</text>
-  <text class="s" x="740" y="1248">out of context, and net ② at +0.122</text>
+  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.007 — MET</text>
+  <text class="s" x="740" y="1220">0 failing endpoints of 62 002, hold +0.026</text>
+  <text class="s" x="740" y="1234">ring 3 first read −6.125, 11 002 failing;</text>
+  <text class="s" x="740" y="1248">the broadcast round took it to +0.010 and</text>
+  <text class="s" x="740" y="1262">the banks to +0.007, each on one roll</text>
 
-  <text class="hb" x="1064" y="1204">① −6.13  the draw's magnitude</text>
-  <text class="hs" x="1064" y="1220">② −5.26  the weight sign bits, fo 528 × 4</text>
-  <text class="hs" x="1064" y="1234">③ −3.78  the capture select, fo 6 019</text>
-  <text class="hs" x="1064" y="1248">④ −2.93  band_row, fo 3 073</text>
-  <text class="hs" x="1064" y="1262">⑤ −2.60  the window slots, fo 768</text>
+  <text class="hb" x="1064" y="1204">the five families, and what answered each</text>
+  <text class="hs" x="1064" y="1220">① the draw's magnitude cone, cut in four</text>
+  <text class="hs" x="1064" y="1234">② the weight bytes: a mux, then a replica</text>
+  <text class="hs" x="1064" y="1248">③ the capture select, a bank a stage</text>
+  <text class="hs" x="1064" y="1262">④ band_row, a replica a slice</text>
+  <text class="hs" x="1064" y="1276">⑤ the window slots and the bands, sliced</text>
 
-  <text class="hs" x="164" y="1288">THE FAILURE IS BROADCAST, AND IT IS A FAMILY AND NOT A PATH. Only ① is bound by logic — the logit mux, the peak subtract, the Q12 shift and the temper multiply, into a</text>
-  <text class="hs" x="164" y="1304">table's ADDRESS PINS with no register between, which is this document's own rule broken in the one unit that predates it. ② is 12.4 ns of pure ROUTE on ZERO logic levels:</text>
-  <text class="hs" x="164" y="1320">one RAMB36 output bit drives 528 pins, and the flop that could break it was absorbed INTO the BRAM by the very rule that buys the zero levels. ③ is the net ring 1 named,</text>
-  <text class="hs" x="164" y="1336">at the fanout ring 1 predicted, and it is only the THIRD cause. A probe answers for the logic it holds and never for the wire the rest of the design takes from it.</text>
+  <text class="s" x="164" y="1296">NO ARRAY-SCALE NET KEEPS A SINGLE DRIVER, and that is the whole of the broadcast round. Ring 3 first read −6.125 on a family of five: one RAMB36 output bit drove 528 pins at</text>
+  <text class="s" x="164" y="1312">12.4 ns of PURE ROUTE, because the rule that buys the zero logic levels — the data register absorbed INTO the BRAM — leaves no flop in the fabric to replicate. The answer is a</text>
+  <text class="s" x="164" y="1328">dont_touch replica bank at every slice of eight rows, and the draw's 21-level magnitude cone cut into four registers. A ROM PAYS FOR ITS WHOLE ADDRESS SPACE and no warning says</text>
+  <text class="s" x="164" y="1344">so either: rung 2's image padded 36 144 words to 65 536 and lost EVERY ROM to fabric. Banked, rung 2 meets at +0.008 with 124.0 tiles (91.9%) and 21 419 LUTs against 42 599.</text>
 </svg>
