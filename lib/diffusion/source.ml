@@ -1066,17 +1066,18 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
     |}]
 ;;
 
-let%expect_test "the cycles of one pass at the rung, measured" =
-  (* THE RUNG SHAPE, RUN. A cycle count is data-independent in the forward and
+let%expect_test "the cycles of one pass at rung 1, measured" =
+  (* RUNG 1'S SHAPE, RUN. A cycle count is data-independent in the forward and
      seed-dependent only in the service — the mask alone decides how many cells a pass
-     redraws — thus DRAWN WEIGHTS AT THE RUNG SHAPE MEASURE THE PASS EXACTLY, and no
+     redraws — thus DRAWN WEIGHTS AT A RUNG SHAPE MEASURE THE PASS EXACTLY, and no
      checkpoint enters a test. [Params.init] is licensed for that and for nothing else.
 
-     IT COSTS ABOUT HALF A MINUTE, which is what one pass of the elected rung IS: 1.17 M
-     cycles at about 38 000 a second in Cyclesim. The price buys the one test that
-     elaborates AND RUNS the rung geometry end to end, thus it also answers what no small
-     shape can — that every width, every address and every counter of the machine holds at
-     T 128 and H 16.
+     IT STAYS AT RUNG 1 AFTER THE RUNG-2 ELECTION, deliberately: l64 is the same machine
+     at a longer table — same geometry, same counters, same widths — thus rung 1 already
+     answers what no small shape can, that every width, every address and every counter
+     holds at T 128 and H 16, and l64 would buy four times the runtime and no new
+     structure. IT COSTS ABOUT HALF A MINUTE, which is what one pass of this shape IS:
+     1.17 M cycles at about 38 000 a second in Cyclesim.
 
      WHAT THE NUMBERS SAY. The walk bench above extrapolates the MEAN pass of the walk;
      this measures PASS 0, the HOTTEST. The anneal opens at alpha 0.9, thus pass 0 redraws
