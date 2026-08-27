@@ -470,10 +470,10 @@ let to_string t =
 ;;
 
 let%expect_test "the elaboration of the elected rung" =
-  (* THE SHAPE OF `l16-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
+  (* THE SHAPE OF `l64-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
      never a value, thus a test states the elected rung's geometry without a checkpoint
      file that git ignores. The rung's real weights arrive at [gen_verilog]. *)
-  let config = { Diffusion.Config.layers = 16; width = 16 } in
+  let config = { Diffusion.Config.layers = 64; width = 16 } in
   let model = Quantized.Model.For_test.init config ~seed:1 in
   print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
   [%expect
@@ -495,13 +495,61 @@ let%expect_test "the elaboration of the elected rung" =
      12  Y + X -> X     16   16   4   144    6624    192      73776
      13  X -> Y         16   16   4   144    7200    208      73776
      14  Y + X -> X     16   16   4   144    7776    224      73776
-     15  X -> logits    16    4   1   144    8352    240      18480
-    the weight ROM 8496 words of 32 bits, the norms 244 of 38, the anneal 512 of 24
-    the weight ROM banks 8192 + 512, 208 words of pad
+     15  X -> Y         16   16   4   144    8352    240      73776
+     16  Y + X -> X     16   16   4   144    8928    256      73776
+     17  X -> Y         16   16   4   144    9504    272      73776
+     18  Y + X -> X     16   16   4   144   10080    288      73776
+     19  X -> Y         16   16   4   144   10656    304      73776
+     20  Y + X -> X     16   16   4   144   11232    320      73776
+     21  X -> Y         16   16   4   144   11808    336      73776
+     22  Y + X -> X     16   16   4   144   12384    352      73776
+     23  X -> Y         16   16   4   144   12960    368      73776
+     24  Y + X -> X     16   16   4   144   13536    384      73776
+     25  X -> Y         16   16   4   144   14112    400      73776
+     26  Y + X -> X     16   16   4   144   14688    416      73776
+     27  X -> Y         16   16   4   144   15264    432      73776
+     28  Y + X -> X     16   16   4   144   15840    448      73776
+     29  X -> Y         16   16   4   144   16416    464      73776
+     30  Y + X -> X     16   16   4   144   16992    480      73776
+     31  X -> Y         16   16   4   144   17568    496      73776
+     32  Y + X -> X     16   16   4   144   18144    512      73776
+     33  X -> Y         16   16   4   144   18720    528      73776
+     34  Y + X -> X     16   16   4   144   19296    544      73776
+     35  X -> Y         16   16   4   144   19872    560      73776
+     36  Y + X -> X     16   16   4   144   20448    576      73776
+     37  X -> Y         16   16   4   144   21024    592      73776
+     38  Y + X -> X     16   16   4   144   21600    608      73776
+     39  X -> Y         16   16   4   144   22176    624      73776
+     40  Y + X -> X     16   16   4   144   22752    640      73776
+     41  X -> Y         16   16   4   144   23328    656      73776
+     42  Y + X -> X     16   16   4   144   23904    672      73776
+     43  X -> Y         16   16   4   144   24480    688      73776
+     44  Y + X -> X     16   16   4   144   25056    704      73776
+     45  X -> Y         16   16   4   144   25632    720      73776
+     46  Y + X -> X     16   16   4   144   26208    736      73776
+     47  X -> Y         16   16   4   144   26784    752      73776
+     48  Y + X -> X     16   16   4   144   27360    768      73776
+     49  X -> Y         16   16   4   144   27936    784      73776
+     50  Y + X -> X     16   16   4   144   28512    800      73776
+     51  X -> Y         16   16   4   144   29088    816      73776
+     52  Y + X -> X     16   16   4   144   29664    832      73776
+     53  X -> Y         16   16   4   144   30240    848      73776
+     54  Y + X -> X     16   16   4   144   30816    864      73776
+     55  X -> Y         16   16   4   144   31392    880      73776
+     56  Y + X -> X     16   16   4   144   31968    896      73776
+     57  X -> Y         16   16   4   144   32544    912      73776
+     58  Y + X -> X     16   16   4   144   33120    928      73776
+     59  X -> Y         16   16   4   144   33696    944      73776
+     60  Y + X -> X     16   16   4   144   34272    960      73776
+     61  X -> Y         16   16   4   144   34848    976      73776
+     62  Y + X -> X     16   16   4   144   35424    992      73776
+     63  X -> logits    16    4   1   144   36000   1008      18480
+    the weight ROM 36144 words of 32 bits, the norms 1012 of 38, the anneal 512 of 24
+    the weight ROM banks 32768 + 4096, 720 words of pad
     the array is 48 by 4, thus 192 lanes
     the seats open inside the classes 1 to 31, 11 to 34, 17 to 39, 25 to 46
     a store is 2048 columns of 768 bits, t-major: step * 16 + channel
-    forward 1088256 cycles, the cell walk 1536, a pass 1089792 less the draw
+    forward 4629504 cycles, the cell walk 1536, a pass 4631040 less the draw
     |}]
 ;;
 
@@ -628,7 +676,7 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
       !pad_not_zero
       !decoded_apart
   in
-  let rung = { Diffusion.Config.layers = 16; width = 16 } in
+  let rung = { Diffusion.Config.layers = 64; width = 16 } in
   case
     ~name:"the elected rung"
     (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
@@ -641,8 +689,8 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
        ~walk:4);
   [%expect
     {|
-    the elected rung: 8496 words banked 8192 + 512, 208 of pad
-      8704 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
+    the elected rung: 36144 words banked 32768 + 4096, 720 of pad
+      36864 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
     a shape of one bank: 414 words banked 512, 98 of pad
       512 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
     |}]

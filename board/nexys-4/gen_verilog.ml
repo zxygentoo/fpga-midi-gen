@@ -15,9 +15,9 @@
 
 open Core
 
-(* Rung 1 of the climb, docs/diffusion_rtl.md: L 16 by H 16, the shape that makes it work
-   before it makes it good. *)
-let checkpoint = "_train/diffusion/coconet/l16-h16-100k.ckpt"
+(* Rung 2 of the climb, docs/diffusion_rtl.md: L 64 by H 16, elected through the listening
+   gate 2026-08-27. The golden candidate waits behind the fused pair. *)
+let checkpoint = "_train/diffusion/coconet/l64-h16-100k.ckpt"
 
 (* T 128 steps of a canvas, G 4 lanes in a group — 192 of the device's 240 DSPs — and N
    512 passes of the walk. At STEP_MS 200 the canvas plays for 25.6 s, and the cost model

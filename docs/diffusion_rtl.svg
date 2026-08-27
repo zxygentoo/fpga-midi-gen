@@ -37,15 +37,15 @@
   </defs>
   <rect x="0" y="0" width="1560" height="1372" fill="var(--bg)"/>
 
-  <text class="h" x="28" y="32">The diffusion machine — era six, rung 1 on the Nexys 4</text>
+  <text class="h" x="28" y="32">The diffusion machine — era six, rung 2 on the Nexys 4</text>
   <text class="s" x="28" y="52">One canvas of T steps by four seats. A rewind draws it whole through N passes of blocked Gibbs; a step plays one of its frames. docs/diffusion_rtl.md is the design.</text>
 
   <!-- L1: the elaboration -->
   <rect class="outacc" x="150" y="70" width="1250" height="58" rx="8"/>
   <text class="b" x="164" y="92" style="fill:var(--accent)">L1 · Elaboration.t<tspan class="s"> — a value, and THE ONLY MODULE THAT READS THE MODEL. A new checkpoint moves one line of gen_verilog and nothing else.</tspan></text>
-  <text class="s" x="164" y="112">the layer table, 16 rows · the weight image in DWELL order · the norm words, gain and shift and bias at one address · the anneal table · the seat openings · the temper</text>
-  <text class="s" x="1416" y="92">rung 1</text>
-  <text class="s" x="1416" y="108">l16-h16-100k</text>
+  <text class="s" x="164" y="112">the layer table, 64 rows · the weight image in DWELL order · the norm words, gain and shift and bias at one address · the anneal table · the seat openings · the temper</text>
+  <text class="s" x="1416" y="92">rung 2</text>
+  <text class="s" x="1416" y="108">l64-h16-100k</text>
   <text class="s" x="1416" y="124">T 128 · P 48</text>
   <text class="s" x="1416" y="140">H 16 · G 4 · N 512</text>
 
@@ -127,14 +127,14 @@
 
   <!-- the cost -->
   <rect class="outline" x="180" y="684" width="250" height="164" rx="5"/>
-  <text class="b" x="194" y="706">one pass, measured</text>
-  <text class="s" x="194" y="724">at the rung shape, in Cyclesim</text>
-  <text class="t" x="194" y="748">1 175 164 cycles</text>
-  <text class="s" x="194" y="768">the opening 1 538 · the mask 1 538</text>
-  <text class="s" x="194" y="784">the engine 1 096 246 · service 75 840</text>
-  <text class="s" x="194" y="806">pass 0 is the HOTTEST — alpha opens</text>
-  <text class="s" x="194" y="822">at 0.9, thus 470 cells of 512 redraw.</text>
-  <text class="s" x="194" y="838">The mean pass costs 1 121 558.</text>
+  <text class="b" x="194" y="706">one pass at the rung</text>
+  <text class="s" x="194" y="724">the elaboration's count, exact</text>
+  <text class="t" x="194" y="748">4 631 040 cycles less the draw</text>
+  <text class="s" x="194" y="768">forward 4 629 504 · cell walk 1 536</text>
+  <text class="s" x="194" y="784">rung 1, measured whole in Cyclesim,</text>
+  <text class="s" x="194" y="806">ran inside a percent of its count —</text>
+  <text class="s" x="194" y="822">the same machine, a longer table.</text>
+  <text class="s" x="194" y="838">N 512 ≈ 23.7 s of a 25.6 s score.</text>
 
   <!-- the column engine -->
   <rect class="outline" x="460" y="366" width="926" height="570" rx="6"/>
@@ -155,7 +155,7 @@
   <rect class="blk" x="1034" y="420" width="266" height="62" rx="4"/>
   <text class="t" x="1046" y="440">the weight ROM · two banks</text>
   <text class="s" x="1046" y="458">the dwell order, thus the address</text>
-  <text class="s" x="1046" y="474">ONLY COUNTS · 8 192 + 512 of 8 496</text>
+  <text class="s" x="1046" y="474">ONLY COUNTS · 32 768 + 4 096 of 36 144</text>
 
   <!-- the bands -->
   <rect class="blk" x="474" y="522" width="266" height="62" rx="4"/>
@@ -281,17 +281,17 @@
   <text class="s" x="164" y="1248">holds — the B port alone now runs</text>
   <text class="s" x="164" y="1262">direct, from the replica bank</text>
 
-  <text class="t" x="440" y="1204">96.0 block RAM (71.1%)</text>
-  <text class="s" x="440" y="1220">under the cost model's ~100, once the weight</text>
-  <text class="s" x="440" y="1234">ROM banks and stops paying its full address</text>
-  <text class="s" x="440" y="1248">space · 21 331 LUTs · 23 682 registers</text>
-  <text class="s" x="440" y="1262">no congestion window above level 5</text>
+  <text class="t" x="440" y="1204">124.0 block RAM (91.9%)</text>
+  <text class="s" x="440" y="1220">under the cost model's ~127: 86 the stores,</text>
+  <text class="s" x="440" y="1234">32 + 4 the weight banks, 1 the norms, and</text>
+  <text class="s" x="440" y="1248">the anneal and exp2 in two RAMB18</text>
+  <text class="s" x="440" y="1262">21 419 LUTs · 23 744 registers</text>
 
-  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.007 — MET</text>
-  <text class="s" x="740" y="1220">0 failing endpoints of 62 002, hold +0.026</text>
+  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.008 — MET</text>
+  <text class="s" x="740" y="1220">0 failing endpoints of 62 518, hold +0.012</text>
   <text class="s" x="740" y="1234">ring 3 first read −6.125, 11 002 failing;</text>
-  <text class="s" x="740" y="1248">the broadcast round took it to +0.010 and</text>
-  <text class="s" x="740" y="1262">the banks to +0.007, each on one roll</text>
+  <text class="s" x="740" y="1248">the broadcast round answered it, and each</text>
+  <text class="s" x="740" y="1262">rung banked met on one roll: +0.007, +0.008</text>
 
   <text class="hb" x="1064" y="1204">the five families, and what answered each</text>
   <text class="hs" x="1064" y="1220">① the draw's magnitude cone, cut in four</text>
@@ -303,5 +303,5 @@
   <text class="s" x="164" y="1296">NO ARRAY-SCALE NET KEEPS A SINGLE DRIVER, and that is the whole of the broadcast round. Ring 3 first read −6.125 on a family of five: one RAMB36 output bit drove 528 pins at</text>
   <text class="s" x="164" y="1312">12.4 ns of PURE ROUTE, because the rule that buys the zero logic levels — the data register absorbed INTO the BRAM — leaves no flop in the fabric to replicate. The answer is a</text>
   <text class="s" x="164" y="1328">dont_touch replica bank at every slice of eight rows, and the draw's 21-level magnitude cone cut into four registers. A ROM PAYS FOR ITS WHOLE ADDRESS SPACE and no warning says</text>
-  <text class="s" x="164" y="1344">so either: rung 2's image padded 36 144 words to 65 536 and lost EVERY ROM to fabric. Banked, rung 2 meets at +0.008 with 124.0 tiles (91.9%) and 21 419 LUTs against 42 599.</text>
+  <text class="s" x="164" y="1344">so either: this rung's image padded 36 144 words to 65 536 and lost EVERY ROM to fabric at 42 599 LUTs, until the elaboration banked it. Rung 1 banked: +0.007 at 96.0 tiles, 21 331 LUTs.</text>
 </svg>
