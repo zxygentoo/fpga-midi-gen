@@ -16,11 +16,13 @@ module type Shape = sig
   val lanes : int
 end
 
-(* The pipe: the multiply, then the shift with the bias and the first clamp, then the
-   residual with the second. A 32 by 16 multiply and a 48-bit variable shift do not stand
-   in one cycle at 100 MHz beside each other, thus the stages are three and the tag rides
-   beside them. *)
-let latency = 3
+(* The pipe: the multiply, then the shift with the bias, then the ReLU with the first
+   clamp, then the residual with the second. A 32 by 16 multiply and a 48-bit variable
+   shift do not stand in one cycle at 100 MHz beside each other — and ring 3 read the
+   shift, the bias and the clamp together at 19 levels, failing in context — thus the
+   stages are four and the tag rides beside them. The split is the round's licensed
+   reserve: no caller counts the depth, because the tag travels. *)
+let latency = 4
 
 (* the activation format the twin states, and the accumulator the array hands over *)
 let activation_bits = 16
@@ -96,30 +98,33 @@ module Make (Shape : Shape) = struct
       (* STAGE 1 — the gain multiply. The product of an int32 sum and an int16 gain is 48
          bits, and it is LUTs and never a DSP: the array owns those. *)
       let product = reg dspec (no_dsp (slice i.sums accumulator_bits *+ gain)) in
-      (* STAGE 2 — [Constants.apply], then the bias, the ReLU and the clamp. The shift is
-         VARIABLE because a gain carries its own q, and it goes toward negative infinity
-         as the twin's arithmetic shift does. *)
+      (* STAGE 2 — [Constants.apply] with the bias. The shift is VARIABLE because a gain
+         carries its own q, and it goes toward negative infinity as the twin's arithmetic
+         shift does. *)
       let scaled = log_shift ~f:sra product ~by:(delay dspec 1 shift) in
-      let biased = scaled +: sresize (delay dspec 1 bias) ~width:(width scaled) in
+      let biased =
+        reg dspec (scaled +: sresize (delay dspec 1 bias) ~width:(width scaled))
+      in
+      (* STAGE 3 — the ReLU and the first clamp *)
       let ramped =
         mux2
-          (delay dspec 1 i.relu)
+          (delay dspec 2 i.relu)
           (mux2 (biased <+. 0) (zero (width biased)) biased)
           biased
       in
       let conv = reg dspec (clamp16 ramped) in
-      (* STAGE 3 — the join. THE TWIN CLAMPS TWICE: it writes the convolution through its
+      (* STAGE 4 — the join. THE TWIN CLAMPS TWICE: it writes the convolution through its
          counted clamp and then writes the sum through it again, thus a value that rode
          the first clamp and then meets a residual gives a different answer under one
          clamp than under two. Gate B is bit for bit. *)
       let sum =
         sresize conv ~width:(activation_bits + 1)
         +: sresize
-             (delay dspec 2 (slice i.residual activation_bits))
+             (delay dspec 3 (slice i.residual activation_bits))
              ~width:(activation_bits + 1)
       in
       let joined = clamp16 (mux2 (sum <+. 0) (zero (width sum)) sum) in
-      reg dspec (mux2 (delay dspec 2 i.join) joined conv)
+      reg dspec (mux2 (delay dspec 3 i.join) joined conv)
     in
     (* the tag clears and the datapath does not: what is real is what [valid] marks *)
     { O.valid = delay spec latency i.drained

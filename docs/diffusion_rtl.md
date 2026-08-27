@@ -219,7 +219,7 @@ rounds of MASK, FORWARD, DRAW, then PLAY. OPEN, MASK and DRAW are small
 serial machinery in the pinned PRNG order — the masks are one uniform for
 each of the 512 cells, the draws ride era four's pipeline over the head's
 streamed logit columns — and together they cost about three percent of a
-pass: three cycles for each cell of the mask draw, and 3 P + 3 cycles for
+pass: three cycles for each cell of the mask draw, and 3 P + 10 cycles for
 each hidden cell that draws, which the cycle bench settles. FORWARD
 walks the layer table: one record for each layer, stating Cin, Cout, the
 source and destination tensors, the ReLU and residual flags, and the weight
@@ -276,6 +276,11 @@ The chapter above is the geometry. This one is the circuit that holds it: the
 shape of the code, the dwell, the drain, the memories and their ports, the
 walk, and the seam to the sequencer. `lib/diffusion/source.ml` holds the
 design and its reasons, as the era before it did.
+
+![The diffusion source: the elaboration, the walk and its one generator, the
+canvas with three faces, the column engine with its memories, bands, array
+and epilogue, the draw, and the five broadcast nets where ring 3 first
+missed timing](diffusion_rtl.svg)
 
 ### The shape of the code
 
@@ -541,7 +546,7 @@ mask.
   `step_taken` and waits for the next level; the pass ends when `busy` falls.
 
   The overlap of the uniform under the draw's own peak walk would save three
-  cycles of a draw that is 2.7 percent of a pass, measured. It is not taken:
+  cycles of a draw that is 2.8 percent of a pass, measured. It is not taken:
   the walk holds one draw at a time and states it in one order, and that is
   what the per-phase gate reads.
 
@@ -683,24 +688,32 @@ and the walk bench beside `Source` counts everything around it:
   dwell. That is the claim of "The dwell", measured.
 - **The layer turn stands at or under the drain tails the model already
   counts.** It is not an overhead on top of them; it IS them.
-- **The head's wait is about `P + 9` cycles at every step** — 57 at P 48 —
-  and it grows with T and with nothing else. This is PHASE I'S
+- **The head's wait is about `P + 10` cycles at every step** — 58 at P 48,
+  one of them the epilogue's fourth stage — and it grows with T and with
+  nothing else. This is PHASE I'S
   SERIALIZATION, priced: the head does not open step `t + 1` until the draw
   has taken step `t`, because a capture would write over the logit file.
-- **The walk's own machinery is 2.7 percent of a pass**, and the walk bench
+- **One pass at the rung, measured whole: 1 175 164 cycles** for the opening
+  and pass 0 at T 128, H 16, G 4 — the opening 1 538 and the mask 1 538
+  against a cell walk of 1 536 each, the engine 1 096 246 against
+  `forward_cycles` 1 088 256, and the service 75 840 for the 470 cells that
+  pass 0 redraws of 512. Every part stands inside a percent of its model.
+  PASS 0 IS THE HOTTEST and not the mean: the anneal opens at alpha 0.9,
+  thus the mean pass redraws 194 and costs the 1 121 558 below.
+- **The walk's own machinery is 2.8 percent of a pass**, and the walk bench
   beside `Source` measures the constants it stands on: a cell walk costs its
   uniforms and two cycles more, a STANDING cell costs one cycle, and a HIDDEN
-  cell costs 154 at P 48 — one for the seat, five for the uniform and the
-  draw's own 147 with the cycle that writes the class it drew. The rung's
+  cell costs 161 at P 48 — one for the seat, five for the uniform and the
+  draw's own 154 with the cycle that writes the class it drew. The rung's
   anneal table hides 194 cells of 512 in the mean pass, thus the service is
-  30 404 cycles against 1 088 256. The same bench reads the ENGINE inside the
-  walk at 10 199 cycles a pass where S3's bench read 10 200 for that shape
+  31 766 cycles against 1 088 256. The same bench reads the ENGINE inside the
+  walk at 10 210 cycles a pass where S3's bench read 10 211 for that shape
   alone: the walk adds nothing to the engine, and every cycle of the service
   is its own.
 
-At the elected rung that is 144 cycles of preamble and 7 296 of head wait
+At the elected rung that is 144 cycles of preamble and 7 424 of head wait
 against 1 088 256, thus a pass measures about 0.7 percent over the model, and
-the service above it takes the whole to about 1 120 200 — the playback window
+the service above it takes the whole to about 1 121 558 — the playback window
 does not move. What Phase II's overlap buys back is the head's wait and the
 service, and not the preamble. Even 48
 lanes (G 1) plays rung 1 at N 512 inside the window: the climb has rungs
@@ -803,6 +816,144 @@ where it was.
 
 The next ring is the machine around this one: the walk, the canvas, the draw
 and the socket, in context and on the real part.
+
+### The whole machine, measured — AND IT DOES NOT MEET
+
+Ring 3: the board top level at rung 1, `l16-h16-100k` at T 128, G 4 and
+N 512, through Vivado on the real part IN CONTEXT. The weights are the
+checkpoint's; the geometry is `gen_verilog`'s three numbers.
+
+| | measured | against |
+|---|---|---|
+| WNS | **−6.125 — VIOLATED**, 11 002 failing of 59 482 endpoints | ring 2's +0.050 |
+| WHS | +0.051 | MET |
+| DSP48E1 | 192 (80%) | exactly one for each lane |
+| block RAM | 103.5 (76.7%) | the cost model's ~100 (74%) |
+| LUTs | 18 150 (28.6%) | ring 2's engine alone, 13 498 |
+| registers | 23 274 (18.4%) | ring 2's 18 778 |
+
+**EVERY RESOURCE LANDS ON THE MODEL AND THE TIMING DOES NOT.** The cost
+model's rung-1 row is confirmed at the tile: 103.5 against ~100, and 192 DSPs
+against one for each lane. Era four's trap holds where the engine applies it —
+all 192 DSPs carry mode `((C:0x0) or P)+(A2*B'')'` with seven elements
+absorbed into each. The design is NOT congested: no congestion window stands
+above level 5, and the device holds 28 percent of its LUTs.
+
+**THE FAILURE IS BROADCAST, AND IT IS A FAMILY AND NOT A PATH.** Ranked, with
+the evidence of `report_timing` and `report_high_fanout_nets` behind each:
+
+| rank | slack | what it is | fanout | route share |
+|---|---|---|---|---|
+| 1 | −6.125 | the draw's magnitude into the exp2 ROM address | — | 56% |
+| 2 | −5.260 | the weight ROM's sign bits into the array's B ports | 528, four nets | 83% |
+| 3 | −3.781 | the capture select and the capture enable | 6 019 and 6 144 | — |
+| 4 | −2.926 | `band_row` | 3 073 | — |
+| 5 | −2.6 | the three window slots | 768 each | — |
+
+- **The draw's magnitude is the one path of LOGIC**, and it is 21 levels with
+  ten CARRY4: the logit file register, the 48-way class mux over a 768-bit
+  column, the peak subtract, the shift to Q12, the temper multiply and the
+  saturate — INTO A MEMORY'S ADDRESS PINS with no register between. That is
+  this document's own rule, broken in `Exp2` alone, which era six forked from
+  `lib/nn` and which registers its entry and its shift but not its address.
+  Registering the address is necessary and NOT sufficient: the 14 ns stands
+  BEFORE the address, thus the magnitude wants two stages and not one.
+- **The weight broadcast is 12.4 ns of ROUTE on ZERO logic levels.** One
+  RAMB36 output bit drives 528 pins — a weight byte's sign, sign-extended into
+  the top eleven bits of an 18-bit B port on each of 48 rows — and the placer
+  put that BRAM at Y28 and its DSP at Y1. Ring 2 read this very path at
+  **+0.122**; the same wire in context reads −5.260. **THE RULE THAT BUYS THE
+  ZERO LOGIC LEVELS IS WHAT LEAVES THE NET ONE DRIVER**: the data register
+  after the memory is absorbed INTO the BRAM's own output register, thus no
+  flop stands in the fabric to replicate.
+- **The capture select is here at the fanout ring 1 predicted**, 6 019, and it
+  is only the THIRD cause. The reserve is real and it is not enough alone.
+
+**WHAT THE OUT-OF-CONTEXT PROBES COULD NOT SEE.** The rule of this document is
+that an OOC number is optimistic by construction, and ring 1 named the reason
+it would be: a net at high fanout and 92 percent route is the kind whose length
+moves. The mechanism was called correctly and THE COUNT WAS NOT — the engine
+holds five broadcast families and the probe had the die to itself for every one
+of them. A probe answers for the logic it holds and never for the wire the rest
+of the design will take from it.
+
+**The stage stopped here.** Two of the three leading causes stand outside the
+reserves the round licensed, thus the board was not programmed and no unit
+moved: what the machine needs is a design round over the broadcast, and the
+reserves enter it as two answers of several rather than as the answer.
+
+### The broadcast round — ring 3 rebuilt, AND IT MEETS
+
+The design round over the broadcast, settled and built 2026-08-27: WNS
+**+0.010**, no failing endpoint of 59 849, on the first roll.
+
+**THE CENSUS FIRST, because the stage's own instruments had misread it.** One
+path for each endpoint over the failed build's checkpoint — `-nworst 1`, where
+the stage's report took forty thousand paths of the ONE worst endpoint — reads
+13 657 endpoints within half a nanosecond and corrects the table above three
+ways:
+
+- **Rank 1 is one cone with three faces.** The worst paths into the exp2
+  table's address (−6.125), into the FDSE set pins (−5.655) and into an FDRE
+  of the walk (−4.982) all start at one bit of the logit column register and
+  are the same magnitude cone, 21 to 22 levels — and the cone opens with the
+  SEAT mux, before the class mux the table records.
+- **The epilogue's stage-2 clamp path was failing on its own, at −2.051** and
+  18 to 19 levels — ring 2's known weak point, invisible to both instruments:
+  the path report was flooded and the fanout report does not see low-fanout
+  logic. One of the two licensed reserves was therefore needed after all.
+- **A seventh family stood unnamed: the X and Y store address registers at
+  −1.78**, into about 43 RAMB36 address pins each, already replicated five
+  times by the tools on their own.
+
+**THE DESIGN IS ONE DISCIPLINE: NO ARRAY-SCALE NET KEEPS A SINGLE DRIVER.**
+Every take of a column-wide register bank stands in a bank of replicas, one
+copy for each slice of eight rows, `dont_touch` so the tools neither merge
+the copies nor absorb them into a primitive. The window slots, the output
+band and the logit file are sliced to match; the chain takes one capture
+register for each stage — the ring-1 reserve, applied. Two cuts go deeper
+than replication:
+
+- **The weight operand register moved from inside the DSP into the fabric
+  bank.** The era-four rule put a register after the ROM and one at the
+  operand, and the tools absorbed the first into the BRAM's own output
+  register and the second into each DSP's B port — leaving the broadcast net
+  ONE driver of 528 pins with no flop in the fabric to replicate. The bank IS
+  the operand register: the depth of the pipe does not move, no counter
+  moves, and the sign now fans 88 pins for each copy. The synthesis log
+  states the new mode for all 192 lanes — `((C:0x0) or P)+(A2*B)` — the B
+  port direct from the replica bank, the A and accumulator absorptions
+  untouched.
+- **The draw's magnitude cone is cut in four**: the walk register behind the
+  class mux — all three walks share it, thus the one-mux rule stands — the
+  temper register, then the table's own address and entry registers, the
+  era-four rule applied to the `Exp2` fork. Cycles are the resource the walk
+  has and levels are what break: the pipe adds seven cycles to a hidden cell
+  (`busy_cycles` 147 to 154) and the service moves from 2.7 to 2.8 percent
+  of a pass. The retire pipe carries its walk's state, because the peak
+  walk's tail rides into the weigh's first cycles and an untagged pipe would
+  take it into the total.
+
+The epilogue split its stage 2 — the shift with the bias, then the ReLU with
+the first clamp; latency 3 to 4, and the tag travels, thus no caller moved.
+
+| | ring 3, failed | the round |
+|---|---|---|
+| WNS | −6.125, 11 002 failing | **+0.010, 0 failing** |
+| endpoints within 0.5 ns | 13 657 | 145, scattered |
+| LUTs | 18 150 (28.6%) | 21 312 (33.6%) |
+| registers | 23 274 | 23 718 |
+| block RAM, DSPs | 103.5, 192 | the same |
+
+**What the round left alone, the rebuild judged.** The residual band's load
+decodes and the store address registers were left for the rebuild's verdict,
+and every one now stands positive — the worst high-fanout net reads +0.893,
+and the seventh family cleared with the congestion the five families had
+made. The worst path of the build is a ten-level socket-side path at 75
+percent route: the natural edge of the design, not a structure. **The slack
+is inside the lottery band and the variance reserves are now spent**, thus a
+future wobble of THIS netlist is the seed round's 0.1 ns lottery and the
+build simply rolls again — the one case where the re-roll is the answer.
 
 ## The iteration strategy
 

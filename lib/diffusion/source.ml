@@ -473,6 +473,9 @@ module Bench = struct
       let cells = e.steps * Frame.voices in
       (e.walk * (Elaboration.pass_cycles e + (cells * (Drawer.busy_cycles + 16))))
       + Elaboration.cell_walk_cycles e
+      (* the engine's own overheads, which the model does not count: nine cycles of
+         preamble at each layer and the head's wait of about P + 9 at each step *)
+      + (e.walk * e.steps * 128)
       + 4096
     in
     let rewind () =
@@ -770,7 +773,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   window ~start_cycle:(taken - 8);
   [%expect
     {|
-    the level rose at cycle 3084 and the step was taken at 3548
+    the level rose at cycle 3088 and the step was taken at 3573
     ┌Signals───────────┐┌Waves─────────────────────────────────────────────────────┐
     │step_ready        ││  ┌───────────────────────────────────────────────────────│
     │                  ││──┘                                                       │
@@ -951,13 +954,71 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
     (100.0 *. Float.of_int (rung_service / rung.walk) /. Float.of_int pass);
   [%expect
     {|
-    H 8, G 2, two pairs, T 6, N 3, seed 1: 37411 cycles, 42 hidden cells of 72
+    H 8, G 2, two pairs, T 6, N 3, seed 1: 37738 cycles, 42 hidden cells of 72
       the opening 74 cycles against the model's cell walk 72
       the masks 222, thus 74 a pass against the same 72
-      the engine 30597, thus 10199 a pass against forward_cycles 9792
-      the service 6516: 72 seat reads, 210 uniform, 6216 draw, 18 acknowledgements
-      a standing cell 1 cycle, a hidden cell 154 — the draw states 147 of them
+      the engine 30630, thus 10210 a pass against forward_cycles 9792
+      the service 6810: 72 seat reads, 210 uniform, 6510 draw, 18 acknowledgements
+      a standing cell 1 cycle, a hidden cell 161 — the draw states 154 of them
     the rung T 128, N 512, P 48, G 4: 99604 hidden cells over the walk, 194 a pass
-      a pass 1120196 cycles: the engine 1088256, the mask 1536, the service 30404 — the service is 2.7 percent
+      a pass 1121558 cycles: the engine 1088256, the mask 1536, the service 31766 — the service is 2.8 percent
+    |}]
+;;
+
+let%expect_test "the cycles of one pass at the rung, measured" =
+  (* THE RUNG SHAPE, RUN. A cycle count is data-independent in the forward and
+     seed-dependent only in the service — the mask alone decides how many cells a pass
+     redraws — thus DRAWN WEIGHTS AT THE RUNG SHAPE MEASURE THE PASS EXACTLY, and no
+     checkpoint enters a test. [Params.init] is licensed for that and for nothing else.
+
+     IT COSTS ABOUT HALF A MINUTE, which is what one pass of the elected rung IS: 1.17 M
+     cycles at about 38 000 a second in Cyclesim. The price buys the one test that
+     elaborates AND RUNS the rung geometry end to end, thus it also answers what no small
+     shape can — that every width, every address and every counter of the machine holds at
+     T 128 and H 16.
+
+     WHAT THE NUMBERS SAY. The walk bench above extrapolates the MEAN pass of the walk;
+     this measures PASS 0, the HOTTEST. The anneal opens at alpha 0.9, thus pass 0 redraws
+     about nine cells in ten where the mean pass redraws four in ten: the engine and the
+     cell walks are the same in both, and the service is the whole of the difference. The
+     playback window holds against the mean and not against this one. *)
+  let config = { Diffusion.Config.layers = 16; width = 16 } in
+  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let e = Elaboration.create model ~steps:128 ~lanes:4 ~walk:1 in
+  let cells = e.steps * Frame.voices in
+  let h = Bench.harness ~e ~seed:42 () in
+  h.rewind ();
+  let spent = h.spent in
+  let service = spent Seat + spent Uniform + spent Drawing + spent Ack in
+  let hidden = spent Uniform / uniform_ticks in
+  printf
+    "the opening and pass 0 at T %d, H %d, G %d, P %d: %d cycles\n"
+    e.steps
+    e.store_channels
+    e.lanes
+    e.rows
+    (h.cycles ());
+  printf
+    "  the opening %d and the mask %d, against the model's cell walk %d for each\n"
+    (spent Open)
+    (spent Mask)
+    (Elaboration.cell_walk_cycles e);
+  printf
+    "  the engine %d against forward_cycles %d, thus %d for the preambles and the head\n"
+    (spent Serve)
+    (Elaboration.forward_cycles e)
+    (spent Serve - Elaboration.forward_cycles e);
+  printf
+    "  the service %d: %d cells redrawn of %d, at %d cycles each\n"
+    service
+    hidden
+    cells
+    (1 + ((spent Uniform + spent Drawing) / hidden));
+  [%expect
+    {|
+    the opening and pass 0 at T 128, H 16, G 4, P 48: 1175164 cycles
+      the opening 1538 and the mask 1538, against the model's cell walk 1536 for each
+      the engine 1096246 against forward_cycles 1088256, thus 7990 for the preambles and the head
+      the service 75840: 470 cells redrawn of 512, at 161 cycles each
     |}]
 ;;

@@ -104,7 +104,22 @@ module Make (Shape : Shape) = struct
        serves the [rows] of a channel, thus the operand registers stand once for each row
        and once for each channel and never once for each lane. *)
     let operand_a = Array.init rows ~f:(fun at -> reg dspec (activation at)) in
-    let operand_b = Array.init lanes ~f:(fun lane -> reg dspec (weight lane)) in
+    (* THE WEIGHT REPLICA BANK — ring 3's second family. The design put a register after
+       the ROM and one at the operand, and the tools absorbed the first into the BRAM's
+       own output register and the second into each DSP's B port — leaving the broadcast
+       net ONE driver of 528 pins with no flop in the fabric to replicate, at 12 ns of
+       route. The bank IS the operand register, stated in fabric: one copy for each slice
+       of rows, [dont_touch] so the tools neither merge the copies nor absorb them back
+       into the primitives. The depth of the pipe does not move — the replica replaces the
+       absorbed B register — and the B port runs direct into the multiplier, far inside a
+       cycle beside a neighbouring flop. *)
+    let slice_rows = 8 in
+    let slices = (rows + slice_rows - 1) / slice_rows in
+    let operand_b =
+      Array.init lanes ~f:(fun lane ->
+        Array.init slices ~f:(fun (_ : int) ->
+          add_attribute (reg dspec (weight lane)) (Rtl_attribute.Vivado.dont_touch true)))
+    in
     (* The operand and product registers FREE-RUN and only the sum is gated: that is how
        the DSP is meant to be driven, and a register that captures on a cycle no term
        marks captures nothing that counts. The tags ride the pipe beside the operands —
@@ -113,8 +128,10 @@ module Make (Shape : Shape) = struct
     let taking = delay accumulate_latency i.term in
     let opening = delay accumulate_latency i.term_first in
     let accumulator =
-      Array.map operand_a ~f:(fun a ->
-        Array.map operand_b ~f:(fun b ->
+      Array.init rows ~f:(fun at ->
+        let a = operand_a.(at) in
+        Array.init lanes ~f:(fun lane ->
+          let b = operand_b.(lane).(at / slice_rows) in
           let product = reg dspec (a *+ b) in
           let term = sresize product ~width:accumulator_bits in
           reg_fb dspec ~enable:taking ~width:accumulator_bits ~f:(fun sum ->
@@ -125,7 +142,17 @@ module Make (Shape : Shape) = struct
        edge that loads the chain — and the chain takes the value the register held BEFORE
        that edge, which is the finished sum. Thus the array never waits between two
        dwells. *)
-    let capture = delay (accumulate_latency + 1) i.term_last in
+    let pre_capture = delay accumulate_latency i.term_last in
+    let capture = reg spec pre_capture in
+    (* THE CAPTURE BANK — the reserve of ring 1, applied: the capture select reached every
+       register of the chain from one flop, fanout 6 019, and its shift enable 6 144. One
+       copy of the capture register for each chain stage, [dont_touch] so the equivalent
+       registers survive synthesis: 48 drivers of about 128 pins each, laid out beside
+       their own stage. The walk of the drain keeps [capture] itself. *)
+    let capture_bank =
+      Array.init rows ~f:(fun (_ : int) ->
+        add_attribute (reg spec pre_capture) (Rtl_attribute.Vivado.dont_touch true))
+    in
     let open Always in
     let row = Variable.reg spec ~width:row_bits in
     let draining = Variable.reg spec ~width:1 in
@@ -144,13 +171,13 @@ module Make (Shape : Shape) = struct
        thus NO VALUE CROSSES A MUX AND NO REGISTER REACHES FARTHER THAN ITS NEIGHBOUR —
        the regularity the timing risk of this design asks for. The rows leave in row
        order, which is the order the epilogue packs a column in. *)
-    let shifting = capture |: draining.value in
     let stage_of at above =
       let loaded = concat_lsb (Array.to_list accumulator.(at)) in
+      let take = capture_bank.(at) in
       reg
         dspec
-        ~enable:shifting
-        (mux2 capture loaded (Option.value above ~default:loaded))
+        ~enable:(take |: draining.value)
+        (mux2 take loaded (Option.value above ~default:loaded))
     in
     (* The chain builds from the top row down, thus each stage names the stage above it as
        a value and no wire stands anywhere in it. The top row has no stage above it and

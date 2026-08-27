@@ -330,20 +330,48 @@ struct
     (* ---------------------------------------------------------------- *)
     (* the bands: the window, the residual columns, the output columns and the norm bank *)
     (* ---------------------------------------------------------------- *)
-    let slots = List.init 3 ~f:(fun (_ : int) -> Variable.reg dspec ~width:column_bits) in
+    (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
+       families: one decode or one strobe drove the 768 register pins of a whole column,
+       at up to 12 ns of route. A bank is [column_slices] register slices, and each
+       slice's take is its own copy of the same condition, [dont_touch] so the tools keep
+       the copies apart — no driver reaches more than [slice_rows] rows, and the placer
+       lays each beside its slice. The values and the writes stay whole columns; the
+       slicing is invisible outside these helpers. *)
+    let slice_rows = 8 in
+    let column_slices = (rows + slice_rows - 1) / slice_rows in
+    let slice_range s =
+      let low = s * slice_rows * activation_bits in
+      let high = min column_bits ((s + 1) * slice_rows * activation_bits) - 1 in
+      high, low
+    in
+    let column_bank () =
+      List.init column_slices ~f:(fun s ->
+        let high, low = slice_range s in
+        Variable.reg dspec ~width:(high - low + 1))
+    in
+    let bank_value bank = concat_lsb (List.map bank ~f:(fun v -> v.Variable.value)) in
+    let replicated_takes make =
+      List.init column_slices ~f:(fun s ->
+        if s = 0
+        then make ()
+        else add_attribute (make ()) (Rtl_attribute.Vivado.dont_touch true))
+    in
+    let write_bank bank ~takes ~column =
+      proc
+        (List.mapi bank ~f:(fun s v ->
+           let high, low = slice_range s in
+           when_ (List.nth_exn takes s) [ v <-- select column ~high ~low ]))
+    in
+    let slots = List.init 3 ~f:(fun (_ : int) -> column_bank ()) in
     let residual_band =
       List.init lanes ~f:(fun (_ : int) -> Variable.reg dspec ~width:column_bits)
     in
-    let output_band =
-      List.init lanes ~f:(fun (_ : int) -> Variable.reg dspec ~width:column_bits)
-    in
+    let output_band = List.init lanes ~f:(fun (_ : int) -> column_bank ()) in
     let norm_bank =
       List.init lanes ~f:(fun (_ : int) ->
         Variable.reg dspec ~width:Elaboration.norm_bits)
     in
-    let logit_file =
-      List.init voices ~f:(fun (_ : int) -> Variable.reg dspec ~width:column_bits)
-    in
+    let logit_file = List.init voices ~f:(fun (_ : int) -> column_bank ()) in
     (* ---------------------------------------------------------------- *)
     (* the array and the epilogue *)
     (* ---------------------------------------------------------------- *)
@@ -356,7 +384,7 @@ struct
       (now_valid &: (now_cin ==:. 0) &: (now_cycle ==:. 0)) -- "term_first"
     in
     let term_last = (now_valid &: now_last_cin &: now_last_cycle) -- "term_last" in
-    let column_now = mux (slot_of now_cycle) (List.map slots ~f:(fun s -> s.value)) in
+    let column_now = mux (slot_of now_cycle) (List.map slots ~f:bank_value) in
     let drained =
       Lanes.create
         { Lanes.I.clock = i.clock
@@ -394,6 +422,15 @@ struct
     let _ = tail.valid -- "band_row" in
     let last_drained = drained.drained &: (drained.row ==:. rows - 1) in
     let band_whole = tail.valid &: (tail.activation_row ==:. rows - 1) in
+    (* the output band's takes: the same delay of the same strobe [tail.valid] states —
+       ring 3's fourth family, one flop at 3 073 pins — one registered copy for each slice
+       of each band column. The flush and the seam keep the epilogue's own. *)
+    let band_takes =
+      let pre = Fn.apply_n_times ~n:(Epilogue.latency - 1) (reg spec) drained.drained in
+      List.init lanes ~f:(fun (_ : int) ->
+        List.init column_slices ~f:(fun (_ : int) ->
+          add_attribute (reg spec pre) (Rtl_attribute.Vivado.dont_touch true)))
+    in
     (* ---------------------------------------------------------------- *)
     (* THE BAND LOADS. The residual columns and the norm words of the group whose terms
        are running now are fetched the moment the drain BEFORE it has read its last row,
@@ -422,9 +459,7 @@ struct
     let flush_last = flush_index.value ==:. lanes - 1 in
     let flush_done = flushing.value &: flush_last in
     let flush_real = flushing.value &: (flush_channel <: out_count) in
-    let flush_column =
-      mux flush_index.value (List.map output_band ~f:(fun c -> c.value))
-    in
+    let flush_column = mux flush_index.value (List.map output_band ~f:bank_value) in
     let store_write = flush_real &: ~:is_head in
     let store_address = column_address ~step:flush_step.value ~channel:flush_channel in
     (* THE PROBE NAMES ARE A CONTRACT: the stream gate reads these six by name. The
@@ -464,7 +499,6 @@ struct
         (zero column_bits)
         (mux2 is_stem i.plane_column (mux2 taps_read_y y_read x_read))
     in
-    let slot_takes at = (run &: (now_cycle ==:. (3 * at) + 2)) -- sprintf "slot_%d" at in
     let step_ready = Variable.reg spec ~width:1 in
     let layer_drained = Variable.reg spec ~width:1 in
     compile
@@ -472,7 +506,11 @@ struct
            read, thus the operand register takes the old value on that very edge *)
         proc
           (List.mapi slots ~f:(fun at slot ->
-             when_ (slot_takes at) [ slot <-- tap_column ]))
+             let takes =
+               replicated_takes (fun () -> run &: (now_cycle ==:. (3 * at) + 2))
+             in
+             let (_ : Signal.t) = List.hd_exn takes -- sprintf "slot_%d" at in
+             write_bank slot ~takes ~column:tap_column))
       ; (* the residual band shifts a row out at every drained row, and takes a whole
            column at a load *)
         proc
@@ -485,18 +523,17 @@ struct
            them it holds the column in the store's own order *)
         proc
           (List.mapi output_band ~f:(fun at column ->
-             when_
-               tail.valid
-               [ column
-                 <-- select
-                       (select
-                          tail.activations
-                          ~high:((at * activation_bits) + activation_bits - 1)
-                          ~low:(at * activation_bits)
-                        @: column.value)
-                       ~high:(column_bits + activation_bits - 1)
-                       ~low:activation_bits
-               ]))
+             let shifted =
+               select
+                 (select
+                    tail.activations
+                    ~high:((at * activation_bits) + activation_bits - 1)
+                    ~low:(at * activation_bits)
+                  @: bank_value column)
+                 ~high:(column_bits + activation_bits - 1)
+                 ~low:activation_bits
+             in
+             write_bank column ~takes:(List.nth_exn band_takes at) ~column:shifted))
       ; proc
           (List.mapi norm_bank ~f:(fun at word ->
              when_ (load_valid &: (load_landed ==:. at)) [ word <-- norms ]))
@@ -504,9 +541,11 @@ struct
            files of the step, and a lane past the four seats writes nothing *)
         proc
           (List.mapi logit_file ~f:(fun seat column ->
-             when_
-               (flushing.value &: is_head &: (flush_channel ==:. seat))
-               [ column <-- flush_column ]))
+             let takes =
+               replicated_takes (fun () ->
+                 flushing.value &: is_head &: (flush_channel ==:. seat))
+             in
+             write_bank column ~takes ~column:flush_column))
       ];
     (* ---------------------------------------------------------------- *)
     (* the walk of the counters *)
@@ -656,7 +695,7 @@ struct
     ; plane_step = landed_step
     ; plane = landed_plane
     ; step_ready = step_ready.value
-    ; logits = mux i.logit_seat (List.map logit_file ~f:(fun c -> c.value))
+    ; logits = mux i.logit_seat (List.map logit_file ~f:bank_value)
     }
   ;;
 end
@@ -938,10 +977,10 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
     │                  ││──────────┘ └───────────────┘ └───────────────┘ └─────────│
     │drained           ││                  ┌───────────┐                           │
     │                  ││──────────────────┘           └───────────────────────────│
-    │band_row          ││                        ┌───────────┐                     │
-    │                  ││────────────────────────┘           └─────────────────────│
-    │x_write           ││                                    ┌───┐                 │
-    │                  ││────────────────────────────────────┘   └─────────────────│
+    │band_row          ││                          ┌───────────┐                   │
+    │                  ││──────────────────────────┘           └───────────────────│
+    │x_write           ││                                      ┌───┐               │
+    │                  ││──────────────────────────────────────┘   └───────────────│
     │                  ││──┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─│
     │lead_cycle        ││ 5│6│7│8│0│1│2│3│4│5│6│7│8│0│1│2│3│4│5│6│7│8│0│1│2│3│4│5│6│
     │                  ││──┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─│
@@ -1138,11 +1177,11 @@ let%expect_test "the cycles of one forward, against the cost model" =
   case ~name:"H 8, G 2, two pairs, T 12" ~width:8 ~lanes:2 ~pairs:2 ~steps:12 ~seed:1;
   [%expect
     {|
-    H 8, G 2, two pairs, T 6: 10200 cycles, the model 9792 (+408)
-      54 preamble (9 a layer), 342 head wait (57 a step), 286 turn against the 288 the model counts, 14 elsewhere
-    H 7, G 3, one pair,  T 5: 4111 cycles, the model 3792 (+319)
-      36 preamble (9 a layer), 290 head wait (58 a step), 175 turn against the 192 the model counts, 10 elsewhere
-    H 8, G 2, two pairs, T 12: 20046 cycles, the model 19296 (+750)
-      54 preamble (9 a layer), 684 head wait (57 a step), 286 turn against the 288 the model counts, 14 elsewhere
+    H 8, G 2, two pairs, T 6: 10211 cycles, the model 9792 (+419)
+      54 preamble (9 a layer), 348 head wait (58 a step), 291 turn against the 288 the model counts, 14 elsewhere
+    H 7, G 3, one pair,  T 5: 4119 cycles, the model 3792 (+327)
+      36 preamble (9 a layer), 295 head wait (59 a step), 178 turn against the 192 the model counts, 10 elsewhere
+    H 8, G 2, two pairs, T 12: 20063 cycles, the model 19296 (+767)
+      54 preamble (9 a layer), 696 head wait (58 a step), 291 turn against the 288 the model counts, 14 elsewhere
     |}]
 ;;

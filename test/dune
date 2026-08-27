@@ -5,7 +5,8 @@
   test_mamba_drift
   test_diffusion_drift
   test_socket
-  test_pink_socket)
+  test_pink_socket
+  test_diffusion_socket)
  (libraries
   base
   stdio

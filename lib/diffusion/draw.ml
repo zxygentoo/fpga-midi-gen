@@ -1,8 +1,9 @@
 (* The draw — see draw.mli for the contract and docs/diffusion_rtl.md, "The walk", for its
    place. What stands here is the WHY of each rule.
 
-   Three walks of one column and one uniform. The walks share ONE class counter and ONE
-   mux into the logits, thus the width of a cell costs one multiplexer and not three. *)
+   Three walks of one column and one uniform. The walks share ONE class counter, ONE mux
+   into the logits and ONE register behind the mux, thus the width of a cell costs one
+   multiplexer and not three, and no walk reads the mux as it stands. *)
 
 open Core
 open Hardcaml
@@ -41,18 +42,26 @@ module Make (Shape : Shape) = struct
   let classes = Shape.classes
   let class_bits = address_bits_for classes
 
-  (* the two table walks count to [classes] and not to [classes] - 1: the last cycle
-     retires the weight of the last class, which the table states one cycle behind its
-     magnitude *)
-  let counter_bits = address_bits_for (classes + 1)
+  (* THE WEIGHT PIPE. A weight stands this many cycles behind the cycle that named its
+     class: the walk register, the temper register, and the table's own address and entry
+     registers. Ring 3 read the whole cone — the seat mux, the class mux, the subtract,
+     the temper and the saturate — on the table's address pins in ONE cycle, the worst
+     path of the machine. The walk spends cycles to cut it in four, because cycles are the
+     resource this unit has and levels are what break: the draw is under three percent of
+     a pass, measured, and the pipe adds seven cycles to a cell. *)
+  let weight_behind = 2 + Exp2.latency
+
+  (* a table walk counts [weight_behind] past its classes, to the retire of the last one *)
+  let counter_bits = address_bits_for (classes + weight_behind + 1)
 
   (* every weight is a Q15 value at most, thus the total of them all needs this many *)
   let total_bits = Int.ceil_log2 ((classes * (1 lsl 15)) + 1)
 
   (* the peak walk, then the weights and their total, then the pick — and one cycle for
-     the threshold between the last two. A table walk takes one cycle more than its
-     classes, because the weight of the last class stands one cycle behind its magnitude. *)
-  let busy_cycles = classes + (classes + 1) + 1 + (classes + 1)
+     the threshold between the last two. The peak walk takes one cycle more than its
+     classes, for the walk register; a table walk takes [weight_behind] more, for the
+     whole pipe. *)
+  let busy_cycles = classes + 1 + (classes + weight_behind) + 1 + (classes + weight_behind)
 
   module I = struct
     type 'a t =
@@ -102,21 +111,31 @@ module Make (Shape : Shape) = struct
              ~high:((at * activation_bits) + activation_bits - 1)
              ~low:(at * activation_bits)))
     in
+    (* THE WALK REGISTER — the first cut of ring 3's cone. Every walk reads the class the
+       counter names through this one register: the peak compares it, and the magnitude
+       cone begins at it, thus the seat mux and the class mux never share a cycle with the
+       arithmetic. *)
+    let staged = reg dspec logit in
     (* The magnitude of one class, the twin's rule in one expression: the difference
        against the peak — never above zero — shifts up to the Q the table reads, takes the
        temper, and NEGATES AFTER THE SCALE. Negating before it parts from the twin by one
        unit wherever the scale does not divide, which era five's head round measured. *)
     let magnitude =
       let difference =
-        sresize logit ~width:(activation_bits + 1)
+        sresize staged ~width:(activation_bits + 1)
         -: sresize peak.value ~width:(activation_bits + 1)
       in
       let shifted =
         let rise = exp2_q - Quantized.activation_q in
         sll (sresize difference ~width:(activation_bits + 1 + rise)) ~by:rise
       in
+      (* THE TEMPER REGISTER — the second cut: the subtract and the temper in one cycle,
+         the negate and the saturate in the next, and the table's own address register
+         takes what they state *)
       let tempered =
-        sra (no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value)) ~by:temper.q
+        reg
+          dspec
+          (sra (no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value)) ~by:temper.q)
       in
       let wide = negate tempered in
       let ceiling = (1 lsl magnitude_bits) - 1 in
@@ -127,12 +146,17 @@ module Make (Shape : Shape) = struct
     in
     let { Exp2.O.e } = Exp2.create { Exp2.I.clock = i.clock; nn = magnitude } in
     let weight = uresize e ~width:total_bits in
-    let last_class = counter.value ==:. classes - 1 in
-    let walked = counter.value ==:. classes in
-    (* the class whose weight stands on the wire: the fork of [Exp2] answers one cycle
-       behind the magnitude, thus the retiring class is the counter of the cycle before *)
-    let retiring = reg spec counter.value in
-    let retires = counter.value <>:. 0 in
+    let rec delay n x = if n = 0 then x else delay (n - 1) (reg spec x) in
+    let walked = counter.value ==:. classes + weight_behind - 1 in
+    (* the class whose weight stands on the wire is the counter of [weight_behind] cycles
+       before — and A RETIRE NAMES ITS WALK: the peak walk feeds the pipe too, its last
+       classes ride into the first cycles of the weigh, thus a tag that did not carry the
+       state would take the peak's tail into the total *)
+    let real = counter.value <:. classes in
+    let retiring = sel_bottom (delay weight_behind counter.value) ~width:class_bits in
+    let compares = reg spec (sm.is Peak &: real) in
+    let retires_weigh = delay weight_behind (sm.is Weigh &: real) in
+    let retires_pick = delay weight_behind (sm.is Pick &: real) in
     let passes = running.value +: weight >: threshold.value in
     compile
       [ sm.switch
@@ -145,12 +169,14 @@ module Make (Shape : Shape) = struct
                   ]
               ] )
           ; ( Peak
-            , [ when_ (logit >+ peak.value) [ peak <-- logit ]
+            , [ when_ (compares &: (staged >+ peak.value)) [ peak <-- staged ]
               ; counter <-- counter.value +:. 1
-              ; when_ last_class [ counter <--. 0; total <--. 0; sm.set_next Weigh ]
+              ; when_
+                  (counter.value ==:. classes)
+                  [ counter <--. 0; total <--. 0; sm.set_next Weigh ]
               ] )
           ; ( Weigh
-            , [ when_ retires [ total <-- total.value +: weight ]
+            , [ when_ retires_weigh [ total <-- total.value +: weight ]
               ; counter <-- counter.value +:. 1
               ; when_ walked [ sm.set_next Threshold ]
               ] )
@@ -170,11 +196,11 @@ module Make (Shape : Shape) = struct
               ] )
           ; ( Pick
             , [ when_
-                  retires
+                  retires_pick
                   [ running <-- running.value +: weight
                   ; when_
                       (passes &: ~:(found.value))
-                      [ found <-- vdd; drawn <-- sel_bottom retiring ~width:class_bits ]
+                      [ found <-- vdd; drawn <-- retiring ]
                   ]
               ; counter <-- counter.value +:. 1
               ; when_ walked [ sm.set_next Idle ]
@@ -304,8 +330,8 @@ let%expect_test "the pick lands by the last class, and costs the cycles it state
   printf "busy_cycles states %d\n" B.Drawer.busy_cycles;
   [%expect
     {|
-    a steep column at the top of the grid: class 0 in 147 cycles
-    a flat column at the top of the grid: class 47 in 147 cycles
-    busy_cycles states 147
+    a steep column at the top of the grid: class 0 in 154 cycles
+    a flat column at the top of the grid: class 47 in 154 cycles
+    busy_cycles states 154
     |}]
 ;;

@@ -8,12 +8,18 @@
     another class's shift, which is silently wrong music.
 
     **THE FORK REGISTERS THE SHIFT AND THE ZERO TEST BESIDE THE ENTRY**, thus a magnitude
-    may change every cycle and [e] stands one cycle behind it. That is two flip-flops.
+    may change every cycle and [e] stands behind it. That is two flip-flops.
+
+    **THE FORK ALSO REGISTERS THE ADDRESS BEFORE THE MEMORY** — era four's rule, which the
+    first fork broke: ring 3 of the machine round read the caller's whole magnitude cone
+    on the table's address pins, the worst path of the build. [nn] is taken whole into one
+    register, thus the entry, the shift and the zero test derive from one value and the
+    caller's cone ends on a flip-flop and not on a memory.
 
     **THE CHANGE DOES NOT MOVE WHAT A HOLDING CALLER READS.** Where [nn] holds across the
-    two cycles, the entry and the shift name one magnitude either way, thus era four and
-    era five would read the same weight on the same cycle. The gate below states that
-    against the shared unit rather than arguing it.
+    cycles of [latency], the entry and the shift name one magnitude either way, thus era
+    four and era five would read the same weight at their held reads. The gate below
+    states that against the shared unit rather than arguing it.
 
     It stands here and not in [Mgen_nn] because a unit two shipped eras carry does not
     move for a round that has not shipped. WHETHER TO BACKPORT IS A DECISION FOR WHEN ERA
@@ -26,8 +32,8 @@
 
 open Hardcaml
 
-(** cycles from a magnitude at [nn] to its weight at [e]. One, and a new magnitude may
-    stand at [nn] every cycle. *)
+(** cycles from a magnitude at [nn] to its weight at [e]. Two — the address register and
+    the entry register — and a new magnitude may stand at [nn] every cycle. *)
 val latency : int
 
 module I : sig

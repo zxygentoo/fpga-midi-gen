@@ -3,21 +3,21 @@
     The control port serves the wire protocol on the host UART and [Control_regs] holds
     the cells; the structure is the one of [docs/host_control_rtl.md]. The MIDI path is
     the model seat and nothing else: [Socket] takes any source of [Source_intf] and gives
-    the line, and it holds the state-space model of [docs/mamba_rtl.md] — one step of
-    music is one step of the recurrence and one frame, and the sequencer decodes the frame
-    into the messages of the wire. The model arrives as [model] at elaboration — the
-    bitstream carries the weights, thus [create] takes the quantized model whole and
-    [gen_verilog] names the checkpoint.
+    the line, and it holds the masked canvas of [docs/diffusion_rtl.md] — a run start
+    draws one canvas whole, a step reads one of its frames, and the sequencer decodes the
+    frame into the messages of the wire. The model arrives as [e] at elaboration — the
+    bitstream carries the weights, thus [create] takes the elaboration of one checkpoint
+    at one geometry and [gen_verilog] names both.
 
-    NOTHING HERE NAMES AN ERA. [Source] and [Quantized.Model] are whatever the library
-    this module opens provides, thus the seat moves with one line of the dune file and the
+    NOTHING HERE NAMES AN ERA. [Source] and [Elaboration] are whatever the library this
+    module opens provides, thus the seat moves with one line of the dune file and the
     source of the era before it stays in the tree, buildable and gated.
 
     The board shows two things: the run state on [led 0] and MIDI activity on [led 1]. The
-    two are not the same lamp, because the model is silent through the lead-in of one bar
-    — about 3.2 s at the default tempo — thus [led 0] answers "did the push take" while
-    [led 1] is still dark. The MIDI line idles at 1, the no-current level of the current
-    loop; the other JD pins stay at 1.
+    two are not the same lamp, because the model states nothing until it has something to
+    state — era six draws the whole canvas at the push, about 5.6 s at the elected rung —
+    thus [led 0] answers "did the push take" while [led 1] is still dark. The MIDI line
+    idles at 1, the no-current level of the current loop; the other JD pins stay at 1.
 
     The model plays while RUN is 1: a host write sets the run state, and a push of the
     center button [btnC] toggles it. The seed comes from the slide switches in the same
@@ -38,7 +38,7 @@ let midi_clocks_per_bit = 3200
 let clocks_per_ms = 100_000
 let button_debounce_ms = 10
 
-let create ~model () =
+let create ~e () =
   let clk = input "clk" 1 in
   let rstn = input "btnCpuReset" 1 in
   let rx_pin = input "RsRx" 1 in
@@ -95,7 +95,7 @@ let create ~model () =
     Socket.create
       ~clocks_per_ms
       ~clocks_per_bit:midi_clocks_per_bit
-      ~source:(Source.create ~model ~seed:control_regs.params.seed)
+      ~source:(Source.create ~e ~seed:control_regs.params.seed)
       { Socket.I.clock = clk; clear; params = control_regs.params }
   in
   let uart_tx =

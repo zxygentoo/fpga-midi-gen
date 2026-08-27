@@ -6,10 +6,9 @@
 
    The MIDI line is here as the silence it must keep: RUN rests at 0 through the whole
    test, thus JD must stay at its no-current level and carry no byte. The bytes of a run
-   are not observable at this level for a useful price — the model draws its first note a
-   bar and a step after the run starts, which is millions of cycles of the real board
-   clock — thus [Midi_out] proves the line format and [test_socket] proves the message
-   stream. *)
+   are not observable at this level for a useful price — era six draws a whole canvas
+   before its first note, which is millions of cycles of the real board clock — thus
+   [Midi_out] proves the line format and the socket chain tests prove the message stream. *)
 
 open Base
 
@@ -25,11 +24,14 @@ let hex s = Mgen_core.Bytes_util.hex (Bytes.of_string s)
 
 let () =
   let open Hardcaml in
-  (* The model seat takes a model of drawn weights in the test shape: the control path
-     does not read the weights, and a test must not read a checkpoint that git ignores.
-     The shape only sizes the counters and the ROM, thus a small one elaborates in a test. *)
-  let model = Mgen_mamba.Quantized.Model.For_test.(init config ~seed:11) in
-  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~model ()) in
+  (* The model seat takes an elaboration of drawn weights at the smallest geometry the era
+     admits: the control path does not read the weights, and a test must not read a
+     checkpoint that git ignores. The shape sizes the counters, the ROMs and the lanes,
+     thus one group of one lane over the shortest canvas elaborates in a test. P stays at
+     the era's 48 — the seat registers of the opening are the corpus's. *)
+  let model = Mgen_diffusion.Quantized.Model.For_test.(init config ~seed:11) in
+  let e = Mgen_diffusion.Elaboration.create model ~steps:4 ~lanes:1 ~walk:2 in
+  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~e ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
   let sw = Cyclesim.in_port sim "sw" in
