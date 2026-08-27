@@ -22,11 +22,13 @@ let activation_bits = Quantized.activation_bits
 
 module State = struct
   type t =
-    | Idle
-    | Prime
-    | Dwell
-    | Wait_step
-    | Turn
+    | Idle (* the rest, and the one state that reads [start] *)
+    | Prime (* the layer's preamble: the window fills, and no term retires behind it *)
+    | Dwell (* the work: one term a cycle, over the taps and channels of a group *)
+    | Offer
+      (* the head alone: the logit file stands whole, offered as a level until the draw
+         takes it *)
+    | Turn (* the chain empties, then the next layer primes — or Idle, behind the head *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
@@ -689,11 +691,11 @@ struct
                 (term_last &: now_last_group)
                 [ if_
                     is_head
-                    [ sm.set_next Wait_step ]
+                    [ sm.set_next Offer ]
                     [ when_ (now_step ==:. steps - 1) [ sm.set_next Turn ] ]
                 ]
             ] )
-        ; ( Wait_step
+        ; ( Offer
           , [ when_
                 (step_ready.value &: i.step_taken)
                 [ step_ready <-- gnd
@@ -900,7 +902,7 @@ struct
       ; offered = List.rev !offered
       ; cycles = !cycles
       ; priming = in_state Prime
-      ; waiting = in_state Wait_step
+      ; waiting = in_state Offer
       ; turning = in_state Turn
       } )
   ;;

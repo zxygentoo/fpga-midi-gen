@@ -27,11 +27,11 @@ let uniform_bits = 24
 
 module State = struct
   type t =
-    | Idle
-    | Peak
-    | Weigh
-    | Threshold
-    | Pick
+    | Idle (* the rest, and the one state that reads [start] *)
+    | Peak (* walk 1 of 3: the largest logit, taken here and never handed in *)
+    | Total (* walk 2: each class's tempered weight, summed — only the total survives *)
+    | Threshold (* one cycle: the uniform times the total, on the generator's grid *)
+    | Pick (* walk 3: the first class the running total passes, and it walks on *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
@@ -150,7 +150,7 @@ module Make (Shape : Shape) = struct
       sel_bottom (pipeline spec ~n:weight_behind counter.value) ~width:class_bits
     in
     let compares = reg spec (sm.is Peak &: real) in
-    let retires_weigh = pipeline spec ~n:weight_behind (sm.is Weigh &: real) in
+    let retires_total = pipeline spec ~n:weight_behind (sm.is Total &: real) in
     let retires_pick = pipeline spec ~n:weight_behind (sm.is Pick &: real) in
     (* the running total with this class's weight in it: the pick compares it and then
        takes it, thus one adder stands and not two *)
@@ -171,10 +171,10 @@ module Make (Shape : Shape) = struct
               ; counter <-- counter.value +:. 1
               ; when_
                   (counter.value ==:. classes)
-                  [ counter <--. 0; total <--. 0; sm.set_next Weigh ]
+                  [ counter <--. 0; total <--. 0; sm.set_next Total ]
               ] )
-          ; ( Weigh
-            , [ when_ retires_weigh [ total <-- total.value +: weight ]
+          ; ( Total
+            , [ when_ retires_total [ total <-- total.value +: weight ]
               ; counter <-- counter.value +:. 1
               ; when_ walked [ sm.set_next Threshold ]
               ] )

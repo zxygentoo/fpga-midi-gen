@@ -45,14 +45,14 @@ module State = struct
     | Serve
       (* the forward runs; the walk rides [step_ready], and stands here for the whole of a
          service *)
-    | Ack (* the offered step is taken *)
+    | Take (* the offered step is taken *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
 (* THE SERVICE OF ONE OFFERED STEP, a machine of its own. It walks the four seats of the
    step the walk's count names: a standing seat costs one cycle, a hidden one its uniform
    and its draw. It starts on the offer while the walk stands in [Serve], and ITS EXIT IS
-   COMBINATIONAL — the walk watches the last seat retire and moves to [Ack] on the very
+   COMBINATIONAL — the walk watches the last seat retire and moves to [Take] on the very
    edge the service rests — thus the cut of this machine out of the walk's own adds no
    cycle anywhere, which the walk bench holds.
 
@@ -66,7 +66,7 @@ module Service = struct
     | Idle (* no step stands open *)
     | Seat (* the level stands: read the mask bit of one seat *)
     | Uniform (* the three steps of a redraw's uniform *)
-    | Drawing (* the draw runs; the cycle it ends writes the class *)
+    | Redraw (* the draw runs; the cycle it ends writes the class *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
@@ -262,7 +262,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      the per-phase gate's contract. *)
   (* ---------------------------------------------------------------- *)
   let walking = sm.is Open |: sm.is Mask in
-  let draw_lands = srv.is Drawing &: ~:(drawer.busy) in
+  let draw_lands = srv.is Redraw &: ~:(drawer.busy) in
   let cell_step = mux2 walking now_step served.value -- "cell_step" in
   let cell_seat = mux2 walking now_seat seat.value -- "cell_seat" in
   let write_class = (sm.is Open &: now_writes |: draw_lands) -- "write_class" in
@@ -292,12 +292,12 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     [ lead_step <--. 0; lead_seat <--. 0; lead_tick <--. 0; lead_running <-- vdd ]
   in
   (* the last seat retires — the exit [next_seat] takes to [Service.Idle], stated
-     combinationally so that the walk moves to [Ack] on the same edge and no cycle is
+     combinationally so that the walk moves to [Take] on the same edge and no cycle is
      added at the seam *)
   let service_done =
     srv.is Seat
     &: ~:(canvas.hidden)
-    |: (srv.is Drawing &: ~:(drawer.busy))
+    |: (srv.is Redraw &: ~:(drawer.busy))
     &: (seat.value ==:. voices - 1)
   in
   let next_seat =
@@ -362,7 +362,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
                 forward.step_ready
                 [ (* the service walks the offered step; the walk takes it on the very
                      edge the last seat retires *)
-                  when_ service_done [ sm.set_next Ack ]
+                  when_ service_done [ sm.set_next Take ]
                 ]
                 [ (* the pass ends where the engine ends: [busy] covers the head's waits,
                      thus the walk holds one wire and counts nothing *)
@@ -375,7 +375,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
                     ]
                 ]
             ] )
-        ; Ack, [ step_taken <-- vdd; served <-- served.value +:. 1; sm.set_next Serve ]
+        ; Take, [ step_taken <-- vdd; served <-- served.value +:. 1; sm.set_next Serve ]
         ]
     ; srv.switch
         [ ( Service.Idle
@@ -388,10 +388,10 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
             ; when_ (tick.value <:. cell_ticks) [ prng_step <-- vdd ]
             ; when_
                 (tick.value ==:. uniform_ticks - 1)
-                [ draw_start <-- vdd; srv.set_next Drawing ]
+                [ draw_start <-- vdd; srv.set_next Redraw ]
             ] )
           (* [drawn] is whole in the cycle [busy] falls, thus the class writes in it *)
-        ; Drawing, [ when_ ~:(drawer.busy) next_seat ]
+        ; Redraw, [ when_ ~:(drawer.busy) next_seat ]
         ]
     ];
   { O.frame = held.value; valid = valid.value; idle }
@@ -803,7 +803,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   let served =
     Option.value_exn (h.service_entered Seat) ~message:"the walk served a step"
   in
-  let taken = Option.value_exn (h.entered Ack) ~message:"the walk took a step" in
+  let taken = Option.value_exn (h.entered Take) ~message:"the walk took a step" in
   let window ~start_cycle =
     Hardcaml_waveterm.Waveform.expect
       ~display_rules:
@@ -812,10 +812,10 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
             [ "step_ready"; "hidden" ]
         ; Hardcaml_waveterm.Display_rule.port_name_is
             "walk_state"
-            ~wave_format:(Wave_format.Index [ "Idl"; "Opn"; "Msk"; "Srv"; "Ack" ])
+            ~wave_format:(Wave_format.Index [ "Idl"; "Opn"; "Msk"; "Srv"; "Tak" ])
         ; Hardcaml_waveterm.Display_rule.port_name_is
             "service_state"
-            ~wave_format:(Wave_format.Index [ "Idl"; "Sea"; "Uni"; "Drw" ])
+            ~wave_format:(Wave_format.Index [ "Idl"; "Sea"; "Uni"; "Red" ])
         ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
             ~wave_format:Wave_format.Unsigned_int
             [ "cell_seat" ]
@@ -856,7 +856,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
     │walk_state        ││ Srv                                                      │
     │                  ││──────────────────────────────────────────────────────────│
     │                  ││────┬───┬─────────┬───────────────────────────────────────│
-    │service_state     ││ Idl│Sea│Uni      │Drw                                    │
+    │service_state     ││ Idl│Sea│Uni      │Red                                    │
     │                  ││────┴───┴─────────┴───────────────────────────────────────│
     │                  ││──────┬───────────────────────────────────────────────────│
     │cell_seat         ││ 0    │1                                                  │
@@ -885,7 +885,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
     │walk_state        ││ Srv            │.│Srv                                    │
     │                  ││────────────────┴─┴───────────────────────────────────────│
     │                  ││────────────────┬─────────────────────────────────────────│
-    │service_state     ││ Drw            │Idl                                      │
+    │service_state     ││ Red            │Idl                                      │
     │                  ││────────────────┴─────────────────────────────────────────│
     │                  ││──────────────────────────────────────────────────────────│
     │cell_seat         ││ 3                                                        │
@@ -958,10 +958,10 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   in
   let spent = h.spent in
   let served = h.service_spent in
-  let service = served Seat + served Uniform + served Drawing + spent Ack in
+  let service = served Seat + served Uniform + served Redraw + spent Take in
   (* what one cell of the service costs, measured: the seat read that every cell pays, and
      the uniform and the draw that only a hidden one does *)
-  let hidden_cell = 1 + ((served Uniform + served Drawing) / hidden) in
+  let hidden_cell = 1 + ((served Uniform + served Redraw) / hidden) in
   printf
     "H 8, G 2, two pairs, T %d, N %d, seed %d: %d cycles, %d hidden cells of %d\n"
     steps
@@ -989,8 +989,8 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
     service
     (served Seat)
     (served Uniform)
-    (served Drawing)
-    (spent Ack);
+    (served Redraw)
+    (spent Take);
   printf
     "  a standing cell 1 cycle, a hidden cell %d — the draw states %d of them\n"
     hidden_cell
@@ -1070,7 +1070,7 @@ let%expect_test "the cycles of one pass at the rung, measured" =
   h.rewind ();
   let spent = h.spent in
   let served = h.service_spent in
-  let service = served Seat + served Uniform + served Drawing + spent Ack in
+  let service = served Seat + served Uniform + served Redraw + spent Take in
   let hidden = served Uniform / uniform_ticks in
   printf
     "the opening and pass 0 at T %d, H %d, G %d, P %d: %d cycles\n"
@@ -1094,7 +1094,7 @@ let%expect_test "the cycles of one pass at the rung, measured" =
     service
     hidden
     cells
-    (1 + ((served Uniform + served Drawing) / hidden));
+    (1 + ((served Uniform + served Redraw) / hidden));
   [%expect
     {|
     the opening and pass 0 at T 128, H 16, G 4, P 48: 1175164 cycles

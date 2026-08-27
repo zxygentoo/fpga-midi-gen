@@ -102,8 +102,8 @@ module Make (M : sig
       (** which seat's column [logits] states: a mux over the standing file, thus the draw
           reads any seat at any cycle and this unit holds no read port of its own *)
       ; step_taken : 'a
-      (** a strobe: the draw is done with the offered step. Read in the waiting state
-          alone, thus a stray strobe reaches nothing. *)
+      (** a strobe: the draw is done with the offered step. Read in the offer state alone,
+          thus a stray strobe reaches nothing. *)
       }
     [@@deriving hardcaml]
   end
