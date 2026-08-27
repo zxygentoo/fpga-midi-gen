@@ -42,11 +42,31 @@ module State = struct
     | Idle (* the rest, and the PLAY phase: the score face answers [step] *)
     | Open (* the opening: one class for each cell *)
     | Mask (* the mask of one pass: one bit for each cell *)
-    | Serve (* the forward runs; the walk rides [step_ready] *)
+    | Serve
+      (* the forward runs; the walk rides [step_ready], and stands here for the whole of a
+         service *)
+    | Ack (* the offered step is taken *)
+  [@@deriving compare ~localize, enumerate, sexp_of]
+end
+
+(* THE SERVICE OF ONE OFFERED STEP, a machine of its own. It walks the four seats of the
+   step the walk's count names: a standing seat costs one cycle, a hidden one its uniform
+   and its draw. It starts on the offer while the walk stands in [Serve], and ITS EXIT IS
+   COMBINATIONAL — the walk watches the last seat retire and moves to [Ack] on the very
+   edge the service rests — thus the cut of this machine out of the walk's own adds no
+   cycle anywhere, which the walk bench holds.
+
+   THE EXCLUSIVITY IS THE CONSUMPTION ORDER'S. One generator, one order: the cell walks
+   step it from the walk's own arms, the service from [Uniform]. In one machine no two
+   phases could stand at once by construction; across two, the same holds because the
+   service runs only while the walk stands parked in [Serve], and this comment is where
+   that invariant is stated. *)
+module Service = struct
+  type t =
+    | Idle (* no step stands open *)
     | Seat (* the level stands: read the mask bit of one seat *)
     | Uniform (* the three steps of a redraw's uniform *)
     | Drawing (* the draw runs; the cycle it ends writes the class *)
-    | Ack (* the offered step is taken *)
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
@@ -108,10 +128,12 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let dspec = Reg_spec.create ~clock:i.clock () in
   let open Always in
   let sm = State_machine.create (module State) spec in
-  (* The state carries its own name, and NOT the [state] the engine already answers to:
-     the two machines stand in one simulation, thus the walk bench would probe whichever
-     of them the name mangler reached first. *)
+  let srv = State_machine.create (module Service) spec in
+  (* Each state carries its own name, and NOT the [state] the engine already answers to:
+     three machines stand in one simulation, thus the walk bench would probe whichever of
+     them the name mangler reached first. *)
   let _ = sm.current -- "walk_state" in
+  let _ = srv.current -- "service_state" in
   (* the LEAD frame of a cell walk: the cell whose three bytes are being drawn *)
   let lead_step = Variable.reg spec ~width:step_bits in
   let lead_seat = Variable.reg spec ~width:seat_bits in
@@ -240,7 +262,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      the per-phase gate's contract. *)
   (* ---------------------------------------------------------------- *)
   let walking = sm.is Open |: sm.is Mask in
-  let draw_lands = sm.is Drawing &: ~:(drawer.busy) in
+  let draw_lands = srv.is Drawing &: ~:(drawer.busy) in
   let cell_step = mux2 walking now_step served.value -- "cell_step" in
   let cell_seat = mux2 walking now_seat seat.value -- "cell_seat" in
   let write_class = (sm.is Open &: now_writes |: draw_lands) -- "write_class" in
@@ -269,11 +291,20 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let enter_walk =
     [ lead_step <--. 0; lead_seat <--. 0; lead_tick <--. 0; lead_running <-- vdd ]
   in
+  (* the last seat retires — the exit [next_seat] takes to [Service.Idle], stated
+     combinationally so that the walk moves to [Ack] on the same edge and no cycle is
+     added at the seam *)
+  let service_done =
+    srv.is Seat
+    &: ~:(canvas.hidden)
+    |: (srv.is Drawing &: ~:(drawer.busy))
+    &: (seat.value ==:. voices - 1)
+  in
   let next_seat =
     [ if_
         (seat.value ==:. voices - 1)
-        [ sm.set_next Ack ]
-        [ seat <-- seat.value +:. 1; sm.set_next Seat ]
+        [ srv.set_next Idle ]
+        [ seat <-- seat.value +:. 1; srv.set_next Seat ]
     ]
   in
   compile
@@ -329,7 +360,10 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
         ; ( Serve
           , [ if_
                 forward.step_ready
-                [ seat <--. 0; sm.set_next Seat ]
+                [ (* the service walks the offered step; the walk takes it on the very
+                     edge the last seat retires *)
+                  when_ service_done [ sm.set_next Ack ]
+                ]
                 [ (* the pass ends where the engine ends: [busy] covers the head's waits,
                      thus the walk holds one wire and counts nothing *)
                   when_
@@ -341,18 +375,23 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
                     ]
                 ]
             ] )
+        ; Ack, [ step_taken <-- vdd; served <-- served.value +:. 1; sm.set_next Serve ]
+        ]
+    ; srv.switch
+        [ ( Service.Idle
+          , [ when_ (sm.is Serve &: forward.step_ready) [ seat <--. 0; srv.set_next Seat ]
+            ] )
           (* a standing cell costs this one cycle and nothing more *)
-        ; Seat, [ if_ canvas.hidden [ tick <--. 0; sm.set_next Uniform ] next_seat ]
+        ; Seat, [ if_ canvas.hidden [ tick <--. 0; srv.set_next Uniform ] next_seat ]
         ; ( Uniform
           , [ tick <-- tick.value +:. 1
             ; when_ (tick.value <:. cell_ticks) [ prng_step <-- vdd ]
             ; when_
                 (tick.value ==:. uniform_ticks - 1)
-                [ draw_start <-- vdd; sm.set_next Drawing ]
+                [ draw_start <-- vdd; srv.set_next Drawing ]
             ] )
           (* [drawn] is whole in the cycle [busy] falls, thus the class writes in it *)
         ; Drawing, [ when_ ~:(drawer.busy) next_seat ]
-        ; Ack, [ step_taken <-- vdd; served <-- served.value +:. 1; sm.set_next Serve ]
         ]
     ];
   { O.frame = held.value; valid = valid.value; idle }
@@ -386,9 +425,17 @@ module Bench = struct
     { rewind : unit -> unit
     ; play : unit -> int
     ; writes : unit -> write list
-    ; spent : State.t -> int (** the cycles the last walk stood in one state *)
+    ; spent : State.t -> int
+    (** the cycles the last walk stood in one of its own states. ONE CYCLE, ONE OWNER: a
+        cycle the service is out of its rest is the service's and not the [Serve] the walk
+        parks in, thus [spent Serve] reads the engine alone, exactly as it did when the
+        two machines were one. *)
     ; cycles : unit -> int
     ; entered : State.t -> int option (** the first cycle of the last walk in one state *)
+    ; service_spent : Service.t -> int
+    (** the cycles the last walk's service stood in one of ITS states, under the same
+        one-owner rule *)
+    ; service_entered : Service.t -> int option
     ; waves : Hardcaml_waveterm.Waveform.t option
     }
 
@@ -432,11 +479,21 @@ module Bench = struct
         (Cyclesim.lookup_node_or_reg_by_name sim "walk_state")
         ~message:"walk_state"
     in
+    let service =
+      Option.value_exn
+        (Cyclesim.lookup_node_or_reg_by_name sim "service_state")
+        ~message:"service_state"
+    in
     let index which =
       fst (List.findi_exn State.all ~f:(fun (_ : int) s -> State.compare s which = 0))
     in
+    let sindex which =
+      fst (List.findi_exn Service.all ~f:(fun (_ : int) s -> Service.compare s which = 0))
+    in
     let spent = Array.create ~len:(List.length State.all) 0 in
     let entered = Array.create ~len:(List.length State.all) None in
+    let service_spent = Array.create ~len:(List.length Service.all) 0 in
+    let service_entered = Array.create ~len:(List.length Service.all) None in
     let writes = ref [] in
     let cycles = ref 0 in
     (* THE STATE REGISTER READS ONE CYCLE AHEAD. A combinational node answers with the
@@ -445,12 +502,22 @@ module Bench = struct
        reading one cycle, and the writes it counts beside it stay in step — a bench that
        did not would name every span in the wrong place and no gate would say so. *)
     let standing = ref (index Idle) in
+    let serving = ref (sindex Service.Idle) in
     let cycle () =
       Cyclesim.cycle sim;
       let at = !standing in
+      let sat = !serving in
       standing := Cyclesim.Node.to_int state;
-      spent.(at) <- spent.(at) + 1;
-      if Option.is_none entered.(at) then entered.(at) <- Some !cycles;
+      serving := Cyclesim.Node.to_int service;
+      (* ONE CYCLE, ONE OWNER: a cycle the service is out of its rest is the service's and
+         not the [Serve] the walk parks in *)
+      if sat = sindex Service.Idle
+      then (
+        spent.(at) <- spent.(at) + 1;
+        if Option.is_none entered.(at) then entered.(at) <- Some !cycles)
+      else (
+        service_spent.(sat) <- service_spent.(sat) + 1;
+        if Option.is_none service_entered.(sat) then service_entered.(sat) <- Some !cycles);
       Int.incr cycles;
       let take ~mask value =
         writes
@@ -479,9 +546,12 @@ module Bench = struct
     let rewind () =
       Array.fill spent ~pos:0 ~len:(Array.length spent) 0;
       Array.fill entered ~pos:0 ~len:(Array.length entered) None;
+      Array.fill service_spent ~pos:0 ~len:(Array.length service_spent) 0;
+      Array.fill service_entered ~pos:0 ~len:(Array.length service_entered) None;
       writes := [];
       cycles := 0;
       standing := index Idle;
+      serving := sindex Service.Idle;
       inp.rewind := Bits.vdd;
       cycle ();
       inp.rewind := Bits.gnd;
@@ -513,6 +583,8 @@ module Bench = struct
     ; spent = (fun which -> spent.(index which))
     ; cycles = (fun () -> !cycles)
     ; entered = (fun which -> entered.(index which))
+    ; service_spent = (fun which -> service_spent.(sindex which))
+    ; service_entered = (fun which -> service_entered.(sindex which))
     ; waves
     }
   ;;
@@ -728,7 +800,9 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   let h = Bench.harness ~trace:true ~e ~seed:5 () in
   h.rewind ();
   let waves = Option.value_exn h.waves ~message:"a traced run gives a waveform" in
-  let served = Option.value_exn (h.entered Seat) ~message:"the walk served a step" in
+  let served =
+    Option.value_exn (h.service_entered Seat) ~message:"the walk served a step"
+  in
   let taken = Option.value_exn (h.entered Ack) ~message:"the walk took a step" in
   let window ~start_cycle =
     Hardcaml_waveterm.Waveform.expect
@@ -738,9 +812,10 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
             [ "step_ready"; "hidden" ]
         ; Hardcaml_waveterm.Display_rule.port_name_is
             "walk_state"
-            ~wave_format:
-              (Wave_format.Index
-                 [ "Idl"; "Opn"; "Msk"; "Srv"; "Sea"; "Uni"; "Drw"; "Ack" ])
+            ~wave_format:(Wave_format.Index [ "Idl"; "Opn"; "Msk"; "Srv"; "Ack" ])
+        ; Hardcaml_waveterm.Display_rule.port_name_is
+            "service_state"
+            ~wave_format:(Wave_format.Index [ "Idl"; "Sea"; "Uni"; "Drw" ])
         ; Hardcaml_waveterm.Display_rule.port_name_is_one_of
             ~wave_format:Wave_format.Unsigned_int
             [ "cell_seat" ]
@@ -777,8 +852,11 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
     │                  ││──┘                                                       │
     │hidden            ││      ┌───────────────────────────────────────────────────│
     │                  ││──────┘                                                   │
+    │                  ││──────────────────────────────────────────────────────────│
+    │walk_state        ││ Srv                                                      │
+    │                  ││──────────────────────────────────────────────────────────│
     │                  ││────┬───┬─────────┬───────────────────────────────────────│
-    │walk_state        ││ Srv│Sea│Uni      │Drw                                    │
+    │service_state     ││ Idl│Sea│Uni      │Drw                                    │
     │                  ││────┴───┴─────────┴───────────────────────────────────────│
     │                  ││──────┬───────────────────────────────────────────────────│
     │cell_seat         ││ 0    │1                                                  │
@@ -804,8 +882,11 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
     │hidden            ││──────────────────────────────────────────────────────────│
     │                  ││                                                          │
     │                  ││────────────────┬─┬───────────────────────────────────────│
-    │walk_state        ││ Drw            │.│Srv                                    │
+    │walk_state        ││ Srv            │.│Srv                                    │
     │                  ││────────────────┴─┴───────────────────────────────────────│
+    │                  ││────────────────┬─────────────────────────────────────────│
+    │service_state     ││ Drw            │Idl                                      │
+    │                  ││────────────────┴─────────────────────────────────────────│
     │                  ││──────────────────────────────────────────────────────────│
     │cell_seat         ││ 3                                                        │
     │                  ││──────────────────────────────────────────────────────────│
@@ -876,10 +957,11 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
       List.length p.draws)
   in
   let spent = h.spent in
-  let service = spent Seat + spent Uniform + spent Drawing + spent Ack in
+  let served = h.service_spent in
+  let service = served Seat + served Uniform + served Drawing + spent Ack in
   (* what one cell of the service costs, measured: the seat read that every cell pays, and
      the uniform and the draw that only a hidden one does *)
-  let hidden_cell = 1 + ((spent Uniform + spent Drawing) / hidden) in
+  let hidden_cell = 1 + ((served Uniform + served Drawing) / hidden) in
   printf
     "H 8, G 2, two pairs, T %d, N %d, seed %d: %d cycles, %d hidden cells of %d\n"
     steps
@@ -905,9 +987,9 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   printf
     "  the service %d: %d seat reads, %d uniform, %d draw, %d acknowledgements\n"
     service
-    (spent Seat)
-    (spent Uniform)
-    (spent Drawing)
+    (served Seat)
+    (served Uniform)
+    (served Drawing)
     (spent Ack);
   printf
     "  a standing cell 1 cycle, a hidden cell %d — the draw states %d of them\n"
@@ -987,8 +1069,9 @@ let%expect_test "the cycles of one pass at the rung, measured" =
   let h = Bench.harness ~e ~seed:42 () in
   h.rewind ();
   let spent = h.spent in
-  let service = spent Seat + spent Uniform + spent Drawing + spent Ack in
-  let hidden = spent Uniform / uniform_ticks in
+  let served = h.service_spent in
+  let service = served Seat + served Uniform + served Drawing + spent Ack in
+  let hidden = served Uniform / uniform_ticks in
   printf
     "the opening and pass 0 at T %d, H %d, G %d, P %d: %d cycles\n"
     e.steps
@@ -1011,7 +1094,7 @@ let%expect_test "the cycles of one pass at the rung, measured" =
     service
     hidden
     cells
-    (1 + ((spent Uniform + spent Drawing) / hidden));
+    (1 + ((served Uniform + served Drawing) / hidden));
   [%expect
     {|
     the opening and pass 0 at T 128, H 16, G 4, P 48: 1175164 cycles
