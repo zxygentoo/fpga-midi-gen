@@ -396,6 +396,32 @@ Where G does not divide Cout, the elaboration pads each `(cin, tap)` row of
 Cout channels to a whole number of words with zeros: the padded lanes multiply
 by zero and the drain does not read them. Each layer has its base.
 
+**AND THE MEMORY STANDS IN BANKS, BECAUSE VIVADO PADS AN INFERRED ROM TO ITS
+FULL ADDRESS SPACE AND SAYS NOTHING.** A ROM of 8 496 words takes the tiles of
+16 384. At rung 2 an image of 36 144 words asks 64 tiles against 49 free, and
+the mapper answers by demoting EVERY ROM of the design to fabric — the
+weights, the norms, the anneal table and the exp2 table — with no warning that
+names it. The elaboration therefore cuts the image into banks whose depth is a
+power of two: a bank has no address space above its own depth, thus the pad
+becomes the elaboration's own, bounded and printed. The plan is the top bit of
+the word count and one tail, taken only where it costs less than one bank —
+8 192 + 512 at rung 1 for 208 words of pad, and 32 768 + 4 096 at rung 2 for
+720. A third bank would save half a tile and buy a second level of mux. A bank
+is never below 512 words, because a 512 by 36 RAMB18 is the smallest tile a
+word of this width fills.
+
+**THE READ DOES NOT MOVE.** One counter feeds every bank as it stands; each
+bank keeps ITS OWN data register, era four's rule for each of them and each
+one absorbable as its BRAM's output register; and one mux behind them selects
+by the top address bits, carried two cycles behind as the data is. Nothing
+stands between the counter and the memories, and nothing between a bank and
+its data register. The mux stands BEFORE the operand replicas, thus the
+replica bank still breaks the broadcast and the mux's own fanout is the
+replica count and no more. The banking is a permutation of ADDRESS SPACE and
+never of values: the concatenation of the banks is the flat image in the dwell
+order, and the elaboration's gate walks that concatenation with the circuit's
+own counter, its own bank decode and its own offset.
+
 ### The drain
 
 At the end of a dwell **all P by G accumulators finish in the SAME cycle**,
@@ -462,7 +488,7 @@ accumulator is a guess that one rung happens to survive.
 | memory | shape | traffic |
 |---|---|---|
 | X and Y | `T * H` columns by `P * 16` bits | one column read each three cycles; G column writes each group |
-| the weight ROM | the packed image, G bytes each word | one word each cycle |
+| the weight ROM | the packed image in banks of a power of two, G bytes each word | one word each cycle |
 | the constants | gain and bias, one entry for each output channel | G entries each group |
 | the canvas | `T` by `voices` classes | registers |
 | the mask | `T * voices` bits | registers |
@@ -484,6 +510,28 @@ thus the drain's G columns are the logit columns of the cells of step t, and
 they go to the logit file. That is what "the head stores nothing" means
 exactly: it stores one step. The draw empties the file before the head goes to
 step t + 1.
+
+**A ROM PAYS FOR ITS WHOLE ADDRESS SPACE, AND NO WARNING SAYS SO.** The
+synthesis log's `ROM: Preliminary Mapping Report` is the only table that ever
+states a padded depth, and it states it as the tool's INTENT: rung 2's first
+build lists `65536x32 | Block RAM` for an image of 36 144 words, and then, in
+the SAME table, lists `65536x32 | LUT` again — the demoted copy. Reading the
+two rows together is what names the demotion; there is no message that does.
+
+**BUT SILENCE IN THAT TABLE PROVES NOTHING.** The same weight ROM at rung 1
+appears in NO mapping table at all — not the ROM one and not the block RAM
+one — in any build of this design, banked or not, and the norm ROM never
+appears at either rung. Only the two activation stores are named every time,
+in the block RAM reports, because they are the only memories here that are
+written. What is extracted as a ROM and what is inferred straight into block
+RAM follow different paths through the tool, and a path can go unreported.
+
+**THUS THE INSTRUMENT IS THE CENSUS AND NOT A REPORT**: the RAMB36 and RAMB18
+counts of `report_utilization`, the `Block RAM Tile` total, and the LUT count
+beside them. Every tile of this design is accountable to a memory by name, and
+a demotion costs about twenty thousand LUTs, which is unmissable. Read all
+three at every build. "The weight ROM" above states what the elaboration does
+about the padding itself.
 
 **THE ELABORATION OWNS THE STORE ADDRESS MAP.** `column_address` states where
 a store holds a column — `step * store_channels + channel` — and the map is
@@ -677,6 +725,13 @@ The cycle numbers are the formula's ideal at 192 lanes (240 for the fused
 G 5 row) and land within a percent of `MAC / lanes`, because the geometry
 divides the H 16 shapes exactly. `l64-h16` holds 8 percent of slack against
 the window for the real overheads.
+
+**THE WEIGHT COLUMN IS THE UNPADDED TRUTH, AND IT WAS NOT WHAT A BUILD PAID
+UNTIL THE ROM ROUND.** Vivado pads an inferred ROM to its full address space:
+rung 1 paid 16 tiles for the ~9 this table states, and rung 2 asked 64 for
+~36 and lost every ROM of the design to fabric for it. The banking of "The
+weight ROM" takes the padding back, and "The ROM round" below measures both
+rungs against this table.
 
 **THE OVERHEADS ARE MEASURED NOW, and the window loads are not among them.**
 The cycle bench beside `Forward` counts one forward against `forward_cycles`,
@@ -975,6 +1030,48 @@ the thru reorders locally under dense chord bursts, measured in the chorale
 era — and the allowance went unused: every message aligned at displacement
 zero. The board plays the twin's canvas exactly, thus instrument 5 closes
 and Gate B stands whole at rung 1.
+
+### The ROM round — the padding taken back, and rung 2 fits
+
+The design change of "The weight ROM", built on both rungs 2026-08-27. Rung 1
+is the board top level as it stands; rung 2 is the same tree with the one-line
+checkpoint swap, in a scratch worktree.
+
+| | rung 1 before | rung 1 banked | rung 2 first build | rung 2 banked |
+|---|---|---|---|---|
+| WNS | +0.010 MET | **+0.007 MET** | +0.003 MET | **+0.008 MET** |
+| endpoints | 59 849 | 62 002 | 63 241 | 62 518 |
+| block RAM | 103.5 (76.7%) | **96.0 (71.1%)** | 86 (63.7%) | **124.0 (91.9%)** |
+| RAMB36 / RAMB18 | 102 / 3 | 94 / 4 | 86 / **0** | 123 / 2 |
+| LUTs | 21 312 (33.6%) | 21 331 (33.7%) | 42 599 (67.2%) | **21 419 (33.8%)** |
+| registers | 23 718 | 23 682 | 24 430 | 23 744 |
+| DSP48E1 | 192 | 192 | 192 | 192 |
+
+**THE COST MODEL WAS RIGHT AND THE BUILD WAS PAYING PADDING.** Rung 1 drops
+7.5 tiles, which is 16 against 8.5 — the weight ROM's full address space
+against its banks — and nothing else in the design moves: 19 LUTs for the mux
+and its decode, 36 registers fewer, and the same 192 DSPs. Both rungs now land
+UNDER the climb table: 96.0 against the model's ~100, and 124.0 against ~127.
+
+**AND THE ROUND IS WHAT MAKES RUNG 2 A BUILD AND NOT A DEMOTION.** The first
+rung-2 build met at +0.003 with 86 tiles and 42 599 LUTs, and those numbers
+are the failure and not the result. **ITS RAMB18 COUNT IS ZERO**, which is the
+whole story in one number: 86 tiles is the two activation stores ALONE, and
+every ROM of the design — the weights, the norms, the anneal table and the
+exp2 table — stands in fabric, because the padded weight image asked 64 tiles
+against the 49 the stores left free. Banked, the same checkpoint holds all of
+them in block RAM and the LUTs halve. The tiles then account for the whole
+design exactly: 86 for the stores, 32 and 4 for the two weight banks, 1 for
+the norms, and the two RAMB18 of the anneal and the exp2 tables.
+
+**THE TIMING IS THE LOTTERY'S AND NOT THE ROUND'S.** Both rungs met on the
+first roll, inside the band of about 0.1 ns that three builds of one netlist
+have measured. The mux stands between a BRAM's output register and the operand
+replicas, thus it adds one level to that path and rung 1 reads 3 ps of it.
+
+**What this round does NOT settle** is the rung-2 election. The tiles and the
+timing say the circuit fits; whether `l64-h16` sings is the listening gate's,
+and the board and the flash stay behind it, as the climb states.
 
 ## The iteration strategy
 

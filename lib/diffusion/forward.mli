@@ -36,6 +36,12 @@
     onto the address pins of every primitive and rebuild the address cone inside each one.
     Every read of this unit is therefore two cycles, and the schedule is written on that.
 
+    **THE WEIGHT ROM STANDS IN THE BANKS [Elaboration.weight_banks] PLANS**, because
+    Vivado pads an inferred ROM to its full address space and warns of nothing. The one
+    counter feeds every bank as it stands, each bank keeps its own data register, and one
+    mux behind them selects by the top address bits — carried two cycles behind, as the
+    data is. The read is the two cycles it always was and no counter moves.
+
     What a caller must know:
 
     - **[start] while [busy] is ignored, structurally.** The machine reads it in its idle

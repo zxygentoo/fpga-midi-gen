@@ -336,7 +336,33 @@ struct
        column's dwell walks a layer's whole range straight through and the address reloads
        one time for each column. *)
     let weight_address = Variable.reg spec ~width:weight_bits in
-    let weights = rom e.weight_rom weight_address.value in
+    (* THE WEIGHT ROM STANDS IN BANKS, AND THE MUX STANDS BEHIND THE DATA REGISTERS.
+       Vivado pads an inferred ROM to its full address space and warns of nothing: rung 2
+       asked 64 tiles against 49 free and the mapper demoted every ROM of the design to
+       fabric. The elaboration takes the padding back by cutting the image into banks of a
+       power of two, and what the circuit owes that plan is ONE MUX — placed where it
+       costs nothing.
+
+       The one counter feeds every bank as it stands, and each bank keeps ITS OWN data
+       register, era four's rule for each of them and each one absorbable as its BRAM's
+       output register. The mux selects among the REGISTERED outputs, by a select that
+       rides the same two [hold]s the data rides. Thus nothing stands between a bank and
+       its data register, and nothing stands between the counter and the memories; and the
+       mux stands BEFORE the operand replicas of the array, thus the replica bank still
+       breaks the broadcast and the mux's own fanout is the replica count and no more. No
+       cycle is added: the read is the two it always was. *)
+    let weights =
+      (* THE OFFSET INSIDE A BANK IS THE LOW BITS OF THE FLAT ADDRESS. A base is a
+         multiple of its own bank's depth, thus nothing subtracts on the address side. *)
+      let read_bank (bank : Elaboration.weight_bank) =
+        rom
+          (Elaboration.weight_bank_image e bank)
+          (uresize weight_address.value ~width:(address_bits_for bank.depth))
+      in
+      mux
+        (hold (hold (Elaboration.Rtl.weight_bank e ~address:weight_address.value)))
+        (List.map (Array.to_list e.weight_banks) ~f:read_bank)
+    in
     (* ---------------------------------------------------------------- *)
     (* the bands: the window, the residual columns, the output columns and the norm bank *)
     (* ---------------------------------------------------------------- *)
@@ -1104,10 +1130,19 @@ let%expect_test "the store writes are the twin's, write for write" =
       match layer.role with
       | Head -> head_columns expected
       | Stem | Pair_open | Pair_close -> store_columns layer expected);
+    (* THE PLAN STANDS IN THE LINE, thus a shape that stops crossing a bank says so here
+       and does not leave the select and the offset untested in silence. *)
+    let banks =
+      String.concat
+        ~sep:" + "
+        (List.map (Array.to_list elaboration.weight_banks) ~f:(fun bank ->
+           Int.to_string bank.depth))
+    in
     printf
-      "%s: %d columns written, %d steps offered, %d columns checked — %d part, %d \
-       misplaced\n"
+      "%s: the weights bank %s; %d columns written, %d steps offered, %d columns checked \
+       — %d part, %d misplaced\n"
       name
+      banks
       (List.length pass.written)
       (List.length pass.offered)
       !checked
@@ -1116,10 +1151,16 @@ let%expect_test "the store writes are the twin's, write for write" =
   in
   case ~name:"H 8, G 2, two pairs, T 6" ~width:8 ~lanes:2 ~pairs:2 ~steps:6 ~seed:1;
   case ~name:"H 7, G 3, one pair,  T 5" ~width:7 ~lanes:3 ~pairs:1 ~steps:5 ~seed:2;
+  (* AN IMAGE THAT REALLY BANKS: 1 080 words plan as 1 024 and 512, thus this case reads
+     through the bank mux and the two above read through one bank alone. The elected
+     rung's own image banks, thus a shape that never crosses a bank would leave the select
+     and the offset untested until a board. *)
+  case ~name:"H 8, G 4, three pairs, T 6" ~width:8 ~lanes:4 ~pairs:3 ~steps:6 ~seed:3;
   [%expect
     {|
-    H 8, G 2, two pairs, T 6: 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
-    H 7, G 3, one pair,  T 5: 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
+    H 8, G 2, two pairs, T 6: the weights bank 2048; 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
+    H 7, G 3, one pair,  T 5: the weights bank 1024; 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
+    H 8, G 4, three pairs, T 6: the weights bank 1024 + 512; 336 columns written, 6 steps offered, 360 columns checked — 0 part, 0 misplaced
     |}]
 ;;
 

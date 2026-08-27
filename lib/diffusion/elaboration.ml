@@ -21,6 +21,15 @@ type layer =
   ; norm_base : int
   }
 
+(* ONE BANK OF THE WEIGHT ROM: where it starts in the flat image, and the words it
+   addresses. The depth is a power of two and the base is a multiple of it, thus the
+   offset inside a bank is the LOW BITS of the flat address and the bank is the bits above
+   them — no subtractor stands on the address side. *)
+type weight_bank =
+  { base : int
+  ; depth : int
+  }
+
 type t =
   { steps : int
   ; rows : int
@@ -29,6 +38,7 @@ type t =
   ; store_channels : int
   ; layers : layer array
   ; weight_rom : Bits.t array
+  ; weight_banks : weight_bank array
   ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
   ; openings : Diffusion.opening array
@@ -135,6 +145,56 @@ let widest_channel t =
 
 let channel_bits t = Bits.address_bits_for (widest_channel t + 1)
 
+(* THE WEIGHT ROM IS BANKED BY POWERS OF TWO, AND THE REASON IS A TRAP IN THE TOOL: VIVADO
+   PADS AN INFERRED ROM TO ITS FULL ADDRESS SPACE, AND THE PADDING IS SILENT. Rung 1 paid
+   16 tiles for an image that stores 9, and the build absorbed it unseen. Rung 2 asked 64
+   tiles against 49 free, and the mapper answered by demoting EVERY ROM of the design to
+   fabric — the weights, the norms, the anneal table and the exp2 table — with no warning
+   that names it. A bank whose depth is a power of two has no address space above its own
+   depth, thus the pad becomes the elaboration's own: bounded, and printed by [to_string].
+
+   THE PLAN IS THE TOP BIT OF THE COUNT AND ONE TAIL, and it is taken only where it costs
+   less than one bank. Rung 1 banks its 8496 words as 8192 and 512 against a single ROM of
+   16384; rung 2 banks its 36144 as 32768 and 4096 against 65536. A third bank would save
+   half a tile and buy a second level of mux, thus the split stops at two.
+
+   A BANK IS NEVER BELOW 512 WORDS. A 512 by 36 RAMB18 is the smallest tile a word of this
+   width fills, thus a shallower bank holds less for the same tile — and the floor is what
+   makes a comparison of DEPTHS a comparison of tiles. It also holds the alignment: a head
+   under the floor never wins the comparison, thus every base a plan states is a multiple
+   of its own bank's depth. *)
+let smallest_bank = 512
+let bank_depth words = max smallest_bank (Int.ceil_pow2 (max 1 words))
+
+let weight_bank_plan words =
+  let whole = [ { base = 0; depth = bank_depth words } ] in
+  let head = Int.floor_pow2 (max 1 words) in
+  let tail = bank_depth (words - head) in
+  if head < words && head >= smallest_bank && head + tail < bank_depth words
+  then [ { base = 0; depth = head }; { base = head; depth = tail } ]
+  else whole
+;;
+
+(* THE BANK AS THE BITSTREAM CARRIES IT: the bank's slice of the image, then its pad. The
+   flat image stays the one authority on every value and on the dwell order; a bank is a
+   window on it, and the pad stands above the last word alone. *)
+let weight_bank_image t { base; depth } =
+  let words = Array.length t.weight_rom in
+  Array.init depth ~f:(fun at ->
+    if base + at < words
+    then t.weight_rom.(base + at)
+    else Bits.zero (Bits.width t.weight_rom.(0)))
+;;
+
+(* WHICH BANK HOLDS A FLAT WEIGHT ADDRESS: the last one whose base the address has
+   reached, because the banks tile the image from address zero. This is the whole of the
+   tiling rule, and [Rtl.weight_bank] states it to the circuit; the gate below holds the
+   two together over every address either can name. *)
+let weight_bank_at t address =
+  Array.foldi t.weight_banks ~init:0 ~f:(fun at select bank ->
+    if address >= bank.base then at else select)
+;;
+
 (* THE MAPS THE IMAGE AND THE CIRCUIT MUST AGREE ON, over any combinational type. Signal
    land cannot call the software functions above — it holds signals and not integers —
    thus era five's answer was to state each map twice and let a gate weld them at run
@@ -170,6 +230,23 @@ module Rtl = struct
 
     let channel_of ~pin t ~group ~lane =
       flat_index ~pin ~width:(channel_bits t) ~stride:t.lanes group lane
+    ;;
+
+    (* WHICH BANK OF THE WEIGHT ROM A FLAT ADDRESS FALLS IN: the last one whose base the
+       address has reached, because the banks tile the image from address zero. At both
+       elected plans that is one comparison against a power of two — the top address bit
+       and nothing more — and the offset inside the bank is the low bits, thus no
+       subtractor stands anywhere on the address side. *)
+    let weight_bank t ~address =
+      let bits = address_bits_for (Array.length t.weight_banks) in
+      Array.foldi t.weight_banks ~init:(zero bits) ~f:(fun at select bank ->
+        if at = 0
+        then select
+        else
+          mux2
+            (address >=: of_unsigned_int ~width:(width address) bank.base)
+            (of_unsigned_int ~width:bits at)
+            select)
     ;;
 
     let norm_fields word =
@@ -265,6 +342,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   let weight_rom =
     Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words))
   in
+  let weight_banks = Array.of_list (weight_bank_plan (Array.length weight_rom)) in
   (* The norms pad to whole groups with a zero word, as the weight image pads with zero
      bytes. THE PADDING IS NOT TIDINESS: without it a ragged group's fetch runs past its
      layer's range — and off the end of the image at the last layer, which a head of four
@@ -298,6 +376,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; store_channels
   ; layers
   ; weight_rom
+  ; weight_banks
   ; norm_rom
   ; alpha_rom
     (* the walk's opening, carried and never restated: the circuit reads one value for
@@ -359,6 +438,14 @@ let to_string t =
         norm_bits
         (Array.length t.alpha_rom)
         alpha_bits
+    ; sprintf
+        "the weight ROM banks %s, %d words of pad"
+        (String.concat
+           ~sep:" + "
+           (List.map (Array.to_list t.weight_banks) ~f:(fun bank ->
+              Int.to_string bank.depth)))
+        (Array.sum (module Int) t.weight_banks ~f:(fun b -> b.depth)
+         - Array.length t.weight_rom)
     ; sprintf "the array is %d by %d, thus %d lanes" t.rows t.lanes (t.rows * t.lanes)
     ; sprintf
         "the seats open inside the classes %s"
@@ -410,6 +497,7 @@ let%expect_test "the elaboration of the elected rung" =
      14  Y + X -> X     16   16   4   144    7776    224      73776
      15  X -> logits    16    4   1   144    8352    240      18480
     the weight ROM 8496 words of 32 bits, the norms 244 of 38, the anneal 512 of 24
+    the weight ROM banks 8192 + 512, 208 words of pad
     the array is 48 by 4, thus 192 lanes
     the seats open inside the classes 1 to 31, 11 to 34, 17 to 39, 25 to 46
     a store is 2048 columns of 768 bits, t-major: step * 16 + channel
@@ -482,6 +570,81 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
     414 words, the counter ended at 414; 0 layer bases out of step
     1296 weights, each seen one time
     360 padded lanes, 0 of them not zero; 0 bytes disagree with the twin
+    |}]
+;;
+
+let%expect_test "the banks re-concatenate into the image, and the circuit finds them" =
+  (* THE BANKING IS A PERMUTATION OF ADDRESS SPACE AND NEVER OF VALUES, and this walks it
+     THE WAY THE CIRCUIT READS IT: the flat counter names the bank by the bits above its
+     depth and the word inside it by the bits below, thus a base that is not a multiple of
+     its own bank's depth fails here and not in a mapping report. The walk above holds the
+     dwell ORDER; this holds that the memories the bitstream really carries stand in that
+     order word for word, and that the pad above the last word is zero and is the size the
+     print states.
+
+     A bijection over the flat image passes any bank order, thus the walk is the counter's
+     own — as the walk above is. And the decode stands beside it: [Rtl.Make (Bits)] is the
+     very function [Forward] elaborates at [Signal], thus the circuit's select and the
+     software's tiling are one rule at every address. THE ELECTED RUNG IS THE SHAPE THAT
+     REALLY BANKS: the tiny shapes hold one bank and would pass any decode. *)
+  let module Map = Rtl.Make (Bits) in
+  let case ~name t =
+    let words = Array.length t.weight_rom in
+    let images = Array.map t.weight_banks ~f:(weight_bank_image t) in
+    let depth = Array.sum (module Int) images ~f:Array.length in
+    let apart = ref 0 in
+    let pad_not_zero = ref 0 in
+    let decoded_apart = ref 0 in
+    for address = 0 to depth - 1 do
+      let bank = weight_bank_at t address in
+      let circuit =
+        Map.weight_bank
+          t
+          ~address:(Bits.of_unsigned_int ~width:(Bits.address_bits_for words) address)
+      in
+      if Bits.to_unsigned_int circuit <> bank then Int.incr decoded_apart;
+      (* the circuit's own offset: the low bits of the flat address, and nothing else *)
+      let image = images.(bank) in
+      let word = image.(address land (Array.length image - 1)) in
+      if address < words
+      then (if Bits.compare word t.weight_rom.(address) <> 0 then Int.incr apart)
+      else if Bits.to_unsigned_int word <> 0
+      then Int.incr pad_not_zero
+    done;
+    printf
+      "%s: %d words banked %s, %d of pad\n"
+      name
+      words
+      (String.concat
+         ~sep:" + "
+         (List.map (Array.to_list t.weight_banks) ~f:(fun bank ->
+            Int.to_string bank.depth)))
+      (depth - words);
+    printf
+      "  %d addresses walked: %d apart from the image, %d pad words not zero, %d banks \
+       decoded apart\n"
+      depth
+      !apart
+      !pad_not_zero
+      !decoded_apart
+  in
+  let rung = { Diffusion.Config.layers = 16; width = 16 } in
+  case
+    ~name:"the elected rung"
+    (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
+  case
+    ~name:"a shape of one bank"
+    (create
+       Quantized.Model.(For_test.init For_test.config ~seed:7)
+       ~steps:8
+       ~lanes:4
+       ~walk:4);
+  [%expect
+    {|
+    the elected rung: 8496 words banked 8192 + 512, 208 of pad
+      8704 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
+    a shape of one bank: 414 words banked 512, 98 of pad
+      512 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
     |}]
 ;;
 
