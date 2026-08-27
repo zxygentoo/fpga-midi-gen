@@ -955,6 +955,27 @@ is inside the lottery band and the variance reserves are now spent**, thus a
 future wobble of THIS netlist is the seed round's 0.1 ns lottery and the
 build simply rolls again — the one case where the re-roll is the answer.
 
+### The board rung — Gate B closes
+
+Measured 2026-08-27, the round's bitstream on the board, the panel seed as
+it stood: **47872**. The smoke first: the S-1 plays, and the stopwatch reads
+about 5.7 seconds from the push to the first note against the model's 574 M
+cycles — fallback (c)'s check, confirmed on silicon.
+
+Then the capture, driven whole from the host: the RUN cell cycled over the
+console UART, `amidi` on the S-1's thru, and the reference's wire bytes from
+`play_diffusion -quantized -seeds 47872 -fade 0 -play -device <file>` — the
+fade off, because the fade is the software player's and Phase II owns the
+board's. The driver and the bitstream came from one repository state, as the
+standing rule demands.
+
+**The two streams are 804 bytes and 268 messages EACH, and they agree BYTE
+FOR BYTE IN ORDER.** The gate only demanded an order-tolerant alignment —
+the thru reorders locally under dense chord bursts, measured in the chorale
+era — and the allowance went unused: every message aligned at displacement
+zero. The board plays the twin's canvas exactly, thus instrument 5 closes
+and Gate B stands whole at rung 1.
+
 ## The iteration strategy
 
 **THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
