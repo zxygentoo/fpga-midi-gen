@@ -176,6 +176,27 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   (* ONE CAPTURE RULE FOR EVERY PHASE: a step states its byte in the cycle that follows
      it, thus the shift register takes a byte exactly when the cycle before stepped. *)
   let take_byte = reg spec prng_step.value in
+  (* THE UNIFORM RIDES REPLICAS TO ITS ARITHMETIC — the broadcast round's rule, learned
+     again on the cut's builds. One [u] register fed the opening multiply, the mask
+     compare and the draw's threshold at a fanout near sixty, and two placements in a row
+     could not carry the cone: the first met setup only by phys_opt adjusting CLOCK SKEW
+     inside the shift register (Physopt 32-703), and the board answered with a DIFFERENT
+     canvas at a fixed seed on every run — hold met by a picosecond at the fast corner is
+     not met. A replica loads the same next value on the same edge, thus it IS [u] cycle
+     for cycle and no gate can tell them apart; what it buys is a register the placer can
+     put beside each consumer's own arithmetic. *)
+  let next_u =
+    mux2
+      take_byte
+      (sel_bottom u.value ~width:(uniform_bits - byte_bits) @: prng_byte)
+      u.value
+  in
+  let uniform_replica name =
+    add_attribute (reg dspec next_u) (Rtl_attribute.Vivado.dont_touch true) -- name
+  in
+  let u_open = uniform_replica "uniform_open" in
+  let u_mask = uniform_replica "uniform_mask" in
+  let u_draw = uniform_replica "uniform_draw" in
   (* ---------------------------------------------------------------- *)
   (* the two frames of a cell walk *)
   (* ---------------------------------------------------------------- *)
@@ -216,7 +237,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       ; clear = i.clear
       ; start = draw_start.value
       ; logits = forward.logits
-      ; uniform = u.value
+      ; uniform = u_draw
       }
   in
   let _ = drawer.busy -- "draw_busy" in
@@ -253,7 +274,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     let register = of_seat ~width:width_bits (fun o -> o.Diffusion.width) in
     (* the array owns the DSPs, thus this product is pinned like every other one outside
        it *)
-    let product = Column_array.no_dsp (u.value *: register) in
+    let product = Column_array.no_dsp (u_open *: register) in
     let index = select product ~high:(uniform_bits + width_bits - 1) ~low:uniform_bits in
     low +: uresize index ~width:class_bits
   in
@@ -268,7 +289,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let write_class = (sm.is Open &: now_writes |: draw_lands) -- "write_class" in
   let cell_class = mux2 (sm.is Open) opened_class drawer.drawn -- "cell_class" in
   let write_mask = (sm.is Mask &: now_writes) -- "write_mask" in
-  let cell_hidden = (u.value <: alpha) -- "cell_hidden" in
+  let cell_hidden = (u_mask <: alpha) -- "cell_hidden" in
   let canvas =
     Cells.create
       { Cells.I.clock = i.clock
