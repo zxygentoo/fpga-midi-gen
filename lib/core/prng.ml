@@ -293,3 +293,29 @@ let%expect_test "the circuit walks with the software" =
     1000 steps agree: true
     |}]
 ;;
+
+(* What a seeded gate needs — see prng.mli. The draws map the generator's 24-bit grid onto
+   a range and never take a modulo of a byte; the two port moves stand beside them because
+   a gate draws its values and then puts them on a port. *)
+module For_test = struct
+  let draw state ~limit =
+    let state, u = run uniform state in
+    state, Int.of_float (u *. Float.of_int ((2 * limit) + 1)) - limit
+  ;;
+
+  let draw_between state ~low ~high =
+    let state, u = run uniform state in
+    state, low + Int.of_float (u *. Float.of_int (high - low + 1))
+  ;;
+
+  let draw_array state ~len ~limit =
+    Array.fold_map (Array.create ~len 0) ~init:state ~f:(fun state (_ : int) ->
+      draw state ~limit)
+  ;;
+
+  let pack values ~width =
+    Bits.concat_lsb (List.map (Array.to_list values) ~f:(Bits.of_signed_int ~width))
+  ;;
+
+  let set port value = port := Bits.of_unsigned_int ~width:(Bits.width !port) value
+end

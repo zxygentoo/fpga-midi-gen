@@ -58,12 +58,6 @@ module type Shape = sig
 end
 
 module Make (Shape : Shape) : sig
-  val steps : int
-  val rows : int
-
-  (** the planes a stem reads: the class planes and the mask planes, [2 * Frame.voices] *)
-  val planes : int
-
   module I : sig
     type 'a t =
       { clock : 'a

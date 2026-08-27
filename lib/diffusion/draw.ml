@@ -280,7 +280,7 @@ let%expect_test "the draw states the class the twin states" =
       end)
     in
     let take (state, disagree) seed =
-      let state, logits = Fuzz.draw_array state ~len:classes ~limit:32767 in
+      let state, logits = Prng.For_test.draw_array state ~len:classes ~limit:32767 in
       let twin, circuit, (_ : int) = B.check ~temper logits ~seed in
       state, if twin = circuit then disagree else disagree + 1
     in

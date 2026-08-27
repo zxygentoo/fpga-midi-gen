@@ -195,8 +195,8 @@ module Bench (Shape : Shape) = struct
     List.iteri work ~f:(fun at { sums; norms; biases; residual } ->
       inp.drained := Bits.vdd;
       inp.row := Bits.of_unsigned_int ~width:(Bits.width !(inp.row)) (at % rows);
-      inp.sums := Fuzz.pack sums ~width:32;
-      inp.residual := Fuzz.pack residual ~width:16;
+      inp.sums := Prng.For_test.pack sums ~width:32;
+      inp.residual := Prng.For_test.pack residual ~width:16;
       inp.norms := pack_norms norms biases;
       cycle ());
     for _ = 1 to latency + 1 do
@@ -250,11 +250,13 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
     let draw_row state =
       (* the rail the array's own gate proved it reaches, not a comfortable fraction of
          it: the multiply's top operand bit is exercised and not argued *)
-      let state, sums = Fuzz.draw_array state ~len:lanes ~limit:((1 lsl 31) - 1) in
-      let state, gains = Fuzz.draw_array state ~len:lanes ~limit:32767 in
-      let state, shifts = Fuzz.draw_array state ~len:lanes ~limit:22 in
-      let state, biases = Fuzz.draw_array state ~len:lanes ~limit:32767 in
-      let state, residual = Fuzz.draw_array state ~len:lanes ~limit:32767 in
+      let state, sums =
+        Prng.For_test.draw_array state ~len:lanes ~limit:((1 lsl 31) - 1)
+      in
+      let state, gains = Prng.For_test.draw_array state ~len:lanes ~limit:32767 in
+      let state, shifts = Prng.For_test.draw_array state ~len:lanes ~limit:22 in
+      let state, biases = Prng.For_test.draw_array state ~len:lanes ~limit:32767 in
+      let state, residual = Prng.For_test.draw_array state ~len:lanes ~limit:32767 in
       ( state
       , { B.sums
         ; norms =

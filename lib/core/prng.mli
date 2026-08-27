@@ -108,3 +108,36 @@ module Rtl : sig
       wins over [step] in the same cycle. *)
   val create : Signal.t I.t -> Signal.t O.t
 end
+
+(** What a seeded gate needs: the draws it takes, and the two moves that put a drawn value
+    on a simulation port.
+
+    Every random thing in this repository comes from this module and the seed is an input,
+    thus a fuzz that finds a fault finds it again. The draws carry the state as the rest
+    of the module does, and a caller sequences them by threading it; they map the 24-bit
+    grid of [uniform] onto a range and never take a modulo of a byte. The two port moves
+    stand beside them because a gate draws its values and then puts them on a port.
+
+    It stands here, beside the generator, and not in the library of one era: a gate is a
+    gate in every era, and the era that copied these would be the era whose fuzz drifted
+    from the one before it. *)
+module For_test : sig
+  (** [draw state ~limit] is one value in [-limit, limit] and the state behind it. *)
+  val draw : state -> limit:int -> state * int
+
+  (** [draw_between state ~low ~high] is one value in [low, high], both ends included. *)
+  val draw_between : state -> low:int -> high:int -> state * int
+
+  (** [draw_array state ~len ~limit] is [len] values of [draw], in the order the generator
+      states them. *)
+  val draw_array : state -> len:int -> limit:int -> state * int array
+
+  (** [pack values ~width] is the values as one word, value 0 in the low bits and each one
+      signed at [width] bits — the shape a wide port takes, thus a gate states the port
+      and never the slicing. *)
+  val pack : int array -> width:int -> Bits.t
+
+  (** [set port value] writes [value] into a simulation port at the width the shape gave
+      it, thus a bench states a number and never a width. *)
+  val set : Bits.t ref -> int -> unit
+end

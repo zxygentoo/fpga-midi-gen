@@ -70,9 +70,6 @@ end
 val latency : int
 
 module Make (Shape : Shape) : sig
-  (** [Shape.lanes], re-exported: a caller slices the ports on it *)
-  val lanes : int
-
   module I : sig
     type 'a t =
       { clock : 'a

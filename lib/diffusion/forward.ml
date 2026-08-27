@@ -876,7 +876,7 @@ struct
       else (
         let columns =
           Array.init voices ~f:(fun seat ->
-            Fuzz.set inp.logit_seat seat;
+            Prng.For_test.set inp.logit_seat seat;
             plain ();
             column_of !(out.logits))
         in

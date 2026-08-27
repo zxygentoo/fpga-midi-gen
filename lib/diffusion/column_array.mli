@@ -75,23 +75,7 @@ val slice_rows : int
     [ceil (rows / slice_rows)]. *)
 val slices_for : rows:int -> int
 
-(** Cycles from a [term] strobe to the edge that takes its term into the accumulator. The
-    DSP48E1 packs as an operand pair, a product and a sum, thus the depth is the
-    primitive's and not a choice. *)
-val accumulate_latency : int
-
-(** Cycles from [term_last] to the first [drained]: the accumulator settles one cycle
-    behind its last term, the chain takes it on that cycle's edge, and the bottom stage
-    stands one cycle later. *)
-val first_row_latency : int
-
 module Make (Shape : Shape) : sig
-  (** [Shape.rows], re-exported: a caller sizes its row counter and its drain from it *)
-  val rows : int
-
-  (** [Shape.lanes], re-exported: a caller sizes its weight word from it *)
-  val lanes : int
-
   module I : sig
     type 'a t =
       { clock : 'a
@@ -116,9 +100,10 @@ module Make (Shape : Shape) : sig
   module O : sig
     type 'a t =
       { drained : 'a
-      (** 1 while [row] and [sums] hold a drained row; it stands for [rows] cycles from
-          [first_row_latency] behind [term_last]. The epilogue takes this wire under the
-          same name, thus one strobe is one word across the seam. *)
+      (** 1 while [row] and [sums] hold a drained row; it stands for [rows] cycles, from
+          four behind [term_last] — the two the accumulator takes, the edge the chain
+          loads on, and the bottom stage a cycle later. The epilogue takes this wire under
+          the same name, thus one strobe is one word across the seam. *)
       ; row : 'a (** the row [sums] holds; the rows leave in row order, 0 upward *)
       ; sums : 'a
       (** the accumulators of that row: [lanes] int32 sums, lane 0 in the low bits *)

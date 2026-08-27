@@ -78,9 +78,6 @@ module type Shape = sig
 end
 
 module Make (Shape : Shape) : sig
-  (** [Shape.classes], re-exported: a caller slices [logits] on it *)
-  val classes : int
-
   (** [busy] reads 1 in the cycle after [start] and reads 0 again this many cycles later:
       one draw, always. *)
   val busy_cycles : int

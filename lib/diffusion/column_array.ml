@@ -282,9 +282,9 @@ module Bench (Shape : Shape) = struct
       inp.term := Bits.vdd;
       inp.term_first := if first then Bits.vdd else Bits.gnd;
       inp.term_last := if last then Bits.vdd else Bits.gnd;
-      inp.column := Fuzz.pack column ~width:16;
+      inp.column := Prng.For_test.pack column ~width:16;
       inp.row_shift := Bits.of_unsigned_int ~width:2 (tap % 3);
-      inp.weights := Fuzz.pack weights ~width:8;
+      inp.weights := Prng.For_test.pack weights ~width:8;
       cycle ()
     in
     let channel ~inputs ~cin window weights =
@@ -313,12 +313,12 @@ module Bench (Shape : Shape) = struct
     let state, columns =
       Array.fold_map (Array.create ~len:inputs 0) ~init:state ~f:(fun state (_ : int) ->
         Array.fold_map (Array.create ~len:3 0) ~init:state ~f:(fun state (_ : int) ->
-          Fuzz.draw_array state ~len:rows ~limit:511))
+          Prng.For_test.draw_array state ~len:rows ~limit:511))
     in
     let state, weights =
       Array.fold_map (Array.create ~len:inputs 0) ~init:state ~f:(fun state (_ : int) ->
         Array.fold_map (Array.create ~len:9 0) ~init:state ~f:(fun state (_ : int) ->
-          Fuzz.draw_array state ~len:lanes ~limit:127))
+          Prng.For_test.draw_array state ~len:lanes ~limit:127))
     in
     state, { columns; weights }
   ;;
@@ -482,12 +482,12 @@ let%expect_test "the array agrees over a sweep of shapes" =
      legal work and never the fault the test below states. One seed reproduces every case
      of it. *)
   let case state =
-    let state, rows = Fuzz.draw_between state ~low:2 ~high:14 in
-    let state, lanes = Fuzz.draw_between state ~low:1 ~high:5 in
-    let state, drawn = Fuzz.draw_between state ~low:1 ~high:6 in
+    let state, rows = Prng.For_test.draw_between state ~low:2 ~high:14 in
+    let state, lanes = Prng.For_test.draw_between state ~low:1 ~high:5 in
+    let state, drawn = Prng.For_test.draw_between state ~low:1 ~high:6 in
     (* the drain rule: a dwell of [9 * inputs] cycles against a chain of [rows] stages *)
     let inputs = Int.max drawn ((rows + 8) / 9) in
-    let state, dwells = Fuzz.draw_between state ~low:1 ~high:3 in
+    let state, dwells = Prng.For_test.draw_between state ~low:1 ~high:3 in
     let module B =
       Bench (struct
         let rows = rows

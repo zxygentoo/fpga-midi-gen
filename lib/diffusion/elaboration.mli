@@ -19,7 +19,7 @@
       are no independent flags that can disagree with each other.
     - **The cycle counts are exact and not bounds.** [create] refuses a layer whose dwell
       is shorter than its drain and the band loads behind it, thus no dwell ever waits and
-      [layer_cycles] is the number the cycle bench must measure.
+      [forward_cycles] is the number the cycle bench must measure.
     - The tables are [Hardcaml.Bits.t] arrays because the bitstream carries them: they
       initialize the memories of the circuit as they stand. *)
 
@@ -135,17 +135,11 @@ val store_depth : t -> int
       passes. *)
 val create : ?rows:int -> Quantized.Model.t -> steps:int -> lanes:int -> walk:int -> t
 
-(** [dwell layer] is the cycles of one (column, group): one for each (tap, input channel)
-    pair. *)
-val dwell : layer -> int
-
-(** [layer_cycles t layer] is one layer, EXACTLY: the dwells of every column and group,
-    and one drain tail of [rows] behind the last of them. It is a count and not a bound,
-    because [create] refuses a layer whose chain cannot empty. What the layer turn itself
-    costs is the cycle bench's to measure. *)
-val layer_cycles : t -> layer -> int
-
-(** the layers of one forward pass, summed *)
+(** [forward_cycles t] is one forward pass, EXACTLY: for each layer the dwells of every
+    column and group — one cycle for each (tap, input channel) pair — and one drain tail
+    of [rows] behind the last of them, summed over the layers. It is a count and not a
+    bound, because [create] refuses a layer whose chain cannot empty. What the layer turns
+    themselves cost is the cycle bench's to measure. *)
 val forward_cycles : t -> int
 
 (** [cell_walk_cycles t] is one uniform for each cell in the cell order: what the opening
