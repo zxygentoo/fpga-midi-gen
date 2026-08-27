@@ -23,7 +23,7 @@ let activation_bits = Quantized.activation_bits
 let magnitude_bits = 22
 
 (* the grid of the generator: the uniform is [k * 2 ** -24] *)
-let uniform_bits = 24
+let uniform_bits = Prng.uniform_bits
 
 module State = struct
   type t =
@@ -261,9 +261,8 @@ module Bench (Shape : Shape) = struct
     let sim = Sim.create (Drawer.create ~temper) in
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
-    inp.logits
-    := Bits.concat_lsb (List.map (Array.to_list logits) ~f:(Bits.of_signed_int ~width:16));
-    inp.uniform := Bits.of_unsigned_int ~width:24 uniform;
+    inp.logits := Harness.pack logits ~width:activation_bits;
+    Harness.set inp.uniform uniform;
     inp.start := Bits.vdd;
     Cyclesim.cycle sim;
     inp.start := Bits.gnd;
@@ -279,17 +278,12 @@ module Bench (Shape : Shape) = struct
      two agree. The twin's [draw_cell] takes the very uniform the circuit is handed. *)
   let check ~temper logits ~seed =
     let prng = Prng.create ~seed in
-    (* the three bytes the twin's own draw would take, read out as the walk reads them *)
-    let uniform_bits =
-      let state, byte0 = Prng.run Prng.next prng in
-      let state, byte1 = Prng.run Prng.next state in
-      let (_ : Prng.state), byte2 = Prng.run Prng.next state in
-      (byte0 lsl 16) lor (byte1 lsl 8) lor byte2
-    in
+    (* the word the twin's own draw stands on, as the walk hands it over *)
+    let (_ : Prng.state), uniform = Prng.run Prng.uniform_word prng in
     let (_ : Prng.state), (_ : float), twin =
       Quantized.For_test.draw_cell (model temper) logits prng
     in
-    let circuit, cycles = run ~temper logits ~uniform:uniform_bits in
+    let circuit, cycles = run ~temper logits ~uniform in
     twin, circuit, cycles
   ;;
 end

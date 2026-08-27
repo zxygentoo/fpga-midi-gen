@@ -131,7 +131,7 @@ type t =
 (** the taps of one 3 by 3 kernel: 9. A dwell counts them. *)
 val taps : int
 
-(** the bits of one [alpha_rom] entry: 24, the grid of the generator *)
+(** the bits of one [alpha_rom] entry: the grid of the generator, [Prng.uniform_bits] *)
 val alpha_bits : int
 
 (** The fields of a norm word, low to high: the bias, the shift, the value of the gain.
@@ -191,71 +191,12 @@ val column_address : t -> step:int -> channel:int -> int
 (** the words of one activation store: [steps * store_channels] *)
 val store_depth : t -> int
 
-(** the columns of Y the ring holds: 4.
-
-    B at column [c] reads Y at [c - 1], [c] and [c + 1], and A runs two columns ahead of
-    B, thus four columns of Y are live at any moment — [c - 1], [c], [c + 1] and the
-    [c + 2] A has just written. Y at [c - 2] died with B at [c - 1]. FOUR IS A POWER OF
-    TWO AND THAT IS THE WHOLE OF THE ADDRESS: the ring's step is the low bits of the
-    semantic column, thus no modulo and no second counter stands anywhere. *)
-val ring_steps : int
-
-(** the words of the Y ring: [ring_steps * store_channels] *)
-val ring_depth : t -> int
-
-(** the bits a ring address takes: [address_bits_for (ring_depth t)] *)
-val ring_bits : t -> int
-
-(** [ring_address t ~step ~channel] is where the ring holds a column of Y: the store's own
-    map over the low bits of the semantic step. THE MAP IS A FACT OF THIS FUNCTION AND OF
-    NOTHING ELSE, as [column_address] is. *)
-val ring_address : t -> step:int -> channel:int -> int
-
-(** the phases of a turn: A runs the opening layer of a pair, B its closing layer. The
-    stem and the head have phase A alone. *)
-val phase_a : int
-
-val phase_b : int
-
 (** [is_pair turn] is whether the turn interleaves two layers. *)
 val is_pair : turn -> bool
-
-(** [layer_of_phase turn phase] is the layer a phase of a turn runs. It raises when a turn
-    of one phase is asked for its B. *)
-val layer_of_phase : turn -> int -> int
-
-(** One block of a turn: the layer it runs, the column of the canvas it works on, and the
-    group of output channels. A block dwells [taps * inputs] cycles, and the fetch of the
-    NEXT block's columns goes out under the last input channel of this one. *)
-type block =
-  { layer : int
-  ; column : int
-  ; group : int
-  }
-
-(** [blocks_of_turn t turn] is the turn's blocks in the order the engine runs them. For a
-    pair, with [s] the step counter from 0 to [steps + 1]: A at column [s] while
-    [s < steps], then B at column [s - 2] while [s >= 2] — A0, A1, A2 B0, A3 B1, ...,
-    B(T-2), B(T-1). For the stem and the head it is the columns in order.
-
-    THIS IS THE SOFTWARE HALF OF [Rtl.next_block] and the gate beside them holds the two
-    together over every block of every shape: the walk cannot drift from the order the
-    cycle model counts. *)
-val blocks_of_turn : t -> turn -> block list
-
-(** the dwells of one layer over every column and group, with no drain tail: the tail
-    belongs to the TURN and not to a layer inside it *)
-val layer_dwell_cycles : t -> layer -> int
 
 (** [turn_cycles t turn] is one turn, exactly: the dwells of its one or two layers and ONE
     drain tail behind the last of them. *)
 val turn_cycles : t -> turn -> int
-
-(** [channel_of t ~group ~lane] is the output channel a lane of a group names:
-    [group * lanes + lane]. The weight image and the norm image are both walked by it, and
-    both pad where it runs past a layer's channels, thus it is a fact of this module and
-    the circuit reads it through [Rtl] rather than restating it. *)
-val channel_of : t -> group:int -> lane:int -> int
 
 (** [weight_bank_image t bank] is the bank as the bitstream carries it: the bank's slice
     of [weight_rom], and then its pad of zero words. It is what initializes one weight
@@ -306,9 +247,10 @@ val forward_cycles : t -> int
 val cell_walk_cycles : t -> int
 
 (** [pass_cycles t] is one pass LESS THE DRAW: the mask and the forward. The draw's cycles
-    belong to the walk and to the bench — [Source]'s walk bench measures a hidden cell at
-    [3 * rows + 10] cycles and a standing one at 1 — and a number this module cannot state
-    exactly it does not state. *)
+    belong to the walk and to the bench — [Source]'s walk bench measures a standing cell
+    at 1 cycle and a hidden one at 162: its seat read, its uniform and [Draw]'s own
+    [busy_cycles], which is 155 at the era's 48 classes — and a number this module cannot
+    state exactly it does not state. *)
 val pass_cycles : t -> int
 
 (** The table as text: the geometry, one line for each layer, the sizes of the memories
@@ -354,9 +296,14 @@ module Rtl : sig
         it as many times as the data is registered before the mux. *)
     val bank_at : bank array -> address:Comb.t -> Comb.t
 
-    (** [ring_address ~pin t ~step ~channel] is [ring_address] as a circuit, at
-        [ring_bits t] bits: the caller drives the SEMANTIC column and this takes the bits
-        the ring keeps. *)
+    (** [ring_address ~pin t ~step ~channel] is where the ring holds a column of Y: the
+        store's own map over the low bits of the semantic step, at the width a ring
+        address takes. The caller drives the SEMANTIC column and this takes the bits the
+        ring keeps, thus no modulo and no second counter stands anywhere.
+
+        THE MAP IS A FACT OF THIS FUNCTION AND OF NOTHING ELSE. It has no software half:
+        the ring is the circuit's own memory and no image, gate or instrument addresses
+        it, thus a second statement of the map would have nothing to weld it to. *)
     val ring_address
       :  pin:(Comb.t -> Comb.t)
       -> t

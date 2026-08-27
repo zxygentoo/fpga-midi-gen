@@ -44,7 +44,6 @@ struct
   let taps = Elaboration.taps
   let voices = Frame.voices
   let planes = 2 * voices
-  let layer_count = Array.length layers
   let widest f = Array.fold layers ~init:1 ~f:(fun widest l -> max widest (f l))
   let max_inputs = widest (fun l -> l.Elaboration.inputs)
   let max_groups = widest (fun l -> l.Elaboration.groups)
@@ -57,7 +56,6 @@ struct
   let group_bits = address_bits_for (max_groups + 1)
   let tap_bits = address_bits_for taps
   let lane_bits = address_bits_for lanes
-  let layer_bits = address_bits_for layer_count
   let turn_count = Array.length e.turns
   let turn_bits = address_bits_for turn_count
 
@@ -68,8 +66,8 @@ struct
   let seat_bits = address_bits_for voices
   let plane_bits = address_bits_for planes
   let column_bits = rows * activation_bits
-  let weight_bits = address_bits_for (Array.length e.weight_rom)
-  let norm_bits = address_bits_for (Array.length e.norm_rom)
+  let weight_address_bits = address_bits_for (Array.length e.weight_rom)
+  let norm_address_bits = address_bits_for (Array.length e.norm_rom)
 
   (* the address widths are the elaboration's, read and not derived again *)
   let store_bits = Elaboration.store_bits e
@@ -148,9 +146,7 @@ struct
      [dont_touch] so the tools keep the copies apart *)
   let replicas ~count make =
     List.init count ~f:(fun s ->
-      if s = 0
-      then make ()
-      else add_attribute (make ()) (Rtl_attribute.Vivado.dont_touch true))
+      if s = 0 then make () else Column_array.replica (make ()))
   ;;
 
   let replicated_takes make = replicas ~count:column_slices make
@@ -202,20 +198,18 @@ struct
     in
     (* THE STEM IS ITS OWN TURN, thus its plane select is a fact of the turn alone and
        needs no phase: a preamble stands between it and everything after it. *)
+    let by_turn f =
+      mux
+        turn.value
+        (List.map (Array.to_list e.turns) ~f:(fun tn -> if f tn then vdd else gnd))
+    in
     let is_stem =
-      mux
-        turn.value
-        (List.map (Array.to_list e.turns) ~f:(fun tn ->
-           match layers.(tn.Elaboration.first).role with
-           | Stem -> vdd
-           | _ -> gnd))
+      by_turn (fun tn ->
+        match layers.(tn.Elaboration.first).role with
+        | Stem -> true
+        | _ -> false)
     in
-    let is_pair =
-      mux
-        turn.value
-        (List.map (Array.to_list e.turns) ~f:(fun tn ->
-           if Elaboration.is_pair tn then vdd else gnd))
-    in
+    let is_pair = by_turn Elaboration.is_pair in
     (* ---------------------------------------------------------------- *)
     (* THE LEAD FRAME: the block being addressed *)
     (* ---------------------------------------------------------------- *)
@@ -309,12 +303,14 @@ struct
         [ out_of_roll; tap_step; sel_bottom fetch_cin ~width:plane_bits; fetch_reads_y ]
     in
     let landed = hold (hold fetch_word) in
-    let landed_zero = bit landed ~pos:0 in
-    let landed_step = select landed ~high:step_bits ~low:1 in
-    let landed_plane =
-      select landed ~high:(step_bits + plane_bits) ~low:(step_bits + 1)
-    in
-    let landed_reads_y = bit landed ~pos:(1 + step_bits + plane_bits) in
+    (* EACH FIELD IS TAKEN WHERE THE ONE BEFORE IT ENDED, and the packing above states the
+       order. Written as cumulative sums these offsets are a set of expressions that must
+       move together when a field is added, and nothing below would say that one did not. *)
+    let field word ~low ~width = select word ~high:(low + width - 1) ~low, low + width in
+    let landed_zero, low = field landed ~low:0 ~width:1 in
+    let landed_step, low = field landed ~low ~width:step_bits in
+    let landed_plane, low = field landed ~low ~width:plane_bits in
+    let landed_reads_y, (_ : int) = field landed ~low ~width:1 in
     (* ---------------------------------------------------------------- *)
     (* THE NOW FRAME: the term that really happens *)
     (* ---------------------------------------------------------------- *)
@@ -335,14 +331,14 @@ struct
         ]
     in
     let now_word = hold (hold lead_word) in
-    let at low width = select now_word ~high:(low + width - 1) ~low in
-    let now_valid = bit now_word ~pos:0 &: run in
-    let now_cycle = at 1 tap_bits in
-    let now_cin = at (1 + tap_bits) cin_bits in
-    let now_group = at (1 + tap_bits + cin_bits) group_bits in
-    let now_step = at (1 + tap_bits + cin_bits + group_bits) step_bits in
-    let now_phase = at (1 + tap_bits + cin_bits + group_bits + step_bits) 1 in
-    let now_ends = at (2 + tap_bits + cin_bits + group_bits + step_bits) 1 in
+    let now_running, low = field now_word ~low:0 ~width:1 in
+    let now_valid = now_running &: run in
+    let now_cycle, low = field now_word ~low ~width:tap_bits in
+    let now_cin, low = field now_word ~low ~width:cin_bits in
+    let now_group, low = field now_word ~low ~width:group_bits in
+    let now_step, low = field now_word ~low ~width:step_bits in
+    let now_phase, low = field now_word ~low ~width:1 in
+    let now_ends, (_ : int) = field now_word ~low ~width:1 in
     let now_layer = layer_of ~phase:now_phase in
     let now_last_cin =
       now_cin ==: fact now_layer ~width:cin_bits (fun l -> l.inputs) -:. 1
@@ -455,7 +451,7 @@ struct
     (* THE WEIGHT ADDRESS ONLY COUNTS. The image is packed in the dwell order, thus one
        column's dwell walks a layer's whole range straight through and the address reloads
        one time for each column. *)
-    let weight_address = Variable.reg spec ~width:weight_bits in
+    let weight_address = Variable.reg spec ~width:weight_address_bits in
     (* THE WEIGHT ROM STANDS IN THE BANKS ITS PLAN STATES, and the port above is the whole
        of what the circuit owes that plan. Vivado pads an inferred ROM to its full address
        space and warns of nothing: rung 2 asked 64 tiles against 49 free and the mapper
@@ -470,7 +466,7 @@ struct
         ~banks:e.weight_banks
         ~address:weight_address.value
         ~write_enable:gnd
-        ~write_address:(zero weight_bits)
+        ~write_address:(zero weight_address_bits)
         ~write_data:(zero (Bits.width e.weight_rom.(0)))
         ()
     in
@@ -560,8 +556,7 @@ struct
     let band_takes =
       let pre = pipeline spec ~n:(Epilogue.latency - 1) drained.drained in
       List.init lanes ~f:(fun (_ : int) ->
-        List.init column_slices ~f:(fun (_ : int) ->
-          add_attribute (reg spec pre) (Rtl_attribute.Vivado.dont_touch true)))
+        List.init column_slices ~f:(fun (_ : int) -> Column_array.replica (reg spec pre)))
     in
     (* ---------------------------------------------------------------- *)
     (* THE BAND LOADS. The residual columns and the norm words of the group whose terms
@@ -584,8 +579,8 @@ struct
     let load_channel = channel_of ~group:load_group.value ~lane:load_index.value in
     let residual_address = column_address ~step:load_step.value ~channel:load_channel in
     let norm_address =
-      fact load_layer ~width:norm_bits (fun l -> l.norm_base)
-      +: uresize load_channel ~width:norm_bits
+      fact load_layer ~width:norm_address_bits (fun l -> l.norm_base)
+      +: uresize load_channel ~width:norm_address_bits
     in
     let norms = rom e.norm_rom norm_address in
     (* ---------------------------------------------------------------- *)
@@ -749,12 +744,12 @@ struct
           if_
             priming.value
             [ weight_address
-              <-- fact lead_layer ~width:weight_bits (fun l -> l.weight_base)
+              <-- fact lead_layer ~width:weight_address_bits (fun l -> l.weight_base)
             ]
             [ if_
                 (last_cycle &: block_closes)
                 [ weight_address
-                  <-- fact fetch_layer ~width:weight_bits (fun l -> l.weight_base)
+                  <-- fact fetch_layer ~width:weight_address_bits (fun l -> l.weight_base)
                 ]
                 [ weight_address <-- weight_address.value +:. 1 ]
             ]
@@ -926,9 +921,10 @@ end
 (* ==================================================================== *)
 
 (* INSTRUMENT 3, AND ITS NAMES ARE A CONTRACT. The gate probes the store write signals by
-   name — [x_write], [x_address], [x_data] and the same for Y — thus a rename cannot
-   silently blind it. Era five's four datapath faults all lived in exactly this layer and
-   none of them moved a frame; that is why the instrument exists.
+   name — [x_write], [y_write], [flush_address], [x_data] and [y_data] — thus a rename
+   cannot silently blind it. ONE FLUSH NEST STATES BOTH DESTINATIONS, thus one address
+   probe does. Era five's four datapath faults all lived in exactly this layer and none of
+   them moved a frame; that is why the instrument exists.
 
    The canvas is MODELLED and not instantiated: [Canvas] carries its own gate, thus the
    bench answers the stem's plane column with the twin's own decode and keeps this gate
@@ -971,11 +967,7 @@ struct
     }
 
   (* one column as the twin holds it: [rows] signed activations, row 0 first *)
-  let column_of bits =
-    Bits.split_lsb ~part_width:activation_bits bits
-    |> List.map ~f:Bits.to_signed_int
-    |> Array.of_list
-  ;;
+  let column_of bits = Harness.unpack bits ~width:activation_bits
 
   (* [run ~planes] is one forward pass, and [planes] is the canvas: the [rows] activations
      of one step and one plane. The stream gate hands the twin's own decode over; a
@@ -986,18 +978,10 @@ struct
        thousands of cycles through it. Every signal the probes look up and every signal
        the waveforms display carries a [--] name, thus [`All_named] reaches all of them. *)
     let sim = Sim.create ~config:(Cyclesim.Config.trace `All_named) Engine.create in
-    let waves, sim =
-      if trace
-      then (
-        let waves, sim = Cyclesim.Waveform.create sim in
-        Some waves, sim)
-      else None, sim
-    in
+    let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
-    let node name =
-      Option.value_exn (Cyclesim.lookup_node_by_name sim name) ~message:name
-    in
+    let node = Harness.node sim in
     (* ONE FLUSH NEST, ONE ADDRESS. The column a write means is the flush nest's own and
        it is the same whichever store takes it; Y's port carries a ring address below it,
        and the gate holds the SEMANTIC write. *)
@@ -1005,22 +989,9 @@ struct
     let probe write data = node write, address, node data in
     let x = probe "x_write" "x_data" in
     let y = probe "y_write" "y_data" in
-    (* What a pass spends outside its dwells. The state's encoding is its index in
-       [State.all] — Hardcaml's binary encoding — and a change of that would not read as a
-       small error here: [List.nth_exn] refuses an index the enumeration does not hold. *)
-    (* the state is a register and not a node, thus it is looked up as either *)
-    let state =
-      Option.value_exn (Cyclesim.lookup_node_or_reg_by_name sim "state") ~message:"state"
-    in
-    let spent = Array.create ~len:(List.length State.all) 0 in
-    let tick () =
-      let at = Cyclesim.Node.to_int state in
-      spent.(at) <- spent.(at) + 1
-    in
-    let in_state which =
-      spent.(fst
-               (List.findi_exn State.all ~f:(fun (_ : int) s -> State.compare s which = 0)))
-    in
+    (* what a pass spends outside its dwells *)
+    let state = node "state" in
+    let spent = Harness.Tally.create (module State) in
     let written = ref [] in
     let offered = ref [] in
     let cycles = ref 0 in
@@ -1039,16 +1010,14 @@ struct
       Int.incr cycles;
       take ~to_y:false x;
       take ~to_y:true y;
-      tick ();
+      Harness.Tally.count spent ~encoded:(Cyclesim.Node.to_int state) ~cycle:!cycles;
       (* the canvas answers the port of the next cycle, combinational from its registers *)
       inp.plane_column
-      := Bits.concat_lsb
-           (List.map
-              (Array.to_list
-                 (planes
-                    ~step:(Bits.to_unsigned_int !(out.plane_step))
-                    ~plane:(Bits.to_unsigned_int !(out.plane))))
-              ~f:(Bits.of_signed_int ~width:activation_bits))
+      := Harness.pack
+           (planes
+              ~step:(Bits.to_unsigned_int !(out.plane_step))
+              ~plane:(Bits.to_unsigned_int !(out.plane)))
+           ~width:activation_bits
     in
     (* THE SEAT SWEEP COSTS CYCLES AND THAT IS THE POINT. The machine is frozen while the
        level stands, thus the file stands still and one cycle for each seat reads it
@@ -1066,7 +1035,7 @@ struct
       else (
         let columns =
           Array.init voices ~f:(fun seat ->
-            Prng.For_test.set inp.logit_seat seat;
+            Harness.set inp.logit_seat seat;
             plain ();
             column_of !(out.logits))
         in
@@ -1087,12 +1056,33 @@ struct
     , { written = List.rev !written
       ; offered = List.rev !offered
       ; cycles = !cycles
-      ; priming = in_state Prime
-      ; waiting = in_state Offer
-      ; turning = in_state Turn
+      ; priming = Harness.Tally.spent spent Prime
+      ; waiting = Harness.Tally.spent spent Offer
+      ; turning = Harness.Tally.spent spent Turn
       } )
   ;;
 end
+
+(* THE STEM'S INPUT AT ONE SEED, as the gates below hand it to the engine: the opening the
+   walk draws, the first mask of a walk of [walk] passes, and the twin's own decode of the
+   two — what the canvas answers the stem's fetch with. The gate that reads the twin's
+   writes needs the canvas and the mask beside the planes, thus the three travel together. *)
+type stem_input =
+  { canvas : int array array
+  ; hidden : bool array array
+  ; planes : step:int -> plane:int -> int array
+  }
+
+let stem_input ~steps ~walk ~seed =
+  let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
+  let threshold = Diffusion.anneal_threshold ~step:0 ~walk in
+  let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
+  let stem = Quantized.For_test.plane_activations canvas hidden ~steps in
+  { canvas
+  ; hidden
+  ; planes = (fun ~step ~plane -> Quantized.For_test.plane_column stem ~step ~plane)
+  }
+;;
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
   (* THE SCHEDULE'S VISUAL GATE, at a shape a picture can hold: P 6, G 2, T 3 and a trunk
@@ -1289,7 +1279,8 @@ let%expect_test "the store writes are the twin's, write for write" =
   let case ~name ~width ~lanes ~pairs ~steps ~seed =
     let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
     let model = Quantized.Model.For_test.init config ~seed in
-    let elaboration = Elaboration.create model ~steps ~lanes ~walk:8 in
+    let walk = 8 in
+    let elaboration = Elaboration.create model ~steps ~lanes ~walk in
     let module B =
       Bench (struct
         let e = elaboration
@@ -1297,11 +1288,7 @@ let%expect_test "the store writes are the twin's, write for write" =
     in
     let rows = elaboration.rows in
     let voices = Frame.voices in
-    let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
-    let threshold = Diffusion.anneal_threshold ~step:0 ~walk:8 in
-    let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
-    let stem = Quantized.For_test.plane_activations canvas hidden ~steps in
-    let planes ~step ~plane = Quantized.For_test.plane_column stem ~step ~plane in
+    let { canvas; hidden; planes } = stem_input ~steps ~walk ~seed in
     let (_ : Hardcaml_waveterm.Waveform.t option), pass = B.run ~planes () in
     let want = Quantized.For_test.layer_writes model canvas hidden ~steps in
     let store () =
@@ -1322,11 +1309,7 @@ let%expect_test "the store writes are the twin's, write for write" =
                (Array.equal
                   Int.equal
                   got
-                  (Quantized.For_test.tensor_column
-                     expected
-                     ~step
-                     ~channel:seat
-                     ~channels:voices))
+                  (Diffusion.tensor_column expected ~step ~channel:seat ~channels:voices))
           then Int.incr part))
     in
     (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.
@@ -1340,11 +1323,7 @@ let%expect_test "the store writes are the twin's, write for write" =
           Int.incr checked;
           let address = Elaboration.column_address elaboration ~step ~channel in
           let want =
-            Quantized.For_test.tensor_column
-              expected
-              ~step
-              ~channel
-              ~channels:layer.outputs
+            Diffusion.tensor_column expected ~step ~channel ~channels:layer.outputs
           in
           if not (Array.equal Int.equal destination.(address) want)
           then (
@@ -1477,17 +1456,16 @@ let%expect_test "the cycles of one forward, against the cost model" =
   let case ~name ~width ~lanes ~pairs ~steps ~seed =
     let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
     let model = Quantized.Model.For_test.init config ~seed in
-    let elaboration = Elaboration.create model ~steps ~lanes ~walk:8 in
+    let walk = 8 in
+    let elaboration = Elaboration.create model ~steps ~lanes ~walk in
     let module B =
       Bench (struct
         let e = elaboration
       end)
     in
-    let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
-    let threshold = Diffusion.anneal_threshold ~step:0 ~walk:8 in
-    let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
-    let stem = Quantized.For_test.plane_activations canvas hidden ~steps in
-    let planes ~step ~plane = Quantized.For_test.plane_column stem ~step ~plane in
+    let { canvas = (_ : int array array); hidden = (_ : bool array array); planes } =
+      stem_input ~steps ~walk ~seed
+    in
     let (_ : Hardcaml_waveterm.Waveform.t option), pass =
       B.run ~read_logits:false ~planes ()
     in

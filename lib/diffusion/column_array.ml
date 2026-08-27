@@ -49,6 +49,12 @@ let weight_bits = 8
    lanes that hold the primitives, rather than once in each unit that obeys it. *)
 let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false)
 
+(* ONE COPY OF A BROADCAST, KEPT APART FROM ITS SIBLINGS. The rule is an attribute and not
+   a hope, as [no_dsp] is, and it stands here for the same reason: this unit is the one
+   that holds the primitives, thus the family of Vivado rules the round leans on has one
+   home rather than a statement in each unit that obeys it. *)
+let replica copy = add_attribute copy (Rtl_attribute.Vivado.dont_touch true)
+
 (* THE REPLICA SLICE — ring 3's rule, and the array's own scale is what imposes it. No net
    of this scale keeps a single driver: a bank stands as one register slice for each
    [slice_rows] rows, [dont_touch] so the tools neither merge the copies nor absorb them
@@ -132,8 +138,7 @@ module Make (Shape : Shape) = struct
     let slices = slices_for ~rows in
     let operand_b =
       Array.init lanes ~f:(fun lane ->
-        Array.init slices ~f:(fun (_ : int) ->
-          add_attribute (reg dspec (weight lane)) (Rtl_attribute.Vivado.dont_touch true)))
+        Array.init slices ~f:(fun (_ : int) -> replica (reg dspec (weight lane))))
     in
     (* The operand and product registers FREE-RUN and only the sum is gated: that is how
        the DSP is meant to be driven, and a register that captures on a cycle no term
@@ -165,8 +170,7 @@ module Make (Shape : Shape) = struct
        registers survive synthesis: 48 drivers of about 128 pins each, laid out beside
        their own stage. The walk of the drain keeps [capture] itself. *)
     let capture_bank =
-      Array.init rows ~f:(fun (_ : int) ->
-        add_attribute (reg spec pre_capture) (Rtl_attribute.Vivado.dont_touch true))
+      Array.init rows ~f:(fun (_ : int) -> replica (reg spec pre_capture))
     in
     let open Always in
     let row = Variable.reg spec ~width:row_bits in
@@ -251,13 +255,7 @@ module Bench (Shape : Shape) = struct
         ~config:(if trace then Cyclesim.Config.trace_all else Cyclesim.Config.default)
         Lanes.create
     in
-    let waves, sim =
-      if trace
-      then (
-        let waves, sim = Cyclesim.Waveform.create sim in
-        Some waves, sim)
-      else None, sim
-    in
+    let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
     let drained = ref [] in
@@ -265,12 +263,8 @@ module Bench (Shape : Shape) = struct
       Cyclesim.cycle sim;
       if Bits.to_bool !(out.drained)
       then (
-        let value lane =
-          Bits.to_signed_int
-            (Bits.select !(out.sums) ~high:((lane * 32) + 31) ~low:(lane * 32))
-        in
-        drained
-        := (Bits.to_unsigned_int !(out.row), Array.init lanes ~f:value) :: !drained);
+        let sums = Harness.unpack !(out.sums) ~width:accumulator_bits in
+        drained := (Bits.to_unsigned_int !(out.row), sums) :: !drained);
       inp.term := Bits.gnd;
       inp.term_first := Bits.gnd;
       inp.term_last := Bits.gnd
@@ -282,9 +276,9 @@ module Bench (Shape : Shape) = struct
       inp.term := Bits.vdd;
       inp.term_first := if first then Bits.vdd else Bits.gnd;
       inp.term_last := if last then Bits.vdd else Bits.gnd;
-      inp.column := Prng.For_test.pack column ~width:16;
+      inp.column := Harness.pack column ~width:activation_bits;
       inp.row_shift := Bits.of_unsigned_int ~width:2 (tap % 3);
-      inp.weights := Prng.For_test.pack weights ~width:8;
+      inp.weights := Harness.pack weights ~width:weight_bits;
       cycle ()
     in
     let channel ~inputs ~cin window weights =

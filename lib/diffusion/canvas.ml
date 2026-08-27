@@ -151,7 +151,6 @@ module Bench (Shape : Shape) = struct
   module Sim = Cyclesim.With_interface (Canvas.I) (Canvas.O)
 
   let steps = Shape.steps
-  let rows = Shape.rows
   let planes = Canvas.planes
 
   (* What one read cycle names: one cell for the walk, one column for the stem and one
@@ -188,26 +187,20 @@ module Bench (Shape : Shape) = struct
         ~config:(if trace then Cyclesim.Config.trace_all else Cyclesim.Config.default)
         Canvas.create
     in
-    let waves, sim =
-      if trace
-      then (
-        let waves, sim = Cyclesim.Waveform.create sim in
-        Some waves, sim)
-      else None, sim
-    in
+    let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
     let name (step, seat) =
-      Prng.For_test.set inp.cell_step step;
-      Prng.For_test.set inp.cell_seat seat
+      Harness.set inp.cell_step step;
+      Harness.set inp.cell_seat seat
     in
     let write_class classes (step, seat) =
       name (step, seat);
-      Prng.For_test.set inp.cell_class classes.(step).(seat);
+      Harness.set inp.cell_class classes.(step).(seat);
       Cyclesim.cycle sim
     in
     let write_mask (step, seat) =
       name (step, seat);
-      Prng.For_test.set inp.cell_hidden (if hidden.(step).(seat) then 1 else 0);
+      Harness.set inp.cell_hidden (if hidden.(step).(seat) then 1 else 0);
       Cyclesim.cycle sim
     in
     let order = Diffusion.cell_order ~steps in
@@ -229,21 +222,14 @@ module Bench (Shape : Shape) = struct
   let ask (sim : Sim.t) { cell = step, seat; column = plane_step, plane; score } =
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
-    Prng.For_test.set inp.cell_step step;
-    Prng.For_test.set inp.cell_seat seat;
-    Prng.For_test.set inp.plane_step plane_step;
-    Prng.For_test.set inp.plane plane;
-    Prng.For_test.set inp.score_step score;
+    Harness.set inp.cell_step step;
+    Harness.set inp.cell_seat seat;
+    Harness.set inp.plane_step plane_step;
+    Harness.set inp.plane plane;
+    Harness.set inp.score_step score;
     Cyclesim.cycle sim;
-    let activation_of_row row =
-      Bits.to_unsigned_int
-        (Bits.select
-           !(out.plane_column)
-           ~high:((row * activation_bits) + activation_bits - 1)
-           ~low:(row * activation_bits))
-    in
     { hidden = Bits.to_bool !(out.hidden)
-    ; activations = Array.init rows ~f:activation_of_row
+    ; activations = Harness.unpack !(out.plane_column) ~width:activation_bits
     ; frame = Bits.to_unsigned_int !(out.frame)
     }
   ;;

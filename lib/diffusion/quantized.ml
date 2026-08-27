@@ -68,7 +68,14 @@ module Model = struct
      [bias = shift - mean * gain]. The fold is the same affine — its rounding is part of
      what [Drift] measures. A bias outside the activation format clamps; a trained norm
      that puts one there is a format fault the drift report would shout about. *)
-  let fold_layer kernel_t scale_t shift_t mean_t variance_t =
+  let fold_layer
+    { Diffusion.Params.kernel = kernel_t
+    ; scale = scale_t
+    ; shift = shift_t
+    ; mean = mean_t
+    ; variance = variance_t
+    }
+    =
     let kernel = Nn_quantized.quantize (Nx.to_array kernel_t) in
     let shape = Nx.shape kernel_t in
     let scale = Nx.to_array scale_t
@@ -94,16 +101,9 @@ module Model = struct
   ;;
 
   let of_params ?(temperature = 1.0) params =
-    let layers =
-      Diffusion.Params.to_list params
-      |> List.chunks_of ~length:5
-      |> List.map ~f:(function
-        | [ kernel; scale; shift; mean; variance ] ->
-          fold_layer kernel scale shift mean variance
-        | group -> invalid_argf "a layer holds 5 tensors, not %d" (List.length group) ())
-      |> Array.of_list
-    in
-    { layers; temper = fst (Nn_quantized.policy ~temperature ~min_p:0.0) }
+    { layers = Array.map (Diffusion.Params.layers params) ~f:fold_layer
+    ; temper = fst (Nn_quantized.policy ~temperature ~min_p:0.0)
+    }
   ;;
 
   let of_checkpoint ?temperature config path =
@@ -174,6 +174,7 @@ module Model = struct
   module For_test = struct
     let config = { Diffusion.Config.layers = 4; width = 6 }
     let init config ~seed = of_params (Diffusion.Params.init config ~seed)
+    let rom_tensors = rom_tensors
   end
 end
 
@@ -223,15 +224,12 @@ let plane_activations canvas hidden ~steps =
   x
 ;;
 
-(* One column of any tensor of this twin: the [rows] values that one step and one channel
-   hold. EVERY TENSOR HERE HAS THE ONE SHAPE — the stem's planes, a layer's output, the
-   head's logits — thus the index rule stands beside them and nowhere else, and the
-   circuit's gates read a column and never an index. *)
-let tensor_column x ~step ~channel ~channels =
-  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
+(* One column of the stem's input tensor. The index rule itself is [Diffusion]'s — every
+   tensor of the era reads as [steps; rows; channels], in float there and in integers here
+   — thus what this states is the PLANE count and nothing else. *)
+let plane_column x ~step ~plane =
+  Diffusion.tensor_column x ~step ~channel:plane ~channels:planes
 ;;
-
-let plane_column x ~step ~plane = tensor_column x ~step ~channel:plane ~channels:planes
 
 (* One layer: the convolution into the int32 accumulator, the folded norm, the optional
    ReLU, and the counted clamp of every write.
@@ -285,7 +283,7 @@ let layer_forward counters (layer : Model.layer) ~steps ~relu x =
    THE CONVOLUTION'S: the residual add rides the same counted clamp, thus a reader of the
    write stream must take it from this fold and never from [layer_forward] alone. The
    circuit's stream gate is that reader. *)
-let layer_writes counters (model : Model.t) canvas hidden ~steps =
+let fold_layer_writes counters (model : Model.t) canvas hidden ~steps ~init ~f =
   let layers = model.layers in
   let last = Array.length layers - 1 in
   let stem =
@@ -296,22 +294,45 @@ let layer_writes counters (model : Model.t) canvas hidden ~steps =
       ~relu:true
       (plane_activations canvas hidden ~steps)
   in
-  let pair (written, x) at =
+  let pair (taken, x) at =
     let first = layer_forward counters layers.(at) ~steps ~relu:true x in
     let second = layer_forward counters layers.(at + 1) ~steps ~relu:false first in
     let joined = Array.create ~len:(Array.length x) 0 in
     Array.iteri x ~f:(fun index held ->
       write counters joined index (max 0 (held + second.(index))));
-    joined :: first :: written, joined
+    f (f taken first) joined, joined
   in
-  let written, trunk =
-    List.fold (List.range ~stride:2 1 last) ~init:([ stem ], stem) ~f:pair
+  let taken, trunk =
+    List.fold (List.range ~stride:2 1 last) ~init:(f init stem, stem) ~f:pair
   in
-  List.rev (layer_forward counters layers.(last) ~steps ~relu:false trunk :: written)
+  f taken (layer_forward counters layers.(last) ~steps ~relu:false trunk)
 ;;
 
+let layer_writes counters model canvas hidden ~steps =
+  List.rev
+    (fold_layer_writes
+       counters
+       model
+       canvas
+       hidden
+       ~steps
+       ~init:[]
+       ~f:(fun held written -> written :: held))
+;;
+
+(* THE COLLECTOR IS WHAT PARTS THE TWO, AND THE WALK IS NOT WRITTEN TWICE. A [forward]
+   that read the last of [layer_writes] held every layer's destination tensor alive to
+   give one back — 48 of them at the elected shape — where the fold keeps only what it is
+   given. *)
 let forward counters model canvas hidden ~steps =
-  List.last_exn (layer_writes counters model canvas hidden ~steps)
+  fold_layer_writes
+    counters
+    model
+    canvas
+    hidden
+    ~steps
+    ~init:[||]
+    ~f:(fun (_ : int array) written -> written)
 ;;
 
 (* the draw of one cell: the logits temper against their peak, exp2 gives Q15 weights, and
@@ -337,7 +358,6 @@ module For_test = struct
   let draw_cell = draw_cell
   let plane_activations = plane_activations
   let plane_column = plane_column
-  let tensor_column = tensor_column
 
   let layer_writes model canvas hidden ~steps =
     layer_writes { hits = 0; seen = 0; peak = 0 } model canvas hidden ~steps
@@ -397,17 +417,14 @@ module Engine = struct
     let canvas = Array.map before ~f:Array.copy in
     (* one draw for each hidden cell, in the cell order the float walk takes: a cell the
        mask left standing takes no uniform *)
-    let draw_hidden_cell (prng, draws) (step, voice) =
-      if not hidden.(step).(voice)
-      then prng, draws
-      else (
-        let logits = Diffusion.column said ~step ~voice in
-        let next, uniform, drawn = draw_cell t.model logits prng in
-        canvas.(step).(voice) <- drawn;
-        next, { step; voice; logits; uniform; drawn } :: draws)
+    let draw_hidden_cell (prng, draws) ~step ~voice =
+      let logits = Diffusion.column said ~step ~voice in
+      let next, uniform, drawn = draw_cell t.model logits prng in
+      canvas.(step).(voice) <- drawn;
+      next, { step; voice; logits; uniform; drawn } :: draws
     in
     let prng, draws =
-      List.fold (Diffusion.cell_order ~steps:t.steps) ~init:(prng, []) ~f:draw_hidden_cell
+      Diffusion.over_hidden_cells (prng, []) ~steps:t.steps ~hidden ~f:draw_hidden_cell
     in
     ( { t with
         pass = t.pass + 1

@@ -59,6 +59,17 @@ end
     reached them — but the model cannot state a probability without them, thus they travel
     inside the checkpoint and inside this structure. *)
 module Params : sig
+  (** one layer of the checkpoint: the kernel, the two norm terms, and the two population
+      statistics. Every pass below the seam reads the population — the reference has no
+      training mode — thus the statistics travel inside a layer and never inside a batch. *)
+  type layer =
+    { kernel : tensor
+    ; scale : tensor
+    ; shift : tensor
+    ; mean : tensor
+    ; variance : tensor
+    }
+
   type t
 
   (** [init config ~seed] draws initial parameters through [Prng], thus a test needs no
@@ -77,8 +88,14 @@ module Params : sig
       which is the regime the twin must answer for. *)
   val init : ?norm_scale:float -> Config.t -> seed:int -> t
 
+  (** the layers in the order of the checkpoint. It is the STRUCTURAL accessor: the twin
+      quantizes a layer whole, thus it reads the five tensors of each one here rather than
+      re-deriving the grouping from the flat list [to_list] states. *)
+  val layers : t -> layer array
+
   (** the tensors in the flat order of the checkpoint: for each layer the kernel, the
-      scale, the shift, the mean and the variance *)
+      scale, the shift, the mean and the variance. It is the SERIALIZATION accessor — the
+      order a checkpoint file carries — and [layers] is the structural one. *)
   val to_list : t -> tensor list
 
   (** [load config ~path] is the parameters of the checkpoint at [path] — the safetensors
@@ -100,12 +117,21 @@ end
     every rearrangement spends some of it. *)
 val logits : Params.t -> classes:int array array -> hidden:bool array array -> tensor
 
+(** [tensor_column x ~step ~channel ~channels] is one column of any tensor of this era:
+    the [rows] values that one step and one channel hold, read out of the flat array of a
+    [steps; rows; channels] tensor.
+
+    EVERY TENSOR OF THE ERA HAS THE ONE SHAPE — the stem's planes, a layer's output, the
+    head's logits, in float here and in integers in [Quantized] — thus THE INDEX RULE
+    STANDS HERE ALONE and no reader of a tensor slices one by hand. *)
+val tensor_column : 'a array -> step:int -> channel:int -> channels:int -> 'a array
+
 (** [column said ~step ~voice] is the column of one cell: the [rows] values that row 0 to
     row [rows - 1] hold for the cell at [step, voice], read out of the flat array of a
     [steps; rows; voices] tensor.
 
-    The index rule stands here alone. The float logits and the integer logits of the twin
-    are the same tensor in two formats, thus both read their cells with this. *)
+    It is [tensor_column] at [channels = voices]. The float logits and the integer logits
+    of the twin are the same tensor in two formats, thus both read their cells with this. *)
 val column : 'a array -> step:int -> voice:int -> 'a array
 
 (** [masked_nll params ~classes ~hidden] is the orderless-NADE loss of one canvas: the
@@ -148,6 +174,21 @@ val seat_openings : opening array
     cell's own seat. [gibbs] opens here and the engine of [Quantized] opens here, thus the
     two openings are one rule and one consumption. *)
 val opening_canvas : Prng.state -> steps:int -> Prng.state * int array array
+
+(** [over_hidden_cells state ~steps ~hidden ~f] folds [f] over the HIDDEN cells of a
+    canvas in the cell order, passing over the cells the mask left standing.
+
+    It is the third leg of the consumption order, and the one that can go wrong quietly:
+    the opening and the mask draw for every cell, but a redraw draws only where the mask
+    hid, thus a walk that spends a uniform on a standing cell states a different piece and
+    no gate below says so. [gibbs] and [Quantized.Engine] both take their redraws through
+    this, thus the skip is one rule. *)
+val over_hidden_cells
+  :  'a
+  -> steps:int
+  -> hidden:bool array array
+  -> f:('a -> step:int -> voice:int -> 'a)
+  -> 'a
 
 (** [hidden_cells state ~steps ~threshold] is the mask of one pass: one uniform for each
     cell in the cell order, hidden exactly when [u * 2^24] falls under [threshold]. The

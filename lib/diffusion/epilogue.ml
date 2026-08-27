@@ -101,10 +101,12 @@ module Make (Shape : Shape) = struct
          256 plus its UNSIGNED low byte, thus [s * g] is [s *+ g_high] shifted eight plus
          [s *+ g_low] — the low half carried as a non-negative signed value, which is what
          the leading zero states. No value moves; one register does. *)
-      let sum = slice i.sums accumulator_bits in
-      let gain_high = reg dspec (Column_array.no_dsp (sum *+ sel_top gain ~width:8)) in
+      let accumulated = slice i.sums accumulator_bits in
+      let gain_high =
+        reg dspec (Column_array.no_dsp (accumulated *+ sel_top gain ~width:8))
+      in
       let gain_low =
-        reg dspec (Column_array.no_dsp (sum *+ (gnd @: sel_bottom gain ~width:8)))
+        reg dspec (Column_array.no_dsp (accumulated *+ (gnd @: sel_bottom gain ~width:8)))
       in
       let product =
         reg
@@ -131,13 +133,15 @@ module Make (Shape : Shape) = struct
          counted clamp and then writes the sum through it again, thus a value that rode
          the first clamp and then meets a residual gives a different answer under one
          clamp than under two. Gate B is bit for bit. *)
-      let sum =
+      let with_residual =
         sresize conv ~width:(activation_bits + 1)
         +: sresize
              (pipeline dspec ~n:4 (slice i.residual activation_bits))
              ~width:(activation_bits + 1)
       in
-      let joined = clamp16 (mux2 (sum <+. 0) (zero (width sum)) sum) in
+      let joined =
+        clamp16 (mux2 (with_residual <+. 0) (zero (width with_residual)) with_residual)
+      in
       reg dspec (mux2 (pipeline dspec ~n:4 i.join) joined conv)
     in
     (* the tag clears and the datapath does not: what is real is what [valid] marks *)
@@ -198,13 +202,8 @@ module Bench (Shape : Shape) = struct
       Cyclesim.cycle sim;
       if Bits.to_bool !(out.valid)
       then (
-        let activation at =
-          Bits.to_signed_int
-            (Bits.select !(out.activations) ~high:((at * 16) + 15) ~low:(at * 16))
-        in
-        given
-        := (Bits.to_unsigned_int !(out.activation_row), Array.init lanes ~f:activation)
-           :: !given);
+        let activations = Harness.unpack !(out.activations) ~width:activation_bits in
+        given := (Bits.to_unsigned_int !(out.activation_row), activations) :: !given);
       inp.drained := Bits.gnd
     in
     inp.relu := if relu then Bits.vdd else Bits.gnd;
@@ -213,8 +212,8 @@ module Bench (Shape : Shape) = struct
     List.iteri work ~f:(fun at { sums; norms; biases; residual } ->
       inp.drained := Bits.vdd;
       inp.row := Bits.of_unsigned_int ~width:(Bits.width !(inp.row)) (at % rows);
-      inp.sums := Prng.For_test.pack sums ~width:32;
-      inp.residual := Prng.For_test.pack residual ~width:16;
+      inp.sums := Harness.pack sums ~width:accumulator_bits;
+      inp.residual := Harness.pack residual ~width:activation_bits;
       inp.norms := pack_norms norms biases;
       cycle ());
     for _ = 1 to latency + 1 do

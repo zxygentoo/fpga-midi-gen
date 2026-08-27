@@ -63,7 +63,7 @@ let taps = 9
 
 (* the 24-bit grid of the generator: an anneal threshold is [floor (alpha * 2 ** 24)],
    thus a mask uniform compares against it exactly *)
-let alpha_bits = 24
+let alpha_bits = Prng.uniform_bits
 
 (* The fields of a norm word, low to high: the bias, the shift of the gain, and the value
    of the gain. The three stand at one address because the epilogue wants the three at one
@@ -82,7 +82,7 @@ let norm_bits = bias_bits + shift_bits + gain_bits
 
 (* One uniform is three steps of the generator — [Prng.uniform] takes three bytes — and
    the machine takes one cycle for each step. *)
-let uniform_cycles = 3
+let uniform_cycles = Prng.uniform_bytes
 
 let role_at ~count index =
   if index = 0
@@ -258,15 +258,16 @@ let store_depth t = t.steps * t.store_channels
 let ring_steps = 4
 let ring_depth t = ring_steps * t.store_channels
 
-let ring_address t ~step ~channel =
-  (step land (ring_steps - 1) * t.store_channels) + channel
-;;
-
 (* THE OTHER MAP OF THE IMAGES: which output channel a lane of a group names. The weight
    image and the norm image are both walked by it, and both pad where it runs past a
    layer's channels. It is a function so that [Rtl] can state the same rule to the circuit
-   rather than let the circuit restate it. *)
-let channel_of t ~group ~lane = (group * t.lanes) + lane
+   rather than let the circuit restate it.
+
+   IT TAKES [lanes] AND NOT A [t], because the weight image is packed inside [create] —
+   before the elaboration it belongs to exists — and an image walked by a second statement
+   of this map is an image the gate below cannot speak for. *)
+let channel_of_lanes ~lanes ~group ~lane = (group * lanes) + lane
+let channel_of t ~group ~lane = channel_of_lanes ~lanes:t.lanes ~group ~lane
 
 (* The widths the circuit sizes its address ports on. They follow from the table, thus
    they stand here and a unit that derived them again would be free to derive them
@@ -276,9 +277,11 @@ let channel_of t ~group ~lane = (group * t.lanes) + lane
 let store_bits t = Bits.address_bits_for (store_depth t)
 let ring_bits t = Bits.address_bits_for (ring_depth t)
 
+(* THE WIDTH FOLLOWS THE GROUPS AND NOT THE OUTPUTS, because a ragged group runs past its
+   layer's own channels: [groups * lanes] is [outputs] rounded up to a whole group, thus
+   it covers the outputs by construction and a [max] against them would state nothing. *)
 let widest_channel t =
-  Array.fold t.layers ~init:1 ~f:(fun widest l ->
-    max widest (max l.outputs (l.groups * t.lanes)))
+  Array.fold t.layers ~init:1 ~f:(fun widest l -> max widest (l.groups * t.lanes))
 ;;
 
 let channel_bits t = Bits.address_bits_for (widest_channel t + 1)
@@ -342,23 +345,19 @@ let bank_at banks address =
     if address >= bank.base then at else select)
 ;;
 
-(* how [to_string] says a plan: one bank reads differently from two *)
-let banks_phrase banks =
-  if Array.length banks = 1
-  then sprintf "in one bank of %d" banks.(0).depth
-  else
-    sprintf
-      "in banks of %s"
-      (String.concat
-         ~sep:" + "
-         (List.map (Array.to_list banks) ~f:(fun b -> Int.to_string b.depth)))
-;;
-
 (* the depths of a plan as [to_string] and the gates print them *)
 let bank_depths banks =
   String.concat
     ~sep:" + "
     (List.map (Array.to_list banks) ~f:(fun b -> Int.to_string b.depth))
+;;
+
+(* how [to_string] says a plan: one bank reads differently from two *)
+let banks_phrase banks =
+  sprintf
+    "in %s of %s"
+    (if Array.length banks = 1 then "one bank" else "banks")
+    (bank_depths banks)
 ;;
 
 (* THE MAPS THE IMAGE AND THE CIRCUIT MUST AGREE ON, over any combinational type. Signal
@@ -566,7 +565,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   let layer_words at (l : Quantized.Model.layer) =
     let base = image_bases.(at) in
     let byte ~cin ~tap ~group lane =
-      let channel = (group * lanes) + lane in
+      let channel = channel_of_lanes ~lanes ~group ~lane in
       (* A group that runs past the channels takes a zero byte: its lane multiplies by
          zero and the drain does not read it. The padding keeps every row of the image a
          whole number of words, thus the address only counts. *)
@@ -608,8 +607,8 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   (* The channels X and Y each hold: the widest layer that writes a store. The head writes
      no store, thus its [voices] channels size nothing. *)
   let store_channels =
-    Array.foldi twin ~init:0 ~f:(fun at widest (l : Quantized.Model.layer) ->
-      match role_at ~count at with
+    Array.fold layers ~init:0 ~f:(fun widest l ->
+      match l.role with
       | Head -> widest
       | Stem | Pair_open | Pair_close -> max widest l.outputs)
   in
@@ -734,10 +733,10 @@ let to_string t =
    walks every map the same way. *)
 let tiny_shape = { Diffusion.Config.layers = 4; width = 8 }
 
-let%expect_test "the elaboration of the elected rung" =
+let%expect_test "the elaboration of rung 2" =
   (* THE SHAPE OF `l64-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
-     never a value, thus a test states the elected rung's geometry without a checkpoint
-     file that git ignores. The rung's real weights arrive at [gen_verilog]. *)
+     never a value, thus a test states rung 2's geometry without a checkpoint file that
+     git ignores. The rung's real weights arrive at [gen_verilog]. *)
   let config = { Diffusion.Config.layers = 64; width = 16 } in
   let model = Quantized.Model.For_test.init config ~seed:1 in
   print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
@@ -831,7 +830,7 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
      the elected shapes never make, thus the padding is under test and not only described. *)
   let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
-  let kernels = Array.of_list (Quantized.Model.rom_tensors model) in
+  let kernels = Array.of_list (Quantized.Model.For_test.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
   let lane_byte word lane =
     Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
@@ -959,13 +958,13 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
   in
   let rung = { Diffusion.Config.layers = 64; width = 16 } in
   case
-    ~name:"the elected rung"
+    ~name:"rung 2"
     (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
   case
     ~name:"a shape of one bank"
     (create (Quantized.Model.For_test.init tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
-  (* A STORE THAT REALLY BANKS, and the elected rung's does not: 129 steps of 8 channels
-     are 1032 columns, thus the plan splits where the two rungs above hold one bank. *)
+  (* A STORE THAT REALLY BANKS, and rung 2's does not: 129 steps of 8 channels are 1032
+     columns, thus the plan splits where the two rungs above hold one bank. *)
   case
     ~name:"a store of two banks"
     (create
@@ -975,7 +974,7 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
        ~walk:4);
   [%expect
     {|
-    the elected rung: 36144 words banked 32768 + 4096, 720 of pad
+    rung 2: 36144 words banked 32768 + 4096, 720 of pad
       36864 addresses walked: 0 apart from the image, 0 pad words not zero, 0 banks decoded apart
       a store of 2048 columns banks 2048: 0 banks decoded apart
     a shape of one bank: 504 words banked 512, 8 of pad
@@ -1095,7 +1094,7 @@ let%expect_test "the circuit walks the turn the block order states" =
        ~lanes:2
        ~walk:4);
   case
-    ~name:"the elected rung"
+    ~name:"rung 2"
     (create
        (Quantized.Model.For_test.init
           { Diffusion.Config.layers = 64; width = 16 }
@@ -1107,7 +1106,7 @@ let%expect_test "the circuit walks the turn the block order states" =
     {|
     a shape of two pairs: 4 turns, 110 blocks, 880 cycles walked, 0 turns apart
       the first pair opens A0 A1 A2 B0 A3 B1 A4 B2
-    the elected rung: 33 turns, 32384 blocks, 514048 cycles walked, 0 turns apart
+    rung 2: 33 turns, 32384 blocks, 514048 cycles walked, 0 turns apart
       the first pair opens A0 A1 A2 B0 A3 B1 A4 B2
     |}]
 ;;

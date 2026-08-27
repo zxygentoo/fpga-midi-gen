@@ -17,7 +17,7 @@ let norm_epsilon = 1e-7
 
 (* the 24-bit grid of the generator: a uniform is [k * 2 ** -24], thus [u * grid] is the
    integer [k] and a threshold compare over it is exact in a double *)
-let grid = Float.of_int (1 lsl 24)
+let grid = Float.of_int (1 lsl Prng.uniform_bits)
 
 (* The register of each seat: the lowest and the highest pitch it sings anywhere in this
    corpus, seat 0 the bass — [Jsb.voice_ranges] turned around, thus the corpus library's
@@ -183,6 +183,8 @@ module Params = struct
     Array.of_list (List.map2_exn (channels config) weights ~f:layer)
   ;;
 
+  let layers params = params
+
   let to_list params =
     Array.to_list params
     |> List.concat_map ~f:(fun { kernel; scale; shift; mean; variance } ->
@@ -306,9 +308,11 @@ let logits (params : Params.t) ~classes ~hidden =
   normed_conv trunk params.(last)
 ;;
 
-let column said ~step ~voice =
-  Array.init rows ~f:(fun p -> said.((((step * rows) + p) * voices) + voice))
+let tensor_column x ~step ~channel ~channels =
+  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
 ;;
+
+let column said ~step ~voice = tensor_column said ~step ~channel:voice ~channels:voices
 
 let masked_nll (params : Params.t) ~classes ~hidden =
   let said = Nx.to_array (logits params ~classes ~hidden) in
@@ -366,6 +370,17 @@ let over_cells state ~steps ~f =
     next)
 ;;
 
+(* THE THIRD LEG OF THE CONSUMPTION ORDER: the hidden cells of a pass, in the cell order,
+   with the standing ones passed over. The opening and the mask draw for every cell and
+   share [over_cells]; the redraws are the leg where a uniform CAN be spent on a cell that
+   wants none, and a walk that spends one states a different piece with no local symptom.
+   Thus the skip stands here one time and the float walk and the integer twin both take
+   it. *)
+let over_hidden_cells state ~steps ~hidden ~f =
+  List.fold (cell_order ~steps) ~init:state ~f:(fun state (step, voice) ->
+    if hidden.(step).(voice) then f state ~step ~voice else state)
+;;
+
 let opening_canvas state ~steps =
   let canvas = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
   (* the product [u * width] is exact on the grid, thus the twin and the circuit state the
@@ -397,14 +412,11 @@ let gibbs (params : Params.t) ~steps ~walk ~temperature ~seed =
      takes no uniform, thus the walk of the twin lands on the same draws *)
   let draw_hidden_cells state ~hidden =
     let said = Nx.to_array (logits params ~classes:canvas ~hidden) in
-    List.fold (cell_order ~steps) ~init:state ~f:(fun state (step, voice) ->
-      if not hidden.(step).(voice)
-      then state
-      else (
-        let raw = column said ~step ~voice in
-        let next, uniform = Prng.run Prng.uniform state in
-        canvas.(step).(voice) <- Policy.draw_class raw ~temperature ~min_p:0.0 ~uniform;
-        next))
+    over_hidden_cells state ~steps ~hidden ~f:(fun state ~step ~voice ->
+      let raw = column said ~step ~voice in
+      let next, uniform = Prng.run Prng.uniform state in
+      canvas.(step).(voice) <- Policy.draw_class raw ~temperature ~min_p:0.0 ~uniform;
+      next)
   in
   let take_pass state pass =
     let threshold = anneal_threshold ~step:pass ~walk in
@@ -433,13 +445,6 @@ let gate_mask ~index ~steps =
   snd (hidden_cells (Prng.create ~seed:(index + 1)) ~steps ~threshold:(1 lsl 23))
 ;;
 
-(* the checkpoint seam of the expect tests below. The interface states nothing of it: the
-   tests that read it stand in this file, thus nothing outside needs the names. *)
-module For_test = struct
-  let with_checkpoint = Checkpoint.with_checkpoint
-  let refusal ~path f = Checkpoint.scrubbed_refusal ~path f
-end
-
 (* ==================================================================== *)
 (* The gates *)
 (* ==================================================================== *)
@@ -447,7 +452,7 @@ end
 let%expect_test "a checkpoint states its own shape, and the tensors survive the seam" =
   let config = { Config.layers = 4; width = 6 } in
   let params = Params.init config ~seed:11 in
-  For_test.with_checkpoint (Params.to_list params) ~f:(fun path ->
+  Checkpoint.with_checkpoint (Params.to_list params) ~f:(fun path ->
     let { Config.layers; width } = Config.of_checkpoint path in
     printf "the file states %d layers of %d channels\n" layers width;
     let back = Params.load config ~path in
@@ -471,10 +476,10 @@ let%expect_test "a file that is not a canvas model refuses, and the message says
     List.init count ~f:(fun (_ : int) -> Nx.full Nx.float32 shape 0.0)
   in
   let refuse tensors =
-    For_test.with_checkpoint tensors ~f:(fun path ->
+    Checkpoint.with_checkpoint tensors ~f:(fun path ->
       printf
         "%s\n"
-        (For_test.refusal ~path (fun () -> ignore (Config.of_checkpoint path))))
+        (Checkpoint.scrubbed_refusal ~path (fun () -> ignore (Config.of_checkpoint path))))
   in
   refuse (dummy 7 [| 1 |]);
   [%expect {| <file>: 7 tensors is no canvas model |}];

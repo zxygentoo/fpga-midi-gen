@@ -25,11 +25,11 @@ module O = Source_intf.O
 let activation_bits = Quantized.activation_bits
 
 (* one uniform is three bytes of the generator, high byte first *)
-let uniform_bits = 24
-let byte_bits = 8
+let uniform_bits = Prng.uniform_bits
+let byte_bits = Prng.byte_bits
 
 (* the ticks of one cell of a cell walk: three steps of the generator *)
-let cell_ticks = 3
+let cell_ticks = Prng.uniform_bytes
 
 (* The service of one hidden cell, before the draw: three steps, the cycle their last byte
    lands, and the cycle the whole uniform stands and starts the draw. The draw reads
@@ -191,9 +191,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (sel_bottom u.value ~width:(uniform_bits - byte_bits) @: prng_byte)
       u.value
   in
-  let uniform_replica name =
-    add_attribute (reg dspec next_u) (Rtl_attribute.Vivado.dont_touch true) -- name
-  in
+  let uniform_replica name = Column_array.replica (reg dspec next_u) -- name in
   let u_open = uniform_replica "uniform_open" in
   let u_mask = uniform_replica "uniform_mask" in
   let u_draw = uniform_replica "uniform_draw" in
@@ -204,12 +202,15 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     concat_lsb [ lead_running.value; lead_tick.value; lead_seat.value; lead_step.value ]
   in
   let now_word = reg spec (reg spec lead_word) in
-  let at low width = select now_word ~high:(low + width - 1) ~low in
   let tick_width = width lead_tick.value in
-  let now_valid = bit now_word ~pos:0 in
-  let now_tick = at 1 tick_width in
-  let now_seat = at (1 + tick_width) seat_bits in
-  let now_step = at (1 + tick_width + seat_bits) step_bits in
+  (* EACH FIELD IS TAKEN WHERE THE ONE BEFORE IT ENDED, and [lead_word] above states the
+     order: an offset written as a cumulative sum has to be moved by hand when a field is
+     added, and nothing below this frame would say that one was not. *)
+  let field ~low ~width = select now_word ~high:(low + width - 1) ~low, low + width in
+  let now_valid, low = field ~low:0 ~width:1 in
+  let now_tick, low = field ~low ~width:tick_width in
+  let now_seat, low = field ~low ~width:seat_bits in
+  let now_step, (_ : int) = field ~low ~width:step_bits in
   let now_writes = now_valid &: (now_tick ==:. cell_ticks - 1) in
   let phase_done =
     now_writes &: (now_seat ==:. voices - 1) &: (now_step ==:. steps - 1)
@@ -474,47 +475,22 @@ module Bench = struct
         ~config:(Cyclesim.Config.trace `All_named)
         (create ~e ~seed:(of_unsigned_int ~width:32 seed))
     in
-    let waves, sim =
-      if trace
-      then (
-        let waves, sim = Cyclesim.Waveform.create sim in
-        Some waves, sim)
-      else None, sim
-    in
+    let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
     (* the traced nodes answer with the cycle that has just run, thus the ports are read
        on the same edge *)
     let out = Cyclesim.outputs ~clock_edge:Before sim in
-    let node name =
-      Option.value_exn (Cyclesim.lookup_node_by_name sim name) ~message:name
-    in
+    let node = Harness.node sim in
     let cell_step = node "cell_step" in
     let cell_seat = node "cell_seat" in
     let write_class = node "write_class" in
     let cell_class = node "cell_class" in
     let write_mask = node "write_mask" in
     let cell_hidden = node "cell_hidden" in
-    (* the state is a register and not a node, thus it is looked up as either *)
-    let state =
-      Option.value_exn
-        (Cyclesim.lookup_node_or_reg_by_name sim "walk_state")
-        ~message:"walk_state"
-    in
-    let service =
-      Option.value_exn
-        (Cyclesim.lookup_node_or_reg_by_name sim "service_state")
-        ~message:"service_state"
-    in
-    let index which =
-      fst (List.findi_exn State.all ~f:(fun (_ : int) s -> State.compare s which = 0))
-    in
-    let sindex which =
-      fst (List.findi_exn Service.all ~f:(fun (_ : int) s -> Service.compare s which = 0))
-    in
-    let spent = Array.create ~len:(List.length State.all) 0 in
-    let entered = Array.create ~len:(List.length State.all) None in
-    let service_spent = Array.create ~len:(List.length Service.all) 0 in
-    let service_entered = Array.create ~len:(List.length Service.all) None in
+    let state = node "walk_state" in
+    let service = node "service_state" in
+    let spent = Harness.Tally.create (module State) in
+    let service_spent = Harness.Tally.create (module Service) in
     let writes = ref [] in
     let cycles = ref 0 in
     (* THE STATE REGISTER READS ONE CYCLE AHEAD. A combinational node answers with the
@@ -522,8 +498,10 @@ module Bench = struct
        into it, which is the state of the cycle to come. The bench therefore carries the
        reading one cycle, and the writes it counts beside it stay in step — a bench that
        did not would name every span in the wrong place and no gate would say so. *)
-    let standing = ref (index Idle) in
-    let serving = ref (sindex Service.Idle) in
+    let at_rest = Harness.Tally.encoded spent Idle in
+    let serving_rest = Harness.Tally.encoded service_spent Service.Idle in
+    let standing = ref at_rest in
+    let serving = ref serving_rest in
     let cycle () =
       Cyclesim.cycle sim;
       let at = !standing in
@@ -532,13 +510,9 @@ module Bench = struct
       serving := Cyclesim.Node.to_int service;
       (* ONE CYCLE, ONE OWNER: a cycle the service is out of its rest is the service's and
          not the [Serve] the walk parks in *)
-      if sat = sindex Service.Idle
-      then (
-        spent.(at) <- spent.(at) + 1;
-        if Option.is_none entered.(at) then entered.(at) <- Some !cycles)
-      else (
-        service_spent.(sat) <- service_spent.(sat) + 1;
-        if Option.is_none service_entered.(sat) then service_entered.(sat) <- Some !cycles);
+      if sat = serving_rest
+      then Harness.Tally.count spent ~encoded:at ~cycle:!cycles
+      else Harness.Tally.count service_spent ~encoded:sat ~cycle:!cycles;
       Int.incr cycles;
       let take ~mask value =
         writes
@@ -565,14 +539,12 @@ module Bench = struct
       + 4096
     in
     let rewind () =
-      Array.fill spent ~pos:0 ~len:(Array.length spent) 0;
-      Array.fill entered ~pos:0 ~len:(Array.length entered) None;
-      Array.fill service_spent ~pos:0 ~len:(Array.length service_spent) 0;
-      Array.fill service_entered ~pos:0 ~len:(Array.length service_entered) None;
+      Harness.Tally.clear spent;
+      Harness.Tally.clear service_spent;
       writes := [];
       cycles := 0;
-      standing := index Idle;
-      serving := sindex Service.Idle;
+      standing := at_rest;
+      serving := serving_rest;
       inp.rewind := Bits.vdd;
       cycle ();
       inp.rewind := Bits.gnd;
@@ -601,11 +573,11 @@ module Bench = struct
     { rewind
     ; play
     ; writes = (fun () -> List.rev !writes)
-    ; spent = (fun which -> spent.(index which))
+    ; spent = Harness.Tally.spent spent
     ; cycles = (fun () -> !cycles)
-    ; entered = (fun which -> entered.(index which))
-    ; service_spent = (fun which -> service_spent.(sindex which))
-    ; service_entered = (fun which -> service_entered.(sindex which))
+    ; entered = Harness.Tally.entered spent
+    ; service_spent = Harness.Tally.spent service_spent
+    ; service_entered = Harness.Tally.entered service_spent
     ; waves
     }
   ;;
@@ -803,7 +775,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   (* THE SERVICE AS A PICTURE, at the era's own P and a canvas of three steps. The seat
      registers are the corpus's, thus this unit refuses a narrower P and the picture
      cannot shrink the draw the way the engine's picture shrinks the dwell: what a window
-     holds is the ORDER of the service, and the draw's 147 cycles stand between the two.
+     holds is the ORDER of the service, and the draw's 155 cycles stand between the two.
 
      WINDOW ONE is the level rising and the two seats behind it. [step_ready] stands, and
      the walk reads [hidden] at seat 0 for ONE CYCLE: that seat stands, thus it costs the

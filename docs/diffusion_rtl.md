@@ -1597,3 +1597,14 @@ items, so the seams stay clean:
 - **The seed succession.** The rule that names the seed of canvas k is a
   contract to pin with `play_diffusion -seeds` and the JAX handoff before
   phase II elaborates.
+- **The frames as interfaces.** The lead and now frames of `Forward` and of
+  `Source` are packed by hand: a `concat_lsb`, two registers on the word,
+  and a `field` unpacker that restates each width. An interface record
+  with `[@bits]` and `Of_signal.pipeline` is the same registers under their
+  own names, and it deletes the packer, the unpacker and the restated
+  widths in both files. It waits here and not in the simplify round because
+  it changes the netlist — one wide register becomes several narrow ones —
+  thus the `top.v` md5 gate cannot cover it, and the timing lottery asks
+  for a build. Phase II reopens `Forward`'s frames and owes that build. One
+  check at the time: `Of_signal.pipeline` must take the `~enable:run` that
+  `Forward`'s `hold` gives its registers.

@@ -62,6 +62,17 @@ end
     epilogue, the draw and the walk each state it to Vivado through this function. *)
 val no_dsp : Signal.t -> Signal.t
 
+(** [replica copy] states one copy of a broadcast and keeps it apart from its siblings.
+
+    RING 3'S RULE. No net of this design's scale keeps a single driver, thus a broadcast
+    stands as one register for each slice of its consumers and every copy is [dont_touch]
+    — so the tools neither merge the copies back into one net nor absorb them into the
+    primitives they feed. The weight bank and the capture bank here, the band takes and
+    the column-slice takes of [Forward], and the walk's own uniform in [Source] are all
+    this rule; it stands beside [no_dsp] and [slice_rows] because those are the same
+    family, and a placement contract with one home cannot be half kept. *)
+val replica : Signal.t -> Signal.t
+
 (** the rows one replica slice covers: 8.
 
     Ring 3's rule, and the array's own scale is what imposes it — no net of this scale

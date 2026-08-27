@@ -48,9 +48,14 @@
     registers its entry but takes the shift from its magnitude as it stands, thus it asks
     a caller to hold that magnitude for two cycles — which a walk of 48 classes would pay
     twice over. [Exp2] here registers the shift beside the entry, thus the walks step a
-    class a cycle and a draw is [classes] + ([classes] + 1) + 1 + ([classes] + 1) cycles.
-    A table walk takes one cycle more than its classes because the weight of the last
-    class stands one cycle behind its magnitude.
+    class a cycle.
+
+    THE WEIGHT OF A CLASS STANDS FOUR CYCLES BEHIND THE CYCLE THAT NAMED IT — the walk
+    register, the temper register and [Exp2]'s own two — thus a table walk takes four
+    cycles more than its classes, and a draw is the peak walk of [classes] + 1, the
+    weights of [classes] + 4, two cycles for the threshold, and the pick of [classes] + 4.
+    [busy_cycles] states that sum and the gate below prints it: 155 at the era's 48
+    classes.
 
     What a caller must know:
 

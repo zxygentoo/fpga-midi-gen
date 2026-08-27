@@ -109,9 +109,6 @@ module Model : sig
   (** the byte base of each kernel inside the image, in layer order *)
   val rom_bases : t -> int array
 
-  (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)
-  val rom_tensors : t -> quantized list
-
   module For_test : sig
     (** the shape of a test model: small enough for an expect test, the same structure as
         the era's *)
@@ -120,6 +117,9 @@ module Model : sig
     (** [init config ~seed]: a model of drawn weights under the draw of the era, thus a
         test reads no checkpoint and no file that git ignores *)
     val init : Diffusion.Config.t -> seed:int -> t
+
+    (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)
+    val rom_tensors : t -> quantized list
   end
 end
 
@@ -142,15 +142,10 @@ module For_test : sig
   val plane_activations : int array array -> bool array array -> steps:int -> int array
 
   (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
-      of one step and one plane, row 0 first. The tensor's index rule stands beside the
-      tensor, thus a gate reads a column and never an index. *)
+      of one step and one plane, row 0 first. The index rule itself is
+      [Diffusion.tensor_column]'s — every tensor of the era reads as
+      [steps; rows; channels] — thus what this states is the plane count alone. *)
   val plane_column : int array -> step:int -> plane:int -> int array
-
-  (** [tensor_column x ~step ~channel ~channels] is one column of ANY tensor of the twin:
-      the [rows] values that one step and one channel hold. Every tensor here reads as
-      [steps; rows; channels] — the stem's planes, a layer's output, the head's logits —
-      thus one index rule serves them all and a gate slices no tensor by hand. *)
-  val tensor_column : int array -> step:int -> channel:int -> channels:int -> int array
 
   (** [layer_writes model classes hidden ~steps] is the destination tensor of every layer
       AS WRITTEN, in the layer order: the stem's, then for each pair the tensor its

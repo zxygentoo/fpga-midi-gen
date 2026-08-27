@@ -71,9 +71,12 @@
     - **A pass leaves the stores as it found them, except X**, which the head reads and
       nothing after the stem writes from the canvas. The walk needs no clear: every column
       a layer reads was written by the layer before it, in the same pass.
-    - **THE STORE WRITE SIGNALS CARRY PINNED NAMES**: [x_write], [x_address], [x_data] and
-      the same for Y, beside [state] for the counters of the cycle bench. The stream gate
-      probes them by name, thus a rename cannot silently blind it.
+    - **THE STORE WRITE SIGNALS CARRY PINNED NAMES**: [x_write], [y_write], [x_data],
+      [y_data] and the one [flush_address] both destinations share, beside [state] for the
+      counters of the cycle bench. The stream gate probes them by name, thus a rename
+      cannot silently blind it. The address is ONE name because one flush nest states both
+      destinations: Y's port carries a ring address below it, but the COLUMN a write means
+      is the nest's own and is the same for X and for Y.
     - There is no clear on the datapath or the memories: what is real is what the strobes
       mark. The counters, the state and [busy] clear. *)
 
