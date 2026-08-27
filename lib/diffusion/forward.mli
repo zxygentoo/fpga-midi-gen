@@ -36,11 +36,17 @@
     onto the address pins of every primitive and rebuild the address cone inside each one.
     Every read of this unit is therefore two cycles, and the schedule is written on that.
 
-    **THE WEIGHT ROM STANDS IN THE BANKS [Elaboration.weight_banks] PLANS**, because
-    Vivado pads an inferred ROM to its full address space and warns of nothing. The one
-    counter feeds every bank as it stands, each bank keeps its own data register, and one
-    mux behind them selects by the top address bits — carried two cycles behind, as the
-    data is. The read is the two cycles it always was and no counter moves.
+    **EVERY MEMORY STANDS IN THE BANKS ITS PLAN STATES, AND ONE PORT BUILDS THEM ALL** —
+    the weight ROM in [Elaboration.weight_banks], each activation store in
+    [Elaboration.store_banks] — because Vivado rounds the depth of an inferred memory up
+    to a power of two and warns of nothing. The one address feeds every bank as it stands,
+    each bank keeps its own data register — the block RAM's own latch — and the mux stands
+    BEHIND those registers, selecting by the top address bits held twice, in step with the
+    address and with the data. A mux before the data register evicts that register into
+    fabric and the address cone lands on the memory's pins instead; the first banked build
+    measured it and lost setup by 0.354. Where the mux is a whole column wide the select
+    rides one replica for each slice of the column, as every array-scale take does. The
+    read is the two cycles it always was and no counter moves.
 
     What a caller must know:
 

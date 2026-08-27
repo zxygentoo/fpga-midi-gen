@@ -15,12 +15,14 @@
       group that runs past a layer's channels pads with zero bytes — those lanes multiply
       by zero and the drain does not read them — thus each [(tap, input channel)] row of
       the image is a whole number of words.
-    - **THE WEIGHT ROM IS BANKED, AND A BANK IS A POWER OF TWO.** Vivado pads an inferred
-      ROM to its full address space and says nothing: rung 2's image asked 64 tiles
-      against 49 free and the mapper demoted every ROM of the design to fabric.
-      [weight_banks] is the plan that takes the padding back — the concatenation of the
-      banks IS [weight_rom] in the dwell order, thus the banking is a permutation of
-      ADDRESS SPACE and never of values, and [to_string] prints the plan and its pad.
+    - **THE MEMORIES ARE BANKED, AND A BANK IS A POWER OF TWO.** Vivado pads an inferred
+      memory to its full address space and says nothing: rung 2's image asked 64 tiles
+      against 49 free and the mapper demoted every ROM of the design to fabric, and a
+      store of 1280 columns maps as [2048x768]. [weight_banks] and [store_banks] are the
+      plans that take the padding back — the concatenation of the weight banks IS
+      [weight_rom] in the dwell order, thus the banking is a permutation of ADDRESS SPACE
+      and never of values, and [to_string] prints both plans. A store carries no image:
+      the circuit writes it, and only the tiling is banked.
     - **A layer's role states its two ends, its ReLU and its residual together.** There
       are no independent flags that can disagree with each other.
     - **The cycle counts are exact and not bounds.** [create] refuses a layer whose dwell
@@ -51,13 +53,14 @@ type layer =
   ; norm_base : int (** the first word of this layer in [norm_rom] *)
   }
 
-(** One bank of the weight ROM: where it starts in [weight_rom], and the words it
+(** One bank of a memory: where it starts in the flat address space, and the words it
     addresses. THE DEPTH IS A POWER OF TWO AND THE BASE IS A MULTIPLE OF IT, thus the
     offset inside a bank is the LOW BITS of the flat address and the bank is the bits
-    above them: no subtractor stands on the address side, and the circuit's one weight
-    counter feeds every bank as it stands. The banks tile [weight_rom] from address zero,
-    and the last of them pads. *)
-type weight_bank =
+    above them: no subtractor stands on the address side, and the circuit's one address
+    feeds every bank as it stands. The banks tile the space from address zero, and the
+    last of them pads. The weight ROM and the two activation stores bank by the one rule;
+    only the ROM carries an image. *)
+type bank =
   { base : int
   ; depth : int
   }
@@ -77,13 +80,18 @@ type t =
       the group, then the input channel, then the tap. One column's dwell therefore walks
       a layer's whole range straight through, thus the circuit's ROM address is ONE
       COUNTER that reloads once for each column; any other order makes it a stride. *)
-  ; weight_banks : weight_bank array
+  ; weight_banks : bank array
   (** how the weight image is banked over the memories: 8192 and 512 at rung 1, 32768 and
       4096 at rung 2. The plan is the top bit of the word count and one tail, taken only
       where it costs less than one bank, and a bank is never below 512 words — the
       smallest tile a word of this width fills. The image does not move: a bank holds
       [weight_rom] from [base] for [depth] words, and the words above the last are the
       pad. *)
+  ; store_banks : bank array
+  (** how each of the two activation stores is banked over the memories: the same plan
+      over [store_depth]. One bank of 2048 at rung 2; 2048 and 512 at T 128 and H 20,
+      where one memory of 2560 columns would map as 4096 and cost 86 tiles against 54. A
+      store holds no image, thus a bank of it is a range of columns and nothing more. *)
   ; norm_rom : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
       low [bias_bits], the shift in the [shift_bits] above it, and the value of the gain
@@ -155,8 +163,8 @@ val channel_of : t -> group:int -> lane:int -> int
 
 (** [weight_bank_image t bank] is the bank as the bitstream carries it: the bank's slice
     of [weight_rom], and then its pad of zero words. It is what initializes one weight
-    memory of the circuit. *)
-val weight_bank_image : t -> weight_bank -> Hardcaml.Bits.t array
+    memory of the circuit. A store has no image, thus this belongs to the ROM alone. *)
+val weight_bank_image : t -> bank -> Hardcaml.Bits.t array
 
 (** the bits a store address takes: [address_bits_for (store_depth t)] *)
 val store_bits : t -> int
@@ -242,13 +250,13 @@ module Rtl : sig
         bits. *)
     val channel_of : pin:(Comb.t -> Comb.t) -> t -> group:Comb.t -> lane:Comb.t -> Comb.t
 
-    (** [weight_bank t ~address] is which bank of [weight_banks] holds a flat weight
-        address, at [address_bits_for (Array.length t.weight_banks)] bits: the last bank
-        whose base the address has reached. The offset inside the bank is the low bits of
-        the same address, thus the address side holds no subtractor and the select is the
-        top address bits alone. A caller carries the answer beside the DATA and not beside
-        the address — the banks answer two cycles behind. *)
-    val weight_bank : t -> address:Comb.t -> Comb.t
+    (** [bank_at banks ~address] is which bank of [banks] holds a flat address, at
+        [address_bits_for (Array.length banks)] bits: the last bank whose base the address
+        has reached. The offset inside the bank is the low bits of the same address, thus
+        the address side holds no subtractor and the select is the top address bits alone.
+        A caller carries the answer beside the DATA and not beside the address, and holds
+        it as many times as the data is registered before the mux. *)
+    val bank_at : bank array -> address:Comb.t -> Comb.t
 
     (** [norm_fields word] slices one word of [norm_rom]: the inverse of [norm_word], and
         the only reader of the field order besides it. *)

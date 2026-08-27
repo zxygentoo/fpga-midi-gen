@@ -120,21 +120,32 @@ struct
      is invisible outside these helpers. *)
   let column_slices = Column_array.slices_for ~rows
 
-  let slice_range s =
+  (* the replica slices of a word of [bits]: [Column_array.slice_rows] rows of activations
+     each, and the last one short. A column bank takes these of a column; the bank mux of
+     a store takes the same slices of the same word. *)
+  let word_slices bits =
     let span = Column_array.slice_rows * activation_bits in
-    let low = s * span in
-    let high = min column_bits (low + span) - 1 in
-    high, low
+    List.init
+      ((bits + span - 1) / span)
+      ~f:(fun s ->
+        let low = s * span in
+        min bits (low + span) - 1, low)
   ;;
 
+  let column_slice_ranges = word_slices column_bits
+  let slice_range s = List.nth_exn column_slice_ranges s
   let bank_value bank = concat_lsb (List.map bank ~f:(fun v -> v.Always.Variable.value))
 
-  let replicated_takes make =
-    List.init column_slices ~f:(fun s ->
+  (* [replicas ~count make] is [count] statements of the same signal, all but the first
+     [dont_touch] so the tools keep the copies apart *)
+  let replicas ~count make =
+    List.init count ~f:(fun s ->
       if s = 0
       then make ()
       else add_attribute (make ()) (Rtl_attribute.Vivado.dont_touch true))
   ;;
+
+  let replicated_takes make = replicas ~count:column_slices make
 
   let create (i : _ I.t) : _ O.t =
     let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
@@ -294,40 +305,77 @@ struct
     (* the memories: the address registers before them and the data registers behind them,
        which is era four's rule and the reason every read of this unit is two cycles *)
     (* ---------------------------------------------------------------- *)
-    (* ONE BLOCK MEMORY, READ ERA FOUR'S WAY: [hold] stands on the address and again on
-       the data, thus the tools cannot retime the data register onto the address pins and
-       rebuild the address cone inside each primitive. A ROM is this same port with an
-       image behind it and a write side that is wired off — one statement of the rule, and
-       the two kinds of memory cannot drift apart in it. *)
-    let block_memory
-      ?initialize_to
-      ~size
-      ~address
-      ~write_enable
-      ~write_address
-      ~write_data
-      ()
-      =
-      (multiport_memory
-         ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
-         ?initialize_to
-         size
-         ~write_ports:
-           [| { Write_port.write_clock = i.clock
-              ; write_address
-              ; write_enable
-              ; write_data
-              }
-           |]
-         ~read_addresses:[| hold address |]).(0)
-      |> hold
+    (* ONE BANKED MEMORY PORT, AND BOTH MEMORY CLASSES READ THROUGH IT. The weight ROM and
+       the two activation stores differ in one thing — the ROM's banks carry an image and
+       the stores' banks are written — thus one port states the rule for both and neither
+       can drift from it.
+
+       READ ERA FOUR'S WAY: [hold] stands on the address and again on the data, thus the
+       tools cannot retime the data register onto the address pins and rebuild the address
+       cone inside each primitive. THE DATA HOLD STANDS INSIDE THE BANK, because it is the
+       block RAM's own latch: evict it into fabric and Vivado absorbs the ADDRESS hold
+       into the latch instead, and the whole address cone lands on the pins. The first
+       banked build measured exactly that — 1424 registers into fabric, an eight-level
+       cone on a store's address pins, and setup lost by 0.354.
+
+       AND EACH MEMORY STANDS IN THE BANKS ITS PLAN STATES. Vivado rounds the depth of a
+       RAM up to a power of two as it rounds a ROM's, and warns of nothing: the rung-3
+       measurement build of 2026-08-27 mapped a store of 1280 columns as [2048x768], the
+       same 43 tiles rung 2 pays for 2048. One memory for each bank; the one address feeds
+       all of them as it stands, because a base is a multiple of its own bank's depth and
+       the offset is therefore the low bits; and a write reaches the bank its own address
+       selects.
+
+       THE MUX STANDS BEHIND THE DATA HOLDS, thus the select rides two [hold]s — one in
+       step with the address hold and one with the data hold. No cycle is added: the read
+       is the two it always was, and nothing stands between a bank and its own latch. The
+       select rides one replica for each slice of the word: a weight word of [lanes] bytes
+       is one slice, a column of 768 bits is six, as every array-scale take.
+
+       WITH ONE BANK NONE OF THIS ELABORATES — no mux, no select, and the write enable
+       passes as it stands — thus a shape that does not bank builds the memory it always
+       did. *)
+    let block_memory ?image ~banks ~address ~write_enable ~write_address ~write_data () =
+      let bank_write_enable =
+        if Array.length banks = 1
+        then fun (_ : int) -> write_enable
+        else (
+          let select = Elaboration.Rtl.bank_at banks ~address:write_address in
+          fun at -> write_enable &: (select ==:. at))
+      in
+      let read_bank at (bank : Elaboration.bank) =
+        let bits = address_bits_for bank.depth in
+        (multiport_memory
+           ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
+           ?initialize_to:(Option.map image ~f:(fun words -> words bank))
+           bank.depth
+           ~write_ports:
+             [| { Write_port.write_clock = i.clock
+                ; write_address = uresize write_address ~width:bits
+                ; write_enable = bank_write_enable at
+                ; write_data
+                }
+             |]
+           ~read_addresses:[| hold (uresize address ~width:bits) |]).(0)
+        |> hold
+      in
+      match List.mapi (Array.to_list banks) ~f:read_bank with
+      | [ read ] -> read
+      | reads ->
+        let slices = word_slices (width (List.hd_exn reads)) in
+        replicas ~count:(List.length slices) (fun () ->
+          hold (hold (Elaboration.Rtl.bank_at banks ~address)))
+        |> List.map2_exn slices ~f:(fun (high, low) which ->
+          mux which (List.map reads ~f:(fun read -> select read ~high ~low)))
+        |> concat_lsb
     in
-    (* a ROM is the same port with an image behind it and its write side wired off *)
+    (* a ROM of one bank is the same port with an image behind it and its write side wired
+       off: the norms want it, and nothing about them asks for a plan *)
     let rom image address =
       let size = Array.length image in
       block_memory
-        ~initialize_to:image
-        ~size
+        ~image:(fun (_ : Elaboration.bank) -> image)
+        ~banks:[| { Elaboration.base = 0; depth = size } |]
         ~address
         ~write_enable:gnd
         ~write_address:(zero (address_bits_for size))
@@ -338,32 +386,23 @@ struct
        column's dwell walks a layer's whole range straight through and the address reloads
        one time for each column. *)
     let weight_address = Variable.reg spec ~width:weight_bits in
-    (* THE WEIGHT ROM STANDS IN BANKS, AND THE MUX STANDS BEHIND THE DATA REGISTERS.
-       Vivado pads an inferred ROM to its full address space and warns of nothing: rung 2
-       asked 64 tiles against 49 free and the mapper demoted every ROM of the design to
-       fabric. The elaboration takes the padding back by cutting the image into banks of a
-       power of two, and what the circuit owes that plan is ONE MUX — placed where it
-       costs nothing.
-
-       The one counter feeds every bank as it stands, and each bank keeps ITS OWN data
-       register, era four's rule for each of them and each one absorbable as its BRAM's
-       output register. The mux selects among the REGISTERED outputs, by a select that
-       rides the same two [hold]s the data rides. Thus nothing stands between a bank and
-       its data register, and nothing stands between the counter and the memories; and the
-       mux stands BEFORE the operand replicas of the array, thus the replica bank still
-       breaks the broadcast and the mux's own fanout is the replica count and no more. No
-       cycle is added: the read is the two it always was. *)
+    (* THE WEIGHT ROM STANDS IN THE BANKS ITS PLAN STATES, and the port above is the whole
+       of what the circuit owes that plan. Vivado pads an inferred ROM to its full address
+       space and warns of nothing: rung 2 asked 64 tiles against 49 free and the mapper
+       demoted every ROM of the design to fabric. The one counter feeds every bank as it
+       stands, and the mux stands behind the data holds, thus nothing stands between the
+       counter and the memories nor between a bank and its own latch. The mux is also
+       BEFORE the operand replicas of the array, thus the replica bank still breaks the
+       broadcast and the mux's own fanout is the replica count and no more. *)
     let weights =
-      (* THE OFFSET INSIDE A BANK IS THE LOW BITS OF THE FLAT ADDRESS. A base is a
-         multiple of its own bank's depth, thus nothing subtracts on the address side. *)
-      let read_bank (bank : Elaboration.weight_bank) =
-        rom
-          (Elaboration.weight_bank_image e bank)
-          (uresize weight_address.value ~width:(address_bits_for bank.depth))
-      in
-      mux
-        (hold (hold (Elaboration.Rtl.weight_bank e ~address:weight_address.value)))
-        (List.map (Array.to_list e.weight_banks) ~f:read_bank)
+      block_memory
+        ~image:(Elaboration.weight_bank_image e)
+        ~banks:e.weight_banks
+        ~address:weight_address.value
+        ~write_enable:gnd
+        ~write_address:(zero weight_bits)
+        ~write_data:(zero (Bits.width e.weight_rom.(0)))
+        ()
     in
     (* ---------------------------------------------------------------- *)
     (* the bands: the window, the residual columns, the output columns and the norm bank *)
@@ -495,7 +534,7 @@ struct
        the same layer *)
     let x_read =
       block_memory
-        ~size:(Elaboration.store_depth e)
+        ~banks:e.store_banks
         ~address:(mux2 is_join residual_address tap_address)
         ~write_enable:x_write
         ~write_address:x_address
@@ -504,7 +543,7 @@ struct
     in
     let y_read =
       block_memory
-        ~size:(Elaboration.store_depth e)
+        ~banks:e.store_banks
         ~address:tap_address
         ~write_enable:y_write
         ~write_address:y_address
@@ -1132,19 +1171,20 @@ let%expect_test "the store writes are the twin's, write for write" =
       match layer.role with
       | Head -> head_columns expected
       | Stem | Pair_open | Pair_close -> store_columns layer expected);
-    (* THE PLAN STANDS IN THE LINE, thus a shape that stops crossing a bank says so here
-       and does not leave the select and the offset untested in silence. *)
-    let banks =
+    (* THE TWO PLANS STAND IN THE LINE, thus a shape that stops crossing a bank says so
+       here and does not leave a select and an offset untested in silence. *)
+    let plan banks =
       String.concat
         ~sep:" + "
-        (List.map (Array.to_list elaboration.weight_banks) ~f:(fun bank ->
+        (List.map (Array.to_list banks) ~f:(fun (bank : Elaboration.bank) ->
            Int.to_string bank.depth))
     in
     printf
-      "%s: the weights bank %s; %d columns written, %d steps offered, %d columns checked \
-       — %d part, %d misplaced\n"
+      "%s: the weights bank %s, the stores bank %s; %d columns written, %d steps \
+       offered, %d columns checked — %d part, %d misplaced\n"
       name
-      banks
+      (plan elaboration.weight_banks)
+      (plan elaboration.store_banks)
       (List.length pass.written)
       (List.length pass.offered)
       !checked
@@ -1158,11 +1198,18 @@ let%expect_test "the store writes are the twin's, write for write" =
      rung's own image banks, thus a shape that never crosses a bank would leave the select
      and the offset untested until a board. *)
   case ~name:"H 8, G 4, three pairs, T 6" ~width:8 ~lanes:4 ~pairs:3 ~steps:6 ~seed:3;
+  (* A STORE THAT REALLY BANKS: 129 steps of 8 channels make a store of 1 032 columns,
+     which plans as 1 024 and 512, thus this case reads and writes THROUGH the store's
+     bank mux and its write select where the three above stand in one bank each. The
+     elected geometry banks its stores at T 128 and H 20, thus a shape that never crosses
+     would leave the split untested until a board. *)
+  case ~name:"H 8, G 2, one pair,   T 129" ~width:8 ~lanes:2 ~pairs:1 ~steps:129 ~seed:4;
   [%expect
     {|
-    H 8, G 2, two pairs, T 6: the weights bank 2048; 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
-    H 7, G 3, one pair,  T 5: the weights bank 1024; 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
-    H 8, G 4, three pairs, T 6: the weights bank 1024 + 512; 336 columns written, 6 steps offered, 360 columns checked — 0 part, 0 misplaced
+    H 8, G 2, two pairs, T 6: the weights bank 2048, the stores bank 512; 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
+    H 7, G 3, one pair,  T 5: the weights bank 1024, the stores bank 512; 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
+    H 8, G 4, three pairs, T 6: the weights bank 1024 + 512, the stores bank 512; 336 columns written, 6 steps offered, 360 columns checked — 0 part, 0 misplaced
+    H 8, G 2, one pair,   T 129: the weights bank 1024, the stores bank 1024 + 512; 3096 columns written, 129 steps offered, 3612 columns checked — 0 part, 0 misplaced
     |}]
 ;;
 

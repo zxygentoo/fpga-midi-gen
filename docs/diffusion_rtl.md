@@ -206,11 +206,24 @@ three-column band of conv1's output, thus the intermediate tensor never
 exists in full: the engine streams a pair for each column, holds a
 five-column band of X and a three-column band of Y, and the pair output
 overwrites X in place, trailing the reads by two columns. One full tensor
-plus bands is about 57 tiles, and the golden candidate lands near 104 of
+plus bands is about 58 tiles, and the golden candidate lands near 105 of
 135 at G 5 — with the same cycle count, because fusion moves memory, not
 work. The rejected alternative — int8 activations with per-layer exponents
 — respins the twin, re-runs the drift election and moves Gate B's target;
 it returns only if fusion fails or the stretch round wants the tiles.
+
+**A STORE PADS AS A ROM PADS, AND THE BANKING IS WHAT KEEPS THESE NUMBERS
+TRUE.** The rung-3 measurement build of 2026-08-27 mapped each store of
+1 280 columns as `2048x768`. At T 128 and H 20 a store is 2 560 columns:
+one memory rounds to 4 096 and costs 86 tiles alone — more than the whole
+activation column of the table above — while the ROM's plan banks it as
+2 048 + 512 for 43 + 11 = 54. The stores are banked, thus the fused pair
+inherits a store that costs its columns and not its address space.
+
+**BANKING DOES NOT MAKE THE UNFUSED CANDIDATE FIT.** Two stores at 54, the
+weight image at 42 and the small state at 1 are 151 of 135, which is the
+same refusal the table states. The fused pair is what buys the candidate,
+and this round only makes the tile it inherits an honest one.
 
 ### The walk and the layer table
 
@@ -422,6 +435,18 @@ never of values: the concatenation of the banks is the flat image in the dwell
 order, and the elaboration's gate walks that concatenation with the circuit's
 own counter, its own bank decode and its own offset.
 
+**THE PLAN IS THE ROM'S BUT IT IS NOT THE ROM'S ALONE, AND ONE PORT BUILDS
+BOTH.** The two activation stores bank by the same rule and the same code —
+`bank_plan` states a plan, `Rtl.bank_at` decodes one, and `block_memory` builds
+one — because the mapper rounds a RAM's depth as it rounds a ROM's. "The
+memories and their ports" holds the measurement and the tiles. The two classes
+differ in one thing: a ROM's banks carry an image and a store's banks are
+written. Everything else is one statement — the address held once at the pins,
+the data held inside each bank, the mux behind those holds, the select held
+twice. Where the mux is a whole column wide the select rides one `dont_touch`
+replica for each slice of the column, as every array-scale take does. No cycle
+is added at either class.
+
 ### The drain
 
 At the end of a dwell **all P by G accumulators finish in the SAME cycle**,
@@ -487,7 +512,7 @@ accumulator is a guess that one rung happens to survive.
 
 | memory | shape | traffic |
 |---|---|---|
-| X and Y | `T * H` columns by `P * 16` bits | one column read each three cycles; G column writes each group |
+| X and Y | `T * H` columns by `P * 16` bits, in banks of a power of two | one column read each three cycles; G column writes each group |
 | the weight ROM | the packed image in banks of a power of two, G bytes each word | one word each cycle |
 | the constants | gain and bias, one entry for each output channel | G entries each group |
 | the canvas | `T` by `voices` classes | registers |
@@ -517,6 +542,15 @@ states a padded depth, and it states it as the tool's INTENT: rung 2's first
 build lists `65536x32 | Block RAM` for an image of 36 144 words, and then, in
 the SAME table, lists `65536x32 | LUT` again — the demoted copy. Reading the
 two rows together is what names the demotion; there is no message that does.
+
+**AND A RAM PAYS THE SAME, WHICH THE RUNG-3 MEASUREMENT BUILD IS WHAT SAYS.**
+`report_ram_utilization -detail` names each store by its mapped dimension, and
+at T 64 and H 20 — 1 280 columns — both read `2048x768`, the very 43 tiles
+rung 2 pays for 2 048 columns. The mapper rounds the depth of a RAM up to a
+power of two as it rounds a ROM's. THE STORES ARE THEREFORE BANKED BY THE ROM'S
+OWN PLAN, `Elaboration.store_banks`, and the tiles follow the columns instead
+of the address space: 2 560 columns are 43 + 11 = 54 tiles banked as
+2 048 + 512, against 86 for one memory the mapper rounds to 4 096.
 
 **BUT SILENCE IN THAT TABLE PROVES NOTHING.** The same weight ROM at rung 1
 appears in NO mapping table at all — not the ROM one and not the block RAM
@@ -718,8 +752,8 @@ The climb, at T 128, N 512, inside the 25.6-second playback window
 |---|---|---|---|---|---|---|
 | `l16-h16` | 34 k | ~9 | ~88 | ~100 (74%) | 1.09 M | 5.6 s |
 | `l64-h16` | 147 k | ~36 | ~88 | ~127 (94%) | 4.63 M | 23.7 s |
-| `l48-h20` unfused | 170 k | ~42 | ~107 | ~152 — OVER | — | — |
-| `l48-h20` fused, G 5 | 170 k | ~42 | ~57 | ~104 (77%) | 4.30 M | 22.0 s |
+| `l48-h20` unfused | 170 k | ~42 | ~108 | ~151 — OVER | — | — |
+| `l48-h20` fused, G 5 | 170 k | ~42 | ~58 | ~105 (78%) | 4.30 M | 22.0 s |
 
 The cycle numbers are the formula's ideal at 192 lanes (240 for the fused
 G 5 row) and land within a percent of `MAC / lanes`, because the geometry
@@ -1125,6 +1159,122 @@ byte gate passed twice, byte for byte.
 bitstream, the same rig and the same seed, answers the only question that
 matters — the build or the method — in three minutes. It is what separated
 this trap from a false reference in one step.
+
+### The store round — a store pads as a ROM pads
+
+A measurement build of `l48-h20-100k` at T 64, G 5, N 512 ran 2026-08-27 to
+ask one question of the golden candidate — does an array of 240 DSPs place and
+route — and answered a second one nobody had asked. Its reports stand in
+`board/_build/rung3-unbanked/`.
+
+| | rung 2 (in flash) | `l48-h20` at T 64, G 5 |
+|---|---|---|
+| LUTs / registers | 21 455 / 23 818 | 24 127 / 25 699 |
+| DSPs | 192 | **240 of 240** |
+| block RAM tiles | 124 | 129 of 135 |
+| WNS / WHS | +0.018 / +0.029 | **+0.216** / +0.008 |
+| `Physopt 32-703` | 1 | 0 |
+
+**THE ARRAY AT 240 DSPS BUILDS.** The build met with the healthiest setup
+margin of any build of this design, and the worst path is in the DRAW —
+`uniform_open_reg[7]`, 12 levels, six of them carry — and not in the array.
+The one number under its line is WHS +0.008, a hair below the hold
+instrument's 0.010; the mortgage the instrument really hunts is absent, and no
+bitstream came out of this build, thus the build stands as a measurement and
+not as a candidate.
+
+**AND THE STORES PAD.** `report_ram_utilization -detail` maps each store of
+1 280 columns as `2048x768`, 43 tiles — the same 43 rung 2 pays for 2 048
+columns. The 129 account exactly: 86 for the two stores, 40 and 2 for the two
+weight banks, and two RAMB18 for the norms and the anneal table. The mapper
+rounds the depth of a RAM up to a power of two as it rounds a ROM's, and the
+ROM round's whole finding therefore holds one memory class wider than it was
+written for.
+
+**THE COST IS AT T 128 AND NOT HERE.** A store of 2 560 columns rounds to
+4 096 and costs 86 tiles alone; banked as 2 048 + 512 it costs 43 + 11 = 54.
+The design change is `Elaboration.store_banks` and the banked port of "The
+weight ROM". Rung 2 banks its 2 048 columns in ONE bank, thus nothing of the
+plan reaches it: the port folded the ROM's hand-built mux into itself and moved
+the constant table, thus the Verilog is not byte-identical, but rung 2 rebuilt
+from it reads 21 455 LUTs, 23 818 registers, 124 tiles, 192 DSPs and
+WNS +0.018 / WHS +0.029 — every number of the flashed build, not a band around
+them (`board/_build/rung2-port`). Nothing on the board or in the flash moves.
+
+**T WAS NOT THE ANSWER, AND IT WAS ASKED.** 2 040 columns fit one bank of
+2 048, thus T at 102 or below would need no banking at all. T is the musical
+parameter — the canvas is eight bars and the ear elected the model at T 128 —
+and the masked loss of the float model over the 76 valid canvases does not
+move with it: 0.1935 at crop 128, 0.1930 at 102, 0.1833 at 96. The draw window
+does not move with T either, because the pass scales with T: the N 512 draw
+needs 172 ms for each sequencer step at G 5 at every T, against `STEP_MS` 200.
+G 5 is the window condition and not a preference.
+
+**THE FIRST PLACEMENT PUT THE MUX BEFORE THE DATA HOLD, AND THE TILES CAME
+WHILE THE TIMING WENT.** It built twice at the same geometry, 2026-08-27, in
+`board/_build/rung3-mux-before` and `board/_build/rung3-mux-before-explore`:
+
+| | unbanked | mux before the data hold | the same, Explore |
+|---|---|---|---|
+| block RAM tiles | 129 | **108.5** | 108.5 |
+| LUTs / registers | 24 127 / 25 699 | 26 213 / 27 123 | 26 230 / 27 125 |
+| WNS | +0.216 MET | **−0.354** | **−0.607** |
+| failing endpoints | 0 | 144 | 285 |
+| WHS | +0.008 | +0.014 | +0.011 |
+| `Physopt 32-703` | 0 | 15 | 11 |
+
+The tiles are the round's whole claim and they arrive: `report_ram_utilization`
+maps each store as `1024x768` and `512x768` with no pad, and 108.5 lands on
+the 109 the cost model predicted. **THE SETUP FAILURE IS STRUCTURE AND NOT A
+ROLL** — the second roll is worse than the first, twice the band a re-roll has
+ever moved — and every failing endpoint of both builds is one class: the store
+address cone into a bank's READ pins, under the two names the two bank shapes
+carry (`ADDRB` of the 1K by 36 bank, `ADDRA` of the 512 by 72 bank). The worst
+path ends in a LUT6 at fanout 24 with 2.599 ns of pure route. The
+`Physopt 32-703` list is the store address counters with `uniform_open_reg[3]`
+and `signal_reg_40` beside them, which is the mortgage the hold instrument
+refuses.
+
+**THE MECHANISM IS THE DATA HOLD, AND THE NETLIST NAMES IT.** A store's read is
+two registers: the address hold and the data hold. Unbanked, the data hold
+rides the block RAM's own latch and the address hold stands in fabric, thus a
+memory's address pins are driven by a REGISTER at zero levels. A mux before the
+data hold evicts that hold from the latch into fabric — 1 424 registers, about
+two columns of 768, and the LUT3 of the mux behind them — and to keep the read
+at two cycles Vivado absorbs the ADDRESS hold into the latch instead. The whole
+tap-address cone then lands on the pins: the ±1, the multiply, the add and the
+`is_join` mux, eight levels of it. This is NOT the broadcast class: the fanout
+fell from 86 to 24 and the last hop from 4.1 ns to 2.6 ns, while the logic
+doubled. The weight ROM never met it, because its mux has always stood behind
+its data registers.
+
+| | unbanked | mux before the data hold |
+|---|---|---|
+| a bank's read address pins are driven by | a fabric register, 0 levels | an 8-level cone, 3.5 ns logic |
+| registers | 25 699 | 27 123 |
+
+**THE ANSWER IS THE ROM'S OWN PLACEMENT, AND IT MEETS.** `block_memory` holds
+the data INSIDE each bank, muxes behind those holds, and holds the select
+twice; the weight ROM reads through that same port with an image of a bank, and
+the hand-built ROM mux is gone. One port, both memory classes. The rebuild is
+`board/_build/rung3`:
+
+| | unbanked | mux before the data hold | **mux behind, one port** |
+|---|---|---|---|
+| block RAM tiles | 129 | 108.5 | **108** |
+| LUTs / registers | 24 127 / 25 699 | 26 213 / 27 123 | **24 356 / 25 563** |
+| DSPs | 240 | 240 | 240 |
+| WNS / WHS | +0.216 / +0.008 | −0.354 / +0.014 | **+0.122 / +0.019** |
+| `Physopt 32-703` | 0 | 15 | **0** |
+
+The stores map `1024x768` and `512x768` with no pad, 21 tiles under the
+unbanked 129 and one under the cost model's 109. The registers come back BELOW
+the unbanked count and the muxes cost 229 LUTs, not the 1 600 two 768-bit muxes
+would stand for on their own: they fold into the LUT6s that already mux the
+zero column, the stem and Y against X. A bank's read address pins are driven by
+a fabric register at ZERO levels again, and the block RAM's output into the
+slot registers reads +1.017 at three levels, against +1.44 with no mux at all.
+Setup met on the first roll with no clock-skew adjustment anywhere.
 
 ## The iteration strategy
 
