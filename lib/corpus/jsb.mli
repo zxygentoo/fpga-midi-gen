@@ -55,8 +55,8 @@ val voices : int
     splits agree exactly, thus this is a fact of the genre and not of a draw.
 
     Two consumers read one table: the transposition policy holds each voice inside its own
-    row, and the seeded opening of the diffusion walk draws inside it — a canvas that
-    opens on notes must open on notes a chorale could hold. *)
+    row, and the seeded opening of the diffusion walk draws inside it — a sheet that opens
+    on notes must open on notes a chorale could hold. *)
 val voice_ranges : (int * int) array
 
 (** the steps of one bar on the sixteenth grid: the rows of the bar-phase table of the
@@ -78,7 +78,7 @@ val transpose : by:int -> chorale -> chorale
     the sixteenth grid, and nothing else. A grid of 1 is the identity, thus the sixteenth
     grid of the corpus — the grid of docs/diffusion.md — costs the caller no special case.
 
-    A grid of 2 is the eighth grid, which halves a canvas. It loses the onset that stands
+    A grid of 2 is the eighth grid, which halves a sheet. It loses the onset that stands
     on an odd sixteenth: the even step before it holds its pitch through. That is 1.4
     percent of the onsets of this corpus, the ornamental passing tones.
 

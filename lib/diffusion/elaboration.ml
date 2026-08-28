@@ -1,6 +1,5 @@
-(* L1 of the diffusion source — see elaboration.mli for the contract and
-   docs/diffusion_rtl.md for the design. What stands here is the WHY of each rule; the
-   interface states what each one is. *)
+(* The elaboration — see elaboration.mli for what each value is, and docs/diffusion_rtl.md
+   for the design. What stands here is the WHY. *)
 
 open Core
 module Bits = Hardcaml.Bits
@@ -21,20 +20,11 @@ type layer =
   ; norm_base : int
   }
 
-(* ONE BANK OF A MEMORY: where it starts in the flat address space, and the words it
-   addresses. The depth is a power of two and the base is a multiple of it, thus the
-   offset inside a bank is the LOW BITS of the flat address and the bank is the bits above
-   them — no subtractor stands on the address side. The weight ROM and the two activation
-   stores bank by the one rule; only the ROM carries an image. *)
 type bank =
   { base : int
   ; depth : int
   }
 
-(* ONE TURN OF THE WALK: the layer of phase A, and the layer of phase B where the turn is
-   a pair. The stem and the head are turns of one phase. A turn is what the engine primes
-   once and drains once; inside a pair the two layers interleave, thus neither of them is
-   a unit the walk can name. *)
 type turn =
   { first : int
   ; second : int option
@@ -54,7 +44,7 @@ type t =
   ; ring_banks : bank array
   ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
-  ; openings : Diffusion.opening array
+  ; openings : Model.opening array
   ; temper : Nn_quantized.Constants.scale
   }
 
@@ -65,16 +55,9 @@ let taps = 9
    thus a mask uniform compares against it exactly *)
 let alpha_bits = Prng.uniform_bits
 
-(* The fields of a norm word, low to high: the bias, the shift of the gain, and the value
-   of the gain. The three stand at one address because the epilogue wants the three at one
-   time, thus no two of them can fall out of step.
-
-   THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT. The q of a gain is
-   [e + weight_exponent], and the two exponent rules cap at 30 and at 14, thus 44 is the
-   largest q a quantizer can state and six bits hold it. A field sized on the elected
-   model's own peak would save a bit or two and would make a drawn-weight timing probe
-   create a DIFFERENT netlist from the trained build; the bits are worth less than that.
-   [create] refuses a q the field cannot hold. *)
+(* THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT: the two exponent rules cap
+   a gain's q at 44, which six bits hold. Sizing it on the elected model's peak would make
+   a drawn-weight timing probe create a DIFFERENT netlist from the trained build. *)
 let bias_bits = 16
 let shift_bits = 6
 let gain_bits = 16
@@ -94,10 +77,8 @@ let role_at ~count index =
   else Pair_close
 ;;
 
-(* THE TURNS OF A MODEL: the stem alone, then one turn for each pair, then the head alone.
-   The roles already state the shape — [create] builds them with [role_at] — thus this
-   reads them back rather than counting layers a second way, and a model whose roles do
-   not walk stem, pairs, head raises here and not in a waveform. *)
+(* The roles already state the shape, thus this reads them back rather than counting
+   layers a second way, and a model whose roles do not walk stem, pairs, head raises here. *)
 let turns_of roles =
   let count = Array.length roles in
   let rec walk at =
@@ -123,10 +104,8 @@ let turns_of roles =
 (* the dwell of one (column, group): one cycle for each (tap, input channel) pair *)
 let dwell layer = taps * layer.inputs
 
-(* THE PHASES OF A TURN. A pair runs its opening layer in phase A and its closing layer in
-   phase B; the stem and the head have phase A alone. The phase is one bit and it travels
-   in the frames, because inside a pair the lead frame can be in B while the now frame is
-   still in A. *)
+(* The phase is one bit and it travels in the frames, because inside a pair the lead frame
+   can be in B while the now frame is still in A. *)
 let phase_a = 0
 let phase_b = 1
 
@@ -138,7 +117,7 @@ let layer_of_phase turn phase =
 
 let is_pair turn = Option.is_some turn.second
 
-(* ONE BLOCK OF A TURN: the layer it runs, the column of the canvas it works on, and the
+(* ONE BLOCK OF A TURN: the layer it runs, the column of the sheet it works on, and the
    group of output channels. A block dwells [dwell layer] cycles. *)
 type block =
   { layer : int
@@ -146,9 +125,6 @@ type block =
   ; group : int
   }
 
-(* THE NEST OF A TURN, as the lead frame carries it: the input channel inside a block, the
-   group inside a phase, the pair's step counter, and the phase. [Rtl.next_block] advances
-   it and [blocks_of_turn] lists what it visits. *)
 type 'a nest =
   { cin : 'a
   ; group : 'a
@@ -162,21 +138,15 @@ type 'a block_walk =
   ; ends : 'a
   }
 
-(* THE ORDER OF A PAIR'S BLOCKS, AND WHY B TRAILS A BY TWO. With [s] the pair's step
-   counter from 0 to T + 1, the turn runs A at column [s] while [s < T] and B at column
-   [s - 2] while [s >= 2]:
+(* WHY B TRAILS A BY TWO. With [s] the pair's step counter from 0 to T + 1, the turn runs
+   A at column [s] while [s < T] and B at column [s - 2] while [s >= 2]:
 
    A0, A1, A2 B0, A3 B1, ..., A(T-1) B(T-3), B(T-2), B(T-1).
 
    B at c reads Y at c + 1, thus A at c + 2 must have written it — and one WHOLE block
    must stand between that write and this read, because a flush lands one epilogue behind
-   its drain. A lag of one would make every column wait for a flush and "the same cycle
-   count" would be false. The lag also frees X: A at c + 1 was the last reader of X at c,
-   thus B at c may overwrite it in place. And it bounds the ring at four columns.
-
-   THE PAIR NEEDS TWO COLUMNS. At T 1 the counter's [s = 1] holds no block at all — A is
-   past its last column and B has not reached its first — and a nest that advances one
-   step for each block would stall there. [create] refuses it. *)
+   its drain. A lag of one would make every column wait for a flush. The lag also frees X,
+   and it bounds the ring at four columns. *)
 let phases_at turn ~steps ~s =
   let a = if s < steps then [ phase_a ] else [] in
   let b = if is_pair turn && s >= 2 then [ phase_b ] else [] in
@@ -196,10 +166,6 @@ let blocks_of_turn t turn =
         { layer = at; column = column_of_phase ~s phase; group })))
 ;;
 
-(* One turn, exactly: the dwells of every column and group of its one or two layers, and
-   ONE drain tail behind the last of them. The count is exact and not a bound, because
-   [create] refuses a layer whose dwell is shorter than the drain and the loads behind it.
-   What the turn itself costs — the preamble, the tail — is the cycle bench's to measure. *)
 let layer_dwell_cycles t layer = t.steps * layer.groups * dwell layer
 
 let turn_cycles t turn =
@@ -212,19 +178,12 @@ let turn_cycles t turn =
 ;;
 
 let forward_cycles t = Array.sum (module Int) t.turns ~f:(turn_cycles t)
-let canvas_cells t = t.steps * Frame.voices
+let sheet_cells t = t.steps * Frame.voices
 
 (* one uniform for each cell in the cell order: the opening, and the mask of each pass *)
-let cell_walk_cycles t = canvas_cells t * uniform_cycles
-
-(* One pass, LESS THE DRAW: the mask and the forward. The draw's cycles are L4's and the
-   bench's — the design estimates about 2 [rows] for each hidden cell — and a number this
-   module cannot state exactly it does not state. *)
+let cell_walk_cycles t = sheet_cells t * uniform_cycles
 let pass_cycles t = cell_walk_cycles t + forward_cycles t
 
-(* THE ONE PACKER OF A NORM WORD. The order is a fact of this function and of nothing
-   else: a consumer that slices another way disagrees with it, and the gate that packs
-   here and slices there is what says so. *)
 type 'a norm_fields =
   { gain : 'a
   ; shift : 'a
@@ -241,45 +200,26 @@ let norm_word (gain : Nn_quantized.Constants.scale) ~bias =
     ]
 ;;
 
-(* WHERE A STORE HOLDS A COLUMN IS A FACT OF THIS FUNCTION AND OF NOTHING ELSE. The map is
-   t-major, thus the G writes of a group land consecutive; nothing else distinguishes the
-   orders, and the circuit's ports and the stream instrument therefore slice ONE rule. *)
 let column_address t ~step ~channel = (step * t.store_channels) + channel
 let store_depth t = t.steps * t.store_channels
 
-(* THE Y RING. The fused pair never lets Y exist as a tensor: B at column c reads Y at c -
-   1, c and c + 1, and A runs two columns ahead of B, thus FOUR columns of Y are live at
-   any moment — c - 1, c, c + 1 and the c + 2 that A has just written. Y at c - 2 died
-   with B at c - 1.
-
-   FOUR IS A POWER OF TWO AND THAT IS THE WHOLE OF THE ADDRESS. The ring's step is the low
-   two bits of the semantic step, thus no modulo and no compare stands anywhere: the
-   engine drives the semantic column and the map takes it. *)
+(* THE Y RING. B at column c reads Y at c - 1, c and c + 1, and A runs two columns ahead,
+   thus FOUR columns of Y are live at any moment and Y at c - 2 died with B at c - 1. FOUR
+   IS A POWER OF TWO AND THAT IS THE WHOLE OF THE ADDRESS: the ring's step is the low two
+   bits of the semantic step, thus no modulo and no compare stands anywhere. *)
 let ring_steps = 4
 let ring_depth t = ring_steps * t.store_channels
 
-(* THE OTHER MAP OF THE IMAGES: which output channel a lane of a group names. The weight
-   image and the norm image are both walked by it, and both pad where it runs past a
-   layer's channels. It is a function so that [Rtl] can state the same rule to the circuit
-   rather than let the circuit restate it.
-
-   IT TAKES [lanes] AND NOT A [t], because the weight image is packed inside [create] —
-   before the elaboration it belongs to exists — and an image walked by a second statement
-   of this map is an image the gate below cannot speak for. *)
+(* which output channel a lane of a group names. IT TAKES [lanes] AND NOT A [t], because
+   the weight image is packed inside [create] — before the elaboration it belongs to
+   exists. *)
 let channel_of_lanes ~lanes ~group ~lane = (group * lanes) + lane
 let channel_of t ~group ~lane = channel_of_lanes ~lanes:t.lanes ~group ~lane
-
-(* The widths the circuit sizes its address ports on. They follow from the table, thus
-   they stand here and a unit that derived them again would be free to derive them
-   differently. A ragged group runs past its layer's own channels — a head of four seats
-   in a group of three reaches channel five — thus the channel width follows the GROUPS
-   and not the outputs. *)
 let store_bits t = Bits.address_bits_for (store_depth t)
 let ring_bits t = Bits.address_bits_for (ring_depth t)
 
-(* THE WIDTH FOLLOWS THE GROUPS AND NOT THE OUTPUTS, because a ragged group runs past its
-   layer's own channels: [groups * lanes] is [outputs] rounded up to a whole group, thus
-   it covers the outputs by construction and a [max] against them would state nothing. *)
+(* [groups * lanes] is [outputs] rounded up to a whole group, thus it covers the outputs
+   by construction and a [max] against them would state nothing *)
 let widest_channel t =
   Array.fold t.layers ~init:1 ~f:(fun widest l -> max widest (l.groups * t.lanes))
 ;;
@@ -287,31 +227,22 @@ let widest_channel t =
 let channel_bits t = Bits.address_bits_for (widest_channel t + 1)
 
 (* THE MEMORIES ARE BANKED BY POWERS OF TWO, AND THE REASON IS A TRAP IN THE TOOL: VIVADO
-   PADS AN INFERRED MEMORY TO ITS FULL ADDRESS SPACE, AND THE PADDING IS SILENT. Rung 1
-   paid 16 tiles for an image that stores 9, and the build absorbed it unseen. Rung 2
-   asked 64 tiles against 49 free, and the mapper answered by demoting EVERY ROM of the
-   design to fabric — the weights, the norms, the anneal table and the exp2 table — with
-   no warning that names it. A bank whose depth is a power of two has no address space
-   above its own depth, thus the pad becomes the elaboration's own: bounded, and printed
-   by [to_string].
+   PADS AN INFERRED MEMORY TO ITS FULL ADDRESS SPACE, SILENTLY. Rung 2 asked 64 tiles
+   against 49 free and the mapper answered by demoting EVERY ROM of the design to fabric,
+   with no warning that names it. A bank whose depth is a power of two has no address
+   space above its own depth, thus the pad becomes the elaboration's own — bounded, and
+   printed.
 
-   THE RULE HOLDS FOR A RAM AS IT HOLDS FOR A ROM, and the rung-3 measurement build of
-   2026-08-27 is what says so: a store of 1280 columns mapped as [2048x768], the same 43
-   tiles rung 2 pays for 2048 columns. At T 128 and H 20 a store is 2560 columns; unbanked
-   the mapper rounds it to 4096 and the store costs 86 tiles alone, banked as 2048 + 512
-   it costs 43 + 11 = 54.
+   THE RULE HOLDS FOR A RAM AS IT HOLDS FOR A ROM: at T 128 and H 20 a store of 2560
+   columns rounds to 4096 and costs 86 tiles alone, where 2048 + 512 costs 54.
 
-   THE PLAN IS THE TOP BIT OF THE COUNT AND ONE TAIL, and it is taken only where it costs
-   less than one bank. Rung 1 banks its 8496 weight words as 8192 and 512 against a single
-   ROM of 16384; rung 2 banks its 36144 as 32768 and 4096 against 65536. A third bank
-   would save half a tile and buy a second level of mux, thus the split stops at two.
+   THE PLAN IS THE TOP BIT OF THE COUNT AND ONE TAIL, taken only where it costs less than
+   one bank; a third bank would save half a tile and buy a second level of mux.
 
-   A BANK IS NEVER BELOW 512 WORDS. A 512 by 36 RAMB18 is the smallest tile a word of this
-   width fills, thus a shallower bank holds less for the same tile — and the floor is what
-   makes a comparison of DEPTHS a comparison of tiles. It holds for a 768-bit word too: a
-   512 by 768 store is eleven such tiles with no waste. It also holds the alignment: a
-   head under the floor never wins the comparison, thus every base a plan states is a
-   multiple of its own bank's depth. *)
+   A BANK IS NEVER BELOW 512 WORDS, because a 512 by 36 RAMB18 is the smallest tile a word
+   of this width fills — a shallower bank holds less for the same tile. The floor is what
+   makes a comparison of DEPTHS a comparison of tiles, and it holds the alignment too: a
+   head under the floor never wins, thus every base is a multiple of its bank's depth. *)
 let smallest_bank = 512
 let bank_depth words = max smallest_bank (Int.ceil_pow2 (max 1 words))
 
@@ -324,10 +255,6 @@ let bank_plan words =
   else whole
 ;;
 
-(* THE BANK AS THE BITSTREAM CARRIES IT: the bank's slice of the image, then its pad. The
-   flat image stays the one authority on every value and on the dwell order; a bank is a
-   window on it, and the pad stands above the last word alone. A store holds no image —
-   the circuit writes it — thus this belongs to the ROM alone. *)
 let weight_bank_image t { base; depth } =
   let words = Array.length t.weight_rom in
   Array.init depth ~f:(fun at ->
@@ -336,10 +263,6 @@ let weight_bank_image t { base; depth } =
     else Bits.zero (Bits.width t.weight_rom.(0)))
 ;;
 
-(* WHICH BANK HOLDS A FLAT ADDRESS: the last one whose base the address has reached,
-   because the banks tile the address space from zero. This is the whole of the tiling
-   rule, and [Rtl.bank_at] states it to the circuit; the gate below holds the two together
-   over every address either can name, in the weight plan and in the store plan. *)
 let bank_at banks address =
   Array.foldi banks ~init:0 ~f:(fun at select bank ->
     if address >= bank.base then at else select)
@@ -360,26 +283,14 @@ let banks_phrase banks =
     (bank_depths banks)
 ;;
 
-(* THE MAPS THE IMAGE AND THE CIRCUIT MUST AGREE ON, over any combinational type. Signal
-   land cannot call the software functions above — it holds signals and not integers —
-   thus era five's answer was to state each map twice and let a gate weld them at run
-   time. The vocabulary already had the better answer: one rule over [Comb], evaluated at
-   [Bits] by a test and elaborated at [Signal] by the circuit, which is what [Vocab.Rtl]
-   does for the class-to-code map. The two halves then stop being two.
-
-   THE PIN IS A LABELLED ARGUMENT AND NOT A SECOND FUNCTOR ARGUMENT. The address maps
-   carry a multiply and the multiply is kept out of the DSPs; [add_attribute] is Signal's
-   alone and means nothing to a [Bits] value, thus the pin cannot live inside [Comb]. As a
-   functor argument it would make [Epilogue] — which wants the norm fields, and multiplies
-   nothing — name the array's rule for no reason, and would put this module's own
-   instantiation in debt to one two levels above it. *)
+(* The maps the image and the circuit must agree on — see elaboration.mli for why they are
+   one rule over [Comb] and why the pin is a labelled argument. *)
 module Rtl = struct
   module Make (Comb : Hardcaml.Comb.S) = struct
     open Comb
 
-    (* [major * stride + minor] at [width] bits. THE MULTIPLY IS REAL AND NOT A
-       CONCATENATION — neither stride is a power of two at every shape, and a
-       concatenation would silently stride by [2 ** minor_bits]. *)
+    (* THE MULTIPLY IS REAL AND NOT A CONCATENATION: neither stride is a power of two at
+       every shape, and a concatenation would silently stride by [2 ** minor_bits]. *)
     let flat_index ~pin ~width ~stride major minor =
       let scaled =
         pin
@@ -393,10 +304,8 @@ module Rtl = struct
       flat_index ~pin ~width:(store_bits t) ~stride:t.store_channels step channel
     ;;
 
-    (* THE RING'S MAP, AND THE ONLY PLACE ITS GEOMETRY IS STATED. The ring holds
-       [ring_steps] columns and that is a power of two, thus the low bits of the SEMANTIC
-       column are the ring's own step: the engine drives the column it means and this
-       takes the bits it keeps. No modulo, no compare, no second counter. *)
+    (* THE ONLY PLACE THE RING'S GEOMETRY IS STATED. [ring_steps] is a power of two, thus
+       the low bits of the SEMANTIC column are the ring's own step. *)
     let ring_address ~pin t ~step ~channel =
       flat_index
         ~pin
@@ -410,11 +319,8 @@ module Rtl = struct
       flat_index ~pin ~width:(channel_bits t) ~stride:t.lanes group lane
     ;;
 
-    (* WHICH BANK OF A PLAN A FLAT ADDRESS FALLS IN: the last one whose base the address
-       has reached, because the banks tile the address space from zero. At every elected
-       plan that is one comparison against a power of two — the top address bit and
-       nothing more — and the offset inside the bank is the low bits, thus no subtractor
-       stands anywhere on the address side. *)
+    (* the last bank whose base the address has reached, because the banks tile from zero.
+       At every elected plan that is the top address bit and nothing more. *)
     let bank_at banks ~address =
       let bits = address_bits_for (Array.length banks) in
       Array.foldi banks ~init:(zero bits) ~f:(fun at select bank ->
@@ -427,9 +333,6 @@ module Rtl = struct
             select)
     ;;
 
-    (* WHICH LAYER A FRAME IS IN: the turn states one or two, and the phase picks. Every
-       fact of the table is muxed by this and not by the turn, thus the table's mux is the
-       one it always was and only its index has learned to travel. *)
     let layer_of t ~turn ~phase =
       let width = address_bits_for (Array.length t.layers) in
       mux
@@ -441,15 +344,10 @@ module Rtl = struct
            | Some second -> mux2 phase (of_unsigned_int ~width second) at))
     ;;
 
-    (* THE NEST OF A TURN, AS THE CIRCUIT WALKS IT. The state is the input channel, the
-       group, the pair's step counter and the phase; the counts come from the LEAD layer,
-       because it is the lead frame that walks and the lead frame's layer states them.
-
-       The order is [blocks_of_turn]'s and the gate beside it holds the two together over
-       every block of every shape. A block closes when the last channel of its last group
+    (* THE NEST OF A TURN, AS THE CIRCUIT WALKS IT; the order is [blocks_of_turn]'s and a
+       gate holds the two together. A block closes when the last channel of its last group
        retires. Then the phase turns to B where B is live at this step; otherwise the step
-       advances, and the phase opens at A while A is still inside the canvas. A turn ends
-       on the close of its last step's last phase. *)
+       advances, and the phase opens at A while A is still inside the sheet. *)
     let next_block t ~is_pair ~cin_count ~group_count { cin; group; step; phase } =
       let at n = of_unsigned_int ~width:(width step) n in
       let last_cin = cin ==: cin_count -:. 1 in
@@ -457,7 +355,7 @@ module Rtl = struct
       let closes = last_cin &: last_group in
       let in_a = ~:phase in
       (* B is live once the step has reached column two; A is live while the step is still
-         inside the canvas *)
+         inside the sheet *)
       let b_live = is_pair &: (step >=: at 2) in
       (* A TURN OF ONE PHASE NEVER LEAVES A. Only a pair runs past its last column, and
          only there does the step open at B. *)
@@ -487,43 +385,33 @@ module Rtl = struct
   include Make (Hardcaml.Signal)
 end
 
-let bases_of sizes =
-  Array.of_list
-    (List.folding_map (Array.to_list sizes) ~init:0 ~f:(fun base size ->
-       base + size, base))
-;;
-
-let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~walk =
-  Quantized.Model.check_shape model;
-  if steps < 1 then invalid_argf "a canvas of %d steps" steps ();
+let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
+  Model.check_shape model;
+  if steps < 1 then invalid_argf "a sheet of %d steps" steps ();
   if rows < 1 then invalid_argf "a column of %d rows" rows ();
   if lanes < 1 then invalid_argf "a group of %d lanes" lanes ();
   if walk < 1 then invalid_argf "a walk of %d passes" walk ();
   let twin = model.layers in
   let count = Array.length twin in
-  let groups_of (l : Quantized.Model.layer) = (l.outputs + lanes - 1) / lanes in
+  let groups_of (l : Model.layer) = (l.outputs + lanes - 1) / lanes in
   (* THE DWELL MUST COVER THE DRAIN, THE BAND LOADS BEHIND IT, AND THE NEXT BLOCK'S FETCH
-     AHEAD OF IT. The chain is [rows] stages and must empty before the next dwell captures
-     the array. Behind it, the residual columns and the norm words of the group are
-     fetched the moment that drain has read its last residual row — one address for each
-     lane, two cycles of read latency behind them — because one buffer serves every group
-     and nothing is doubled. That is [rows + lanes + 2], and it was the whole rule while a
-     layer was the unit of the walk.
+     AHEAD OF IT. The chain of [rows] stages must empty before the next dwell captures the
+     array; behind it, the group's residual columns and norm words are fetched the moment
+     that drain has read its last residual row — one address a lane, two cycles of read
+     latency — because one buffer serves every group. That is [rows + lanes + 2].
 
      THE FUSED PAIR ADDS THE LAST INPUT CHANNEL, AND IT COSTS NINE. Inside a pair no
      preamble stands between the blocks: the next block's three columns are fetched under
-     the LAST input channel of the running one, which is [taps] cycles wide. In a B block
-     the X port carries the residual load, and the block after it is an A whose fetch
-     needs X. The two windows must not overlap, thus the load — which ends by
-     [rows + lanes + 2] — must close before the last channel opens at [dwell - taps].
+     the LAST input channel of the running one, [taps] cycles wide. In a B block the X
+     port carries the residual load and the block after it is an A whose fetch needs X,
+     thus the load must close before the last channel opens at [dwell - taps].
 
-     NOTHING DOWNSTREAM SAYS SO IF IT DOES NOT. A half-loaded band and a column fetched
-     from the wrong memory are both silently wrong arithmetic, and only the write stream
-     would catch them. It is a check and not a comment, thus [turn_cycles] states an exact
-     count and never a bound. H 6 at G 4 dwells 54 against a floor of 54 under the old
-     rule and 63 under this one: it is the shape the fused engine would read wrong. *)
+     A half-loaded band and a column fetched from the wrong memory are both silently wrong
+     arithmetic that only the write stream would catch, thus this is a check and not a
+     comment. H 6 at G 4 dwells 54 against a floor of 54 under the old rule and 63 under
+     this one: the shape the fused engine would read wrong. *)
   let dwell_floor = rows + lanes + 2 + taps in
-  Array.iteri twin ~f:(fun at (l : Quantized.Model.layer) ->
+  Array.iteri twin ~f:(fun at (l : Model.layer) ->
     if taps * l.inputs < dwell_floor
     then
       invalid_argf
@@ -533,18 +421,16 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
         (taps * l.inputs)
         dwell_floor
         ());
-  (* A PAIR NEEDS TWO COLUMNS. B trails A by two, thus the pair's step counter walks 0 to
-     T + 1; at T 1 the step 1 holds no block at all — A is past its last column and B has
-     not reached its first — and a nest that advances one step for each block would stall
-     there. Two columns is not a canvas either, but it is a shape the nest can walk. *)
+  (* A PAIR NEEDS TWO COLUMNS: at T 1 the step 1 holds no block at all — A is past its
+     last column and B has not reached its first — and the nest would stall there. *)
   if steps < 2 && count > 2
-  then invalid_argf "a canvas of %d steps cannot carry a fused pair" steps ();
+  then invalid_argf "a sheet of %d steps cannot carry a fused pair" steps ();
   let layers =
     let weight_bases =
-      bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
+      Model.bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
-    let norm_bases = bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
-    Array.mapi twin ~f:(fun at (l : Quantized.Model.layer) ->
+    let norm_bases = Model.bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
+    Array.mapi twin ~f:(fun at (l : Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs
       ; outputs = l.outputs
@@ -553,22 +439,18 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
       ; norm_base = norm_bases.(at)
       })
   in
-  (* The weight image in the DWELL order. The twin gives the checkpoint order — for each
-     layer the flat kernel [3; 3; inputs; outputs] — and the dwell walks the group, then
-     the input channel, then the tap. The permutation stands here, thus the twin stays the
-     authority on every value and THE CIRCUIT READS ONE COUNTER: a group holds its taps
-     and channels back to back, and the groups stand in order, thus one column's dwell
-     walks a layer's whole range straight through and the address reloads once for each
-     column. Any other order makes the address a stride and not a count. *)
-  let image = Quantized.Model.rom_bits model in
-  let image_bases = Quantized.Model.rom_bases model in
-  let layer_words at (l : Quantized.Model.layer) =
+  (* The weight image in the DWELL order — the group, then the input channel, then the tap
+     — where the twin gives the checkpoint order. THE CIRCUIT THEN READS ONE COUNTER: one
+     column's dwell walks a layer's whole range straight through and the address reloads
+     once for each column. Any other order makes the address a stride and not a count. *)
+  let image = Model.rom_bits model in
+  let image_bases = Model.rom_bases model in
+  let layer_words at (l : Model.layer) =
     let base = image_bases.(at) in
     let byte ~cin ~tap ~group lane =
       let channel = channel_of_lanes ~lanes ~group ~lane in
-      (* A group that runs past the channels takes a zero byte: its lane multiplies by
-         zero and the drain does not read it. The padding keeps every row of the image a
-         whole number of words, thus the address only counts. *)
+      (* a group past the channels takes a zero byte, thus every row of the image is a
+         whole number of words and the address only counts *)
       if channel >= l.outputs
       then Bits.zero 8
       else image.(base + ((((tap * l.inputs) + cin) * l.outputs) + channel))
@@ -586,13 +468,11 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
     Array.of_list (List.concat (List.mapi (Array.to_list twin) ~f:layer_words))
   in
   let weight_banks = Array.of_list (bank_plan (Array.length weight_rom)) in
-  (* The norms pad to whole groups with a zero word, as the weight image pads with zero
-     bytes. THE PADDING IS NOT TIDINESS: without it a ragged group's fetch runs past its
-     layer's range — and off the end of the image at the last layer, which a head of four
-     channels in a group of five really reaches. With it the address is
-     [norm_base + group * lanes + lane] at every layer and every group. *)
+  (* THE PADDING IS NOT TIDINESS: without it a ragged group's fetch runs past its layer's
+     range — and off the end of the image at the last layer, which a head of four channels
+     in a group of five really reaches. *)
   let norm_rom =
-    Array.concat_map twin ~f:(fun (l : Quantized.Model.layer) ->
+    Array.concat_map twin ~f:(fun (l : Model.layer) ->
       Array.init
         (groups_of l * lanes)
         ~f:(fun channel ->
@@ -602,7 +482,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   in
   let alpha_rom =
     Array.init walk ~f:(fun pass ->
-      Bits.of_unsigned_int ~width:alpha_bits (Diffusion.anneal_threshold ~step:pass ~walk))
+      Bits.of_unsigned_int ~width:alpha_bits (Model.anneal_threshold ~step:pass ~walk))
   in
   (* The channels X and Y each hold: the widest layer that writes a store. The head writes
      no store, thus its [voices] channels size nothing. *)
@@ -626,8 +506,8 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; norm_rom
   ; alpha_rom
     (* the walk's opening, carried and never restated: the circuit reads one value for
-       everything it holds, and [Diffusion] stays the authority on what a seat may sing *)
-  ; openings = Diffusion.seat_openings
+       everything it holds, and [Model] stays the authority on what a seat may sing *)
+  ; openings = Model.seat_openings
   ; temper = model.temper
   }
 ;;
@@ -694,7 +574,7 @@ let to_string t =
         "the seats open inside the classes %s"
         (String.concat
            ~sep:", "
-           (List.map (Array.to_list t.openings) ~f:(fun { Diffusion.low; width } ->
+           (List.map (Array.to_list t.openings) ~f:(fun { Model.low; width } ->
               sprintf "%d to %d" low (low + width - 1))))
     ; sprintf
         "a store is %d columns of %d bits %s, t-major: step * %d + channel"
@@ -726,19 +606,15 @@ let to_string t =
   |> String.concat ~sep:"\n"
 ;;
 
-(* THE TINY SHAPE THE GATES BELOW ELABORATE, and it is NOT the twin's own
-   [Quantized.Model.For_test.config]. At H 6 a layer dwells 54 cycles and the fused floor
-   asks 63: the model the twin tests with is a model this elaboration refuses, and the
-   refusal gate at the foot of the file is where that shape belongs. One channel wider
-   walks every map the same way. *)
-let tiny_shape = { Diffusion.Config.layers = 4; width = 8 }
+(* THE TINY SHAPE THE GATES BELOW ELABORATE, one channel wider than the narrowest the era
+   draws: at H 6 a layer dwells 54 cycles against a fused floor of 63, which the refusal
+   gate at the foot of the file holds. One channel wider walks every map the same way. *)
+let tiny_model = Model.For_test.drawn ~layers:4 ~width:8
 
 let%expect_test "the elaboration of rung 2" =
-  (* THE SHAPE OF `l64-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
-     never a value, thus a test states rung 2's geometry without a checkpoint file that
-     git ignores. The rung's real weights arrive at [gen_verilog]. *)
-  let config = { Diffusion.Config.layers = 64; width = 16 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  (* rung 2's geometry on DRAWN weights: a cycle count reads the shape and never a value,
+     thus no test reads a checkpoint file that git ignores *)
+  let model = Model.For_test.drawn ~layers:64 ~width:16 ~seed:1 in
   print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
   [%expect
     {|
@@ -821,16 +697,14 @@ let%expect_test "the elaboration of rung 2" =
 
 let%expect_test "the ROM walks as one counter in the dwell order" =
   (* THE TEST WALKS THE ROM WITH A PLAIN COUNTER, as the circuit does, and demands at each
-     step the weight that step of the dwell needs. A packing that is a valid permutation
-     but a bad walk therefore fails here and not on the board: a bijection test alone
-     passes on any order, and the order is the whole point of the permutation.
+     step the weight that step of the dwell needs. A bijection test alone passes on any
+     order, and the ORDER is the whole point of the permutation.
 
-     It also holds the two other properties: every weight stands at one address and no two
-     share one, and a lane past the channels reads zero. H 6 at G 4 makes the ragged group
-     the elected shapes never make, thus the padding is under test and not only described. *)
-  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+     It also holds that every weight stands at one address and that a lane past the
+     channels reads zero. H 6 at G 4 makes the ragged group the elected shapes never make. *)
+  let model = tiny_model ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
-  let kernels = Array.of_list (Quantized.Model.For_test.rom_tensors model) in
+  let kernels = Array.of_list (Model.For_test.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
   let lane_byte word lane =
     Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
@@ -890,21 +764,15 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
 let%expect_test "the banks re-concatenate into the image, and the circuit finds them" =
   (* THE BANKING IS A PERMUTATION OF ADDRESS SPACE AND NEVER OF VALUES, and this walks it
      THE WAY THE CIRCUIT READS IT: the flat counter names the bank by the bits above its
-     depth and the word inside it by the bits below, thus a base that is not a multiple of
-     its own bank's depth fails here and not in a mapping report. The walk above holds the
-     dwell ORDER; this holds that the memories the bitstream really carries stand in that
-     order word for word, and that the pad above the last word is zero and is the size the
-     print states.
+     depth and the word by the bits below, thus a base that is not a multiple of its own
+     bank's depth fails here and not in a mapping report. The walk above holds the dwell
+     ORDER; this holds that the memories the bitstream carries stand in that order word
+     for word, and that the pad is zero and the size the print states.
 
-     A bijection over the flat image passes any bank order, thus the walk is the counter's
-     own — as the walk above is. And the decode stands beside it: [Rtl.Make (Bits)] is the
-     very function [Forward] elaborates at [Signal], thus the circuit's select and the
-     software's tiling are one rule at every address. THE ELECTED RUNG IS THE SHAPE THAT
-     REALLY BANKS: the tiny shapes hold one bank and would pass any decode.
-
-     THE STORES BANK BY THE SAME PLAN AND THE DECODE RUNS OVER THEM TOO. A store carries
-     no image — the circuit writes it — thus what there is to hold is the tiling, and its
-     addresses are its columns and no pad above them. *)
+     The decode stands beside it: [Rtl.Make (Bits)] is the very function [Forward]
+     elaborates at [Signal]. THE ELECTED RUNG IS THE SHAPE THAT REALLY BANKS — the tiny
+     shapes hold one bank and would pass any decode. The stores bank by the same plan and
+     carry no image, thus what there is to hold over them is the tiling alone. *)
   let module Map = Rtl.Make (Bits) in
   let decoded_apart banks ~address_bits ~addresses =
     let apart = ref 0 in
@@ -956,22 +824,14 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
          ~address_bits:(store_bits t)
          ~addresses:(store_depth t))
   in
-  let rung = { Diffusion.Config.layers = 64; width = 16 } in
-  case
-    ~name:"rung 2"
-    (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
-  case
-    ~name:"a shape of one bank"
-    (create (Quantized.Model.For_test.init tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
+  let rung = Model.For_test.drawn ~layers:64 ~width:16 ~seed:1 in
+  case ~name:"rung 2" (create rung ~steps:128 ~lanes:4 ~walk:512);
+  case ~name:"a shape of one bank" (create (tiny_model ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   (* A STORE THAT REALLY BANKS, and rung 2's does not: 129 steps of 8 channels are 1032
      columns, thus the plan splits where the two rungs above hold one bank. *)
   case
     ~name:"a store of two banks"
-    (create
-       (Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 8 } ~seed:3)
-       ~steps:129
-       ~lanes:2
-       ~walk:4);
+    (create (Model.For_test.drawn ~layers:4 ~width:8 ~seed:3) ~steps:129 ~lanes:2 ~walk:4);
   [%expect
     {|
     rung 2: 36144 words banked 32768 + 4096, 720 of pad
@@ -989,12 +849,11 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
 let%expect_test "the circuit walks the turn the block order states" =
   (* THE WALK CANNOT DRIFT FROM THE ORDER THE COST MODEL COUNTS. [blocks_of_turn] is what
      [turn_cycles] sums and what the stream gate reads the writes in; [Rtl.next_block] is
-     what the engine's lead frame really does. They are one rule stated twice, thus a gate
-     welds them — the era's answer to two statements of one map, as [Rtl.bank_at] is.
+     what the engine's lead frame really does, thus a gate welds the two.
 
      THE FUSED PAIR IS THE SHAPE THAT REALLY INTERLEAVES: a turn of one phase would pass
-     any phase logic. The lag of two is visible in the print — A0, A1, A2 B0, ... — and a
-     schedule that drifted by a column would move that line. *)
+     any phase logic. The lag of two is visible in the print, and a schedule that drifted
+     by a column would move that line. *)
   let module Map = Rtl.Make (Bits) in
   let case ~name t =
     let step_bits = Bits.address_bits_for (t.steps + 2) in
@@ -1088,17 +947,11 @@ let%expect_test "the circuit walks the turn the block order states" =
   in
   case
     ~name:"a shape of two pairs"
-    (create
-       (Quantized.Model.For_test.init { Diffusion.Config.layers = 6; width = 8 } ~seed:1)
-       ~steps:5
-       ~lanes:2
-       ~walk:4);
+    (create (Model.For_test.drawn ~layers:6 ~width:8 ~seed:1) ~steps:5 ~lanes:2 ~walk:4);
   case
     ~name:"rung 2"
     (create
-       (Quantized.Model.For_test.init
-          { Diffusion.Config.layers = 64; width = 16 }
-          ~seed:1)
+       (Model.For_test.drawn ~layers:64 ~width:16 ~seed:1)
        ~steps:128
        ~lanes:4
        ~walk:512);
@@ -1112,7 +965,7 @@ let%expect_test "the circuit walks the turn the block order states" =
 ;;
 
 let%expect_test "a norm word carries the twin's gain, shift and bias" =
-  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+  let model = tiny_model ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   (* THE TEST SLICES WITH THE CIRCUIT'S OWN UNPACKER and never with a third reading of the
      field order: [Rtl.Make (Bits)] is the very function the epilogue elaborates. *)
@@ -1154,17 +1007,14 @@ let%expect_test "a norm word carries the twin's gain, shift and bias" =
 let%expect_test "the circuit states the maps the software states" =
   (* ONE RULE, TWO HALVES, HELD TOGETHER. [Rtl.Make (Bits)] evaluates exactly the
      functions [Forward] elaborates at [Signal], thus this holds the circuit's arithmetic
-     against the software's over every address either can name — the gate [Vocab.Rtl]
-     already stands for the vocabulary's own map. Before the functor these two were
-     separate statements and only the store-write stream said whether they agreed.
+     against the software's over every address either can name.
 
-     The pin is the identity here: an attribute means nothing to a value, and it is the
-     multiply's placement and not its arithmetic. The shapes below make a RAGGED group — H
-     6 at G 4 — thus the channel map is under test past a layer's own channels, which is
-     where the padding lives. *)
+     The pin is the identity here: an attribute means nothing to a value. The shapes below
+     make a RAGGED group — H 6 at G 4 — thus the channel map is under test past a layer's
+     own channels, which is where the padding lives. *)
   let module Map = Rtl.Make (Bits) in
   let case ~steps ~lanes =
-    let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+    let model = tiny_model ~seed:7 in
     let t = create model ~steps ~lanes ~walk:4 in
     let addresses = ref 0
     and channels = ref 0
@@ -1235,7 +1085,8 @@ let%expect_test "the circuit states the maps the software states" =
 ;;
 
 let%expect_test "the elaboration refuses what the machine cannot hold" =
-  let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+  (* H 6, which this elaboration refuses at every G the fused floor admits *)
+  let model = Model.For_test.drawn ~layers:4 ~width:6 ~seed:7 in
   let refuse name f =
     match f () with
     | (_ : t) -> printf "%s: NOT REFUSED\n" name
@@ -1244,28 +1095,22 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
   (* the drain rule: at P 60 the H 6 layers dwell 54 cycles and the chain is 60 stages *)
   refuse "a chain that cannot empty" (fun () ->
     create model ~rows:60 ~steps:8 ~lanes:4 ~walk:4);
-  (* THE BAND RULE, AND THE GAP IT CLOSES. At P 48 and G 5 the H 6 layers dwell 54 cycles
-     and the chain of 48 empties inside that: the array's rule alone admits this shape.
-     The band loads behind the drain need 55, thus the engine would read a half-loaded
-     residual band and no gate below it would say so. G 5 is the fused rung's geometry,
-     thus this is a shape the ladder could really elaborate. *)
+  (* THE BAND RULE. At P 48 and G 5 the H 6 layers dwell 54 cycles and the chain of 48
+     empties inside that, thus the array's rule alone admits this shape — but the band
+     loads need 55, and the engine would read a half-loaded residual band with no gate
+     below to say so. G 5 is the fused rung's geometry. *)
   refuse "a band load the dwell outruns" (fun () ->
     create model ~steps:8 ~lanes:5 ~walk:4);
-  (* THE FUSED FLOOR, AND THE SHAPE IT CLOSES. At P 48 and G 4 the H 6 layers dwell 54
-     cycles: the drain and the band loads need 54, thus the unfused machine accepted this
-     shape exactly. Fused, the next block's three columns are fetched under the last input
-     channel — nine cycles — and in a B block the X port is still carrying the residual
-     load, thus the fetch would read the wrong memory and no gate below it would say so.
-     One channel wider clears it: H 7 dwells 63 against 63. *)
+  (* THE FUSED FLOOR. At P 48 and G 4 the H 6 layers dwell 54 cycles and the unfused
+     machine accepted that exactly. Fused, the next block's three columns are fetched
+     under the last input channel while a B block's X port still carries the residual
+     load, thus the fetch would read the wrong memory. One channel wider clears it: H 7
+     dwells 63 against 63. *)
   refuse "a fetch the load outruns" (fun () -> create model ~steps:8 ~lanes:4 ~walk:4);
   refuse "the channel that clears it" (fun () ->
-    create
-      (Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 7 } ~seed:7)
-      ~steps:8
-      ~lanes:4
-      ~walk:4);
+    create (Model.For_test.drawn ~layers:4 ~width:7 ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
-  refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
+  refuse "a sheet of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
   refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);
   [%expect
     {|
@@ -1274,7 +1119,7 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
     a fetch the load outruns: layer 1 dwells 54 cycles; its drain, band loads and the next block's fetch need 63: the dwell is short
     the channel that clears it: NOT REFUSED
     a walk of no passes: a walk of 0 passes
-    a canvas of no steps: a canvas of 0 steps
+    a sheet of no steps: a sheet of 0 steps
     a group of no lanes: a group of 0 lanes
     |}]
 ;;

@@ -42,7 +42,7 @@ val send_note_off : Core_unix.File_descr.t -> channel:int -> note:int -> unit
     fact of the onset — the synthesizer makes a control change audible only on the next
     note — thus a fade reaches only the notes that BEGIN inside its window, and the window
     is a whole bar because a crop's last note has been sounding 4.5 steps in the mean. A
-    canvas shorter than the window fades across the whole of itself.
+    sheet shorter than the window fades across the whole of itself.
 
     The ramp ends at a quarter of the stroke and never at zero: A NOTE-ON OF VELOCITY ZERO
     IS A NOTE-OFF on the wire, and a note the fade silenced would never be released. *)

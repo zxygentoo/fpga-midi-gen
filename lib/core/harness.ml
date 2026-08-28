@@ -13,6 +13,18 @@ let unpack word ~width =
   Bits.split_lsb ~part_width:width word |> List.map ~f:Bits.to_signed_int |> Array.of_list
 ;;
 
+let long_bench =
+  { (Cyclesim.Config.trace `All_named) with Cyclesim.Config.deduplicate_signals = true }
+;;
+
+let verdict complaints =
+  match
+    List.filter_map complaints ~f:(fun (name, wrong) -> Option.some_if wrong name)
+  with
+  | [] -> "ok"
+  | named -> String.concat ~sep:", " named
+;;
+
 let node sim name =
   Option.value_exn (Cyclesim.lookup_node_or_reg_by_name sim name) ~message:name
 ;;

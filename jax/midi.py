@@ -38,7 +38,7 @@ def fading(step, steps, fade):
 
     It is the same gesture as [rest] and it has the same limit: it says an ending is
     happening, and it cannot make a phrase that never closed sound closed."""
-    # a canvas shorter than the window fades across the whole of itself; without the
+    # a sheet shorter than the window fades across the whole of itself; without the
     # clamp it would OPEN partway down the ramp and never sound its full stroke
     fade = min(fade, steps)
     left = steps - step
@@ -79,8 +79,8 @@ def rest(steps, *, step_ms):
 
     THE DEFAULT IS TWO BARS, and the ear set it on 2026-08-25 in two readings: a quarter
     note helps and a bar was what it wanted, and then [fading] arrived and a bar was short
-    again. That follows -- a canvas now ENDS quiet, thus the silence after it has less to
-    part from and must run longer to read as a break at all. IT DOES NOT FIX THE ENDING. A canvas is a crop of eight measures
+    again. That follows -- a sheet now ENDS quiet, thus the silence after it has less to
+    part from and must run longer to read as a break at all. IT DOES NOT FIX THE ENDING. A sheet is a crop of eight measures
     and it stops where the corpus was cut -- it does not arrive -- and no silence after a
     phrase that never closed will make it sound closed. That is the deferred round, the
     whole piece with its cadence, and not this wait."""

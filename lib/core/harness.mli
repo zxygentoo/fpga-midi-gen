@@ -25,6 +25,23 @@ val pack : int array -> width:int -> Bits.t
     this, thus a gate reads a column and never an index. *)
 val unpack : Bits.t -> width:int -> int array
 
+(** The configuration a LONG bench mounts its circuit under: the named signals traced, and
+    the simulator's own deduplication pass.
+
+    [`All_named] reaches every signal a probe looks up and every signal a waveform shows —
+    a bench of thousands of cycles over a wide array cannot afford [`Everything]. The
+    deduplication shares structurally equal signals before the compile, thus a lane that
+    states the same term as its neighbour is evaluated one time; measured 2026-08-28, it
+    took era six's library gates from 38.5 s to 31.2 s and no cycle count moved. It is a
+    SIMULATOR setting — [Rtl.output] never sees this record — thus no netlist follows it. *)
+val long_bench : Cyclesim.Config.t
+
+(** [verdict complaints] is what a bench says its run disagreed about: ["ok"] when every
+    check held, and the names of the checks that did not, separated by commas. A check is
+    a pair of the name and whether it went WRONG, thus a bench states its checks in one
+    list and never an if for each of them. *)
+val verdict : (string * bool) list -> string
+
 (** [node sim name] is the traced signal a circuit named [name], whether it is a node or a
     register. It raises with the name when the trace does not hold it, thus a rename
     cannot silently blind a probe. *)

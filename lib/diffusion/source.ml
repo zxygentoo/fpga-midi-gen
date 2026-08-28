@@ -1,12 +1,9 @@
-(* The walk — see source.mli for the contract and docs/diffusion_rtl.md, "The walk" and
-   "The seam to the sequencer", for the design. What stands here is the WHY of each rule.
+(* The walk — see source.mli, and docs/diffusion_rtl.md for the design.
 
    THE RISK OF THIS UNIT IS ORDER AND NOT TIMING. What it adds of its own is serial
-   machinery at 2.7 percent of a pass, which the walk bench below measures: three cycles
-   for each uniform, one cycle for each standing cell, and one draw for each hidden one.
-   Nothing here is near the critical path. What is near the whole piece is the CONSUMPTION
-   ORDER — one generator, one order, and a walk that takes one uniform out of place draws
-   another canvas with no local symptom.
+   machinery at 2.7 percent of a pass and nothing near the critical path. What is near the
+   whole piece is the CONSUMPTION ORDER: a walk that takes one uniform out of place draws
+   another sheet with no local symptom.
 
    TWO FRAMES, TWO CYCLES APART, AS THE ENGINE HAS. The LEAD frame of a cell walk steps
    the generator; the NOW frame — the lead through two registers — is where the cell is
@@ -22,7 +19,7 @@ module I = Source_intf.I
 module O = Source_intf.O
 
 (* the activation format of the twin: what a logit column carries in each row *)
-let activation_bits = Quantized.activation_bits
+let activation_bits = Model.activation_bits
 
 (* one uniform is three bytes of the generator, high byte first *)
 let uniform_bits = Prng.uniform_bits
@@ -31,10 +28,9 @@ let byte_bits = Prng.byte_bits
 (* the ticks of one cell of a cell walk: three steps of the generator *)
 let cell_ticks = Prng.uniform_bytes
 
-(* The service of one hidden cell, before the draw: three steps, the cycle their last byte
-   lands, and the cycle the whole uniform stands and starts the draw. The draw reads
-   [uniform] after its total and states no cycle for it, thus the walk hands over a value
-   that has already stopped moving rather than one that stops moving behind it. *)
+(* one hidden cell before its draw: three steps, the cycle their last byte lands, and the
+   cycle the whole uniform stands. The draw states no cycle for reading [uniform], thus
+   the walk hands over a value that has already stopped moving. *)
 let uniform_ticks = 5
 
 module State = struct
@@ -49,18 +45,14 @@ module State = struct
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
-(* THE SERVICE OF ONE OFFERED STEP, a machine of its own. It walks the four seats of the
-   step the walk's count names: a standing seat costs one cycle, a hidden one its uniform
-   and its draw. It starts on the offer while the walk stands in [Serve], and ITS EXIT IS
-   COMBINATIONAL — the walk watches the last seat retire and moves to [Take] on the very
-   edge the service rests — thus the cut of this machine out of the walk's own adds no
-   cycle anywhere, which the walk bench holds.
+(* THE SERVICE OF ONE OFFERED STEP, a machine of its own: a standing seat costs one cycle,
+   a hidden one its uniform and its draw. ITS EXIT IS COMBINATIONAL — the walk watches the
+   last seat retire and moves to [Take] on the very edge the service rests — thus cutting
+   it out of the walk's own machine adds no cycle anywhere.
 
-   THE EXCLUSIVITY IS THE CONSUMPTION ORDER'S. One generator, one order: the cell walks
-   step it from the walk's own arms, the service from [Uniform]. In one machine no two
-   phases could stand at once by construction; across two, the same holds because the
-   service runs only while the walk stands parked in [Serve], and this comment is where
-   that invariant is stated. *)
+   THE EXCLUSIVITY IS THE CONSUMPTION ORDER'S. The cell walks step the generator from the
+   walk's own arms and the service from [Uniform]; the two never stand at once because the
+   service runs only while the walk is parked in [Serve]. *)
 module Service = struct
   type t =
     | Idle (* no step stands open *)
@@ -77,7 +69,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     end)
   in
   let module Cells =
-    Canvas.Make (struct
+    Sheet.Make (struct
       let steps = e.steps
       let rows = e.rows
     end)
@@ -90,10 +82,9 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let steps = e.steps in
   let rows = e.rows in
   let voices = Frame.voices in
-  (* THE CANVAS MUST HOLD WHAT THE OPENING DRAWS. A probe geometry may narrow P — the
-     elaboration takes [rows] so that the twin can follow later — and the registers of the
-     seats are the corpus's, thus a narrow P states a class no cell can hold. It is a
-     refusal and not a clamp: a clamped opening is another walk. *)
+  (* THE SHEET MUST HOLD WHAT THE OPENING DRAWS. A probe geometry may narrow P while the
+     seat registers stay the corpus's, thus a narrow P states a class no cell can hold. It
+     is a refusal and not a clamp: a clamped opening is another walk. *)
   if Array.length e.openings <> voices
   then
     invalid_argf
@@ -101,11 +92,11 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (Array.length e.openings)
       voices
       ();
-  Array.iteri e.openings ~f:(fun seat { Diffusion.low; width } ->
+  Array.iteri e.openings ~f:(fun seat { Model.low; width } ->
     if low + width > rows
     then
       invalid_argf
-        "seat %d opens inside the classes %d to %d and a canvas of %d rows cannot hold it"
+        "seat %d opens inside the classes %d to %d and a sheet of %d rows cannot hold it"
         seat
         low
         (low + width - 1)
@@ -148,7 +139,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let seat = Variable.reg spec ~width:seat_bits in
   let tick = Variable.reg spec ~width:tick_bits in
   let play_step = Variable.reg spec ~width:step_bits in
-  (* the canvas is played one time: past the last step the frame is four zero bytes *)
+  (* the sheet is played one time: past the last step the frame is four zero bytes *)
   let spent = Variable.reg spec ~width:1 in
   let held = Variable.reg spec ~width:frame_bits in
   let valid = Variable.reg spec ~width:1 in
@@ -176,15 +167,12 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   (* ONE CAPTURE RULE FOR EVERY PHASE: a step states its byte in the cycle that follows
      it, thus the shift register takes a byte exactly when the cycle before stepped. *)
   let take_byte = reg spec prng_step.value in
-  (* THE UNIFORM RIDES REPLICAS TO ITS ARITHMETIC — the broadcast round's rule, learned
-     again on the cut's builds. One [u] register fed the opening multiply, the mask
-     compare and the draw's threshold at a fanout near sixty, and two placements in a row
-     could not carry the cone: the first met setup only by phys_opt adjusting CLOCK SKEW
-     inside the shift register (Physopt 32-703), and the board answered with a DIFFERENT
-     canvas at a fixed seed on every run — hold met by a picosecond at the fast corner is
-     not met. A replica loads the same next value on the same edge, thus it IS [u] cycle
-     for cycle and no gate can tell them apart; what it buys is a register the placer can
-     put beside each consumer's own arithmetic. *)
+  (* THE UNIFORM RIDES REPLICAS TO ITS ARITHMETIC. One [u] register fed the opening
+     multiply, the mask compare and the draw's threshold at a fanout near sixty, and two
+     placements in a row could not carry the cone: the first met setup only by phys_opt
+     adjusting CLOCK SKEW inside the shift register, and the board then answered with a
+     DIFFERENT sheet at a fixed seed on every run. A replica loads the same next value on
+     the same edge, thus it IS [u] cycle for cycle. *)
   let next_u =
     mux2
       take_byte
@@ -242,11 +230,10 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       }
   in
   let _ = drawer.busy -- "draw_busy" in
-  (* THE ANNEAL ENTRY IS READ THROUGH ERA FOUR'S RULE — the address register before the
-     memory and the data register behind it — thus it stands two cycles after the pass
-     counter moves, and the first mask write of a phase cannot want it before its fourth
-     cycle. No attribute states a memory kind: one entry each pass is a read the tools may
-     hold in whatever they have spare. *)
+  (* the address register before the memory and the data register behind it, thus the
+     entry stands two cycles after the pass counter moves — and the first mask write of a
+     phase cannot want it before its fourth. No attribute states a memory kind: one entry
+     a pass is a read the tools may hold in whatever they have spare. *)
   let alpha =
     let size = Array.length e.alpha_rom in
     (multiport_memory
@@ -271,8 +258,8 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (List.map (Array.to_list e.openings) ~f:(fun o -> of_unsigned_int ~width (f o)))
   in
   let opened_class =
-    let low = of_seat ~width:class_bits (fun o -> o.Diffusion.low) in
-    let register = of_seat ~width:width_bits (fun o -> o.Diffusion.width) in
+    let low = of_seat ~width:class_bits (fun o -> o.Model.low) in
+    let register = of_seat ~width:width_bits (fun o -> o.Model.width) in
     (* the array owns the DSPs, thus this product is pinned like every other one outside
        it *)
     let product = Column_array.no_dsp (u_open *: register) in
@@ -291,7 +278,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let cell_class = mux2 (sm.is Open) opened_class drawer.drawn -- "cell_class" in
   let write_mask = (sm.is Mask &: now_writes) -- "write_mask" in
   let cell_hidden = (u_mask <: alpha) -- "cell_hidden" in
-  let canvas =
+  let sheet =
     Cells.create
       { Cells.I.clock = i.clock
       ; cell_step
@@ -305,8 +292,8 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       ; score_step = play_step.value
       }
   in
-  Signal.assign plane_column canvas.plane_column;
-  let _ = canvas.hidden -- "hidden" in
+  Signal.assign plane_column sheet.plane_column;
+  let _ = sheet.hidden -- "hidden" in
   (* ---------------------------------------------------------------- *)
   (* the machine *)
   (* ---------------------------------------------------------------- *)
@@ -318,7 +305,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      added at the seam *)
   let service_done =
     srv.is Seat
-    &: ~:(canvas.hidden)
+    &: ~:(sheet.hidden)
     |: (srv.is Redraw &: ~:(drawer.busy))
     &: (seat.value ==:. voices - 1)
   in
@@ -366,7 +353,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
                      register holds the answer and the walk keeps no copy. *)
                   when_
                     i.step
-                    [ held <-- mux2 spent.value (zero frame_bits) canvas.frame
+                    [ held <-- mux2 spent.value (zero frame_bits) sheet.frame
                     ; valid <-- vdd
                     ; if_
                         (play_step.value ==:. steps - 1)
@@ -404,7 +391,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
           , [ when_ (sm.is Serve &: forward.step_ready) [ seat <--. 0; srv.set_next Seat ]
             ] )
           (* a standing cell costs this one cycle and nothing more *)
-        ; Seat, [ if_ canvas.hidden [ tick <--. 0; srv.set_next Uniform ] next_seat ]
+        ; Seat, [ if_ sheet.hidden [ tick <--. 0; srv.set_next Uniform ] next_seat ]
         ; ( Uniform
           , [ tick <-- tick.value +:. 1
             ; when_ (tick.value <:. cell_ticks) [ prng_step <-- vdd ]
@@ -423,12 +410,10 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
 (* The bench *)
 (* ==================================================================== *)
 
-(* INSTRUMENT 2, AND ITS NAMES ARE A CONTRACT. The gate probes the cell port by name —
-   [cell_step], [cell_seat], [write_class], [cell_class], [write_mask], [cell_hidden] —
-   thus a rename cannot silently blind it. It is the ONE port all three phases share, and
-   a walk whose masks stand one pass out of phase, or whose draws take a uniform out of
-   order, writes the wrong thing THERE and nowhere else: the finished canvas alone would
-   pass such a walk, which is era five's lesson for the third time. *)
+(* THE PROBE NAMES ARE A CONTRACT: the gate reads the cell port by name, thus a rename
+   cannot silently blind it. It is the ONE port all three phases share, and a walk whose
+   masks stand one pass out of phase writes the wrong thing THERE and nowhere else — the
+   finished sheet alone would pass such a walk. *)
 module Bench = struct
   module Sim = Cyclesim.With_interface (I) (O)
 
@@ -439,7 +424,6 @@ module Bench = struct
     ; seat : int
     ; value : int (** the class a face wrote, or the mask bit *)
     }
-  [@@deriving equal ~localize, sexp_of]
 
   (* The walk, driven. [rewind] runs one whole walk from the rest to the rest and clears
      the write log behind it; [play] strobes one step and gives the frame it answers. *)
@@ -449,9 +433,8 @@ module Bench = struct
     ; writes : unit -> write list
     ; spent : State.t -> int
     (** the cycles the last walk stood in one of its own states. ONE CYCLE, ONE OWNER: a
-        cycle the service is out of its rest is the service's and not the [Serve] the walk
-        parks in, thus [spent Serve] reads the engine alone, exactly as it did when the
-        two machines were one. *)
+        cycle the service is out of its rest belongs to the service and not to the [Serve]
+        the walk parks in, thus [spent Serve] reads the engine alone. *)
     ; cycles : unit -> int
     ; entered : State.t -> int option (** the first cycle of the last walk in one state *)
     ; service_spent : Service.t -> int
@@ -467,12 +450,12 @@ module Bench = struct
         let classes = e.Elaboration.rows
       end)
     in
-    (* THE TRACE IS THE NAMED SIGNALS AND NOT EVERY SIGNAL. A walk is thousands of cycles
-       over an array of [rows] by [lanes] lanes, thus a full trace would cost what the
-       machine could show and not what it computes. *)
+    (* A walk is thousands of cycles over an array of [rows] by [lanes] lanes, thus this
+       bench takes the long bench's configuration — [Harness.long_bench] holds what it
+       sets and why. *)
     let sim =
       Sim.create
-        ~config:(Cyclesim.Config.trace `All_named)
+        ~config:Harness.long_bench
         (create ~e ~seed:(of_unsigned_int ~width:32 seed))
     in
     let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
@@ -493,11 +476,9 @@ module Bench = struct
     let service_spent = Harness.Tally.create (module Service) in
     let writes = ref [] in
     let cycles = ref 0 in
-    (* THE STATE REGISTER READS ONE CYCLE AHEAD. A combinational node answers with the
-       cycle that has just run; a register answers with the value the edge has just put
-       into it, which is the state of the cycle to come. The bench therefore carries the
-       reading one cycle, and the writes it counts beside it stay in step — a bench that
-       did not would name every span in the wrong place and no gate would say so. *)
+    (* THE STATE REGISTER READS ONE CYCLE AHEAD: a register answers with the value the
+       edge has just put into it, which is the state of the cycle to come. The bench
+       carries the reading one cycle so that the writes it counts stay in step. *)
     let at_rest = Harness.Tally.encoded spent Idle in
     let serving_rest = Harness.Tally.encoded service_spent Service.Idle in
     let standing = ref at_rest in
@@ -581,214 +562,21 @@ module Bench = struct
     ; waves
     }
   ;;
-
-  (* [List.init] applies its function in the reverse index order, thus it cannot collect
-     from a simulation; the fold steps in the true order *)
-  let collect n f =
-    List.rev (List.fold (List.range 0 n) ~init:[] ~f:(fun acc (_ : int) -> f () :: acc))
-  ;;
-
-  (* THE REFERENCE IS THE TWIN'S OWN ENGINE, WALKED BESIDE THE CIRCUIT. [init] draws the
-     opening, [next_pass] gives the canvas the forward saw, the mask it drew and the
-     redraws in the cell order — cell, uniform and class. No export is added for the gate:
-     what the engine already states IS every phase. *)
-  let passes model ~steps ~walk ~seed =
-    let rec take engine at got =
-      if at = walk
-      then engine, List.rev got
-      else (
-        let engine, pass = Quantized.Engine.next_pass engine in
-        take engine (at + 1) (pass :: got))
-    in
-    take (Quantized.Engine.init model ~steps ~walk ~seed) 0 []
-  ;;
-
-  (* Every write the walk must make, in the order it must make them, and the phase that
-     owns each one: the opening, then for each pass its mask and its redraws. A
-     disagreement therefore names its phase and not only its index. *)
-  let wanted (passes : Quantized.Engine.pass list) ~steps =
-    let cells = Diffusion.cell_order ~steps in
-    let opening = (List.hd_exn passes).before in
-    let opened =
-      List.map cells ~f:(fun (step, seat) ->
-        "the opening", { mask = false; step; seat; value = opening.(step).(seat) })
-    in
-    let of_pass at (pass : Quantized.Engine.pass) =
-      let masked =
-        List.map cells ~f:(fun (step, seat) ->
-          ( Printf.sprintf "the mask of pass %d" at
-          , { mask = true; step; seat; value = Bool.to_int pass.hidden.(step).(seat) } ))
-      in
-      let drawn =
-        List.map pass.draws ~f:(fun (d : Quantized.Engine.draw) ->
-          ( Printf.sprintf "a draw of pass %d" at
-          , { mask = false; step = d.step; seat = d.voice; value = d.drawn } ))
-      in
-      masked @ drawn
-    in
-    opened @ List.concat (List.mapi passes ~f:of_pass)
-  ;;
-
-  (* the disagreements, in order, with the phase that owns each one *)
-  let apart ~got ~want =
-    let rec walk got want at apart =
-      match got, want with
-      | [], [] -> List.rev apart
-      | got, [] ->
-        List.rev
-          (Printf.sprintf "%d writes past the last one wanted" (List.length got) :: apart)
-      | [], want -> List.rev (Printf.sprintf "%d writes short" (List.length want) :: apart)
-      | g :: got, (phase, w) :: want ->
-        let apart =
-          if equal_write g w
-          then apart
-          else
-            Printf.sprintf
-              "%s, write %d: %s against %s"
-              phase
-              at
-              (Sexp.to_string ([%sexp_of: write] g))
-              (Sexp.to_string ([%sexp_of: write] w))
-            :: apart
-        in
-        walk got want (at + 1) apart
-    in
-    walk got want 0 []
-  ;;
 end
 
-let%expect_test "the canvas is the engine's, phase for phase" =
-  (* INSTRUMENT 2. The walk stands beside [Quantized.Engine] and the two are compared
-     WHERE EACH PHASE HAPPENS: the opening's classes against the canvas the first forward
-     saw, each mask's bits against the mask that pass drew, each redraw against the cell
-     it names and the class it wrote, in the offer order the walk counts — and then the
-     finished canvas THROUGH THE FRAME FACE, thus the Vocab decode, the score counter and
-     the silence past T - 1 stand in the same gate.
-
-     The finished canvas alone would pass a walk whose masks are one pass out of phase, or
-     one that spends a uniform on a standing cell: both draw a canvas, and both draw the
-     WRONG one with no local symptom. That is why the comparison is per phase.
-
-     SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 — the panel can state it,
-     [Prng.create] carries it and this engine stands still on it — thus every uniform is
-     0, every cell hides and every draw takes the top of the grid. The walk that stands
-     still is the design, and the gate holds the circuit to the engine's stillness like
-     any other walk. *)
-  let case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay =
-    let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
-    let model = Quantized.Model.For_test.init config ~seed:model_seed in
-    let e = Elaboration.create model ~steps ~lanes ~walk in
-    let h = Bench.harness ~e ~seed () in
-    h.rewind ();
-    let last, passes = Bench.passes model ~steps ~walk ~seed in
-    let want = Bench.wanted passes ~steps in
-    let got = h.writes () in
-    let apart = Bench.apart ~got ~want in
-    let frames = Diffusion.frames_of_canvas (Quantized.Engine.run last) in
-    let silent = 2 in
-    let played = Bench.collect (steps + silent) h.play in
-    let wanted_frames = Array.to_list frames @ List.init silent ~f:(fun (_ : int) -> 0) in
-    let again =
-      if replay
-      then (
-        h.rewind ();
-        Some (Bench.collect (steps + silent) h.play))
-      else None
-    in
-    printf
-      "%s, N %d, seed %d: %d writes — %d open, %s mask, %s draws\n"
-      name
-      walk
-      seed
-      (List.length got)
-      (steps * Frame.voices)
-      (String.concat
-         ~sep:"+"
-         (List.map passes ~f:(fun (_ : Quantized.Engine.pass) ->
-            Int.to_string (steps * Frame.voices))))
-      (String.concat
-         ~sep:"+"
-         (List.map passes ~f:(fun (p : Quantized.Engine.pass) ->
-            Int.to_string (List.length p.draws))));
-    (match apart with
-     | [] -> printf "  every write is the engine's, in the engine's order\n"
-     | apart ->
-       printf "  %d WRITES APART:\n" (List.length apart);
-       List.iter (List.take apart 8) ~f:(fun line -> printf "    %s\n" line));
-    printf
-      "  %d frames: %s%s\n"
-      (List.length played)
-      (if [%compare.equal: int list] played wanted_frames
-       then "the engine's canvas, and the two past T - 1 silent"
-       else "APART FROM THE ENGINE'S CANVAS")
-      (match again with
-       | None -> ""
-       | Some again ->
-         if [%compare.equal: int list] again played
-         then "; a rewind draws it again from the same seed"
-         else "; A REWIND DREW ANOTHER CANVAS")
-  in
-  let shape name ~width ~lanes ~pairs ~steps ~walk ~model_seed =
-    List.iteri [ 1; 2; 0 ] ~f:(fun at seed ->
-      case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay:(at = 0))
-  in
-  shape
-    "H 8, G 2, two pairs, T 6"
-    ~width:8
-    ~lanes:2
-    ~pairs:2
-    ~steps:6
-    ~walk:3
-    ~model_seed:1;
-  shape
-    "H 7, G 3, one pair,  T 5"
-    ~width:7
-    ~lanes:3
-    ~pairs:1
-    ~steps:5
-    ~walk:4
-    ~model_seed:2;
-  [%expect
-    {|
-    H 8, G 2, two pairs, T 6, N 3, seed 1: 138 writes — 24 open, 24+24+24 mask, 23+12+7 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
-    H 8, G 2, two pairs, T 6, N 3, seed 2: 137 writes — 24 open, 24+24+24 mask, 23+13+5 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent
-    H 8, G 2, two pairs, T 6, N 3, seed 0: 168 writes — 24 open, 24+24+24 mask, 24+24+24 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent
-    H 7, G 3, one pair,  T 5, N 4, seed 1: 145 writes — 20 open, 20+20+20+20 mask, 19+12+9+5 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
-    H 7, G 3, one pair,  T 5, N 4, seed 2: 140 writes — 20 open, 20+20+20+20 mask, 19+10+9+2 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent
-    H 7, G 3, one pair,  T 5, N 4, seed 0: 180 writes — 20 open, 20+20+20+20 mask, 20+20+20+20 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent
-    |}]
-;;
-
 let%expect_test "the service of one step: the level, a standing seat, a hidden one" =
-  (* THE SERVICE AS A PICTURE, at the era's own P and a canvas of three steps. The seat
-     registers are the corpus's, thus this unit refuses a narrower P and the picture
-     cannot shrink the draw the way the engine's picture shrinks the dwell: what a window
-     holds is the ORDER of the service, and the draw's 155 cycles stand between the two.
+  (* THE SERVICE AS A PICTURE. This unit refuses a narrower P, thus the picture cannot
+     shrink the draw the way the engine's shrinks the dwell: what a window holds is the
+     ORDER, and the draw's 155 cycles stand between the two.
 
-     WINDOW ONE is the level rising and the two seats behind it. [step_ready] stands, and
-     the walk reads [hidden] at seat 0 for ONE CYCLE: that seat stands, thus it costs the
-     cycle and nothing more. Seat 1 hides, and the five cycles of a uniform open — three
-     steps of the generator, then the cycle its last byte lands in and the cycle the whole
-     24 stands in, which is the cycle that starts the draw. [draw_busy] rises behind it.
+     WINDOW ONE is the level rising and the two seats behind it. Seat 0 stands, thus it
+     costs one cycle. Seat 1 hides, and the five cycles of a uniform open — three steps,
+     the cycle its last byte lands, the cycle the whole 24 stands and the draw starts.
 
-     WINDOW TWO is the close of the step. The draw of seat 3 ends; [write_class] puts the
-     class it drew into the cell the port names, in the very cycle [draw_busy] falls; the
-     walk strobes [step_taken]; and the level falls on the edge behind that strobe, thus
-     the engine opens the next step. *)
-  let config = { Diffusion.Config.layers = 4; width = 8 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+     WINDOW TWO is the close of the step: the draw of seat 3 ends, [write_class] puts the
+     class into the cell in the very cycle [draw_busy] falls, the walk strobes
+     [step_taken], and the level falls on the edge behind it. *)
+  let model = Model.For_test.drawn ~layers:4 ~width:8 ~seed:1 in
   let e = Elaboration.create model ~steps:3 ~lanes:2 ~walk:1 in
   let h = Bench.harness ~trace:true ~e ~seed:5 () in
   h.rewind ();
@@ -902,37 +690,24 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
 ;;
 
 let%expect_test "where a pass spends its cycles, against the cost model" =
-  (* INSTRUMENT 4'S LAST HOLE. [Elaboration] prices the engine and the cell walks; S3's
-     bench measured the engine against that price. What no number covered until here is
-     the machine around it — the opening, the masks and the SERVICE — thus the cost model
-     of the document and the walk could part with nothing saying so.
+  (* WHAT THE COST MODEL DOES NOT PRICE: the machine around the engine — the opening, the
+     masks and the SERVICE.
 
-     The measurement is at a shape a test can run and the CLAIM is about the elected rung,
-     thus the bench measures the CONSTANTS and states the rung: a standing cell costs one
-     cycle, a hidden cell costs the same one and then its uniform and its draw, and both
-     numbers are P 48's — the test shape and the rung hold the same P, thus the constant
-     carries with no scaling.
+     The measurement runs at a shape a test can afford and the CLAIM is about the elected
+     rung, thus the bench measures the CONSTANTS and states the rung. Both carry with no
+     scaling because the test shape and the rung hold the same P. The rung's expected
+     hidden cells come from [alpha_rom] itself.
 
-     The expected hidden cells of the rung come from the anneal table itself: a pass hides
-     [alpha] of its cells, and [alpha_rom] holds the thresholds on the generator's grid.
-
-     WHAT THE NUMBERS SAY.
-
-     - **A cell walk costs its uniforms and two cycles more**, and the two are the write
-       frame's lag: the model counts the three steps of each cell, and the machine also
-       has to write the last of them.
+     - **A cell walk costs its uniforms and two cycles more**: the write frame's lag,
+       where the model counts the three steps alone.
      - **The engine inside the walk is the engine S3 measured, and the walk adds nothing
-       to it.** S3's cycle bench reads 10 200 cycles for one forward at this very shape,
-       with its [step_taken] tied to [step_ready]; the walk reads 10 199 in [Serve], and
-       the one cycle is the tie's — it answers the level in the cycle the level rises and
-       the walk leaves for [Seat] in it. Every cycle of the service is therefore the
-       walk's own, and none of it is the engine waiting for something new.
-     - **The service is about three percent of a pass at the rung**, which is the claim of
-       the design chapter, measured. It is what Phase II's overlap would buy back beside
-       the head's wait; Phase I spends it. *)
+       to it.** S3 reads 10 200 cycles for one forward at this shape and the walk reads 10
+       199 in [Serve]; the one cycle is the tie's. Every cycle of the service is the
+       walk's own.
+     - **The service is about three percent of a pass at the rung**, which is the design
+       chapter's claim, measured. Phase II's overlap would buy it back. *)
   let cells_of steps = steps * Frame.voices in
-  let config = { Diffusion.Config.layers = 6; width = 8 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:6 ~width:8 ~seed:1 in
   let steps = 6 in
   let walk = 3 in
   let seed = 1 in
@@ -944,13 +719,12 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   in
   let h = Bench.harness ~e ~seed () in
   h.rewind ();
-  let (_ : Quantized.Engine.t), passes = Bench.passes model ~steps ~walk ~seed in
-  let hidden =
-    List.sum (module Int) passes ~f:(fun (p : Quantized.Engine.pass) ->
-      List.length p.draws)
-  in
   let spent = h.spent in
   let served = h.service_spent in
+  (* THE HIDDEN CELLS COME OUT OF THE MACHINE'S OWN COUNTER: the service takes one uniform
+     for each cell it redraws and nothing else takes one there. WHETHER it hid the right
+     cells is the walk gate's question and not this one's. *)
+  let hidden = served Uniform / uniform_ticks in
   let service = served Seat + served Uniform + served Redraw + spent Take in
   (* what one cell of the service costs, measured: the seat read that every cell pays, and
      the uniform and the draw that only a hidden one does *)
@@ -991,7 +765,7 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   (* THE CLAIM, AT THE RUNG THE COST MODEL STATES. *)
   let rung =
     Elaboration.create
-      (Quantized.Model.For_test.init { Diffusion.Config.layers = 16; width = 16 } ~seed:1)
+      (Model.For_test.drawn ~layers:16 ~width:16 ~seed:1)
       ~steps:128
       ~lanes:4
       ~walk:512
@@ -1040,24 +814,20 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
 
 let%expect_test "the cycles of one pass at rung 1, measured" =
   (* RUNG 1'S SHAPE, RUN. A cycle count is data-independent in the forward and
-     seed-dependent only in the service — the mask alone decides how many cells a pass
-     redraws — thus DRAWN WEIGHTS AT A RUNG SHAPE MEASURE THE PASS EXACTLY, and no
-     checkpoint enters a test. [Params.init] is licensed for that and for nothing else.
+     seed-dependent only in the service, thus DRAWN WEIGHTS AT A RUNG SHAPE MEASURE THE
+     PASS EXACTLY and no checkpoint enters a test.
 
      IT STAYS AT RUNG 1 AFTER THE RUNG-2 ELECTION, deliberately: l64 is the same machine
-     at a longer table — same geometry, same counters, same widths — thus rung 1 already
-     answers what no small shape can, that every width, every address and every counter
-     holds at T 128 and H 16, and l64 would buy four times the runtime and no new
-     structure. IT COSTS ABOUT HALF A MINUTE, which is what one pass of this shape IS:
-     1.17 M cycles at about 38 000 a second in Cyclesim.
+     at a longer table, thus rung 1 already answers what no small shape can — that every
+     width, address and counter holds at T 128 and H 16 — and l64 would buy four times the
+     runtime and no new structure. IT COSTS ABOUT HALF A MINUTE, which is what one pass of
+     this shape IS.
 
-     WHAT THE NUMBERS SAY. The walk bench above extrapolates the MEAN pass of the walk;
-     this measures PASS 0, the HOTTEST. The anneal opens at alpha 0.9, thus pass 0 redraws
-     about nine cells in ten where the mean pass redraws four in ten: the engine and the
-     cell walks are the same in both, and the service is the whole of the difference. The
-     playback window holds against the mean and not against this one. *)
-  let config = { Diffusion.Config.layers = 16; width = 16 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+     This measures PASS 0, the HOTTEST, where the walk bench above extrapolates the MEAN:
+     alpha opens at 0.9, thus pass 0 redraws nine cells in ten against the mean's four.
+     The service is the whole of the difference, and the playback window holds against the
+     mean. *)
+  let model = Model.For_test.drawn ~layers:16 ~width:16 ~seed:1 in
   let e = Elaboration.create model ~steps:128 ~lanes:4 ~walk:1 in
   let cells = e.steps * Frame.voices in
   let h = Bench.harness ~e ~seed:42 () in
@@ -1097,3 +867,32 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
       the service 76310: 470 cells redrawn of 512, at 162 cycles each
     |}]
 ;;
+
+(* ==================================================================== *)
+(* The export of the RTL gate *)
+(* ==================================================================== *)
+
+module For_test = struct
+  (* narrowed to what the RTL gate's driver reads: the walk alone. THE ORACLE IS THE JAX
+     TWIN — this side runs the circuit and states what it did, and nothing here states
+     what it should have done. *)
+  module Bench = struct
+    type write = Bench.write =
+      { mask : bool
+      ; step : int
+      ; seat : int
+      ; value : int
+      }
+
+    type t =
+      { rewind : unit -> unit
+      ; play : unit -> int
+      ; writes : unit -> write list
+      }
+
+    let harness ~e ~seed () =
+      let bench = Bench.harness ~e ~seed () in
+      { rewind = bench.rewind; play = bench.play; writes = bench.writes }
+    ;;
+  end
+end

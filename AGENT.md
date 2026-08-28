@@ -240,6 +240,14 @@ Run all tests with `dune runtest`.
   sampler, the timer. Exact test vectors are easy at the block level.
 - If a reference model is exact with no extra work, the stream comparison
   against Cyclesim is a cheap extra test. The Markov chain is this case.
+- **A gate that needs a MODEL AS AN ORACLE runs under `uv run pytest` in
+  `jax/`, and `dune runtest` holds the unit gates.** An era whose integer
+  twin lives in JAX (era six is the first) keeps Cyclesim in OCaml and puts
+  the oracle in Python: a driver executable runs the bench and prints what
+  the circuit did, and the test states what it must have done. Neither side
+  can then pass a gate by agreeing with itself. The gates that hold the
+  machine against ITSELF — the cycle counts, the images, the waveforms —
+  stay beside the units, because they need no model.
 - Randomness is pseudo-randomness, and the seed is an input. The same seed
   gives the same sequence in the simulation and on the board.
 - Diagnostics are on the board: the LEDs and the display. The host control

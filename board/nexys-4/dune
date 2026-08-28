@@ -12,7 +12,16 @@
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries core core_unix hardcaml jane_rope mgen_diffusion mgen_nexys4))
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  hardcaml
+  jane_rope
+  mgen_diffusion
+  mgen_nexys4))
 
 ; The out-of-context probe: one unit alone, for a timing and utilization reading before
 ; the machine around it exists. It carries no model — the column array takes its weights

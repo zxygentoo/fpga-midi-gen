@@ -8,19 +8,25 @@
    knows none of them.
 
    The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
-   states over the frames of [Quantized.Engine], byte for byte and in order; the run stop
-   plays the silent frame; and a second run from the same seed repeats the first. The two
-   halves of the model path are proved separately — [Source]'s own gate holds the walk to
-   the engine phase for phase, and this holds the sequencer to the frames — thus a failure
-   here names the sequencer's side and never the network.
+   states over THE FRAMES THE SOURCE IN THE SEAT ANSWERS, byte for byte and in order; the
+   run stop plays the silent frame; and a second run from the same seed repeats the first.
+   The two halves of the model path are proved separately — the walk gate of
+   [jax/tests/test_rtl.py] holds the source's walk to the integer twin phase for phase,
+   and this holds the sequencer to the frames that source answers — thus a failure here
+   names the sequencer's side and never the network.
+
+   THE REFERENCE IS THE SOURCE, PLAYED ON ITS OWN. [Source]'s bench drives a second
+   instance of the same block from the same seed and the same elaboration, thus it answers
+   the same frames; what this gate then measures is everything BETWEEN those frames and
+   the wire — the socket, the sequencer, the note tracking and the UART.
 
    ERA SIX IS THE EASY TENANT OF THIS SOCKET. The source answers [step] in one cycle from
-   a canvas that already stands, thus the step period constrains nothing; what it does
+   a sheet that already stands, thus the step period constrains nothing; what it does
    instead is hold [idle] low for a whole walk at the rewind, which is exactly the wait
    that [WaitRewind] exists for.
 
    **THE GATE DOES NOT DEPEND ON THE LENGTH OF THAT WALK.** The run below carries the
-   whole canvas and some steps past it, and PAST STEP T - 1 EVERY FRAME IS SILENT: the
+   whole sheet and some steps past it, and PAST STEP T - 1 EVERY FRAME IS SILENT: the
    first of them releases what the last cell held and every one after it states no event
    at all. The stop's own silent frame is the same frame again. Thus the message stream
    saturates, the draw budget only has to be an over-estimate, and no number of this test
@@ -31,13 +37,12 @@ module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
-module Diffusion = Mgen_diffusion.Diffusion
+module Model = Mgen_diffusion.Model
 module Elaboration = Mgen_diffusion.Elaboration
-module Quantized = Mgen_diffusion.Quantized
 module Source = Mgen_diffusion.Source
 
 (* The model of the test: drawn weights in the era's test shape, thus the test reads no
-   checkpoint that git ignores. The canvas is short and the walk is two passes; P stays at
+   checkpoint that git ignores. The sheet is short and the walk is two passes; P stays at
    the era's 48, because the seat registers of the opening are the corpus's. *)
 let steps = 8
 let walk = 2
@@ -45,10 +50,7 @@ let walk = 2
 (* One channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
    the fused floor asks 61, thus the shape the twin tests with is one this elaboration
    refuses. Nothing here reads the width. *)
-let model =
-  Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 8 } ~seed:11
-;;
-
+let model = Model.For_test.drawn ~layers:4 ~width:8 ~seed:11
 let e = Elaboration.create model ~steps ~lanes:2 ~walk
 let clocks_per_ms = 4
 let step_ms = 400
@@ -66,8 +68,8 @@ let draw_budget =
 ;;
 
 (* The harness drives the parameter views directly and samples the line in each cycle.
-   [play] runs one whole run: run to 1, the draw, the canvas and some silence past it,
-   then run to 0 and the drain; it gives the messages that the line carried. *)
+   [play] runs one whole run: run to 1, the draw, the sheet and some silence past it, then
+   run to 0 and the drain; it gives the messages that the line carried. *)
 let harness () =
   let open Hardcaml in
   let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
@@ -111,11 +113,23 @@ let harness () =
   inp, set, play
 ;;
 
-(* the messages of the reference: the frames of the canvas the engine draws, the silent
-   frame of the stop behind them, and [Frame.events_of_frames] over the whole run *)
+(* the messages of the reference: the frames the source answers over the whole sheet, the
+   silent frame of the stop behind them, and [Frame.events_of_frames] over the run.
+
+   THE FRAMES PAST T - 1 ARE NOT IN THE LIST AND DO NOT HAVE TO BE. The first of them
+   releases what the last cell held and every one after it states no event at all, thus
+   the stop's silent frame states that release and the message stream saturates — which is
+   why no number of this test tracks the machine's cycles. *)
 let reference_messages ~seed ~channel ~velocity =
-  let canvas = Quantized.Engine.run (Quantized.Engine.init model ~steps ~walk ~seed) in
-  Array.append (Diffusion.frames_of_canvas canvas) [| Frame.silent |]
+  let h = Source.For_test.Bench.harness ~e ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
+  let played =
+    List.rev
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun got (_ : int) -> h.play () :: got))
+  in
+  Array.of_list (played @ [ Frame.silent ])
   |> Frame.events_of_frames
   |> List.concat
   |> List.map ~f:(function

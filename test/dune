@@ -3,7 +3,6 @@
   test_txn
   test_quantized_drift
   test_mamba_drift
-  test_diffusion_drift
   test_socket
   test_pink_socket
   test_diffusion_socket)

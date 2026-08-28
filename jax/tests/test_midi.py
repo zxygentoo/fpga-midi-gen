@@ -1,6 +1,6 @@
-"""The wire side of an audition: the two gestures that shape the end of a canvas.
+"""The wire side of an audition: the two gestures that shape the end of a sheet.
 
-Neither one changes a note. A canvas is a crop and it stops where the corpus was cut; the
+Neither one changes a note. A sheet is a crop and it stops where the corpus was cut; the
 rest and the fade say that an ending is happening, and the tests here pin what they do and
 what they must never do -- a fade that reached zero would write a note-on of velocity zero,
 which is a note-off on the wire, and the note it silenced would ring for ever.
@@ -14,7 +14,7 @@ import midi
 
 
 def test_the_fade_leaves_the_music_before_it_alone():
-    """the gesture is the last bar of a canvas and nothing else: a step outside the window
+    """the gesture is the last bar of a sheet and nothing else: a step outside the window
     keeps the whole stroke"""
     assert midi.fading(0, 128, 16) == pytest.approx(1.0)
     assert midi.fading(111, 128, 16) == pytest.approx(1.0)
@@ -46,8 +46,8 @@ def test_no_fade_is_the_full_stroke_everywhere():
     assert all(midi.fading(step, 128, 0) == 1.0 for step in range(128))
 
 
-def test_a_short_canvas_still_fades():
-    """the window is the last [fade] steps or the whole canvas, whichever is shorter; a
+def test_a_short_sheet_still_fades():
+    """the window is the last [fade] steps or the whole sheet, whichever is shorter; a
     walk of four steps must not divide by a fade of sixteen"""
     scale = [midi.fading(step, 4, 16) for step in range(4)]
     assert scale[0] == pytest.approx(1.0)

@@ -3,18 +3,20 @@
 ## Scope
 
 Era six on the board: the RTL round. The model is `docs/diffusion.md` — the
-masked canvas, blocked Gibbs over an annealed schedule. The board draws one
-canvas and the sequencer plays it.
+masked sheet, blocked Gibbs over an annealed schedule. The board draws one
+sheet and the sequencer plays it.
 
 **The contract of the round is QUANTIZED-RTL EXACTNESS.** The integer twin
-(`lib/diffusion/quantized.ml`) is the specification. The circuit must equal
-`Quantized.Engine` operation for operation: the same seed gives the same
-canvas, bit for bit. This is Gate B. The circuit takes its ROM image and
-bases from the twin (`rom_bits`, `rom_bases`) — the twin is the authority
-on every value, and the dwell-order packing is the elaboration's
-permutation of it, as "The weight ROM" states. The float
-reference is not the specification of the circuit; the drift report already
-measured what the quantization costs.
+(`jax/diffusion/quantized.py`) is the specification. The circuit must equal
+it operation for operation: the same seed gives the same sheet, bit for
+bit. This is Gate B, and it runs under `uv run pytest` — Python states what
+the machine must do and `bin/gate_diffusion.exe` states what it did. The
+circuit takes its ROM image and bases from the CONTRACT FILE the twin
+writes (`rom_bits`, `rom_bases` over `Model.of_int8_checkpoint`) — the twin
+is the authority on every
+value, and the dwell-order packing is the elaboration's permutation of it,
+as "The weight ROM" states. The float model is not the specification of the
+circuit; the drift report already measured what the quantization costs.
 
 **The round CLIMBS A LADDER OF CHECKPOINTS, as the model round climbed its
 ladder of sizes.** First make it work, then make it good: the machine
@@ -28,7 +30,7 @@ activation memories.
 
 Out of scope, in order behind this round:
 
-- **Int4, the 17-bar canvas and the mix** — one stretch round, possibly,
+- **Int4, the 17-bar sheet and the mix** — one stretch round, possibly,
   after the int8 board ships. Pinned out 2026-08-26.
 - Whole pieces, the length mask and the endings — the thesis round, on top
   of this stack.
@@ -36,17 +38,40 @@ Out of scope, in order behind this round:
 
 ### The references, as built
 
-The reference round built the two software layers below the JAX seam and
-its record is the code. What the machine round stands on:
+THE TWO SOFTWARE LAYERS ARE ONE LAYER, AND IT IS IN JAX. The reference
+round built a float model and an integer twin in OCaml to weld the JAX
+model to the circuit; the cut of 2026-08-28 (commit 5ed90f8) removed them —
+both had become welds between the JAX model and the circuit, and a weld
+needs no second copy of what it welds — and the chain is now:
 
-- **The float reference** (`lib/diffusion/diffusion.ml`). Gate A holds it
-  to the JAX forward: one masked-NLL number over a deterministic corpus
-  set, inside a pinned tolerance. Gate C holds the walk: a small-N canvas
-  prints as the same text, character for character, from JAX and from the
-  reference.
-- **The integer twin** (`lib/diffusion/quantized.ml`). The drift report
-  pins it to the float reference. The report is a measurement and gates
-  nothing; Gates A, B and C are equivalences and must pass.
+```
+JAX float --(drift, in one framework)--> JAX int8 --(exact, pytest drives Cyclesim)--> RTL
+```
+
+What the machine round stands on:
+
+- **The float model and the integer twin** (`jax/diffusion/model.py` and
+  `jax/diffusion/quantized.py`). The drift report pins the twin to the
+  float model in one framework, on the walk the board takes:
+  `uv run python -m diffusion.infer drift --ckpt C`. The report is a
+  measurement and gates nothing.
+- **The contract file**, the only thing that crosses the seam for a build:
+  `infer.py quantize --ckpt C --out C.int8` states the int8 image and the
+  folded norm, and `Model.of_int8_checkpoint` reads it into the
+  elaboration. Its own gate is the NETLIST — the Verilog of `gen_verilog`
+  must stay md5-identical to the one the flash carries.
+- **The gates of the circuit**, in `jax/tests/test_rtl.py`: Python states
+  what the machine must do and `bin/gate_diffusion.exe` states what it
+  did. The walk gate holds every write of the cell port, phase for phase;
+  the stream gate holds every column the stores take. Neither side can
+  pass by agreeing with itself.
+- **What stays in OCaml below the seam** is what the CIRCUIT reads, and it
+  is ONE MODULE: `lib/diffusion/model.ml` — the roll, the formats, the
+  contract file as data, the walk (the cell order, the registers of the
+  seats, the opening, the masks, the anneal) and the frames. The two
+  software halves that a unit must equal stand beside that unit instead:
+  the stem's decode in `sheet.ml`, the draw in `draw.ml`. Each of those is
+  a rule the RTL must equal rather than restate.
 
 The drift lines of the climb, measured 2026-08-26 at seed 42, T 128,
 32 passes:
@@ -66,10 +91,10 @@ module at every rung.
 
 Every uniform of a walk comes from `Prng`, the xorshift32 of the circuit,
 and THE CONSUMPTION ORDER IS THE CONTRACT — the full statement is in
-`lib/diffusion/diffusion.mli` and `quantized.mli`, and the machine obeys it
-as written:
+`lib/diffusion/model.mli` and `jax/diffusion/quantized.py`, and the
+machine obeys it as written:
 
-1. One canvas is one seed. The board takes the SEED cell as it stands
+1. One sheet is one seed. The board takes the SEED cell as it stands
    (`Prng.create`). Seed 0 is the walk that stands still: every uniform is
    0 and the twin plays silence. That is the design, not a fault.
 2. The cell order is step-major, seat-minor.
@@ -77,7 +102,7 @@ as written:
    `low + floor(u * width)` over the register of the cell's seat.
 4. Each pass n of N: the masks (one uniform for each cell, hidden when
    `u * 2^24 < floor(alpha_n * 2^24)`), then one forward pass, then the
-   draws (one uniform for each hidden cell, `Policy.draw_class` over its
+   draws (one uniform for each hidden cell, the tempered pick over its
    48 logits).
 5. The anneal is `alpha_n = max(0.1, 0.9 - 0.8 n / (0.7 N))`; the
    temperature is 1.0, baked.
@@ -178,7 +203,7 @@ registers from one flop. "The array, measured" below states the numbers.
   the read of column t stands before the write of column t, thus two
   tensors are the whole activation store.
 - **The stem stores nothing.** Its input planes are 0 or 1, decoded on
-  the fly from the canvas RAM and the mask bits. No input tensor exists.
+  the fly from the sheet RAM and the mask bits. No input tensor exists.
 - **The head stores nothing.** Its output columns ARE the logit columns —
   the 48 rows of seat v at step t are exactly the 48 logits of that cell —
   and they stream to the draw pipeline in the step-major order the PRNG
@@ -187,7 +212,7 @@ registers from one flop. "The array, measured" below states the numbers.
 - **The weight ROM** is one linear memory of G-byte words, read once each
   cycle, initialized by the bitstream. The gains and biases are small
   per-channel constants beside it.
-- **The small state**: the canvas RAM (`T` by four classes), the mask
+- **The small state**: the sheet RAM (`T` by four classes), the mask
   bits, the alpha threshold ROM of N entries, the seat registers.
 
 ### The activation budget, and the fused pair
@@ -204,7 +229,7 @@ storage. The H 16 rungs fit — that is why the climb runs on them.
 built.** Conv2 of a residual pair needs only a three-column band of conv1's
 output, thus the intermediate tensor never exists in full. Y IS A RING OF
 FOUR COLUMNS. The pair output overwrites X in place, and the ring costs the
-WIDTH of a column and not the length of the canvas: eleven tiles at any T,
+WIDTH of a column and not the length of the sheet: eleven tiles at any T,
 because a 768-bit word fills eleven `512x72` tiles at any depth.
 
 | memory | unfused | fused |
@@ -339,7 +364,7 @@ walk, and the seam to the sequencer. `lib/diffusion/source.ml` holds the
 design and its reasons, as the era before it did.
 
 ![The diffusion source: the elaboration, the walk and its one generator, the
-canvas with three faces, the column engine with its memories, bands, array
+sheet with three faces, the column engine with its memories, bands, array
 and epilogue, the draw, and the five broadcast nets where ring 3 first
 missed timing](diffusion_rtl.svg)
 
@@ -350,7 +375,7 @@ Five layers, and the middle one is where the retired program stood:
 - **L0, the shared units**: `Prng.Rtl`, `Exp2`, the pick rules of
   `Mgen_nn.Quantized`, and `Vocab.Rtl` for the score port. Era four and era
   five built them and this era changes none of them.
-- **L1, the elaboration**: a value, computed from `Quantized.Model.t`. It
+- **L1, the elaboration**: a value, computed from `Model.t`. It
   gives the layer table, the weight ROM image, the constant ROMs, the alpha
   ROM, the address maps and the cycle cost. It states no signal, thus an
   expect test prints it and the cost model cannot rot.
@@ -361,7 +386,7 @@ Five layers, and the middle one is where the retired program stood:
 - **L3, the epilogue**: the folded norm, the ReLU, the clamp and the residual
   add — one drained row into one row of activations, and nothing wider than
   a row.
-- **L4, the walk**: the outer FSM, the canvas, the draw and the score port —
+- **L4, the walk**: the outer FSM, the sheet, the draw and the score port —
   and `Forward`, the unit that runs the FORWARD state. `Forward` holds the two
   activation stores, the three bands that cache them — the column window, the
   residual columns and the output columns — the weight and norm ROMs, the
@@ -422,7 +447,7 @@ PREAMBLE FOR EACH LAYER, at its first dwell. The cycle bench prints it, and if
 a fetch fails to hide at some turn the bench says so and this design moves.
 
 **The zero column and the stem enter at the slot load.** Beyond the ends of
-the roll the slot loads zero; on the stem it loads the canvas's plane column.
+the roll the slot loads zero; on the stem it loads the sheet's plane column.
 One mux, one place, and the array never knows. The residual band and the norm
 bank load in the port slack of the same dwell: the taps take three read slots
 of nine, and on a pair-closing layer the taps read Y while the residual rides
@@ -564,14 +589,14 @@ accumulator is a guess that one rung happens to survive.
 | the Y ring | `4 * H` columns by `P * 16` bits, one bank | the same traffic; the address is the low bits of the semantic column |
 | the weight ROM | the packed image in banks of a power of two, G bytes each word | one word each cycle |
 | the constants | gain and bias, one entry for each output channel | G entries each group |
-| the canvas | `T` by `voices` classes | registers |
+| the sheet | `T` by `voices` classes | registers |
 | the mask | `T * voices` bits | registers |
 | the alpha ROM | N entries of 24 bits | one entry each pass |
 | the logit file | `voices` files of P by 16 bits | the head's drain writes it, the draw reads it |
 
 **The stem decodes and does not read.** Its input column for `(t, plane)`
-comes from the canvas and the mask: a class plane is one-hot at
-`canvas[t][v]`, in activation units, when the cell stands, and zero when the
+comes from the sheet and the mask: a class plane is one-hot at
+`sheet[t][v]`, in activation units, when the cell stands, and zero when the
 cell hides; a mask plane is all ones when the cell hides and zero when it
 stands. No input tensor exists.
 
@@ -628,7 +653,7 @@ computes its own address disagrees with a gate and not with a board.
 `Source` is the walk: **Idle, then OPEN, then N rounds of MASK and SERVE,
 then PLAY.** One unit holds the outer FSM, the generator, the uniform shift
 register, the opening multiply, the alpha ROM, the draw service and the
-socket answers; it instantiates `Canvas`, `Forward`, `Draw` and `Prng.Rtl`
+socket answers; it instantiates `Sheet`, `Forward`, `Draw` and `Prng.Rtl`
 and wires the plane face straight across. Every uniform comes from that one
 generator, in the consumption order of the Scope chapter.
 
@@ -717,18 +742,18 @@ mask.
 
   **Phase I holds the head and the draws apart.** The dwells of step t + 1 do
   not start before `step_taken`, because a capture would write over the file.
-  The overlap is safe on the data — the draws write the canvas and the head
+  The overlap is safe on the data — the draws write the sheet and the head
   reads X — thus it stays a local cut, for when the cycle bench prices the
   wait.
 
 - **PLAY answers the socket, and it is what the Idle state does.** The walk
   has one rest, thus `rewind` is read where `idle` stands and the generator's
   `load` rides that one condition — the idiom of the eras. A step counter
-  walks the canvas: `step` reads its frame through the score face, `valid`
+  walks the sheet: `step` reads its frame through the score face, `valid`
   answers ONE CYCLE BEHIND the strobe with the frame the face stated, and the
   counter then advances. **Past step T - 1 the frame is four zero bytes, for
   ever**, until the next `rewind` puts the counter back at 0. The face is
-  combinational from the cells, thus PLAY holds no copy of the canvas and the
+  combinational from the cells, thus PLAY holds no copy of the sheet and the
   answer costs one register.
 
 **One cell port, three users, and no contention BY STATE.** OPEN writes
@@ -736,10 +761,10 @@ classes, MASK writes bits, and SERVE reads `hidden` and writes classes, in
 disjoint states of one FSM. The frame face is the sequencer's own and never
 the walk's, thus a piece plays while nothing writes.
 
-**The canvas is written IN PLACE during the head, and it is exact.** The head
-reads the trunk tensor, and the forward computed that tensor from the canvas
-as it stood at the start of the pass. Nothing after the stem reads the canvas,
-thus a draw at step t cannot reach a later column. The twin copies the canvas
+**The sheet is written IN PLACE during the head, and it is exact.** The head
+reads the trunk tensor, and the forward computed that tensor from the sheet
+as it stood at the start of the pass. Nothing after the stem reads the sheet,
+thus a draw at step t cannot reach a later column. The twin copies the sheet
 because a value engine must; the circuit does not have to.
 
 ### The seam to the sequencer
@@ -752,17 +777,17 @@ every depth, every base and the register of every seat has one authority —
 thus a new checkpoint moves that line and nothing else.
 
 - **`rewind`** is the run start. It captures SEED, drops `idle`, and runs OPEN
-  and the N passes. `idle` rises when the canvas stands. The sequencer's
+  and the N passes. `idle` rises when the sheet stands. The sequencer's
   `WaitRewind` state waits for exactly this already, thus the seconds of the
   draw need no rule of their own.
-- **`step`** reads `canvas[t]`, maps each class through `Vocab.Rtl`, packs the
+- **`step`** reads `sheet[t]`, maps each class through `Vocab.Rtl`, packs the
   frame and answers `valid` one cycle behind the strobe. The map is the
   vocabulary's rule and this era does not restate it.
 - **Past step T - 1 the frame is silence**, for ever, until the next
-  `rewind`. The sequencer plays the canvas one time and the reset button gives
+  `rewind`. The sequencer plays the sheet one time and the reset button gives
   the next run, as Phase I states.
 
-The score port stands behind its own interface, thus Phase II's second canvas
+The score port stands behind its own interface, thus Phase II's second sheet
 memory is a local change.
 
 ### What the elaboration refuses
@@ -783,7 +808,7 @@ refuses loudly, and the message names what it refused:
   nothing below it saying so. G 5 is the fused rung's geometry, thus the gap
   is a shape the ladder could really elaborate; the elaboration states the
   whole rule and a test stands on the gap.
-- a walk of no passes, a canvas of no steps, and a group of no lanes: N, T
+- a walk of no passes, a sheet of no steps, and a group of no lanes: N, T
   and G each stand at 1 or above.
 
 ## The cost model
@@ -797,7 +822,7 @@ wants all 240 for the array. "The circuit" chapter gives the reason.
 The climb, at T 128, N 512, inside the 25.6-second playback window
 (2.56 G cycles):
 
-| rung | params | weights | activations | tiles (of 135) | cycles / pass | canvas at N 512 |
+| rung | params | weights | activations | tiles (of 135) | cycles / pass | sheet at N 512 |
 |---|---|---|---|---|---|---|
 | `l16-h16` | 34 k | ~9 | ~88 | ~100 (74%) | 1.09 M | 5.6 s |
 | `l64-h16` | 147 k | ~36 | ~88 | ~127 (94%) | 4.63 M | 23.7 s |
@@ -916,7 +941,7 @@ Two rules for reading this table:
 
 Ring 2: the whole of `Forward` at the elected `l16-h16`, T 128 and G 4,
 through Vivado out of context on the part at 100 MHz. The weights are DRAWN
-under `Params.init` and not a checkpoint's — a timing reading needs no
+under `Model.For_test.drawn` and not a checkpoint's — a timing reading needs no
 correct data, and every width of this design follows a RULE and not a
 model's own peak, which is the argument `shift_bits` already makes — thus a
 drawn model elaborates the netlist a trained one does.
@@ -952,7 +977,7 @@ Held, like the capture-select reserve, until a full build asks. **The
 capture net did not come to the top in this ring**, thus that reserve stands
 where it was.
 
-The next ring is the machine around this one: the walk, the canvas, the draw
+The next ring is the machine around this one: the walk, the sheet, the draw
 and the socket, in context and on the real part.
 
 ### The whole machine, measured — AND IT DOES NOT MEET
@@ -1111,7 +1136,7 @@ standing rule demands.
 FOR BYTE IN ORDER.** The gate only demanded an order-tolerant alignment —
 the thru reorders locally under dense chord bursts, measured in the chorale
 era — and the allowance went unused: every message aligned at displacement
-zero. The board plays the twin's canvas exactly, thus instrument 5 closes
+zero. The board plays the twin's sheet exactly, thus instrument 5 closes
 and Gate B stands whole at rung 1.
 
 ### The ROM round — the padding taken back, and rung 2 fits
@@ -1163,12 +1188,12 @@ gate can see, measured 2026-08-27 on the first cut build.
 
 **THE FAILURE.** The cut's netlist was sound — Cyclesim exact against the
 twin, the phase gate exact write for write — and its build met at WNS +0.004
-with every constraint green. On the board it drew a DIFFERENT coherent canvas
+with every constraint green. On the board it drew a DIFFERENT coherent sheet
 at a fixed seed on every run: 762, 594 and 618 bytes across three captures at
 one panel seed, a power cycle curing nothing, while the pre-cut bitstream on
 the same rig and seed answered byte for byte. The board plays plausibly
 throughout — right channel, right density, right shape — thus THE SMOKE TEST
-CANNOT CATCH THIS CLASS, and the finished canvas alone convicts nothing. Only
+CANNOT CATCH THIS CLASS, and the finished sheet alone convicts nothing. Only
 the byte gate against the twin can.
 
 **THE MECHANISM.** The roll placed badly (post-place −0.143, the worst of the
@@ -1180,7 +1205,7 @@ path into that flop pays. Neighbour bits of the shift register ended on
 different clock trees, and the byte-shift path `uniform_reg[7] →
 uniform_reg[15]` closed at 0.001 ns of hold at the fast corner — met, in the
 report's own words. A corrupted uniform scrambles which cells hide and which
-classes draw, which is exactly a coherent wrong canvas.
+classes draw, which is exactly a coherent wrong sheet.
 
 **THE RULE: STA met by a picosecond is not met.** The refusal instrument, at
 every build from this round on:
@@ -1258,8 +1283,8 @@ them (`board/_build/rung2-port`). Nothing on the board or in the flash moves.
 
 **T WAS NOT THE ANSWER, AND IT WAS ASKED.** 2 040 columns fit one bank of
 2 048, thus T at 102 or below would need no banking at all. T is the musical
-parameter — the canvas is eight bars and the ear elected the model at T 128 —
-and the masked loss of the float model over the 76 valid canvases does not
+parameter — the sheet is eight bars and the ear elected the model at T 128 —
+and the masked loss of the float model over the 76 valid sheets does not
 move with it: 0.1935 at crop 128, 0.1930 at 102, 0.1833 at 96. The draw window
 does not move with T either, because the pass scales with T: the N 512 draw
 needs 172 ms for each sequencer step at G 5 at every T, against `STEP_MS` 200.
@@ -1446,7 +1471,7 @@ FAMILIES INSIDE 0.14 ns**, and the lottery band is 0.1:
 |---|---|---|---|
 | the draw's threshold: the uniform times the total, one cycle | −0.140 | 15, nine carry | `Draw`, old |
 | the fetch cone: `next_block` → the `s - 2` → `column_address` → a bank's address hold | −0.118 | 11–12 | `Forward`, the fused round's own |
-| the draw's class into the canvas | −0.107 | 11 | `Source`, old |
+| the draw's class into the sheet | −0.107 | 11 | `Source`, old |
 | the epilogue's gain multiply, one cycle | −0.090 | 15–17 | `Epilogue`, old |
 | the opening: the uniform times the seat width | −0.077 | 11 | `Source`, old |
 
@@ -1500,17 +1525,18 @@ stands aside as `board/_build/top-rung2-unfused.bit`.
 
 ## The iteration strategy
 
-**THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
-The elaboration reads the shape the way `Config.of_checkpoint` does — no
-flag states a dimension — and the layer table, the ROM image, the memory
+**THE MACHINE ELABORATES FROM THE CONTRACT FILE, as the twin wrote it.**
+The elaboration reads the shape out of the tensor shapes — no flag states a
+dimension — and the layer table, the ROM image, the memory
 depths and the group count all follow. The weights were never runtime
 state in this project; the bitstream initializes them. That standing rule
 becomes the iteration loop:
 
 ```
 elect a checkpoint
-  -> the drift line (check_diffusion drift, minutes, on the host)
-  -> dune build: the netlist, and the Cyclesim gates at a tiny shape
+  -> infer.py quantize: the contract file
+  -> the drift line (infer.py drift, seconds, on the host)
+  -> dune build: the netlist; uv run pytest: the Cyclesim gates at a tiny shape
   -> Vivado -> the board -> the capture gate
 ```
 
@@ -1518,13 +1544,14 @@ Each rung of the climb is this loop with new constants. Two rules keep it
 honest:
 
 - **Trained checkpoints elect music; drawn weights measure builds only.**
-  `Params.init ?norm_scale` elaborates a shape that has no checkpoint, for
-  a timing or utilization reading — never for a drift number (the drift of
-  drawn weights reads the format floor, a known trap) and never for a
+  `Model.For_test.drawn` elaborates a shape that has no
+  checkpoint, for a timing or utilization reading — never for a drift
+  number (the drift of drawn weights reads the format floor, a known trap)
+  and never for a
   rung.
 - **Every elaboration parameter has a test shape.** P — the 48 pitch rows
   — is a parameter of the CIRCUIT like the rest, pinned to 48 by the board.
-  The twin holds P at `Diffusion.rows`, thus Gate B compares at P 48 and the
+  The twin holds P at `Model.rows`, thus Gate B compares at P 48 and the
   tiny shapes come from T, L, H, G and N. **Parameterizing the twin is
   DEFERRED and not refused**: it moves a frozen reference, and nothing moves
   the reference before a circuit works. When one works, the twin takes P as
@@ -1532,13 +1559,13 @@ honest:
 
 ## The two phases
 
-**Phase I — the machine.** The working network on the board: one canvas
+**Phase I — the machine.** The working network on the board: one sheet
 from the panel seed on run, and the simplest circuit that hands it to the
 sequencer to play. Then measure: the Vivado build, the real generation
 cycles, the utilization against the cost model. Phase I holds every
 unknown of the round.
 
-**Phase II — the performance.** Many canvases: draw the next while this
+**Phase II — the performance.** Many sheets: draw the next while this
 one plays, the gap, the fade, the buffer. Phase II reuses semantics the
 software side already pinned.
 
@@ -1548,10 +1575,10 @@ software side already pinned.
   it good. The engine, the memories and the walk are the machine above;
   `l64-h16-100k` is the same elaboration with a longer table and a larger
   ROM. The golden candidate came through the fused pair, 2026-08-28.
-- **One canvas on run.** Reset releases, the machine draws one canvas from
+- **One sheet on run.** Reset releases, the machine draws one sheet from
   the SEED cell, the sequencer plays it once, the machine stops. The reset
   button gives the next run. Continuation belongs to phase II.
-- **The canvas is the score.** The engine draws in one canvas memory and
+- **The sheet is the score.** The engine draws in one sheet memory and
   the sequencer reads the same memory: no copy, no second buffer. The
   handoff is a read port, the step timer, the `Vocab` decode and the
   releases-before-strikes rule, into the socket the board already has. The
@@ -1563,18 +1590,22 @@ software side already pinned.
 - **Gate B, the machine gate.** The instruments, inherited from the era
   four and five pattern:
   1. the unit gates — the draw pipeline and the tables, expect and
-     waveform tests beside the units;
-  2. the canvas agreement — the circuit against `Quantized.Engine` in
-     Cyclesim, end to end at a small shape, and at MORE THAN ONE shape, so
-     that no address region field elaborates empty;
+     waveform tests beside the units, under `dune runtest`;
+  2. the sheet agreement — the circuit against the JAX twin, end to end at
+     a small shape, and at MORE THAN ONE shape, so that no address region
+     field elaborates empty;
   3. the stream gate, WRITE FOR WRITE — every per-layer activation write
      against the twin's, because era five proved that four real datapath
      faults move no frame at a test-sized shape;
   4. the cycle bench — the schedule prints its cycles at the elected
      shape, thus the cost model above and the machine cannot part;
   5. the board rung — the amidi capture of the board's events against
-     `play_diffusion -quantized` at the panel seed, the one gate that
+     `infer.py sample --quantized` at the panel seed, the one gate that
      waits for a person and the hardware.
+
+  Instruments 2 and 3 are `jax/tests/test_rtl.py` and instruments 1 and 4
+  are `dune runtest`: the two that need an ORACLE moved to the side that
+  holds it, and the two that hold the machine against itself stayed.
 - **The measurements of phase I**, the numbers the phase must report: the
   build (WNS, LUTs, block RAM, DSPs), the measured cycles of one pass, the
   utilization against the cost model, and the N the board affords inside
@@ -1585,17 +1616,17 @@ software side already pinned.
 Nothing here is designed; the chapter waits for phase I's numbers. The
 items, so the seams stay clean:
 
-- **The buffer.** Gibbs rewrites the canvas in place, thus the playing
-  canvas must be its own copy: two canvas memories in ping-pong. Phase I
+- **The buffer.** Gibbs rewrites the sheet in place, thus the playing
+  sheet must be its own copy: two sheet memories in ping-pong. Phase I
   keeps the score read port behind its own interface so the doubling stays
   local.
-- **The scheduling.** Draw the next canvas while this one plays; the lane
+- **The scheduling.** Draw the next sheet while this one plays; the lane
   count and N come from phase I's measurement.
 - **The gap and the fade**, as the software states them: `Player`'s
   `velocity_at ~step` is the fade's one point of variation, and velocity
   is a fact of the onset.
-- **The seed succession.** The rule that names the seed of canvas k is a
-  contract to pin with `play_diffusion -seeds` and the JAX handoff before
+- **The seed succession.** The rule that names the seed of sheet k is a
+  contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.
 - **The frames as interfaces.** The lead and now frames of `Forward` and of
   `Source` are packed by hand: a `concat_lsb`, two registers on the word,

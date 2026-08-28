@@ -1,20 +1,9 @@
-(* L2 of the diffusion source — see column_array.mli for the contract and
-   docs/diffusion_rtl.md, "The dwell" and "The drain", for the design. What stands here is
-   the WHY of each rule.
+(* The column array — see column_array.mli, and docs/diffusion_rtl.md for the design.
 
-   The unit is one op shape and nothing else: P by G lanes that take one term each cycle,
-   and the chain that carries their accumulators out one row a cycle. It knows no layer,
-   no memory and no walk — the caller states the terms and the array states the drained
-   rows.
-
-   THE THREE-COLUMN WINDOW STANDS OUTSIDE THIS UNIT, with the store it caches. A window is
-   a read cache for the column port: what fills it, when a slot is free, and what the zero
-   column is beyond the ends of the roll are all questions of the memory and of the walk
-   that reads it. Holding the registers here and the policy there would put a load strobe
-   on one side of an interface and the dwell it must be timed against on the other. The
-   path is the same either way — the caller's window register through its time mux, then
-   this unit's pitch mux into the operand register — thus the cut costs no logic and no
-   stage. *)
+   THE THREE-COLUMN WINDOW STANDS OUTSIDE THIS UNIT, with the store it caches: holding the
+   registers here and the policy there would put a load strobe on one side of an interface
+   and the dwell it must be timed against on the other. The path is the same either way,
+   thus the cut costs no logic and no stage. *)
 
 open Core
 open Hardcaml
@@ -26,41 +15,21 @@ module type Shape = sig
   val lanes : int
 end
 
-(* Cycles from a [term] strobe to the edge that takes its term into the accumulator: the
-   operand registers, then the product register. The DSP48E1 packs as A, B, M and P, thus
-   the depth is the primitive's own and not a choice. *)
+(* the operand registers, then the product register. The DSP48E1 packs as A, B, M and P,
+   thus the depth is the primitive's own and not a choice. *)
 let accumulate_latency = 2
 
-(* Cycles from [term_last] to the first [drained]. The accumulator settles one cycle
-   behind its last term, the chain takes it on that cycle's edge, and the bottom stage
-   stands one cycle later. *)
+(* the accumulator settles one cycle behind its last term, the chain takes it on that
+   cycle's edge, and the bottom stage stands one cycle later *)
 let first_row_latency = accumulate_latency + 2
-
-(* the activation format of the stream and the accumulator behind it, read from the twin
-   that states them; the weight byte is the quantizer's own rail *)
-let activation_bits = Quantized.activation_bits
-let accumulator_bits = Quantized.accumulator_bits
+let activation_bits = Model.activation_bits
+let accumulator_bits = Model.accumulator_bits
 let weight_bits = 8
 
-(* THE ARRAY OWNS THE DSPS AND EVERY OTHER UNIT PINS ITS PRODUCTS AWAY FROM THEM. The
-   fused rung at G 5 is 48 by 5, which is the device's whole 240, thus a multiply that
-   drifted into a DSP anywhere else would have to move at the moment the design is
-   tightest. The rule is an attribute and not a hope — and it stands HERE, beside the
-   lanes that hold the primitives, rather than once in each unit that obeys it. *)
+(* The placement family — see column_array.mli. The three stand HERE, beside the lanes
+   that hold the primitives, rather than once in each unit that obeys them. *)
 let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false)
-
-(* ONE COPY OF A BROADCAST, KEPT APART FROM ITS SIBLINGS. The rule is an attribute and not
-   a hope, as [no_dsp] is, and it stands here for the same reason: this unit is the one
-   that holds the primitives, thus the family of Vivado rules the round leans on has one
-   home rather than a statement in each unit that obeys it. *)
 let replica copy = add_attribute copy (Rtl_attribute.Vivado.dont_touch true)
-
-(* THE REPLICA SLICE — ring 3's rule, and the array's own scale is what imposes it. No net
-   of this scale keeps a single driver: a bank stands as one register slice for each
-   [slice_rows] rows, [dont_touch] so the tools neither merge the copies nor absorb them
-   back into the primitives. The number is a placement fact of the device and not of a
-   model, thus the walk that slices a column band reads it here and never states an 8 of
-   its own. *)
 let slice_rows = 8
 let slices_for ~rows = (rows + slice_rows - 1) / slice_rows
 
@@ -94,9 +63,8 @@ module Make (Shape : Shape) = struct
 
   let create (i : _ I.t) : _ O.t =
     let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
-    (* the datapath registers have no clear: what is real is what the strobes mark, and a
-       stale value that no strobe reaches touches nothing. The DSP packs best with no
-       reset. The control registers clear. *)
+    (* the datapath takes no clear: a stale value no strobe reaches touches nothing, and
+       the DSP packs best with no reset *)
     let dspec = Reg_spec.create ~clock:i.clock () in
     let row_of column at =
       select
@@ -104,16 +72,13 @@ module Make (Shape : Shape) = struct
         ~high:((at * activation_bits) + activation_bits - 1)
         ~low:(at * activation_bits)
     in
-    (* The three pitch taps are wire shifts of the registered column: output row [at]
-       takes input row [at + dx - 1], and zeros shift in at row 0 and row [rows - 1]. No
-       arithmetic stands here — the shift is the wiring. *)
+    (* the three pitch taps are wire shifts: no arithmetic stands here *)
     let silent = zero activation_bits in
     let activation at =
       let below = if at = 0 then silent else row_of i.column (at - 1) in
       let here = row_of i.column at in
       let above = if at = rows - 1 then silent else row_of i.column (at + 1) in
-      (* the contract states 0, 1 and 2; the fourth arm is the don't care of a 2-bit
-         select and it takes the row itself *)
+      (* the fourth arm is the don't care of a 2-bit select *)
       mux i.row_shift [ below; here; above; here ]
     in
     let weight lane =
@@ -122,29 +87,20 @@ module Make (Shape : Shape) = struct
         ~high:((lane * weight_bits) + weight_bits - 1)
         ~low:(lane * weight_bits)
     in
-    (* The two broadcast trees: one activation serves the [lanes] of a row and one weight
-       serves the [rows] of a channel, thus the operand registers stand once for each row
-       and once for each channel and never once for each lane. *)
+    (* the two broadcast trees: the operand registers stand once for each row and once for
+       each channel, never once for each lane *)
     let operand_a = Array.init rows ~f:(fun at -> reg dspec (activation at)) in
-    (* THE WEIGHT REPLICA BANK — ring 3's second family. The design put a register after
-       the ROM and one at the operand, and the tools absorbed the first into the BRAM's
-       own output register and the second into each DSP's B port — leaving the broadcast
-       net ONE driver of 528 pins with no flop in the fabric to replicate, at 12 ns of
-       route. The bank IS the operand register, stated in fabric: one copy for each slice
-       of rows, [dont_touch] so the tools neither merge the copies nor absorb them back
-       into the primitives. The depth of the pipe does not move — the replica replaces the
-       absorbed B register — and the B port runs direct into the multiplier, far inside a
-       cycle beside a neighbouring flop. *)
+    (* THE WEIGHT REPLICA BANK. With a plain register the tools absorb it into each DSP's
+       B port, leaving the broadcast net ONE driver of 528 pins with no flop in the fabric
+       to replicate: 12 ns of route. The bank IS that operand register, stated in fabric,
+       one copy for each slice of rows. The depth of the pipe does not move. *)
     let slices = slices_for ~rows in
     let operand_b =
       Array.init lanes ~f:(fun lane ->
         Array.init slices ~f:(fun (_ : int) -> replica (reg dspec (weight lane))))
     in
     (* The operand and product registers FREE-RUN and only the sum is gated: that is how
-       the DSP is meant to be driven, and a register that captures on a cycle no term
-       marks captures nothing that counts. The tags ride the pipe beside the operands —
-       the accumulator takes a term two cycles behind its strobe, thus the flags that gate
-       it arrive two cycles behind as well. *)
+       the DSP is meant to be driven. The flags ride the pipe beside the operands. *)
     let taking = pipeline spec ~n:accumulate_latency i.term in
     let opening = pipeline spec ~n:accumulate_latency i.term_first in
     let accumulator =
@@ -157,18 +113,14 @@ module Make (Shape : Shape) = struct
           reg_fb dspec ~enable:taking ~width:accumulator_bits ~f:(fun sum ->
             mux2 opening term (sum +: term))))
     in
-    (* THE CAPTURE STANDS ON THE EDGE THAT CLOSES THE DWELL. The next dwell may open on
-       the cycle behind [term_last] — its first term reaches the accumulator on the very
-       edge that loads the chain — and the chain takes the value the register held BEFORE
-       that edge, which is the finished sum. Thus the array never waits between two
-       dwells. *)
+    (* THE CAPTURE STANDS ON THE EDGE THAT CLOSES THE DWELL, and the chain takes the value
+       the register held BEFORE that edge — the finished sum. Thus two dwells never need a
+       gap between them. *)
     let pre_capture = pipeline spec ~n:accumulate_latency i.term_last in
     let capture = reg spec pre_capture in
-    (* THE CAPTURE BANK — the reserve of ring 1, applied: the capture select reached every
-       register of the chain from one flop, fanout 6 019, and its shift enable 6 144. One
-       copy of the capture register for each chain stage, [dont_touch] so the equivalent
-       registers survive synthesis: 48 drivers of about 128 pins each, laid out beside
-       their own stage. The walk of the drain keeps [capture] itself. *)
+    (* THE CAPTURE BANK: from one flop the capture select reached every register of the
+       chain at fanout 6 019. One copy for each chain stage instead — 48 drivers of about
+       128 pins, laid out beside their own stage. The drain walk keeps [capture] itself. *)
     let capture_bank =
       Array.init rows ~f:(fun (_ : int) -> replica (reg spec pre_capture))
     in
@@ -185,11 +137,10 @@ module Make (Shape : Shape) = struct
               [ if_ last_row [ draining <-- gnd ] [ row <-- row.value +:. 1 ] ]
           ]
       ];
-    (* The chain: one stage for each row, [lanes] accumulators wide. The capture loads
-       every stage at one time and each cycle after it every stage takes the stage above,
-       thus NO VALUE CROSSES A MUX AND NO REGISTER REACHES FARTHER THAN ITS NEIGHBOUR —
-       the regularity the timing risk of this design asks for. The rows leave in row
-       order, which is the order the epilogue packs a column in. *)
+    (* The chain: one stage for each row, [lanes] wide. The capture loads every stage at
+       one time and each cycle after it every stage takes the stage above, thus NO
+       REGISTER REACHES FARTHER THAN ITS NEIGHBOUR. The rows leave in row order, which is
+       the order the epilogue packs a column in. *)
     let stage_of at above =
       let loaded = concat_lsb (Array.to_list accumulator.(at)) in
       let take = capture_bank.(at) in
@@ -198,9 +149,8 @@ module Make (Shape : Shape) = struct
         ~enable:(take |: draining.value)
         (mux2 take loaded (Option.value above ~default:loaded))
     in
-    (* The chain builds from the top row down, thus each stage names the stage above it as
-       a value and no wire stands anywhere in it. The top row has no stage above it and
-       takes its own accumulator on both arms, thus its mux collapses. *)
+    (* built from the top row down, thus each stage names the stage above it as a value
+       and no wire stands in the chain. The top row's mux collapses. *)
     let chain =
       List.fold
         (List.rev (List.range 0 rows))
@@ -215,9 +165,8 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* One shape, the dwells driven into it, and the rows the chain gives back. THE REFERENCE
-   IS THE TWIN'S INNER SUM restricted to one (column, group): the array holds no more than
-   that, thus the gates need no model of their own. *)
+(* THE REFERENCE IS THE TWIN'S INNER SUM restricted to one (column, group): the array
+   holds no more than that, thus the gates need no model of their own. *)
 module Bench (Shape : Shape) = struct
   module Lanes = Make (Shape)
   module Sim = Cyclesim.With_interface (Lanes.I) (Lanes.O)
@@ -246,9 +195,8 @@ module Bench (Shape : Shape) = struct
           Nn_quantized.sum 9 (fun tap -> term ~at ~lane ~cin ~tap))))
   ;;
 
-  (* [run dwells] drives the dwells BACK TO BACK — the next one opens on the cycle behind
-     the [term_last] of the one before it, which is the hazard the capture rule stands on
-     — and gives the drained rows in the order they left the chain. *)
+  (* the dwells BACK TO BACK — the next opens on the cycle behind the [term_last] of the
+     one before, which is the hazard the capture rule stands on *)
   let run ?(trace = false) dwells =
     let sim =
       Sim.create
@@ -269,15 +217,14 @@ module Bench (Shape : Shape) = struct
       inp.term_first := Bits.gnd;
       inp.term_last := Bits.gnd
     in
-    (* The bench stands where the walk will: it holds the window itself, thus a term names
-       its column and the array only shifts it. The term of tap [t] takes the column of
-       the time tap [t / 3]. *)
+    (* the bench stands where the walk will and holds the window itself, thus a term names
+       its column and the array only shifts it *)
     let multiply ~first ~last ~tap column weights =
       inp.term := Bits.vdd;
       inp.term_first := if first then Bits.vdd else Bits.gnd;
       inp.term_last := if last then Bits.vdd else Bits.gnd;
       inp.column := Harness.pack column ~width:activation_bits;
-      inp.row_shift := Bits.of_unsigned_int ~width:2 (tap % 3);
+      Harness.set inp.row_shift (tap % 3);
       inp.weights := Harness.pack weights ~width:weight_bits;
       cycle ()
     in
@@ -325,26 +272,17 @@ module Bench (Shape : Shape) = struct
     let order = List.concat_map dwells ~f:(fun (_ : dwell) -> List.range 0 rows) in
     let given = List.map drained ~f:snd in
     let counted = List.length given = List.length wanted in
-    let complain wrong name = if wrong then Some name else None in
-    let complaints =
-      List.filter_opt
-        [ complain (not (List.equal Int.equal (List.map drained ~f:fst) order)) "order"
-        ; complain (not counted) "count"
-        ; complain
-            (not (counted && List.for_all2_exn given wanted ~f:(Array.equal Int.equal)))
-            "sums"
-        ]
-    in
-    if List.is_empty complaints then "ok" else String.concat ~sep:", " complaints
+    Harness.verdict
+      [ "order", not (List.equal Int.equal (List.map drained ~f:fst) order)
+      ; "count", not counted
+      ; "sums", not (counted && List.for_all2_exn given wanted ~f:(Array.equal Int.equal))
+      ]
   ;;
 end
 
 let%expect_test "the array sums what the twin sums" =
-  (* The fuzz: columns inside the range the Q6 clamp allows and int8 weights, over the
-     geometries a simulation can hold, over one to six input channels, and at the elected
-     P 48 by G 4. THE DWELLS RUN BACK TO BACK — the next opens on the cycle behind the
-     [term_last] of the one before — thus every case also holds the capture rule, which is
-     the one hazard of the design. *)
+  (* The fuzz, over the geometries a simulation can hold and at the elected P 48 by G 4.
+     THE DWELLS RUN BACK TO BACK, thus every case also holds the capture rule. *)
   let case ~rows ~lanes ~inputs ~dwells =
     let module B =
       Bench (struct
@@ -352,20 +290,11 @@ let%expect_test "the array sums what the twin sums" =
         let lanes = lanes
       end)
     in
-    let take (state, held) (_ : int) =
-      let state, drawn = B.draw_dwell state ~inputs in
-      state, drawn :: held
-    in
+    let draw state (_ : int) = B.draw_dwell state ~inputs in
     let (_ : Prng.state), drawn =
-      List.fold (List.range 0 dwells) ~init:(Prng.create ~seed:7, []) ~f:take
+      List.fold_map (List.range 0 dwells) ~init:(Prng.create ~seed:7) ~f:draw
     in
-    printf
-      "P %2d G %d Cin %d, %d dwells: %s\n"
-      rows
-      lanes
-      inputs
-      dwells
-      (B.check (List.rev drawn))
+    printf "P %2d G %d Cin %d, %d dwells: %s\n" rows lanes inputs dwells (B.check drawn)
   in
   case ~rows:3 ~lanes:1 ~inputs:1 ~dwells:1;
   case ~rows:6 ~lanes:3 ~inputs:2 ~dwells:3;
@@ -381,11 +310,9 @@ let%expect_test "the array sums what the twin sums" =
 ;;
 
 let%expect_test "the waveform of one dwell and its drain" =
-  (* Three rows, one lane, one input channel: NINE CYCLES AND NOTHING ELSE — the window
-     stands outside, thus a dwell is exactly its terms. [term_first] opens the sum and
-     [term_last] closes it; the accumulator takes a term two cycles behind its strobe,
-     thus [drained] stands four cycles behind [term_last] and the rows leave in row order,
-     which is the order a column is packed in. *)
+  (* Three rows, one lane, one input channel: NINE CYCLES AND NOTHING ELSE, because the
+     window stands outside. [drained] stands four cycles behind [term_last] and the rows
+     leave in row order. *)
   let module B =
     Bench (struct
       let rows = 3
@@ -400,8 +327,8 @@ let%expect_test "the waveform of one dwell and its drain" =
   in
   let drained, waves = B.run ~trace:true [ dwell ] in
   let waves = Option.value_exn waves ~message:"a traced run gives a waveform" in
-  (* the picture is the HANDSHAKE and the text below it is the arithmetic: a 32-bit
-     accumulator does not fit a wave column, and the rows print exactly *)
+  (* the picture is the HANDSHAKE and the text below it the arithmetic: a 32-bit
+     accumulator does not fit a wave column *)
   Hardcaml_waveterm.Waveform.expect
     ~display_rules:
       [ Hardcaml_waveterm.Display_rule.port_name_is_one_of
@@ -470,11 +397,9 @@ let%expect_test "a dwell shorter than the chain throws rows away" =
 ;;
 
 let%expect_test "the array agrees over a sweep of shapes" =
-  (* THE FUZZ. The named cases above hold the shapes that matter; this holds the ones
-     nobody thought of — a shape, its channel count and its data all drawn, over and over.
-     A drawn shape takes the input channels the drain rule demands, thus the sweep states
-     legal work and never the fault the test below states. One seed reproduces every case
-     of it. *)
+  (* THE FUZZ over shapes nobody thought of: the shape, its channel count and its data all
+     drawn. A drawn shape takes the input channels the drain rule demands, thus the sweep
+     states legal work and never the fault the test below states. *)
   let case state =
     let state, rows = Prng.For_test.draw_between state ~low:2 ~high:14 in
     let state, lanes = Prng.For_test.draw_between state ~low:1 ~high:5 in
@@ -518,19 +443,17 @@ let%expect_test "the array agrees over a sweep of shapes" =
 ;;
 
 let%expect_test "the accumulator holds the twin's widest layer at its rails" =
-  (* THE INT32 ACCUMULATOR IS THE TIGHTEST NUMBER IN THIS UNIT, and a drawn value never
-     reaches it. The twin is exact below [Quantized.Model.widest_inputs] channels and the
-     array accumulates in 32 bits on that promise; here the promise runs to its edge —
-     every activation at the int16 rail, every weight at the quantizer's rail of 127, and
-     every sign the same, at the widest layer the twin allows. The printed peak is the
-     margin, and it is small: a sum one channel wider would pass the ceiling. *)
+  (* THE INT32 ACCUMULATOR AT ITS EDGE, which a drawn value never reaches: every
+     activation at the int16 rail, every weight at 127, every sign the same, at the widest
+     layer the twin allows. The printed margin is small — one channel wider would pass the
+     ceiling. *)
   let module B =
     Bench (struct
-      let rows = Diffusion.rows
+      let rows = Model.rows
       let lanes = 4
     end)
   in
-  let inputs = Quantized.Model.widest_inputs in
+  let inputs = Model.widest_inputs in
   let rail activation weight =
     { B.columns =
         Array.init inputs ~f:(fun (_ : int) ->

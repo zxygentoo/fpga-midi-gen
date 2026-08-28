@@ -6,7 +6,7 @@
 
    The MIDI line is here as the silence it must keep: RUN rests at 0 through the whole
    test, thus JD must stay at its no-current level and carry no byte. The bytes of a run
-   are not observable at this level for a useful price — era six draws a whole canvas
+   are not observable at this level for a useful price — era six draws a whole sheet
    before its first note, which is millions of cycles of the real board clock — thus
    [Midi_out] proves the line format and the socket chain tests prove the message stream. *)
 
@@ -27,15 +27,11 @@ let () =
   (* The model seat takes an elaboration of drawn weights at the smallest geometry the era
      admits: the control path does not read the weights, and a test must not read a
      checkpoint that git ignores. The shape sizes the counters, the ROMs and the lanes,
-     thus one group of one lane over the shortest canvas elaborates in a test. P stays at
+     thus one group of one lane over the shortest sheet elaborates in a test. P stays at
      the era's 48 — the seat registers of the opening are the corpus's. *)
   (* one channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
      the fused floor asks 60, thus the twin's shape is one this elaboration refuses *)
-  let model =
-    Mgen_diffusion.Quantized.Model.For_test.init
-      { Mgen_diffusion.Diffusion.Config.layers = 4; width = 8 }
-      ~seed:11
-  in
+  let model = Mgen_diffusion.Model.For_test.drawn ~layers:4 ~width:8 ~seed:11 in
   let e = Mgen_diffusion.Elaboration.create model ~steps:4 ~lanes:1 ~walk:2 in
   let sim = Cyclesim.create (Mgen_nexys4.Top.create ~e ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in

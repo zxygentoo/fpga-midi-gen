@@ -1,9 +1,11 @@
 (library
  (name mgen_diffusion)
- ; Era six below the JAX seam: the float reference of the masked canvas and its integer
- ; twin. The units and the shared rules come from mgen_nn, as the unification round put
- ; them. Mgen_nn is not opened — its [Quantized] would shadow this library's own — thus
- ; everything is named through it.
+ ; Era six below the JAX seam: the circuit of the masked sheet, and the model as the
+ ; circuit reads it. The units and the shared rules come from mgen_nn, as the unification
+ ; round put them. Mgen_nn is NOT opened, and no module of this library shadows one of its
+ ; any more: opening it would put [Quantized] in scope unqualified beside the
+ ; [Nn_quantized] alias that every unit here reads it by, and one name for one thing is
+ ; the point.
  (libraries
   base
   core
