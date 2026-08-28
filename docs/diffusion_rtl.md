@@ -40,8 +40,9 @@ Out of scope, in order behind this round:
 
 THE TWO SOFTWARE LAYERS ARE ONE LAYER, AND IT IS IN JAX. The reference
 round built a float model and an integer twin in OCaml to weld the JAX
-model to the circuit; `docs/diffusion_ocaml_cut.md` cut them out, and the
-chain is now:
+model to the circuit; the cut of 2026-08-28 (commit 5ed90f8) removed them —
+both had become welds between the JAX model and the circuit, and a weld
+needs no second copy of what it welds — and the chain is now:
 
 ```
 JAX float --(drift, in one framework)--> JAX int8 --(exact, pytest drives Cyclesim)--> RTL

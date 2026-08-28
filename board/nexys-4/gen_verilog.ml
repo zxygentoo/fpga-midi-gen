@@ -9,8 +9,9 @@
    THE MODEL IS A CONTRACT FILE AND THE QUANTIZATION IS NOT HERE.
    jax/diffusion/quantized.py folds the norm and states the int8 image, one time, and
    writes the file this reads: `uv run python -m diffusion.infer quantize --ckpt C --out
-   C.int8`. What that buys is in docs/diffusion_ocaml_cut.md, and the gate that holds it
-   is `test_g1_the_quantizer_states_the_golden_netlist` — the netlist of this program must
+   C.int8`. The quantization happens above the seam, one time, thus the file is the only
+   thing that crosses it for a build; the gate that holds it is
+   `test_g1_the_quantizer_states_the_golden_netlist` — the netlist of this program must
    stay the netlist the flash carries.
 
    THE SHAPE OF THE MODEL COMES FROM THE FILE and the GEOMETRY comes from this one call. A

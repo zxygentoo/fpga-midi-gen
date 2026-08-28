@@ -9,11 +9,11 @@
     the design of this layer and its gates is [docs/diffusion_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/diffusion/model.py] and the
-    integer twin is [jax/diffusion/quantized.py]; the order that cut them out of OCaml is
-    [docs/diffusion_ocaml_cut.md], and the gate that replaced them is
-    [jax/tests/test_rtl.py] — Python states what the circuit must do and
-    [bin/gate_diffusion.ml] states what it did. What stays here is what the CIRCUIT reads,
-    and every one of those facts is a rule the RTL must equal rather than restate:
+    integer twin is [jax/diffusion/quantized.py]; the cut of 2026-08-28 (commit 5ed90f8)
+    moved them out of OCaml, and the gate that replaced them is [jax/tests/test_rtl.py] —
+    Python states what the circuit must do and [bin/gate_diffusion.ml] states what it did.
+    What stays here is what the CIRCUIT reads, and every one of those facts is a rule the
+    RTL must equal rather than restate:
 
     - **The formats**, which every unit of the machine slices on.
     - **The model as data**: the record the contract file carries, and its reader.
