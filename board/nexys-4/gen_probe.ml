@@ -59,7 +59,7 @@ let circuit unit lanes =
        [Elaboration.shift_bits] states that argument — thus a drawn model elaborates the
        netlist a trained one does. *)
     let config = { Mgen_diffusion.Diffusion.Config.layers = 16; width = 16 } in
-    let model = Mgen_diffusion.Quantized.Model.For_test.init config ~seed:1 in
+    let model = Mgen_diffusion.Quantized.Model.For_test.drawn config ~seed:1 in
     let module Unit =
       Mgen_diffusion.Forward.Make (struct
         let e = Mgen_diffusion.Elaboration.create model ~steps:128 ~lanes ~walk:512

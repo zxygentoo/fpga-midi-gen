@@ -1,12 +1,13 @@
-(** The integer twin of the masked canvas: the reference the circuit of the next round
-    must equal.
+(** The int8 checkpoint as data: the model the bitstream carries, and the formats it is
+    written in.
 
-    The float model of [Diffusion] is what the trainer produced. This module is the same
-    model in the arithmetic the board can hold — int8 weights with a power-of-two exponent
-    for each tensor, int16 activations, the norm folded into per-channel constants, and
-    the draw in integers — and the circuit must equal it operation for operation, not
-    approximately. Nothing here approximates on purpose: every shift, every floor and
-    every table is a rule the RTL will read from this module rather than restate.
+    THE ARITHMETIC OF THE TWIN IS NOT HERE. It is [jax/diffusion/quantized.py], beside the
+    float model it quantizes: one framework holds both, the drift between them is measured
+    in one place, and the seed sweep runs on the arithmetic the board plays. What crosses
+    the seam is one CONTRACT FILE, and this module is its reader. The order that cut the
+    OCaml twin is [docs/diffusion_ocaml_cut.md], and the gate that replaced it is
+    [jax/tests/test_rtl.py]: Python states what the circuit must do, and
+    [bin/gate_diffusion.ml] states what it did.
 
     The formats, and where each rule comes from, are [docs/diffusion_rtl.md]:
 
@@ -22,19 +23,14 @@
       exact and the order of the taps cannot matter. [Model.check_shape] refuses a wider
       layer, thus the bound is a rule and not a comment; the elected shapes stand far
       under it.
-    - The norm folds at quantization: [gain = scale * rsqrt (variance + eps)] becomes a
-      per-channel multiplier that also retires the weight exponent, and
-      [bias = shift - mean * gain] becomes Q[activation_q] in int16. Then ReLU; the head
-      keeps no ReLU, thus the logits carry the activation format.
-    - The draw is era four's pipeline: the logit differences shift up to the Q12 the exp2
-      unit reads — exact, a left shift — then temper against the peak under [log2e / T],
-      exp2 over the shared table gives Q15 weights, and [Mgen_nn.Quantized.draw] picks
-      with a 24-bit uniform.
-    - The masks and the opening are the integer rules of the walk already, and the twin
-      consumes the same uniforms in the same places as [Diffusion.gibbs].
-
-    What the quantization costs is a measurement and not a promise: [Drift] states it, on
-    the walk the board really takes. *)
+    - The norm folds at quantization, above the seam:
+      [gain = scale * rsqrt (variance + eps)] becomes a per-channel multiplier that also
+      retires the weight exponent, and [bias = shift - mean * gain] becomes
+      Q[activation_q] in int16. The file carries the result and never the population.
+    - The draw is era four's pipeline, and [Draw] holds it: the logit differences shift up
+      to the Q12 the exp2 unit reads, temper against the peak under [log2e / T], exp2 over
+      the shared table gives Q15 weights, and [Mgen_nn.Quantized.draw] picks with a 24-bit
+      uniform. The temper travels with the model, because the bitstream carries it. *)
 
 (** the Q of the activation format: a value holds [v * 2^-activation_q] in int16. The
     circuit of the next round reads it here. *)
@@ -91,15 +87,22 @@ module Model : sig
       elaboration of the next round calls this where a bad shape must fail loudly. *)
   val check_shape : t -> unit
 
-  (** [of_params ?temperature params] quantizes the float model: the kernels under the
-      exponent rule, the norms folded. This is the one quantization of the era — the drift
-      walk, the tools and the elaboration all take their model here, thus the pair under
-      comparison cannot slip. *)
-  val of_params : ?temperature:float -> Diffusion.Params.t -> t
+  (** [of_int8_checkpoint path] is the model of one CONTRACT FILE — the quantized model
+      that [jax/diffusion/quantized.py] writes, and the only thing that crosses the seam
+      for a build. The quantization happens above the seam, one time, thus this reader
+      folds nothing: it takes the kernels, the two per-channel rows and the temper as they
+      stand, and [check_shape] holds every rule the consumers assume.
 
-  (** [of_checkpoint ?temperature config path] is [Diffusion.Params.load] then
-      [of_params]: the model of one checkpoint file. *)
-  val of_checkpoint : ?temperature:float -> Diffusion.Config.t -> string -> t
+      The layout is that module's docstring. Two of its facts are facts of THIS reader:
+      every tensor is int32, because [Nx_io] skips every dtype it does not hold and int8
+      is one of them; and the temper and the Q travel as the named tensors ["temper"] and
+      ["activation_q"], because [Nx_io] gives no access to [__metadata__]. A file
+      quantized at another Q refuses here and not in the middle of a walk.
+
+      It raises [Invalid_argument] when the tensor count does not divide into layers, when
+      a tensor is missing, or when a shape or a rule does not hold; the message names the
+      tensor that refused. *)
+  val of_int8_checkpoint : string -> t
 
   (** the ROM image of the circuit: every kernel in checkpoint order, one byte for each
       weight, two's complement. The gains and the biases are not in it — they are
@@ -114,138 +117,24 @@ module Model : sig
         the era's *)
     val config : Diffusion.Config.t
 
-    (** [init config ~seed]: a model of drawn weights under the draw of the era, thus a
-        test reads no checkpoint and no file that git ignores *)
-    val init : Diffusion.Config.t -> seed:int -> t
+    (** [drawn config ~seed] is a model of the shape [config] states, its values drawn
+        under [Prng] STRAIGHT INTO THE FORMATS: the kernel bytes at one fixed exponent, a
+        per-channel gain in int16 whose shift fits the six bits of the norm word, a bias
+        in int16, and the temper of temperature 1.0. It passes [check_shape], thus a test
+        reads no file and quantizes nothing.
+
+        THE DRAWN TRUNK HOLDS O(1) ACTIVATIONS, and that is what makes the model worth
+        drawing: a gain drawn flat inside int16 would clamp every write of the trunk or
+        zero it, and the pictures, the frames and the cycle counts of the tests that read
+        this model would all read a machine that no checkpoint makes. The implementation
+        states the arithmetic that holds it.
+
+        The tests that read it need a model OF A SHAPE — cycle counts, tile counts, the
+        turn order, the images' self-consistency, a picture — and none of them needs the
+        twin's arithmetic: the two gates that did are [jax/tests/test_rtl.py]'s. *)
+    val drawn : Diffusion.Config.t -> seed:int -> t
 
     (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)
     val rom_tensors : t -> quantized list
   end
-end
-
-module For_test : sig
-  (** [draw_cell model logits prng] is one redraw: the peak, the tempered exponentials
-      over the shared table, and the pick a 24-bit uniform lands — the engine's own draw,
-      lifted out of it. It gives the state behind the draw, the uniform as a float, and
-      the class.
-
-      IT IS EXPORTED FOR THE CIRCUIT'S GATE AND FOR NOTHING ELSE: the draw of era six must
-      equal this function and not a second reading of it, thus the gate calls the
-      arithmetic itself. It reads [model.temper] alone. *)
-  val draw_cell : Model.t -> int array -> Prng.state -> Prng.state * float * int
-
-  (** [plane_activations classes hidden ~steps] is the stem's input tensor: the
-      [steps; rows; 2 * Diffusion.voices] activations that the class planes and the mask
-      planes carry over one masked canvas. The engine builds its own stem input with this
-      function, thus it is the decode itself and not a second reading of it — which is
-      what [Canvas] of the circuit must equal. *)
-  val plane_activations : int array array -> bool array array -> steps:int -> int array
-
-  (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
-      of one step and one plane, row 0 first. The index rule itself is
-      [Diffusion.tensor_column]'s — every tensor of the era reads as
-      [steps; rows; channels] — thus what this states is the plane count alone. *)
-  val plane_column : int array -> step:int -> plane:int -> int array
-
-  (** [layer_writes model classes hidden ~steps] is the destination tensor of every layer
-      AS WRITTEN, in the layer order: the stem's, then for each pair the tensor its
-      opening wrote and the JOINED tensor its close wrote, and the head's logits last.
-      Each one reads as [steps; rows; that layer's output channels].
-
-      IT IS EXPORTED FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. The gate holds
-      the store writes of the circuit against the twin's, write for write, and
-      [layer_forward] alone cannot state them: a pair-closing layer writes the JOINED
-      tensor through the counted clamp, and only the fold of the trunk produces it.
-      [forward] is the last of this list, thus the list is the arithmetic itself and never
-      a second reading of it. The clamp counters of the walk are not touched. *)
-  val layer_writes
-    :  Model.t
-    -> int array array
-    -> bool array array
-    -> steps:int
-    -> int array list
-end
-
-(** The clamps a walk met, and the chances each one had. The formats are chosen with
-    margin and not metered on a trained checkpoint; a clamp that fires is the finding that
-    says which format is wrong, thus it is counted and never assumed away. *)
-module Clamps : sig
-  type t =
-    { activations : int (** the activation writes that rode the clamp *)
-    ; activations_seen : int
-    ; peak : int
-    (** THE HOTTEST WRITE OF THE WALK, in activation units and BEFORE the clamp: the
-        number the format election stands on. The Q6 election read peaks of 184 and 313
-        with a throwaway probe; this counter is what makes that measurement repeatable
-        when the checkpoint changes, thus the format question never again waits on a probe
-        that no longer exists. *)
-    }
-end
-
-(** One running walk, as a value: a pass gives the engine after it. *)
-module Engine : sig
-  type t
-
-  (** one redraw of a pass: the cell, the logits the draw read, the uniform it took and
-      the class it chose. The drift report reads all four; the walk itself needs only the
-      class. *)
-  type draw =
-    { step : int
-    ; voice : int
-    ; logits : int array
-    ; uniform : float
-    ; drawn : int
-    }
-
-  (** what one pass states: the canvas it read, the mask it drew, and the redraws in the
-      cell order. [before] is the canvas the forward pass saw — the drift report
-      teacher-forces the float model on exactly it. *)
-  type pass =
-    { before : int array array
-    ; hidden : bool array array
-    ; draws : draw list
-    }
-
-  (** [init model ~steps ~walk ~seed] is the engine at its origin: the seeded opening
-      already drawn, under [Prng.create] — the seed as it stands, under the rule of the
-      SEED cell. A seed inside 32 bits walks the very stream [Diffusion.gibbs] folds to,
-      thus the two openings are one opening and the walks part only where the arithmetic
-      parts — EXCEPT AT 0, the one seed the fold does not carry: [Prng.create_folded]
-      sends it to the top state, while this engine stands still on it as the circuit does.
-      An A/B at seed 0 therefore compares two walks and not two arithmetics. *)
-  val init : Model.t -> steps:int -> walk:int -> seed:int -> t
-
-  (** [next_pass t] takes one Gibbs pass: the masks, one integer forward, the redraws.
-      Past the last pass it raises [Invalid_argument]. *)
-  val next_pass : t -> t * pass
-
-  (** [run t] takes every remaining pass and gives the finished canvas *)
-  val run : t -> int array array
-
-  (** the clamps the walk has met so far, accumulated *)
-  val clamps : t -> Clamps.t
-end
-
-(** What the quantization costs, measured on the walk the board takes. *)
-module Drift : sig
-  type stats =
-    { passes : int
-    ; cells : int (** the redrawn cells: the comparisons of the report *)
-    ; same_peak : int (** the cells where both models elect the same class *)
-    ; same_draw : int (** the cells where both models pick the same class *)
-    ; mean_cosine : float
-    ; activations_clamped : float
-    (** the share of activation writes that rode the clamp *)
-    ; activation_peak : float
-    (** the hottest write of the walk in real units — [Clamps.peak] over the format's one.
-        The format holds while it stands under the int16 ceiling, 512.0 at Q6. *)
-    }
-
-  (** [walk params ~steps ~walk ~seed] draws the quantized walk and scores the float model
-      against it, cell for cell. The engine walks; at every pass the float model is
-      teacher-forced on the ENGINE'S canvas and the ENGINE'S mask, thus the two read one
-      context and what stands between them is the arithmetic alone. The same-draw share
-      reads the float draw on the very uniform the engine took — a difference there is the
-      arithmetic and never the generator. *)
-  val walk : Diffusion.Params.t -> steps:int -> walk:int -> seed:int -> stats
 end

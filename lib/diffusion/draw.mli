@@ -5,7 +5,8 @@
     era four's pipeline over them: the peak, the tempered exponentials, their total, and
     the pick that a 24-bit uniform lands.
 
-    It is [Mgen_nn.Quantized.draw] over [Quantized.draw_cell], operation for operation:
+    It is [Mgen_nn.Quantized.draw] over the software half of this unit, [draw_cell] in
+    [draw.ml], operation for operation:
 
     {v
       peak      = the largest of the logits

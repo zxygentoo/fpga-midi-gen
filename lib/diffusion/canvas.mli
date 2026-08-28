@@ -15,11 +15,12 @@
 
     The two decodes are the rules of the era, and this unit restates neither:
 
-    - **A plane column is [Quantized]'s [plane_activations].** The [Frame.voices] class
-      planes carry the activation one at the row the cell holds and zero elsewhere, and
-      they carry nothing at all where the cell is hidden; the [Frame.voices] mask planes
-      carry the activation one at EVERY row where the cell is hidden, and zero where it
-      stands. The one is [Quantized.activation_q]'s, thus the format has one home.
+    - **A plane column is the software half of this unit, [For_test.plane_activations].**
+      The [Frame.voices] class planes carry the activation one at the row the cell holds
+      and zero elsewhere, and they carry nothing at all where the cell is hidden; the
+      [Frame.voices] mask planes carry the activation one at EVERY row where the cell is
+      hidden, and zero where it stands. The one is [Quantized.activation_q]'s, thus the
+      format has one home.
     - **A frame is [Vocab.Rtl]'s.** Each seat's class becomes its voice code and the four
       pack with seat 0 in the low byte, which is [Frame]'s rule and the sequencer's.
 
@@ -99,4 +100,22 @@ module Make (Shape : Shape) : sig
   (** [create i] is the block. It takes no model and no constant: a canvas holds classes,
       and what a class means is [Vocab]'s. *)
   val create : Signal.t I.t -> Signal.t O.t
+end
+
+(** The software half of the stem's decode, exported for the gates that must build the
+    stem's input: [Forward]'s cycle bench and [bin/gate_diffusion.ml]. The plane face of
+    the circuit must equal it, which is what this unit's own gate holds. *)
+module For_test : sig
+  (** [plane_activations classes hidden ~steps] is the stem's input tensor: the
+      [steps; rows; 2 * Frame.voices] activations that the class planes and the mask
+      planes carry over one masked canvas. A standing cell carries the one of the
+      activation format at the row it holds and nothing elsewhere; a hidden cell carries
+      it at EVERY row of its mask plane and nothing in its class plane. *)
+  val plane_activations : int array array -> bool array array -> steps:int -> int array
+
+  (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
+      of one step and one plane, row 0 first. The index rule itself is
+      [Diffusion.tensor_column]'s — every tensor of the era reads as
+      [steps; rows; channels] — thus what this states is the plane count alone. *)
+  val plane_column : int array -> step:int -> plane:int -> int array
 end

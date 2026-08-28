@@ -42,7 +42,7 @@ import midi
 import nn
 import prng
 from diffusion import measure as canvas
-from diffusion import model
+from diffusion import model, quantized
 
 
 def opening_canvas(states, steps):
@@ -151,12 +151,31 @@ def audition_path(path, at, count):
     return str(name.with_name(f"{name.stem}-{at}{name.suffix}"))
 
 
-def draw(params, stats, *, crop, seeds, walk, temperature):
-    """one batch of canvases, and the seconds the walk cost"""
-    states, given = opening_canvas(prng.states(seeds), crop)
+def draw(params, stats, *, crop, seeds, walk, temperature, twin):
+    """one batch of canvases, and the seconds the walk cost.
+
+    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
+    -- and the temperature bakes into it, as the bitstream carries it. The two walks open
+    on different generators: the float walk folds its seed and the twin takes it as the
+    SEED cell does. A seed inside 32 bits names itself under both, thus an A/B at one seed
+    hears the quantization and nothing else; seed 0 is the exception the fold states, and
+    there the twin stands still while the float walk runs from the top state."""
+    if twin:
+        model_of_seat = quantized.of_params(params, stats, temperature)
+        states, given = opening_canvas(quantized.engine_states(seeds), crop)
+
+        def walked():
+            return quantized.gibbs(model_of_seat, states, given, walk=walk)[0]
+    else:
+        states, given = opening_canvas(prng.states(seeds), crop)
+
+        def walked():
+            return gibbs(
+                params, stats, given, states, walk=walk, temperature=temperature
+            )[0]
+
     started = time.perf_counter()
-    classes, _ = gibbs(params, stats, given, states, walk=walk, temperature=temperature)
-    return classes, time.perf_counter() - started
+    return walked(), time.perf_counter() - started
 
 
 @click.group(help=__doc__)
@@ -178,6 +197,12 @@ def main():
 # the code release's sampler defaults to 0.99, which is not a measurable difference from
 # 1.0; the flag is here because the ear may want one
 @click.option("--temperature", default=1.0)
+@click.option(
+    "--quantized",
+    "twin",
+    is_flag=True,
+    help="draw the integer twin of the circuit: the piece the board plays at this seed",
+)
 @click.option("--corpus-seed", default=1, help="the crop draw of the battery row")
 @click.option(
     "--walk", default=model.CROP * model.VOICES, help="N, the paper's I times T"
@@ -257,6 +282,63 @@ def sample(
                     midi.step_line(step, events) for step, events in enumerate(piece)
                 )
             )
+
+
+@main.command()
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--crop", default=model.CROP, help="T; the steps of the canvas")
+@click.option("--seed", default=42, help="N, the seed of the walk")
+@click.option("--walk", default=32, help="N, the Gibbs passes to compare")
+@click.option("--temperature", default=1.0)
+def drift(ckpt, crop, seed, walk, temperature):
+    """What the quantization costs, measured on the walk the board takes.
+
+    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S canvas
+    and the ENGINE'S mask, thus the two read one context and what stands between them is the
+    arithmetic alone. The same-draw share reads the float draw on the very uniform the
+    engine took, thus a difference there is the arithmetic and never the generator."""
+    params, stats = model.load_params(ckpt)
+    states, given = opening_canvas(quantized.engine_states([seed]), crop)
+    said = quantized.drift(
+        params, stats, states, given, walk=walk, temperature=temperature
+    )
+    seen = said.cells
+
+    def share(count):
+        return 100.0 * count / max(1, seen)
+
+    click.echo(f"{said.passes} passes over {crop} steps redrew {seen} cells")
+    click.echo(
+        f"against the float model: top-1 {share(said.same_peak):.1f}% "
+        f"({said.same_peak}/{seen})  cosine {said.mean_cosine:.4f}  "
+        f"same draw {share(said.same_draw):.1f}% ({said.same_draw}/{seen})"
+    )
+    click.echo(
+        f"activations on the clamp: {100.0 * said.activations_clamped:.4f}%  "
+        f"the hottest write: {said.activation_peak:.1f} of the format's 512.0"
+    )
+
+
+@main.command()
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", required=True, type=click.Path(dir_okay=False))
+@click.option("--temperature", default=1.0)
+def quantize(ckpt, out, temperature):
+    """Write the contract file of one checkpoint: the quantized model, and nothing else.
+
+    It is the only thing that crosses the seam for a build -- the elaboration reads it
+    through Quantized.Model.of_int8_checkpoint and the bitstream carries the result. The
+    population statistics and the float scales do not travel: the fold happens here, one
+    time. The temperature bakes into the temper, as the bitstream carries it."""
+    params, stats = model.load_params(ckpt)
+    twin = quantized.of_params(params, stats, temperature)
+    quantized.save(out, twin)
+    widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in twin.layers)
+    click.echo(f"wrote {out}: {len(twin.layers)} layers, {widths}")
+    click.echo(
+        f"temper {twin.temper_q_value} at Q{twin.temper_q}, "
+        f"temperature {twin.temperature}"
+    )
 
 
 if __name__ == "__main__":

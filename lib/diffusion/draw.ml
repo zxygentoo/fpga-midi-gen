@@ -240,20 +240,35 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* THE REFERENCE IS THE TWIN, CALLED. [Quantized.draw_cell] is the engine's own draw, thus
-   the gate compares the circuit against the arithmetic the walk really takes and never
-   against a second reading of it. The twin takes its uniform from [Prng]; the circuit
-   takes the 24 bits the walk hands it, thus the bench draws the same three bytes and
-   states them both ways. *)
+(* THE SOFTWARE HALF OF THIS UNIT, and the reason it stands here: the draw of the circuit
+   must equal this function, thus the two are one unit's two statements of one rule. The
+   integer twin of the era is [jax/diffusion/quantized.py]; what a gate below the seam
+   needs of it is exactly this draw, over [Mgen_nn.Quantized]'s own table and pick. *)
+let draw_cell ~(temper : Nn_quantized.Constants.scale) raw prng =
+  let peak = Array.fold raw ~init:Int.min_value ~f:max in
+  let weights =
+    Array.map raw ~f:(fun logit ->
+      (* the logits carry Q[activation_q] and the exp2 unit reads Q12, thus the difference
+         shifts up by the gap first — exact, because a left shift of an int is. A
+         difference read at the wrong Q is silently wrong music: unshifted, every weight
+         stands within a fraction of a nat of the peak and the draw is uniform — the fault
+         the drift report caught at 3.4 percent same-draw. *)
+      Nn_quantized.exp2_q
+        (Nn_quantized.Constants.apply
+           temper
+           ((logit - peak) lsl (exp2_q - Quantized.activation_q))))
+  in
+  Nn_quantized.draw ~weights prng
+;;
+
+(* THE REFERENCE IS [draw_cell] ABOVE, CALLED. The twin takes its uniform from [Prng]; the
+   circuit takes the 24 bits the walk hands it, thus the bench draws the same three bytes
+   and states them both ways. *)
 module Bench (Shape : Shape) = struct
   module Drawer = Make (Shape)
   module Sim = Cyclesim.With_interface (Drawer.I) (Drawer.O)
 
   let classes = Shape.classes
-
-  (* the model the twin's [draw_cell] reads: it takes the temper alone, thus a bench model
-     carries no layer *)
-  let model temper = { Quantized.Model.layers = [||]; temper }
 
   (* [run ~temper logits ~uniform] is the class the circuit draws, and the cycles it took
      from [start] to the fall of [busy]. *)
@@ -280,20 +295,18 @@ module Bench (Shape : Shape) = struct
     let prng = Prng.create ~seed in
     (* the word the twin's own draw stands on, as the walk hands it over *)
     let (_ : Prng.state), uniform = Prng.run Prng.uniform_word prng in
-    let (_ : Prng.state), (_ : float), twin =
-      Quantized.For_test.draw_cell (model temper) logits prng
-    in
+    let (_ : Prng.state), (_ : float), twin = draw_cell ~temper logits prng in
     let circuit, cycles = run ~temper logits ~uniform in
     twin, circuit, cycles
   ;;
 end
 
 let%expect_test "the draw states the class the twin states" =
-  (* THE FUZZ, against [Quantized.For_test.draw_cell] itself. The logits run the whole
-     int16 both ways, thus the differences reach the saturation the table needs and the
-     weights reach zero; and the tempers include ONE THAT DOES NOT DIVIDE — era five's
-     head round measured that a scale which divides exactly hides the difference between
-     negating before it and negating after, and the twin negates after. *)
+  (* THE FUZZ, against [draw_cell] itself. The logits run the whole int16 both ways, thus
+     the differences reach the saturation the table needs and the weights reach zero; and
+     the tempers include ONE THAT DOES NOT DIVIDE — era five's head round measured that a
+     scale which divides exactly hides the difference between negating before it and
+     negating after, and the twin negates after. *)
   let case ~classes ~temper ~name ~cells =
     let module B =
       Bench (struct

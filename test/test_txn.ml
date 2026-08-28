@@ -32,7 +32,7 @@ let () =
   (* one channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
      the fused floor asks 60, thus the twin's shape is one this elaboration refuses *)
   let model =
-    Mgen_diffusion.Quantized.Model.For_test.init
+    Mgen_diffusion.Quantized.Model.For_test.drawn
       { Mgen_diffusion.Diffusion.Config.layers = 4; width = 8 }
       ~seed:11
   in

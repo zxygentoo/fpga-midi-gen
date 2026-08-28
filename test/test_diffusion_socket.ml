@@ -8,11 +8,17 @@
    knows none of them.
 
    The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
-   states over the frames of [Quantized.Engine], byte for byte and in order; the run stop
-   plays the silent frame; and a second run from the same seed repeats the first. The two
-   halves of the model path are proved separately — [Source]'s own gate holds the walk to
-   the engine phase for phase, and this holds the sequencer to the frames — thus a failure
-   here names the sequencer's side and never the network.
+   states over THE FRAMES THE SOURCE IN THE SEAT ANSWERS, byte for byte and in order; the
+   run stop plays the silent frame; and a second run from the same seed repeats the first.
+   The two halves of the model path are proved separately — the walk gate of
+   [jax/tests/test_rtl.py] holds the source's walk to the integer twin phase for phase,
+   and this holds the sequencer to the frames that source answers — thus a failure here
+   names the sequencer's side and never the network.
+
+   THE REFERENCE IS THE SOURCE, PLAYED ON ITS OWN. [Source]'s bench drives a second
+   instance of the same block from the same seed and the same elaboration, thus it answers
+   the same frames; what this gate then measures is everything BETWEEN those frames and
+   the wire — the socket, the sequencer, the note tracking and the UART.
 
    ERA SIX IS THE EASY TENANT OF THIS SOCKET. The source answers [step] in one cycle from
    a canvas that already stands, thus the step period constrains nothing; what it does
@@ -46,7 +52,7 @@ let walk = 2
    the fused floor asks 61, thus the shape the twin tests with is one this elaboration
    refuses. Nothing here reads the width. *)
 let model =
-  Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 8 } ~seed:11
+  Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 8 } ~seed:11
 ;;
 
 let e = Elaboration.create model ~steps ~lanes:2 ~walk
@@ -111,11 +117,23 @@ let harness () =
   inp, set, play
 ;;
 
-(* the messages of the reference: the frames of the canvas the engine draws, the silent
-   frame of the stop behind them, and [Frame.events_of_frames] over the whole run *)
+(* the messages of the reference: the frames the source answers over the whole canvas, the
+   silent frame of the stop behind them, and [Frame.events_of_frames] over the run.
+
+   THE FRAMES PAST T - 1 ARE NOT IN THE LIST AND DO NOT HAVE TO BE. The first of them
+   releases what the last cell held and every one after it states no event at all, thus
+   the stop's silent frame states that release and the message stream saturates — which is
+   why no number of this test tracks the machine's cycles. *)
 let reference_messages ~seed ~channel ~velocity =
-  let canvas = Quantized.Engine.run (Quantized.Engine.init model ~steps ~walk ~seed) in
-  Array.append (Diffusion.frames_of_canvas canvas) [| Frame.silent |]
+  let h = Source.For_test.Bench.harness ~e ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
+  let played =
+    List.rev
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun got (_ : int) -> h.play () :: got))
+  in
+  Array.of_list (played @ [ Frame.silent ])
   |> Frame.events_of_frames
   |> List.concat
   |> List.map ~f:(function

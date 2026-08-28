@@ -138,3 +138,38 @@ module Make (M : sig
       initialize its memories, thus no weight crosses a port. *)
   val create : Signal.t I.t -> Signal.t O.t
 end
+
+(** The bench, narrowed to what the driver of the RTL gate reads.
+
+    The stream gate of this era runs in [jax/tests/test_rtl.py]: THE ORACLE IS THE JAX
+    TWIN, [bin/gate_diffusion.ml] drives one pass through this bench and prints every
+    column the stores took, and Python states what they must have been. Nothing here
+    states that. *)
+module For_test : sig
+  module Bench (M : sig
+      val e : Elaboration.t
+    end) : sig
+    (** one column write of a store, as the probe sees it. ONE FLUSH NEST, ONE ADDRESS:
+        the column a write means is the flush nest's own and it is the same whichever
+        store takes it, thus [address] is the SEMANTIC column and [to_y] alone says where
+        it landed. *)
+    type write =
+      { to_y : bool
+      ; address : int
+      ; column : int array (** [rows] signed activations, row 0 first *)
+      }
+
+    (** what one pass did *)
+    type pass =
+      { written : write list
+      (** the columns the stores took, in the order they went out *)
+      ; offered : int array array list
+      (** the logit columns of every step the head offered: one array for each step, and
+          one column inside it for each seat *)
+      }
+
+    (** [run ~planes ()] is one forward pass. [planes] is the canvas as the stem's fetch
+        reads it: the [rows] activations of one step and one plane. *)
+    val run : planes:(step:int -> plane:int -> int array) -> unit -> pass
+  end
+end

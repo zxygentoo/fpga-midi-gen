@@ -28,7 +28,7 @@ import data
 import measure
 import nn
 import prng
-from diffusion import infer, model, train
+from diffusion import infer, model, quantized, train
 from diffusion import measure as canvas
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
@@ -738,3 +738,88 @@ def test_the_loss_falls_over_a_short_run():
     # a model that has learned nothing reads log(48) = 3.87 nats for each masked cell
     assert losses[0] > 3.5, done.output
     assert losses[-1] < losses[0] - 0.5, f"the loss did not fall: {losses}"
+
+
+# ==================================================================== #
+# The integer twin: the scalar rules, and the contract file            #
+# ==================================================================== #
+
+# THE TWIN IS HELD BY THREE THINGS AND THESE ARE THE SMALLEST OF THEM. `test_rtl.py` holds
+# it against the circuit, write for write; `test_drift.py` holds it against the float model
+# it quantizes; and `test_parity.py`'s G1 holds the quantizer through the netlist the flash
+# carries. What stands here is the arithmetic each of those would break on FIRST -- a
+# rounding, an exponent, a table entry -- so that a failure names the rule and not the walk.
+
+
+@pytest.mark.parametrize(
+    "peak,exponent",
+    [(0.0, 14), (0.02, 12), (0.08, 10), (127.0, 0), (127.49, 0), (127.5, -1), (1e9, -23)],
+)
+def test_the_exponent_rule_holds_at_its_boundaries(peak, exponent):
+    """The largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
+    every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
+    exponent has to step down. A tie rounds UP and never away from zero, which is Base's
+    `Float.iround_nearest_exn` and not Python's `round`."""
+    assert quantized.max_exponent(peak) == exponent
+
+
+def test_the_byte_is_symmetric_and_ties_round_up():
+    """The byte is two's complement and the negative end is not used: the clamp is -127 and
+    not -128, thus the image is symmetric and a negated weight is a negated byte."""
+    q, e = quantized.quantize(np.array([0.02, -0.01, 0.0]))
+    assert (list(q), e) == ([82, -41, 0], 12)
+    assert quantized.round_half_up([-5.5, -2.5, 2.5, 5.5]).tolist() == [-5, -2, 3, 6]
+
+
+def test_the_exp2_table_is_the_shared_table():
+    """exp2 of -j/256 in Q15, the one table the samplers of every era read. Entry 0 is the
+    peak 2^15, a full fractional step halves, and the last entry sits one table step above
+    one half. The whole table was compared entry for entry against
+    `Nn_quantized.Constants.exp2_bits` when it was written, and no entry differed: the two
+    libm implementations agree here."""
+    table = quantized.EXP2_TABLE
+    assert (table[0], table[128], table[255]) == (32768, 23170, 16428)
+    assert quantized.exp2_of_magnitude(np.int64(4096)) == 16384
+    # a magnitude of 16 or more is zero, and the shift may not run past the host word
+    assert quantized.exp2_of_magnitude(np.int64(1 << 20)) == 0
+
+
+def test_the_temper_is_log2e_over_the_temperature():
+    """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
+    temperature, because the circuits carry this constant on an 18-bit signed port."""
+    assert quantized.temper_of(1.0) == (23637, 14)
+    assert quantized.temper_of(0.5) == (47274, 14)
+    with pytest.raises(ValueError):
+        quantized.temper_of(0.0)
+
+
+def test_the_contract_file_round_trips_exactly(tmp_path):
+    """`save` then `load` is the identity: the seam carries the whole model and nothing of
+    it is re-derived on either side of the file."""
+    params, stats = model.drawn_params(5, 6, 8)
+    twin = quantized.of_params(params, stats, 0.9)
+    path = tmp_path / "round-trip.int8"
+    quantized.save(path, twin)
+    read = quantized.load(path)
+    assert (read.temper_q_value, read.temper_q) == (twin.temper_q_value, twin.temper_q)
+    assert read.temperature == twin.temperature
+    assert len(read.layers) == len(twin.layers)
+    for here, there in zip(read.layers, twin.layers):
+        assert here.e == there.e
+        assert np.array_equal(here.kernel, there.kernel)
+        assert np.array_equal(here.gain_q_value, there.gain_q_value)
+        assert np.array_equal(here.gain_q, there.gain_q)
+        assert np.array_equal(here.bias, there.bias)
+
+
+def test_a_broken_model_refuses_loudly():
+    """`check_shape` states the rules its consumers assume, and the elaboration calls it
+    where a bad shape must fail loudly."""
+    params, stats = model.drawn_params(5, 6, 8)
+    twin = quantized.of_params(params, stats)
+    with pytest.raises(ValueError, match="no whole residual pairs"):
+        quantized.check_shape(twin._replace(layers=twin.layers[:3]))
+    head = twin.layers[-1]
+    chopped = head._replace(bias=head.bias[:2])
+    with pytest.raises(ValueError, match="do not cover its channels"):
+        quantized.check_shape(twin._replace(layers=twin.layers[:-1] + (chopped,)))

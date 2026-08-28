@@ -7,14 +7,16 @@ masked canvas, blocked Gibbs over an annealed schedule. The board draws one
 canvas and the sequencer plays it.
 
 **The contract of the round is QUANTIZED-RTL EXACTNESS.** The integer twin
-(`lib/diffusion/quantized.ml`) is the specification. The circuit must equal
-`Quantized.Engine` operation for operation: the same seed gives the same
-canvas, bit for bit. This is Gate B. The circuit takes its ROM image and
-bases from the twin (`rom_bits`, `rom_bases`) — the twin is the authority
-on every value, and the dwell-order packing is the elaboration's
-permutation of it, as "The weight ROM" states. The float
-reference is not the specification of the circuit; the drift report already
-measured what the quantization costs.
+(`jax/diffusion/quantized.py`) is the specification. The circuit must equal
+it operation for operation: the same seed gives the same canvas, bit for
+bit. This is Gate B, and it runs under `uv run pytest` — Python states what
+the machine must do and `bin/gate_diffusion.exe` states what it did. The
+circuit takes its ROM image and bases from the CONTRACT FILE the twin
+writes (`rom_bits`, `rom_bases` over
+`Quantized.Model.of_int8_checkpoint`) — the twin is the authority on every
+value, and the dwell-order packing is the elaboration's permutation of it,
+as "The weight ROM" states. The float model is not the specification of the
+circuit; the drift report already measured what the quantization costs.
 
 **The round CLIMBS A LADDER OF CHECKPOINTS, as the model round climbed its
 ladder of sizes.** First make it work, then make it good: the machine
@@ -36,17 +38,39 @@ Out of scope, in order behind this round:
 
 ### The references, as built
 
-The reference round built the two software layers below the JAX seam and
-its record is the code. What the machine round stands on:
+THE TWO SOFTWARE LAYERS ARE ONE LAYER, AND IT IS IN JAX. The reference
+round built a float model and an integer twin in OCaml to weld the JAX
+model to the circuit; `docs/diffusion_ocaml_cut.md` cut them out, and the
+chain is now:
 
-- **The float reference** (`lib/diffusion/diffusion.ml`). Gate A holds it
-  to the JAX forward: one masked-NLL number over a deterministic corpus
-  set, inside a pinned tolerance. Gate C holds the walk: a small-N canvas
-  prints as the same text, character for character, from JAX and from the
-  reference.
-- **The integer twin** (`lib/diffusion/quantized.ml`). The drift report
-  pins it to the float reference. The report is a measurement and gates
-  nothing; Gates A, B and C are equivalences and must pass.
+```
+JAX float --(drift, in one framework)--> JAX int8 --(exact, pytest drives Cyclesim)--> RTL
+```
+
+What the machine round stands on:
+
+- **The float model and the integer twin** (`jax/diffusion/model.py` and
+  `jax/diffusion/quantized.py`). The drift report pins the twin to the
+  float model in one framework, on the walk the board takes:
+  `uv run python -m diffusion.infer drift --ckpt C`. The report is a
+  measurement and gates nothing.
+- **The contract file**, the only thing that crosses the seam for a build:
+  `infer.py quantize --ckpt C --out C.int8` states the int8 image and the
+  folded norm, and `Quantized.Model.of_int8_checkpoint` reads it into the
+  elaboration. Its own gate is the NETLIST — the Verilog of `gen_verilog`
+  must stay md5-identical to the one the flash carries.
+- **The gates of the circuit**, in `jax/tests/test_rtl.py`: Python states
+  what the machine must do and `bin/gate_diffusion.exe` states what it
+  did. The walk gate holds every write of the cell port, phase for phase;
+  the stream gate holds every column the stores take. Neither side can
+  pass by agreeing with itself.
+- **What stays in OCaml below the seam** is what the CIRCUIT reads: the
+  facts of the walk (`lib/diffusion/diffusion.ml` — the cell order, the
+  registers of the seats, the opening, the masks, the anneal, the frames),
+  the int8 checkpoint as data (`quantized.ml`), the stem's decode
+  (`canvas.ml`) and the draw (`draw.ml`). Each of those is a rule the RTL
+  must equal rather than restate, and each stands beside the unit that
+  must equal it.
 
 The drift lines of the climb, measured 2026-08-26 at seed 42, T 128,
 32 passes:
@@ -66,8 +90,8 @@ module at every rung.
 
 Every uniform of a walk comes from `Prng`, the xorshift32 of the circuit,
 and THE CONSUMPTION ORDER IS THE CONTRACT — the full statement is in
-`lib/diffusion/diffusion.mli` and `quantized.mli`, and the machine obeys it
-as written:
+`lib/diffusion/diffusion.mli` and `jax/diffusion/quantized.py`, and the
+machine obeys it as written:
 
 1. One canvas is one seed. The board takes the SEED cell as it stands
    (`Prng.create`). Seed 0 is the walk that stands still: every uniform is
@@ -77,7 +101,7 @@ as written:
    `low + floor(u * width)` over the register of the cell's seat.
 4. Each pass n of N: the masks (one uniform for each cell, hidden when
    `u * 2^24 < floor(alpha_n * 2^24)`), then one forward pass, then the
-   draws (one uniform for each hidden cell, `Policy.draw_class` over its
+   draws (one uniform for each hidden cell, the tempered pick over its
    48 logits).
 5. The anneal is `alpha_n = max(0.1, 0.9 - 0.8 n / (0.7 N))`; the
    temperature is 1.0, baked.
@@ -916,7 +940,7 @@ Two rules for reading this table:
 
 Ring 2: the whole of `Forward` at the elected `l16-h16`, T 128 and G 4,
 through Vivado out of context on the part at 100 MHz. The weights are DRAWN
-under `Params.init` and not a checkpoint's — a timing reading needs no
+under `Quantized.Model.For_test.drawn` and not a checkpoint's — a timing reading needs no
 correct data, and every width of this design follows a RULE and not a
 model's own peak, which is the argument `shift_bits` already makes — thus a
 drawn model elaborates the netlist a trained one does.
@@ -1500,17 +1524,18 @@ stands aside as `board/_build/top-rung2-unfused.bit`.
 
 ## The iteration strategy
 
-**THE MACHINE ELABORATES FROM THE CHECKPOINT, as the twin loads from it.**
-The elaboration reads the shape the way `Config.of_checkpoint` does — no
-flag states a dimension — and the layer table, the ROM image, the memory
+**THE MACHINE ELABORATES FROM THE CONTRACT FILE, as the twin wrote it.**
+The elaboration reads the shape out of the tensor shapes — no flag states a
+dimension — and the layer table, the ROM image, the memory
 depths and the group count all follow. The weights were never runtime
 state in this project; the bitstream initializes them. That standing rule
 becomes the iteration loop:
 
 ```
 elect a checkpoint
-  -> the drift line (check_diffusion drift, minutes, on the host)
-  -> dune build: the netlist, and the Cyclesim gates at a tiny shape
+  -> infer.py quantize: the contract file
+  -> the drift line (infer.py drift, seconds, on the host)
+  -> dune build: the netlist; uv run pytest: the Cyclesim gates at a tiny shape
   -> Vivado -> the board -> the capture gate
 ```
 
@@ -1518,9 +1543,10 @@ Each rung of the climb is this loop with new constants. Two rules keep it
 honest:
 
 - **Trained checkpoints elect music; drawn weights measure builds only.**
-  `Params.init ?norm_scale` elaborates a shape that has no checkpoint, for
-  a timing or utilization reading — never for a drift number (the drift of
-  drawn weights reads the format floor, a known trap) and never for a
+  `Quantized.Model.For_test.drawn` elaborates a shape that has no
+  checkpoint, for a timing or utilization reading — never for a drift
+  number (the drift of drawn weights reads the format floor, a known trap)
+  and never for a
   rung.
 - **Every elaboration parameter has a test shape.** P — the 48 pitch rows
   — is a parameter of the CIRCUIT like the rest, pinned to 48 by the board.
@@ -1563,18 +1589,22 @@ software side already pinned.
 - **Gate B, the machine gate.** The instruments, inherited from the era
   four and five pattern:
   1. the unit gates — the draw pipeline and the tables, expect and
-     waveform tests beside the units;
-  2. the canvas agreement — the circuit against `Quantized.Engine` in
-     Cyclesim, end to end at a small shape, and at MORE THAN ONE shape, so
-     that no address region field elaborates empty;
+     waveform tests beside the units, under `dune runtest`;
+  2. the canvas agreement — the circuit against the JAX twin, end to end at
+     a small shape, and at MORE THAN ONE shape, so that no address region
+     field elaborates empty;
   3. the stream gate, WRITE FOR WRITE — every per-layer activation write
      against the twin's, because era five proved that four real datapath
      faults move no frame at a test-sized shape;
   4. the cycle bench — the schedule prints its cycles at the elected
      shape, thus the cost model above and the machine cannot part;
   5. the board rung — the amidi capture of the board's events against
-     `play_diffusion -quantized` at the panel seed, the one gate that
+     `infer.py sample --quantized` at the panel seed, the one gate that
      waits for a person and the hardware.
+
+  Instruments 2 and 3 are `jax/tests/test_rtl.py` and instruments 1 and 4
+  are `dune runtest`: the two that need an ORACLE moved to the side that
+  holds it, and the two that hold the machine against itself stayed.
 - **The measurements of phase I**, the numbers the phase must report: the
   build (WNS, LUTs, block RAM, DSPs), the measured cycles of one pass, the
   utilization against the cost model, and the N the board affords inside
@@ -1595,7 +1625,7 @@ items, so the seams stay clean:
   `velocity_at ~step` is the fade's one point of variation, and velocity
   is a fact of the onset.
 - **The seed succession.** The rule that names the seed of canvas k is a
-  contract to pin with `play_diffusion -seeds` and the JAX handoff before
+  contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.
 - **The frames as interfaces.** The lead and now frames of `Forward` and of
   `Source` are packed by hand: a `concat_lsb`, two registers on the word,

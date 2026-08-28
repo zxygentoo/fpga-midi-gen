@@ -1063,25 +1063,17 @@ struct
   ;;
 end
 
-(* THE STEM'S INPUT AT ONE SEED, as the gates below hand it to the engine: the opening the
-   walk draws, the first mask of a walk of [walk] passes, and the twin's own decode of the
-   two — what the canvas answers the stem's fetch with. The gate that reads the twin's
-   writes needs the canvas and the mask beside the planes, thus the three travel together. *)
-type stem_input =
-  { canvas : int array array
-  ; hidden : bool array array
-  ; planes : step:int -> plane:int -> int array
-  }
-
+(* THE STEM'S INPUT AT ONE SEED: the opening the walk draws, the first mask of a walk of
+   [walk] passes, and the decode of the two — what the canvas answers the stem's fetch
+   with. The cycle bench below reads it, and the STREAM gate that once read it beside the
+   canvas and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
+   columns lives. *)
 let stem_input ~steps ~walk ~seed =
   let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
   let threshold = Diffusion.anneal_threshold ~step:0 ~walk in
   let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
-  let stem = Quantized.For_test.plane_activations canvas hidden ~steps in
-  { canvas
-  ; hidden
-  ; planes = (fun ~step ~plane -> Quantized.For_test.plane_column stem ~step ~plane)
-  }
+  let stem = Canvas.For_test.plane_activations canvas hidden ~steps in
+  fun ~step ~plane -> Canvas.For_test.plane_column stem ~step ~plane
 ;;
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
@@ -1103,7 +1095,7 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
      RUNNING UNDER ALL OF IT — [term] never falls — which is what "the dwells stand back
      to back" means and what the exact cycle counts lean on. *)
   let config = { Diffusion.Config.layers = 4; width = 3 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:3 ~lanes:2 ~walk:4 in
   let module B =
     Bench (struct
@@ -1215,7 +1207,7 @@ let%expect_test "the pair interleaves, and the picture is the schedule" =
      trails the dwell by a drain and an epilogue, thus a write stands under the block
      AFTER the one that made it — which is the whole reason the lag is two and not one. *)
   let config = { Diffusion.Config.layers = 4; width = 3 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:4 ~lanes:2 ~walk:4 in
   let module B =
     Bench (struct
@@ -1263,173 +1255,7 @@ let%expect_test "the pair interleaves, and the picture is the schedule" =
     │clock             ││╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥╥│
     │                  ││╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨╨│
     └──────────────────┘└──────────────────────────────────────────────────────────┘
-    6bc98568b57b46d22731f0145f1c1770
-    |}]
-;;
-
-let%expect_test "the store writes are the twin's, write for write" =
-  (* INSTRUMENT 3. Era five's four faults — a weight address whose stride was not the
-     tensor's, a channel block read at the gate's offset, an operand taken on the address
-     side of a two-cycle read, and a ring run off its end — were all faults of this
-     composition layer, and none of them moved a frame. This holds EVERY column the engine
-     writes against [Quantized.For_test.layer_writes]: the address stands in the
-     elaboration's own map, the datum equals the twin's, and each destination column is
-     written exactly one time for each layer. The head writes no store, thus its gate is
-     the logit face, read through the ports at every step the level offers. *)
-  let case ~name ~width ~lanes ~pairs ~steps ~seed =
-    let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
-    let model = Quantized.Model.For_test.init config ~seed in
-    let walk = 8 in
-    let elaboration = Elaboration.create model ~steps ~lanes ~walk in
-    let module B =
-      Bench (struct
-        let e = elaboration
-      end)
-    in
-    let rows = elaboration.rows in
-    let voices = Frame.voices in
-    let { canvas; hidden; planes } = stem_input ~steps ~walk ~seed in
-    let (_ : Hardcaml_waveterm.Waveform.t option), pass = B.run ~planes () in
-    let want = Quantized.For_test.layer_writes model canvas hidden ~steps in
-    let store () =
-      Array.init (Elaboration.store_depth elaboration) ~f:(fun (_ : int) ->
-        Array.create ~len:rows 0)
-    in
-    let x = store () in
-    let y = store () in
-    let cursor = ref pass.written in
-    let checked = ref 0 in
-    let part = ref 0 in
-    let misplaced = ref 0 in
-    let head_columns (expected : int array) =
-      List.iteri pass.offered ~f:(fun step columns ->
-        Array.iteri columns ~f:(fun seat got ->
-          Int.incr checked;
-          if not
-               (Array.equal
-                  Int.equal
-                  got
-                  (Diffusion.tensor_column expected ~step ~channel:seat ~channels:voices))
-          then Int.incr part))
-    in
-    (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.
-       Inside a pair the blocks run A0, A1, A2 B0, A3 B1, ...: A's columns go to Y and B's
-       to X in one stream, and each write says which store took it. The gate holds the
-       stream by TURN and then reads each layer's tensor whole. *)
-    let check_layer at (layer : Elaboration.layer) destination =
-      let expected = List.nth_exn want at in
-      List.iter (List.range 0 steps) ~f:(fun step ->
-        List.iter (List.range 0 layer.outputs) ~f:(fun channel ->
-          Int.incr checked;
-          let address = Elaboration.column_address elaboration ~step ~channel in
-          let want =
-            Diffusion.tensor_column expected ~step ~channel ~channels:layer.outputs
-          in
-          if not (Array.equal Int.equal destination.(address) want)
-          then (
-            Int.incr part;
-            let rows_part =
-              Array.counti want ~f:(fun r v -> v <> destination.(address).(r))
-            in
-            if !part <= 2
-            then
-              printf
-                "  L%d step %d channel %d: %d of %d rows part\n    want %s\n    got  %s\n"
-                at
-                step
-                channel
-                rows_part
-                rows
-                (String.concat
-                   ~sep:" "
-                   (List.map (List.take (Array.to_list want) 12) ~f:Int.to_string))
-                (String.concat
-                   ~sep:" "
-                   (List.map
-                      (List.take (Array.to_list destination.(address)) 12)
-                      ~f:Int.to_string)))))
-    in
-    let turn_columns (turn : Elaboration.turn) =
-      let ats = turn.first :: Option.to_list turn.second in
-      let count =
-        List.sum (module Int) ats ~f:(fun at -> steps * elaboration.layers.(at).outputs)
-      in
-      let mine = List.take !cursor count in
-      cursor := List.drop !cursor count;
-      List.iter mine ~f:(fun (w : B.write) ->
-        (if w.to_y then y else x).(w.address) <- w.column);
-      (* every destination column written exactly one time, and each store taking exactly
-         the layer's own count *)
-      (* the destination and the address as one key: X at [address], Y above them *)
-      let depth = Elaboration.store_depth elaboration in
-      let placed =
-        List.fold
-          mine
-          ~init:(Set.empty (module Int))
-          ~f:(fun seen w ->
-            Set.add seen (if w.to_y then depth + w.address else w.address))
-      in
-      if List.length mine <> count || Set.length placed <> count then Int.incr misplaced;
-      List.iter ats ~f:(fun at ->
-        let layer = elaboration.layers.(at) in
-        let to_y =
-          match layer.role with
-          | Pair_open -> true
-          | Stem | Pair_close | Head -> false
-        in
-        if List.count mine ~f:(fun w -> Bool.equal w.to_y to_y) <> steps * layer.outputs
-        then Int.incr misplaced;
-        check_layer at layer (if to_y then y else x))
-    in
-    Array.iter elaboration.turns ~f:(fun (turn : Elaboration.turn) ->
-      match elaboration.layers.(turn.first).role with
-      | Head -> head_columns (List.nth_exn want turn.first)
-      | Stem | Pair_open | Pair_close -> turn_columns turn);
-    (* THE TWO PLANS STAND IN THE LINE, thus a shape that stops crossing a bank says so
-       here and does not leave a select and an offset untested in silence. *)
-    let plan banks =
-      String.concat
-        ~sep:" + "
-        (List.map (Array.to_list banks) ~f:(fun (bank : Elaboration.bank) ->
-           Int.to_string bank.depth))
-    in
-    printf
-      "%s: the weights bank %s, the stores bank %s; %d columns written, %d steps \
-       offered, %d columns checked — %d part, %d misplaced\n"
-      name
-      (plan elaboration.weight_banks)
-      (plan elaboration.store_banks)
-      (List.length pass.written)
-      (List.length pass.offered)
-      !checked
-      !part
-      !misplaced
-  in
-  case ~name:"H 8, G 2, two pairs, T 6" ~width:8 ~lanes:2 ~pairs:2 ~steps:6 ~seed:1;
-  case ~name:"H 7, G 3, one pair,  T 5" ~width:7 ~lanes:3 ~pairs:1 ~steps:5 ~seed:2;
-  (* AN IMAGE THAT REALLY BANKS: 1 080 words plan as 1 024 and 512, thus this case reads
-     through the bank mux and the two above read through one bank alone. The elected
-     rung's own image banks, thus a shape that never crosses a bank would leave the select
-     and the offset untested until a board. *)
-  case ~name:"H 8, G 4, three pairs, T 6" ~width:8 ~lanes:4 ~pairs:3 ~steps:6 ~seed:3;
-  (* A STORE THAT REALLY BANKS: 129 steps of 8 channels make a store of 1 032 columns,
-     which plans as 1 024 and 512, thus this case reads and writes THROUGH the store's
-     bank mux and its write select where the three above stand in one bank each. The
-     elected geometry banks its stores at T 128 and H 20, thus a shape that never crosses
-     would leave the split untested until a board. *)
-  case ~name:"H 8, G 2, one pair,   T 129" ~width:8 ~lanes:2 ~pairs:1 ~steps:129 ~seed:4;
-  (* THE RING WRAPS TWICE. Five columns over four ring slots is one wrap; two pairs and
-     the head behind them read every wrapped column, thus a ring one column short — or a
-     lag of one instead of two — writes over a column that is still live and this case is
-     where it would say so. *)
-  case ~name:"H 8, G 2, two pairs, T 5" ~width:8 ~lanes:2 ~pairs:2 ~steps:5 ~seed:5;
-  [%expect
-    {|
-    H 8, G 2, two pairs, T 6: the weights bank 2048, the stores bank 512; 240 columns written, 6 steps offered, 264 columns checked — 0 part, 0 misplaced
-    H 7, G 3, one pair,  T 5: the weights bank 1024, the stores bank 512; 105 columns written, 5 steps offered, 125 columns checked — 0 part, 0 misplaced
-    H 8, G 4, three pairs, T 6: the weights bank 1024 + 512, the stores bank 512; 336 columns written, 6 steps offered, 360 columns checked — 0 part, 0 misplaced
-    H 8, G 2, one pair,   T 129: the weights bank 1024, the stores bank 1024 + 512; 3096 columns written, 129 steps offered, 3612 columns checked — 0 part, 0 misplaced
-    H 8, G 2, two pairs, T 5: the weights bank 2048, the stores bank 512; 200 columns written, 5 steps offered, 220 columns checked — 0 part, 0 misplaced
+    dcee24146cacb618078e13625f9c45be
     |}]
 ;;
 
@@ -1455,7 +1281,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
      and not with the layers, and then the design moves and not this bench. *)
   let case ~name ~width ~lanes ~pairs ~steps ~seed =
     let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
-    let model = Quantized.Model.For_test.init config ~seed in
+    let model = Quantized.Model.For_test.drawn config ~seed in
     let walk = 8 in
     let elaboration = Elaboration.create model ~steps ~lanes ~walk in
     let module B =
@@ -1463,9 +1289,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
         let e = elaboration
       end)
     in
-    let { canvas = (_ : int array array); hidden = (_ : bool array array); planes } =
-      stem_input ~steps ~walk ~seed
-    in
+    let planes = stem_input ~steps ~walk ~seed in
     let (_ : Hardcaml_waveterm.Waveform.t option), pass =
       B.run ~read_logits:false ~planes ()
     in
@@ -1504,3 +1328,36 @@ let%expect_test "the cycles of one forward, against the cost model" =
       36 preamble (9 a turn), 708 head wait (59 a step), 178 turn against the 192 the model counts, 10 elsewhere
     |}]
 ;;
+
+(* ==================================================================== *)
+(* The export of the RTL gate *)
+(* ==================================================================== *)
+
+module For_test = struct
+  (* THE BENCH, NARROWED TO WHAT THE DRIVER OF THE RTL GATE READS: one pass, the columns
+     the stores took in the order they went out, and the logit columns the head offered.
+     The cycle tallies and the waveforms of the expect tests above stay inside. The driver
+     is [bin/gate_diffusion.ml] and the gate is [jax/tests/test_rtl.py]. *)
+  module Bench (M : sig
+      val e : Elaboration.t
+    end) =
+  struct
+    module Driven = Bench (M)
+
+    type write = Driven.write =
+      { to_y : bool
+      ; address : int
+      ; column : int array
+      }
+
+    type pass =
+      { written : write list
+      ; offered : int array array list
+      }
+
+    let run ~planes () =
+      let (_ : Hardcaml_waveterm.Waveform.t option), pass = Driven.run ~planes () in
+      { written = pass.written; offered = pass.offered }
+    ;;
+  end
+end

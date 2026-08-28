@@ -27,12 +27,12 @@ disagree. From the repository root:
     dune build bin/check_transformer.exe bin/play_transformer.exe
 """
 
+import hashlib
 import re
 import subprocess
 from pathlib import Path
 
 import jax.numpy as jnp
-import numpy as np
 import pytest
 
 import data
@@ -222,122 +222,51 @@ def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
 
 
 # ==================================================================== #
-# Era six: the same two gates, over the masked canvas                  #
+# Era six: the quantizer, held through the netlist                     #
 # ==================================================================== #
 
-# the golden candidate of the era; the shape is in the file, thus neither side states one
+# THE QUANTIZER'S OWN GATE, and the last thing era six holds against OCaml. The two
+# temporary gates that welded the two integer twins -- the walk and the drift report -- went
+# with the OCaml twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is
+# what stays. This one holds the QUANTIZATION, through the netlist the flash carries.
+
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
-PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
-CHECK_DIFFUSION = BUILT / "check_diffusion.exe"
-DIFFUSION_PLAYER = BUILT / "play_diffusion.exe"
+GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.exe"
+
+# the netlist the flash holds: the golden candidate at T 128, G 5, N 512
+GOLDEN_NETLIST_MD5 = "4e367cef6e38b2ae1f06ab3cf42a9c42"
 
 
-def diffusion_gate_masks(canvases, crop):
-    """The Bernoulli-half masks of Gate A: canvas i on the generator at seed i + 1, one
-    uniform for each cell in the cell order, hidden exactly when u * 2^24 < 2^23. This is
-    Diffusion.gate_mask drawn from the batched twin of the generator, thus the two sides
-    hide the same cells by construction and no tolerance covers the mask."""
-    import prng
-    from diffusion import model as canvas_model
-
-    states = prng.states(np.arange(1, canvases + 1))
-    hidden = np.zeros((canvases, crop, canvas_model.VOICES), dtype=bool)
-    everyone = np.ones(canvases, dtype=bool)
-    for step in range(crop):
-        for voice in range(canvas_model.VOICES):
-            states, u = prng.uniform(states, everyone)
-            hidden[:, step, voice] = u * 2.0**24 < float(1 << 23)
-    return hidden
-
-
-def test_gate_a_the_diffusion_forwards_agree():
-    """The canvases are deterministic -- the first [crop] steps of every valid piece that
-    holds them, in corpus order -- and the masks come from the shared generator, thus no
-    draw of either framework enters and the number reads the forward alone: every kernel,
-    every fold of the norm, every plane. The crop travels in the tool's output, as the
-    shapes of the sibling gates do."""
-    need(DIFFUSION_CHECKPOINT, PIECES, CORPUS_JSON, CHECK_DIFFUSION)
-    from diffusion import model as canvas_model
-
-    stated = run(
-        str(CHECK_DIFFUSION),
-        "loss",
-        "-ckpt",
-        str(DIFFUSION_CHECKPOINT),
-        "-corpus",
-        str(CORPUS_JSON),
-        "-crop",
-        "128",
-    )
-    said = dict(re.findall(r"(\w+) (-?[\d.]+)", stated))
-    canvases, crop = int(said["canvases"]), int(said["crop"])
-
-    pieces = data.load_pieces(str(PIECES))["valid"]
-    keep = [at for at in range(len(pieces.lengths)) if pieces.lengths[at] >= crop]
-    assert len(keep) == canvases, "the two sides kept a different count of canvases"
-    classes = np.stack([pieces.classes[at][:crop] for at in keep])
-    hidden = diffusion_gate_masks(canvases, crop)
-
-    params, stats = canvas_model.load_params(str(DIFFUSION_CHECKPOINT))
-    values = []
-    for at in range(0, canvases, 16):
-        chunk_classes = jnp.asarray(classes[at : at + 16])
-        chunk_hidden = jnp.asarray(hidden[at : at + 16])
-        said_logits, _ = canvas_model.logits(
-            params, stats, canvas_model.planes(chunk_classes, chunk_hidden)
-        )
-        nll = np.asarray(canvas_model.nll_of_logits(said_logits, chunk_classes))
-        for row in range(len(nll)):
-            mask = hidden[at + row]
-            values.append(float(nll[row][mask].mean()))
-    here = float(np.mean(values))
-    there = float(said["loss"])
-    assert here == pytest.approx(there, abs=TOLERANCE), (
-        f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
-    )
-
-
-@pytest.mark.parametrize("seed,crop,walk", [(3, 128, 32), (7, 32, 8)])
-def test_gate_c_the_two_canvas_walks_are_the_same_stream(seed, crop, walk):
-    """The walk gate of the era: the seeded opening, the anneal thresholds, the tempered
-    picks -- every uniform from the shared generator in the pinned cell order, thus the
-    whole canvas compares as text. One row runs the full canvas at a board-like budget and
-    one runs small, so the gate crosses every rule without owning the suite's clock."""
-    need(DIFFUSION_CHECKPOINT, DIFFUSION_PLAYER)
-    theirs = run(
-        str(DIFFUSION_PLAYER),
-        "-ckpt",
-        str(DIFFUSION_CHECKPOINT),
-        "-seeds",
-        str(seed),
-        "-steps",
-        str(crop),
-        "-walk",
-        str(walk),
-    )
-    ours = run(
+def quantized_checkpoint(tmp_path):
+    """the contract file of the golden candidate, written by the JAX quantizer"""
+    path = tmp_path / "l48-h20-100k.int8"
+    run(
         "uv",
         "run",
         "python",
         "-m",
         "diffusion.infer",
-        "sample",
+        "quantize",
         "--ckpt",
         str(DIFFUSION_CHECKPOINT),
-        "--seeds",
-        str(seed),
-        "--crop",
-        str(crop),
-        "--walk",
-        str(walk),
+        "--out",
+        str(path),
     )
-    lines = lambda text: [l for l in text.splitlines() if l.startswith("step")]
-    here, there = lines(ours), lines(theirs)
-    assert here, "the JAX walk printed no step lines"
-    assert len(here) == len(there) == crop, (
-        f"{len(here)} JAX steps against {len(there)} OCaml steps, wanted {crop}"
-    )
-    first = next((i for i, (a, b) in enumerate(zip(here, there)) if a != b), None)
-    assert first is None, (
-        f"the walks part at step {first}:\n  jax   {here[first]}\n  ocaml {there[first]}"
+    return path
+
+
+def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
+    """THE CIRCUIT DOES NOT MOVE. The elaboration reads the contract file the JAX quantizer
+    writes, and the Verilog it states must be the golden's byte for byte: one rounding, one
+    exponent or one fold out of place moves a weight, and a moved weight moves the netlist.
+
+    It is the gate of the quantizer and it costs one second. A different md5 says the
+    quantization parted; diff the norm ROM first -- the gains and the biases -- and then the
+    weight ROM."""
+    need(DIFFUSION_CHECKPOINT, GEN_VERILOG)
+    run(str(GEN_VERILOG), "-int8", str(quantized_checkpoint(tmp_path)), str(tmp_path))
+    said = hashlib.md5((tmp_path / "top.v").read_bytes()).hexdigest()
+    assert said == GOLDEN_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {said} and the golden is "
+        f"{GOLDEN_NETLIST_MD5}"
     )

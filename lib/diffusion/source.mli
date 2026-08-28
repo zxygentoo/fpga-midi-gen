@@ -59,3 +59,37 @@ module O = Source_intf.O
     registers of the seats are the corpus's, thus a probe geometry that narrows P below
     the top class of a register states a class no cell can hold. *)
 val create : e:Elaboration.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+(** The bench, narrowed to what the driver of the RTL gate reads.
+
+    The walk gate of this era runs in [jax/tests/test_rtl.py]: THE ORACLE IS THE JAX TWIN,
+    [bin/gate_diffusion.ml] drives the circuit through this harness and prints what the
+    circuit did, and Python states what it must have done. Nothing here states that, thus
+    the driver cannot pass a walk by agreeing with itself. *)
+module For_test : sig
+  module Bench : sig
+    (** one write of the cell port, as the probe sees it *)
+    type write =
+      { mask : bool (** the mask face, and not the class face *)
+      ; step : int
+      ; seat : int
+      ; value : int (** the class a face wrote, or the mask bit *)
+      }
+
+    (** the walk, driven *)
+    type t =
+      { rewind : unit -> unit
+      (** run one whole walk, from the rest to the rest, and clear the write log behind
+          it. It raises [Failure] when the walk does not finish inside the budget the cost
+          model states — a machine that stalls must fail a gate and not hang it. *)
+      ; play : unit -> int
+      (** strobe one step and give the frame it answers. It raises [Failure] when the step
+          is not answered. *)
+      ; writes : unit -> write list
+      (** every write of the last walk, in the order the walk made them *)
+      }
+
+    (** [harness ~e ~seed ()] builds the simulation and its probes *)
+    val harness : e:Elaboration.t -> seed:int -> unit -> t
+  end
+end

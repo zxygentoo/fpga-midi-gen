@@ -738,7 +738,7 @@ let%expect_test "the elaboration of rung 2" =
      never a value, thus a test states rung 2's geometry without a checkpoint file that
      git ignores. The rung's real weights arrive at [gen_verilog]. *)
   let config = { Diffusion.Config.layers = 64; width = 16 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
   [%expect
     {|
@@ -828,7 +828,7 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
      It also holds the two other properties: every weight stands at one address and no two
      share one, and a lane past the channels reads zero. H 6 at G 4 makes the ragged group
      the elected shapes never make, thus the padding is under test and not only described. *)
-  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+  let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   let kernels = Array.of_list (Quantized.Model.For_test.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
@@ -959,16 +959,16 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
   let rung = { Diffusion.Config.layers = 64; width = 16 } in
   case
     ~name:"rung 2"
-    (create (Quantized.Model.For_test.init rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
+    (create (Quantized.Model.For_test.drawn rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
   case
     ~name:"a shape of one bank"
-    (create (Quantized.Model.For_test.init tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
+    (create (Quantized.Model.For_test.drawn tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   (* A STORE THAT REALLY BANKS, and rung 2's does not: 129 steps of 8 channels are 1032
      columns, thus the plan splits where the two rungs above hold one bank. *)
   case
     ~name:"a store of two banks"
     (create
-       (Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 8 } ~seed:3)
+       (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 8 } ~seed:3)
        ~steps:129
        ~lanes:2
        ~walk:4);
@@ -1089,14 +1089,14 @@ let%expect_test "the circuit walks the turn the block order states" =
   case
     ~name:"a shape of two pairs"
     (create
-       (Quantized.Model.For_test.init { Diffusion.Config.layers = 6; width = 8 } ~seed:1)
+       (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 6; width = 8 } ~seed:1)
        ~steps:5
        ~lanes:2
        ~walk:4);
   case
     ~name:"rung 2"
     (create
-       (Quantized.Model.For_test.init
+       (Quantized.Model.For_test.drawn
           { Diffusion.Config.layers = 64; width = 16 }
           ~seed:1)
        ~steps:128
@@ -1112,7 +1112,7 @@ let%expect_test "the circuit walks the turn the block order states" =
 ;;
 
 let%expect_test "a norm word carries the twin's gain, shift and bias" =
-  let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+  let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   (* THE TEST SLICES WITH THE CIRCUIT'S OWN UNPACKER and never with a third reading of the
      field order: [Rtl.Make (Bits)] is the very function the epilogue elaborates. *)
@@ -1164,7 +1164,7 @@ let%expect_test "the circuit states the maps the software states" =
      where the padding lives. *)
   let module Map = Rtl.Make (Bits) in
   let case ~steps ~lanes =
-    let model = Quantized.Model.For_test.init tiny_shape ~seed:7 in
+    let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
     let t = create model ~steps ~lanes ~walk:4 in
     let addresses = ref 0
     and channels = ref 0
@@ -1235,7 +1235,7 @@ let%expect_test "the circuit states the maps the software states" =
 ;;
 
 let%expect_test "the elaboration refuses what the machine cannot hold" =
-  let model = Quantized.Model.(For_test.init For_test.config ~seed:7) in
+  let model = Quantized.Model.(For_test.drawn For_test.config ~seed:7) in
   let refuse name f =
     match f () with
     | (_ : t) -> printf "%s: NOT REFUSED\n" name
@@ -1260,7 +1260,7 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
   refuse "a fetch the load outruns" (fun () -> create model ~steps:8 ~lanes:4 ~walk:4);
   refuse "the channel that clears it" (fun () ->
     create
-      (Quantized.Model.For_test.init { Diffusion.Config.layers = 4; width = 7 } ~seed:7)
+      (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 7 } ~seed:7)
       ~steps:8
       ~lanes:4
       ~walk:4);

@@ -41,6 +41,7 @@ population statistics. The layer count follows from the tensor count and the wid
 the shapes, thus a checkpoint reads without a flag.
 """
 
+import math
 from functools import partial
 
 import jax
@@ -279,6 +280,44 @@ def load_params(path):
         }
         params.append({field: held[field] for field in PARAM_FIELDS})
         stats.append({field: held[field] for field in STAT_FIELDS})
+    return {"layers": params}, stats
+
+
+def drawn_params(seed, layers, width, norm_scale=1.0):
+    """A model of DRAWN weights, at a shape a gate can afford: the gates of the circuit and
+    of the twin need a model and not a training run, thus one is drawn here and no gate has
+    to read a checkpoint that git ignores.
+
+    The draw follows the SHAPE of the trainer and not its values: He normal kernels --
+    sqrt(2 / fan_in) over the reach and the input channels -- the norm scale, the shift at
+    zero, and the population at mean 0 and variance 1.
+
+    THE NORM SCALE OPENS AT 1.0 AND NOT AT THE TRAINER'S TENTH. At the tenth an L-layer
+    DRAWN trunk decays its activations tenfold at every layer -- a trained norm grows out of
+    that opening, an untrained one never leaves it -- and by the third layer a gate over the
+    integer twin reads the resolution floor of the activation format instead of the
+    arithmetic. At 1.0 the drawn trunk holds the O(1) activations a trained model holds,
+    which is the regime the twin and the circuit must answer for."""
+    rng = np.random.default_rng(seed)
+    params, stats = [], []
+    for at in range(layers):
+        inputs = 2 * VOICES if at == 0 else width
+        outputs = VOICES if at == layers - 1 else width
+        deviation = math.sqrt(2.0 / (KERNEL * KERNEL * inputs))
+        drawn = rng.normal(0.0, deviation, (KERNEL, KERNEL, inputs, outputs))
+        params.append(
+            {
+                "kernel": drawn.astype(np.float32),
+                "scale": np.full(outputs, norm_scale, np.float32),
+                "shift": np.zeros(outputs, np.float32),
+            }
+        )
+        stats.append(
+            {
+                "mean": np.zeros(outputs, np.float32),
+                "variance": np.ones(outputs, np.float32),
+            }
+        )
     return {"layers": params}, stats
 
 

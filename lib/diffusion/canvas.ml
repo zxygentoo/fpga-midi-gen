@@ -20,6 +20,54 @@ end
 (* the activation format of the twin: what a plane column carries in each row *)
 let activation_bits = Quantized.activation_bits
 
+(* ==================================================================== *)
+(* The stem's decode, in software *)
+(* ==================================================================== *)
+
+(* THE SOFTWARE HALF OF THIS UNIT, and the reason it stands here and not in [Quantized]:
+   the plane face of the circuit must equal this decode, thus the two are one unit's two
+   statements of one rule. [Quantized] is the int8 checkpoint as data and holds no
+   arithmetic of the walk any more; the integer twin is [jax/diffusion/quantized.py], and
+   what a gate below the seam needs of it is exactly this decode. *)
+
+let rows = Diffusion.rows
+let voices = Diffusion.voices
+
+(* the planes the stem reads: one class plane and one mask plane for each seat *)
+let planes = 2 * voices
+
+(* the one of the activation format, which a hot row of a plane carries *)
+let activation_one = 1 lsl Quantized.activation_q
+
+(* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
+let plane_activations canvas hidden ~steps =
+  let x = Array.create ~len:(steps * rows * planes) 0 in
+  for step = 0 to steps - 1 do
+    for voice = 0 to voices - 1 do
+      if hidden.(step).(voice)
+      then
+        for row = 0 to rows - 1 do
+          x.((((step * rows) + row) * planes) + voices + voice) <- activation_one
+        done
+      else
+        x.((((step * rows) + canvas.(step).(voice)) * planes) + voice) <- activation_one
+    done
+  done;
+  x
+;;
+
+(* One column of the stem's input tensor. The index rule itself is [Diffusion]'s — every
+   tensor of the era reads as [steps; rows; channels] — thus what this states is the PLANE
+   count and nothing else. *)
+let plane_column x ~step ~plane =
+  Diffusion.tensor_column x ~step ~channel:plane ~channels:planes
+;;
+
+module For_test = struct
+  let plane_activations = plane_activations
+  let plane_column = plane_column
+end
+
 module Make (Shape : Shape) = struct
   let steps = Shape.steps
   let rows = Shape.rows
@@ -142,10 +190,10 @@ end
 (* ==================================================================== *)
 
 (* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Diffusion.opening_canvas] and
-   [Diffusion.hidden_cells] state what the walk writes, [Quantized.plane_activations]
-   states what the stem must read, and [Diffusion.frames_of_canvas] states what the
-   sequencer must play — thus the gate compares the circuit against the functions
-   themselves and never against a second reading of them. *)
+   [Diffusion.hidden_cells] state what the walk writes, [plane_activations] above states
+   what the stem must read, and [Diffusion.frames_of_canvas] states what the sequencer
+   must play — thus the gate compares the circuit against the functions themselves and
+   never against a second reading of them. *)
 module Bench (Shape : Shape) = struct
   module Canvas = Make (Shape)
   module Sim = Cyclesim.With_interface (Canvas.I) (Canvas.O)
@@ -247,7 +295,7 @@ module Bench (Shape : Shape) = struct
   let check ~opening ~hidden ~redraw =
     let sim = snd (filled ~opening ~hidden ~redraw ()) in
     let canvas = redrawn ~opening ~hidden ~redraw in
-    let stem = Quantized.For_test.plane_activations canvas hidden ~steps in
+    let stem = plane_activations canvas hidden ~steps in
     let frames = Diffusion.frames_of_canvas canvas in
     let cells = Array.of_list (Diffusion.cell_order ~steps) in
     let disagrees agrees = if agrees then 0 else 1 in
@@ -264,7 +312,7 @@ module Bench (Shape : Shape) = struct
               (Array.equal
                  Int.equal
                  answer.activations
-                 (Quantized.For_test.plane_column stem ~step:plane_step ~plane))
+                 (plane_column stem ~step:plane_step ~plane))
       ; frames = counts.frames + disagrees (answer.frame = frames.(score))
       }
     in

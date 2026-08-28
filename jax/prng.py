@@ -14,6 +14,22 @@ import numpy as np
 
 MASK32 = 0xFFFFFFFF
 
+# The bits of the grid a uniform stands on: Prng.uniform_bits, three bytes of the walk.
+# THE GRID HAS ONE HOME -- a threshold, an anneal table and an integer draw are all sized
+# on it, and each reads the width here rather than states 24 again.
+UNIFORM_BITS = 24
+
+
+def create(seed):
+    """Prng.create: the walk that starts at [seed] itself.
+
+    The seed as it stands, which is the rule of the board's SEED cell -- thus 0 is a seed
+    like any other and the walk it names stands still. Take this where the seed IS the
+    piece, and [create_folded] where it only has to name a walk."""
+    if seed & MASK32 != seed:
+        raise ValueError("Prng: the seed must fit 32 bits")
+    return seed
+
 
 def create_folded(seed):
     """Prng.create_folded: any integer names a walk.
@@ -41,15 +57,23 @@ def step(state):
     return wide.astype(np.uint32), (wide & np.uint64(0xFF)).astype(np.int64)
 
 
-def uniform(state, active):
-    """Prng.uniform over a batch: three steps, one draw over [0, 1).
+def uniform_word(state, active):
+    """Prng.uniform_word over a batch: three steps, and the 24-bit word they make with the
+    first byte highest.
 
-    The three bytes make a grid of 2 ** -24. [active] holds the walks that draw; the rest
-    keep the state they came in with, so a finished element never consumes a draw it
-    would not have consumed in a run of its own."""
+    It is the uniform AS THE CIRCUITS TAKE IT -- an integer twin hands its draw a word and
+    never a float -- thus [uniform] is this word on the grid and the two cannot part.
+    [active] holds the walks that draw; the rest keep the state they came in with, so a
+    finished element never consumes a draw it would not have consumed in a run of its
+    own."""
     held = state.copy()
     state, high = step(state)
     state, middle = step(state)
     state, low = step(state)
-    value = ((high * 256 + middle) * 256 + low) * (2.0**-24)
-    return np.where(active, state, held), value
+    return np.where(active, state, held), (high * 256 + middle) * 256 + low
+
+
+def uniform(state, active):
+    """Prng.uniform over a batch: the word of [uniform_word] on the grid of 2 ** -24."""
+    state, word = uniform_word(state, active)
+    return state, word * (2.0**-UNIFORM_BITS)

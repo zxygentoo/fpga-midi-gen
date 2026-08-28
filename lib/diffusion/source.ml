@@ -439,7 +439,6 @@ module Bench = struct
     ; seat : int
     ; value : int (** the class a face wrote, or the mask bit *)
     }
-  [@@deriving equal ~localize, sexp_of]
 
   (* The walk, driven. [rewind] runs one whole walk from the rest to the rest and clears
      the write log behind it; [play] strobes one step and gives the frame it answers. *)
@@ -581,195 +580,7 @@ module Bench = struct
     ; waves
     }
   ;;
-
-  (* [List.init] applies its function in the reverse index order, thus it cannot collect
-     from a simulation; the fold steps in the true order *)
-  let collect n f =
-    List.rev (List.fold (List.range 0 n) ~init:[] ~f:(fun acc (_ : int) -> f () :: acc))
-  ;;
-
-  (* THE REFERENCE IS THE TWIN'S OWN ENGINE, WALKED BESIDE THE CIRCUIT. [init] draws the
-     opening, [next_pass] gives the canvas the forward saw, the mask it drew and the
-     redraws in the cell order — cell, uniform and class. No export is added for the gate:
-     what the engine already states IS every phase. *)
-  let passes model ~steps ~walk ~seed =
-    let rec take engine at got =
-      if at = walk
-      then engine, List.rev got
-      else (
-        let engine, pass = Quantized.Engine.next_pass engine in
-        take engine (at + 1) (pass :: got))
-    in
-    take (Quantized.Engine.init model ~steps ~walk ~seed) 0 []
-  ;;
-
-  (* Every write the walk must make, in the order it must make them, and the phase that
-     owns each one: the opening, then for each pass its mask and its redraws. A
-     disagreement therefore names its phase and not only its index. *)
-  let wanted (passes : Quantized.Engine.pass list) ~steps =
-    let cells = Diffusion.cell_order ~steps in
-    let opening = (List.hd_exn passes).before in
-    let opened =
-      List.map cells ~f:(fun (step, seat) ->
-        "the opening", { mask = false; step; seat; value = opening.(step).(seat) })
-    in
-    let of_pass at (pass : Quantized.Engine.pass) =
-      let masked =
-        List.map cells ~f:(fun (step, seat) ->
-          ( Printf.sprintf "the mask of pass %d" at
-          , { mask = true; step; seat; value = Bool.to_int pass.hidden.(step).(seat) } ))
-      in
-      let drawn =
-        List.map pass.draws ~f:(fun (d : Quantized.Engine.draw) ->
-          ( Printf.sprintf "a draw of pass %d" at
-          , { mask = false; step = d.step; seat = d.voice; value = d.drawn } ))
-      in
-      masked @ drawn
-    in
-    opened @ List.concat (List.mapi passes ~f:of_pass)
-  ;;
-
-  (* the disagreements, in order, with the phase that owns each one *)
-  let apart ~got ~want =
-    let rec walk got want at apart =
-      match got, want with
-      | [], [] -> List.rev apart
-      | got, [] ->
-        List.rev
-          (Printf.sprintf "%d writes past the last one wanted" (List.length got) :: apart)
-      | [], want -> List.rev (Printf.sprintf "%d writes short" (List.length want) :: apart)
-      | g :: got, (phase, w) :: want ->
-        let apart =
-          if equal_write g w
-          then apart
-          else
-            Printf.sprintf
-              "%s, write %d: %s against %s"
-              phase
-              at
-              (Sexp.to_string ([%sexp_of: write] g))
-              (Sexp.to_string ([%sexp_of: write] w))
-            :: apart
-        in
-        walk got want (at + 1) apart
-    in
-    walk got want 0 []
-  ;;
 end
-
-let%expect_test "the canvas is the engine's, phase for phase" =
-  (* INSTRUMENT 2. The walk stands beside [Quantized.Engine] and the two are compared
-     WHERE EACH PHASE HAPPENS: the opening's classes against the canvas the first forward
-     saw, each mask's bits against the mask that pass drew, each redraw against the cell
-     it names and the class it wrote, in the offer order the walk counts — and then the
-     finished canvas THROUGH THE FRAME FACE, thus the Vocab decode, the score counter and
-     the silence past T - 1 stand in the same gate.
-
-     The finished canvas alone would pass a walk whose masks are one pass out of phase, or
-     one that spends a uniform on a standing cell: both draw a canvas, and both draw the
-     WRONG one with no local symptom. That is why the comparison is per phase.
-
-     SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 — the panel can state it,
-     [Prng.create] carries it and this engine stands still on it — thus every uniform is
-     0, every cell hides and every draw takes the top of the grid. The walk that stands
-     still is the design, and the gate holds the circuit to the engine's stillness like
-     any other walk. *)
-  let case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay =
-    let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
-    let model = Quantized.Model.For_test.init config ~seed:model_seed in
-    let e = Elaboration.create model ~steps ~lanes ~walk in
-    let h = Bench.harness ~e ~seed () in
-    h.rewind ();
-    let last, passes = Bench.passes model ~steps ~walk ~seed in
-    let want = Bench.wanted passes ~steps in
-    let got = h.writes () in
-    let apart = Bench.apart ~got ~want in
-    let frames = Diffusion.frames_of_canvas (Quantized.Engine.run last) in
-    let silent = 2 in
-    let played = Bench.collect (steps + silent) h.play in
-    let wanted_frames = Array.to_list frames @ List.init silent ~f:(fun (_ : int) -> 0) in
-    let again =
-      if replay
-      then (
-        h.rewind ();
-        Some (Bench.collect (steps + silent) h.play))
-      else None
-    in
-    printf
-      "%s, N %d, seed %d: %d writes — %d open, %s mask, %s draws\n"
-      name
-      walk
-      seed
-      (List.length got)
-      (steps * Frame.voices)
-      (String.concat
-         ~sep:"+"
-         (List.map passes ~f:(fun (_ : Quantized.Engine.pass) ->
-            Int.to_string (steps * Frame.voices))))
-      (String.concat
-         ~sep:"+"
-         (List.map passes ~f:(fun (p : Quantized.Engine.pass) ->
-            Int.to_string (List.length p.draws))));
-    (match apart with
-     | [] -> printf "  every write is the engine's, in the engine's order\n"
-     | apart ->
-       printf "  %d WRITES APART:\n" (List.length apart);
-       List.iter (List.take apart 8) ~f:(fun line -> printf "    %s\n" line));
-    printf
-      "  %d frames: %s%s\n"
-      (List.length played)
-      (if [%compare.equal: int list] played wanted_frames
-       then "the engine's canvas, and the two past T - 1 silent"
-       else "APART FROM THE ENGINE'S CANVAS")
-      (match again with
-       | None -> ""
-       | Some again ->
-         if [%compare.equal: int list] again played
-         then "; a rewind draws it again from the same seed"
-         else "; A REWIND DREW ANOTHER CANVAS")
-  in
-  let shape name ~width ~lanes ~pairs ~steps ~walk ~model_seed =
-    List.iteri [ 1; 2; 0 ] ~f:(fun at seed ->
-      case ~name ~width ~lanes ~pairs ~steps ~walk ~model_seed ~seed ~replay:(at = 0))
-  in
-  shape
-    "H 8, G 2, two pairs, T 6"
-    ~width:8
-    ~lanes:2
-    ~pairs:2
-    ~steps:6
-    ~walk:3
-    ~model_seed:1;
-  shape
-    "H 7, G 3, one pair,  T 5"
-    ~width:7
-    ~lanes:3
-    ~pairs:1
-    ~steps:5
-    ~walk:4
-    ~model_seed:2;
-  [%expect
-    {|
-    H 8, G 2, two pairs, T 6, N 3, seed 1: 138 writes — 24 open, 24+24+24 mask, 23+12+7 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
-    H 8, G 2, two pairs, T 6, N 3, seed 2: 137 writes — 24 open, 24+24+24 mask, 23+13+5 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent
-    H 8, G 2, two pairs, T 6, N 3, seed 0: 168 writes — 24 open, 24+24+24 mask, 24+24+24 draws
-      every write is the engine's, in the engine's order
-      8 frames: the engine's canvas, and the two past T - 1 silent
-    H 7, G 3, one pair,  T 5, N 4, seed 1: 145 writes — 20 open, 20+20+20+20 mask, 19+12+9+5 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent; a rewind draws it again from the same seed
-    H 7, G 3, one pair,  T 5, N 4, seed 2: 140 writes — 20 open, 20+20+20+20 mask, 19+10+9+2 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent
-    H 7, G 3, one pair,  T 5, N 4, seed 0: 180 writes — 20 open, 20+20+20+20 mask, 20+20+20+20 draws
-      every write is the engine's, in the engine's order
-      7 frames: the engine's canvas, and the two past T - 1 silent
-    |}]
-;;
 
 let%expect_test "the service of one step: the level, a standing seat, a hidden one" =
   (* THE SERVICE AS A PICTURE, at the era's own P and a canvas of three steps. The seat
@@ -788,7 +599,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
      walk strobes [step_taken]; and the level falls on the edge behind that strobe, thus
      the engine opens the next step. *)
   let config = { Diffusion.Config.layers = 4; width = 8 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   let e = Elaboration.create model ~steps:3 ~lanes:2 ~walk:1 in
   let h = Bench.harness ~trace:true ~e ~seed:5 () in
   h.rewind ();
@@ -932,7 +743,7 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
        the head's wait; Phase I spends it. *)
   let cells_of steps = steps * Frame.voices in
   let config = { Diffusion.Config.layers = 6; width = 8 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   let steps = 6 in
   let walk = 3 in
   let seed = 1 in
@@ -944,13 +755,14 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   in
   let h = Bench.harness ~e ~seed () in
   h.rewind ();
-  let (_ : Quantized.Engine.t), passes = Bench.passes model ~steps ~walk ~seed in
-  let hidden =
-    List.sum (module Int) passes ~f:(fun (p : Quantized.Engine.pass) ->
-      List.length p.draws)
-  in
   let spent = h.spent in
   let served = h.service_spent in
+  (* THE HIDDEN CELLS COME OUT OF THE MACHINE'S OWN COUNTER, as they do in the rung-1
+     measurement below: the service takes one uniform for each cell it redraws and nothing
+     else takes one there, thus its uniform cycles divided by the ticks of a uniform ARE
+     the redraws. WHETHER the machine hid the right cells is not this gate's question — it
+     is the walk gate's, in [jax/tests/test_rtl.py] — and this one prices the cycles. *)
+  let hidden = served Uniform / uniform_ticks in
   let service = served Seat + served Uniform + served Redraw + spent Take in
   (* what one cell of the service costs, measured: the seat read that every cell pays, and
      the uniform and the draw that only a hidden one does *)
@@ -991,7 +803,9 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   (* THE CLAIM, AT THE RUNG THE COST MODEL STATES. *)
   let rung =
     Elaboration.create
-      (Quantized.Model.For_test.init { Diffusion.Config.layers = 16; width = 16 } ~seed:1)
+      (Quantized.Model.For_test.drawn
+         { Diffusion.Config.layers = 16; width = 16 }
+         ~seed:1)
       ~steps:128
       ~lanes:4
       ~walk:512
@@ -1057,7 +871,7 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
      cell walks are the same in both, and the service is the whole of the difference. The
      playback window holds against the mean and not against this one. *)
   let config = { Diffusion.Config.layers = 16; width = 16 } in
-  let model = Quantized.Model.For_test.init config ~seed:1 in
+  let model = Quantized.Model.For_test.drawn config ~seed:1 in
   let e = Elaboration.create model ~steps:128 ~lanes:4 ~walk:1 in
   let cells = e.steps * Frame.voices in
   let h = Bench.harness ~e ~seed:42 () in
@@ -1097,3 +911,35 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
       the service 76310: 470 cells redrawn of 512, at 162 cycles each
     |}]
 ;;
+
+(* ==================================================================== *)
+(* The export of the RTL gate *)
+(* ==================================================================== *)
+
+module For_test = struct
+  (* THE BENCH, NARROWED TO WHAT THE DRIVER OF THE RTL GATE READS. The expect tests above
+     read the cycle tallies, the state encodings and the waveforms beside these three; a
+     driver outside this library reads the walk alone, thus nothing else leaves. The
+     driver is [bin/gate_diffusion.ml] and the gate is [jax/tests/test_rtl.py], where the
+     ORACLE is the JAX twin: this side runs the circuit and states what it did, and
+     nothing here states what it should have done. *)
+  module Bench = struct
+    type write = Bench.write =
+      { mask : bool
+      ; step : int
+      ; seat : int
+      ; value : int
+      }
+
+    type t =
+      { rewind : unit -> unit
+      ; play : unit -> int
+      ; writes : unit -> write list
+      }
+
+    let harness ~e ~seed () =
+      let bench = Bench.harness ~e ~seed () in
+      { rewind = bench.rewind; play = bench.play; writes = bench.writes }
+    ;;
+  end
+end

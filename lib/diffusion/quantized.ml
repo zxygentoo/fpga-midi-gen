@@ -1,16 +1,12 @@
-(* The integer twin of the masked canvas — see quantized.mli for the contract and
-   docs/diffusion_rtl.md for the formats. Every rule here is one the circuit of the next
-   round will read rather than restate. *)
+(* The int8 checkpoint as data — see quantized.mli for the contract and
+   docs/diffusion_rtl.md for the formats. The arithmetic of the twin is
+   jax/diffusion/quantized.py; what stands here is the reader of the file it writes, the
+   ROM image the bitstream carries, and the formats every unit of the circuit slices on. *)
 
 open Core
 module Nn_quantized = Mgen_nn.Quantized
-module Policy = Mgen_nn.Policy
 
-let rows = Diffusion.rows
 let voices = Diffusion.voices
-
-(* the planes the stem reads: one class plane and one mask plane for each seat *)
-let planes = 2 * voices
 
 (* THE ACTIVATION FORMAT IS Q6 IN INT16, AND IT IS MEASURED. The trunk is a residual stack
    with no norm on the stream, thus a trained model's activations GROW with depth: the
@@ -21,9 +17,6 @@ let planes = 2 * voices
    gain shift would absorb for free) is the refinement of the next round if the verdict is
    poor. *)
 let activation_q = 6
-
-(* the one in the activation format, and the fixed point of the biases *)
-let activation_one = 1 lsl activation_q
 
 (* The WIDTHS of the format, beside its Q: an activation is int16, and the products of one
    dwell sum into int32. They stand here because they are the other half of the sentence
@@ -48,67 +41,15 @@ module Model = struct
     ; temper : Nn_quantized.Constants.scale
     }
 
-  (* The 16-bit form of the exponent rule of the eras: the largest exponent that keeps the
-     rounded gain in int16. The shift of the scale retires the weight exponent in the same
-     move, thus the accumulator goes from Q(activation_q + e) to Q(activation_q) in one
-     multiply. 30 caps the all-zero gain, as 14 caps the all-zero tensor in
-     [Nn_quantized.max_exponent]. *)
-  let gain_scale value ~weight_exponent =
-    let magnitude = Float.abs value in
-    let fits e = Float.iround_nearest_exn (Float.ldexp magnitude e) <= 32767 in
-    let rec largest e = if fits e then e else largest (e - 1) in
-    let e = if Float.(magnitude <= 0.0) then 30 else largest 30 in
-    { Nn_quantized.Constants.q_value = Float.iround_nearest_exn (Float.ldexp value e)
-    ; q = e + weight_exponent
-    }
-  ;;
+  (* The tensors of the contract file that are not layers: the sampling temper, and the Q
+     the file was quantized at. They stand beside the numbered layers and not inside
+     [__metadata__] BECAUSE [Nx_io] GIVES NO ACCESS TO IT — the loader hands back the
+     tensors alone — and the elaboration needs both numbers. *)
+  let temper_tensor = "temper"
+  let activation_tensor = "activation_q"
 
-  (* The norm folds into the two per-channel rows: at inference batch normalization is the
-     affine [a * gain + bias] with [gain = scale * rsqrt (variance + eps)] and
-     [bias = shift - mean * gain]. The fold is the same affine — its rounding is part of
-     what [Drift] measures. A bias outside the activation format clamps; a trained norm
-     that puts one there is a format fault the drift report would shout about. *)
-  let fold_layer
-    { Diffusion.Params.kernel = kernel_t
-    ; scale = scale_t
-    ; shift = shift_t
-    ; mean = mean_t
-    ; variance = variance_t
-    }
-    =
-    let kernel = Nn_quantized.quantize (Nx.to_array kernel_t) in
-    let shape = Nx.shape kernel_t in
-    let scale = Nx.to_array scale_t
-    and shift = Nx.to_array shift_t
-    and mean = Nx.to_array mean_t
-    and variance = Nx.to_array variance_t in
-    let gain_of channel =
-      scale.(channel) /. Float.sqrt (variance.(channel) +. Diffusion.norm_epsilon)
-    in
-    { kernel
-    ; gain =
-        Array.init (Array.length scale) ~f:(fun channel ->
-          gain_scale (gain_of channel) ~weight_exponent:kernel.e)
-    ; bias =
-        Array.init (Array.length scale) ~f:(fun channel ->
-          Nn_quantized.clamp16
-            (Float.iround_nearest_exn
-               ((shift.(channel) -. (mean.(channel) *. gain_of channel))
-                *. Float.of_int activation_one)))
-    ; inputs = shape.(2)
-    ; outputs = shape.(3)
-    }
-  ;;
-
-  let of_params ?(temperature = 1.0) params =
-    { layers = Array.map (Diffusion.Params.layers params) ~f:fold_layer
-    ; temper = fst (Nn_quantized.policy ~temperature ~min_p:0.0)
-    }
-  ;;
-
-  let of_checkpoint ?temperature config path =
-    of_params ?temperature (Diffusion.Params.load config ~path)
-  ;;
+  (* the tensors one layer holds, in the order of the file *)
+  let layer_tensors = 5
 
   (* The int32 accumulator of the machine is exact below this width: 9 C products of int8
      by int16 reach 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more
@@ -158,6 +99,80 @@ module Model = struct
       then invalid_argf "the constants of layer %d do not cover its channels" at ())
   ;;
 
+  (* THE CONTRACT FILE, READ. [jax/diffusion/quantized.py] writes it and this is its only
+     reader: the quantization happens above the seam, one time, and the file carries the
+     result. Its layout and the reasons behind it are that module's docstring.
+
+     EVERY TENSOR IS INT32, INCLUDING THE KERNEL. It is a fact of the reader and not a
+     taste: [Nx_io.load_safetensors] holds F32, F64, I32, F16 and BF16 and SKIPS every
+     other dtype with a warning on stderr, thus an int8 kernel would arrive here as a hole
+     and the model would refuse for the wrong reason. The values are the int8 image all
+     the same, and [check_shape] and [Elaboration.norm_word] hold every range. *)
+  let of_int8_checkpoint path =
+    let archive = Nx_io.load_safetensors path in
+    let packed name =
+      match Stdlib.Hashtbl.find_opt archive name with
+      | None -> invalid_argf "%s has no tensor %s" path name ()
+      | Some packed -> packed
+    in
+    let values name =
+      Array.map (Nx.to_array (Nx_io.to_typed Nx.int32 (packed name))) ~f:Int32.to_int_exn
+    in
+    let only name =
+      match values name with
+      | [| value |] -> value
+      | row ->
+        invalid_argf "%s: %s holds %d values, not one" path name (Array.length row) ()
+    in
+    let count = Stdlib.Hashtbl.length archive in
+    let layers, spare = (count - 2) / layer_tensors, (count - 2) % layer_tensors in
+    if spare <> 0 || layers < 1
+    then invalid_argf "%s: %d tensors is no quantized canvas model" path count ();
+    let stated = only activation_tensor in
+    if stated <> activation_q
+    then
+      invalid_argf
+        "%s is quantized at Q%d and this twin reads Q%d"
+        path
+        stated
+        activation_q
+        ();
+    let layer at =
+      let name index = Int.to_string ((layer_tensors * at) + index) in
+      (* the reach of one convolution is three by three over time and pitch *)
+      let inputs, outputs =
+        match Nx_io.packed_shape (packed (name 0)) with
+        | [| 3; 3; inputs; outputs |] -> inputs, outputs
+        | shape ->
+          invalid_argf
+            "the kernel of layer %d of %s is %s, and not a 3 by 3 kernel"
+            at
+            path
+            (Sexp.to_string ([%sexp_of: int array] shape))
+            ()
+      in
+      { kernel = { Nn_quantized.q = values (name 0); e = only (name 1) }
+      ; gain =
+          Array.map2_exn
+            (values (name 2))
+            (values (name 3))
+            ~f:(fun q_value q -> { Nn_quantized.Constants.q_value; q })
+      ; bias = values (name 4)
+      ; inputs
+      ; outputs
+      }
+    in
+    let temper =
+      match values temper_tensor with
+      | [| q_value; q |] -> { Nn_quantized.Constants.q_value; q }
+      | row ->
+        invalid_argf "%s: the temper holds %d values, not two" path (Array.length row) ()
+    in
+    let model = { layers = Array.init layers ~f:layer; temper } in
+    check_shape model;
+    model
+  ;;
+
   let rom_tensors { layers; temper = (_ : Nn_quantized.Constants.scale) } =
     Array.to_list (Array.map layers ~f:(fun { kernel; _ } -> kernel))
   ;;
@@ -173,340 +188,98 @@ module Model = struct
 
   module For_test = struct
     let config = { Diffusion.Config.layers = 4; width = 6 }
-    let init config ~seed = of_params (Diffusion.Params.init config ~seed)
+
+    (* THE EXPONENT OF A DRAWN KERNEL. Nothing below the seam reads it — the ROM carries
+       [q] alone and the norm word carries the gain's own shift — thus one constant serves
+       every drawn layer and its bytes stand for [q * 2^-14]. *)
+    let drawn_exponent = 14
+
+    (* the spread of a drawn kernel byte: a third of the byte, thus a draw of three sigma
+       still fits and the clamp of [quantize] is rare *)
+    let kernel_spread = 42.0
+
+    (* the spread of a drawn channel gain around one, and of a drawn bias in the
+       activation format: a quarter of the one, thus the channels differ and none of them
+       dominates *)
+    let gain_spread = 0.25
+    let bias_spread = Float.of_int (1 lsl activation_q) /. 4.0
+
+    (* THE DRAWN MODEL HOLDS ITS TRUNK AT O(1) ACTIVATIONS, AND THAT IS THE WHOLE OF THE
+       ARITHMETIC HERE. A kernel byte of spread [s] over the [9 * C] taps of a dwell
+       carries an activation of magnitude A into an accumulator of about
+       [sqrt (9 C) * s * A]; the gain has to take it back to A, thus the multiplier is
+       [1 / (sqrt (9 C) * s)].
+
+       A GAIN DRAWN FLAT INSIDE INT16 WOULD SAY NOTHING. It would clamp every write of the
+       trunk or zero it, and the pictures, the frames and the cycle counts of the thirteen
+       tests that read a drawn model would all read a machine that no checkpoint makes.
+       This is the argument [jax/diffusion/model.py]'s [drawn_params] makes in floats, in
+       the integers the file now carries. *)
+    let multiplier ~inputs =
+      1.0 /. (Float.sqrt (Float.of_int (9 * inputs)) *. kernel_spread)
+    ;;
+
+    (* The shift that puts the multiplier at a quarter of int16: the largest that keeps
+       four times it inside the format, thus a drawn channel gain varies around it and no
+       [q_value] leaves the width. It is the 16-bit exponent rule of the eras with the
+       headroom the draw wants. *)
+    let gain_shift value =
+      let rec largest e =
+        if Float.iround_nearest_exn (Float.ldexp value e) <= 8191
+        then e
+        else largest (e - 1)
+      in
+      largest 30
+    ;;
+
+    let clamp16 = Nn_quantized.clamp16
+    let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
+
+    let drawn { Diffusion.Config.layers = count; width } ~seed =
+      (* the input and output channels of each layer: the stem widens the planes, the
+         trunk holds the width, and the head narrows to the voices *)
+      let channels =
+        List.init count ~f:(fun at ->
+          (if at = 0 then 2 * voices else width), if at = count - 1 then voices else width)
+      in
+      let layer (inputs, outputs) =
+        let open Prng in
+        let scale = multiplier ~inputs in
+        let shift = gain_shift scale in
+        let* weights = normals ~count:(9 * inputs * outputs) ~scale:kernel_spread in
+        let* gains = normals ~count:outputs ~scale:gain_spread in
+        let+ biases = normals ~count:outputs ~scale:bias_spread in
+        { kernel =
+            { Nn_quantized.q =
+                Array.map weights ~f:(fun w -> clamp_byte (Float.iround_nearest_exn w))
+            ; e = drawn_exponent
+            }
+        ; gain =
+            Array.map gains ~f:(fun g ->
+              { Nn_quantized.Constants.q_value =
+                  clamp16
+                    (Float.iround_nearest_exn (Float.ldexp (scale *. (1.0 +. g)) shift))
+              ; q = shift
+              })
+        ; bias = Array.map biases ~f:(fun b -> clamp16 (Float.iround_nearest_exn b))
+        ; inputs
+        ; outputs
+        }
+      in
+      let (_ : Prng.state), layers =
+        Prng.run (Prng.all (List.map channels ~f:layer)) (Prng.create_folded ~seed)
+      in
+      let model =
+        { layers = Array.of_list layers
+        ; temper = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0)
+        }
+      in
+      check_shape model;
+      model
+    ;;
+
     let rom_tensors = rom_tensors
   end
-end
-
-module Clamps = struct
-  type t =
-    { activations : int
-    ; activations_seen : int
-    ; peak : int
-    }
-
-  let share hit seen = if seen = 0 then 0.0 else Float.of_int hit /. Float.of_int seen
-end
-
-(* the running counters of a walk, folded into [Clamps.t] when a caller reads them *)
-type counters =
-  { mutable hits : int
-  ; mutable seen : int
-  ; mutable peak : int
-  }
-
-(* Every activation write goes through here: the clamp is counted and the peak is kept,
-   never assumed away. The peak reads BEFORE the clamp, thus it answers the format
-   question directly — the Q6 election was made on exactly this number, measured then with
-   a throwaway probe, and the counter is what makes it re-measurable when the checkpoint
-   changes. *)
-let write counters out index value =
-  if Nn_quantized.clamps16 value then counters.hits <- counters.hits + 1;
-  counters.seen <- counters.seen + 1;
-  counters.peak <- max counters.peak (abs value);
-  out.(index) <- Nn_quantized.clamp16 value
-;;
-
-(* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
-let plane_activations canvas hidden ~steps =
-  let x = Array.create ~len:(steps * rows * planes) 0 in
-  for step = 0 to steps - 1 do
-    for voice = 0 to voices - 1 do
-      if hidden.(step).(voice)
-      then
-        for row = 0 to rows - 1 do
-          x.((((step * rows) + row) * planes) + voices + voice) <- activation_one
-        done
-      else
-        x.((((step * rows) + canvas.(step).(voice)) * planes) + voice) <- activation_one
-    done
-  done;
-  x
-;;
-
-(* One column of the stem's input tensor. The index rule itself is [Diffusion]'s — every
-   tensor of the era reads as [steps; rows; channels], in float there and in integers here
-   — thus what this states is the PLANE count and nothing else. *)
-let plane_column x ~step ~plane =
-  Diffusion.tensor_column x ~step ~channel:plane ~channels:planes
-;;
-
-(* One layer: the convolution into the int32 accumulator, the folded norm, the optional
-   ReLU, and the counted clamp of every write.
-
-   The accumulator is exact below [Model.widest_inputs] input channels — 9 C products of
-   int8 by int16 stand under 2^31, and [check_shape] refuses a wider layer — thus the tap
-   order cannot matter and the circuit may take its own. The gain multiply rides the wide
-   host int and the RTL will size its own product. *)
-let layer_forward counters (layer : Model.layer) ~steps ~relu x =
-  let { Model.kernel = { q = weights; e = (_ : int) }; gain; bias; inputs; outputs } =
-    layer
-  in
-  let out = Array.create ~len:(steps * rows * outputs) 0 in
-  for step = 0 to steps - 1 do
-    for row = 0 to rows - 1 do
-      for channel = 0 to outputs - 1 do
-        let acc = ref 0 in
-        for dy = 0 to 2 do
-          let source_step = step + dy - 1 in
-          if source_step >= 0 && source_step < steps
-          then
-            for dx = 0 to 2 do
-              let source_row = row + dx - 1 in
-              if source_row >= 0 && source_row < rows
-              then (
-                let x_base = ((source_step * rows) + source_row) * inputs in
-                let k_base = ((dy * 3) + dx) * inputs in
-                for input = 0 to inputs - 1 do
-                  acc
-                  := !acc
-                     + (x.(x_base + input)
-                        * weights.(((k_base + input) * outputs) + channel))
-                done)
-            done
-        done;
-        let value = Nn_quantized.Constants.apply gain.(channel) !acc + bias.(channel) in
-        let value = if relu then max value 0 else value in
-        write counters out ((((step * rows) + row) * outputs) + channel) value
-      done
-    done
-  done;
-  out
-;;
-
-(* The trunk: the stem, the residual pairs, the head — the structure of the float model,
-   join for join. The skip adds two activation-format values and the sum is written
-   through the same counted clamp.
-
-   The fold gives the destination tensor of EVERY layer as written, in the layer order,
-   and [forward] is the last of them. THE PAIR-CLOSING WRITE IS THE JOINED TENSOR AND NOT
-   THE CONVOLUTION'S: the residual add rides the same counted clamp, thus a reader of the
-   write stream must take it from this fold and never from [layer_forward] alone. The
-   circuit's stream gate is that reader. *)
-let fold_layer_writes counters (model : Model.t) canvas hidden ~steps ~init ~f =
-  let layers = model.layers in
-  let last = Array.length layers - 1 in
-  let stem =
-    layer_forward
-      counters
-      layers.(0)
-      ~steps
-      ~relu:true
-      (plane_activations canvas hidden ~steps)
-  in
-  let pair (taken, x) at =
-    let first = layer_forward counters layers.(at) ~steps ~relu:true x in
-    let second = layer_forward counters layers.(at + 1) ~steps ~relu:false first in
-    let joined = Array.create ~len:(Array.length x) 0 in
-    Array.iteri x ~f:(fun index held ->
-      write counters joined index (max 0 (held + second.(index))));
-    f (f taken first) joined, joined
-  in
-  let taken, trunk =
-    List.fold (List.range ~stride:2 1 last) ~init:(f init stem, stem) ~f:pair
-  in
-  f taken (layer_forward counters layers.(last) ~steps ~relu:false trunk)
-;;
-
-let layer_writes counters model canvas hidden ~steps =
-  List.rev
-    (fold_layer_writes
-       counters
-       model
-       canvas
-       hidden
-       ~steps
-       ~init:[]
-       ~f:(fun held written -> written :: held))
-;;
-
-(* THE COLLECTOR IS WHAT PARTS THE TWO, AND THE WALK IS NOT WRITTEN TWICE. A [forward]
-   that read the last of [layer_writes] held every layer's destination tensor alive to
-   give one back — 48 of them at the elected shape — where the fold keeps only what it is
-   given. *)
-let forward counters model canvas hidden ~steps =
-  fold_layer_writes
-    counters
-    model
-    canvas
-    hidden
-    ~steps
-    ~init:[||]
-    ~f:(fun (_ : int array) written -> written)
-;;
-
-(* the draw of one cell: the logits temper against their peak, exp2 gives Q15 weights, and
-   the shared 24-bit pick takes the class — era four's pipeline, rule for rule *)
-let draw_cell (model : Model.t) raw prng =
-  let peak = Array.fold raw ~init:Int.min_value ~f:max in
-  let weights =
-    Array.map raw ~f:(fun logit ->
-      (* the logits carry Q[activation_q] and the exp2 unit reads Q12, thus the difference
-         shifts up by the gap first — exact, because a left shift of an int is. A
-         difference read at the wrong Q is silently wrong music: unshifted, every weight
-         stands within a fraction of a nat of the peak and the draw is uniform — the fault
-         the drift report caught at 3.4 percent same-draw. *)
-      Nn_quantized.exp2_q
-        (Nn_quantized.Constants.apply
-           model.temper
-           ((logit - peak) lsl (12 - activation_q))))
-  in
-  Nn_quantized.draw ~weights prng
-;;
-
-module For_test = struct
-  let draw_cell = draw_cell
-  let plane_activations = plane_activations
-  let plane_column = plane_column
-
-  let layer_writes model canvas hidden ~steps =
-    layer_writes { hits = 0; seen = 0; peak = 0 } model canvas hidden ~steps
-  ;;
-end
-
-module Engine = struct
-  type draw =
-    { step : int
-    ; voice : int
-    ; logits : int array
-    ; uniform : float
-    ; drawn : int
-    }
-
-  type pass =
-    { before : int array array
-    ; hidden : bool array array
-    ; draws : draw list
-    }
-
-  type t =
-    { model : Model.t
-    ; steps : int
-    ; walk : int
-    ; pass : int
-    ; canvas : int array array
-    ; prng : Prng.state
-    ; clamps : Clamps.t
-    }
-
-  let init model ~steps ~walk ~seed =
-    Model.check_shape model;
-    let prng, canvas = Diffusion.opening_canvas (Prng.create ~seed) ~steps in
-    { model
-    ; steps
-    ; walk
-    ; pass = 0
-    ; canvas
-    ; prng
-    ; clamps = { Clamps.activations = 0; activations_seen = 0; peak = 0 }
-    }
-  ;;
-
-  let canvas t = t.canvas
-  let clamps t = t.clamps
-
-  let next_pass t =
-    if t.pass >= t.walk then invalid_arg "the walk is finished";
-    let threshold = Diffusion.anneal_threshold ~step:t.pass ~walk:t.walk in
-    let prng, hidden = Diffusion.hidden_cells t.prng ~steps:t.steps ~threshold in
-    (* the engine never writes a canvas in place, thus the record shares it and one copy
-       serves the successor *)
-    let before = t.canvas in
-    let counters = { hits = 0; seen = 0; peak = 0 } in
-    let said = forward counters t.model before hidden ~steps:t.steps in
-    let canvas = Array.map before ~f:Array.copy in
-    (* one draw for each hidden cell, in the cell order the float walk takes: a cell the
-       mask left standing takes no uniform *)
-    let draw_hidden_cell (prng, draws) ~step ~voice =
-      let logits = Diffusion.column said ~step ~voice in
-      let next, uniform, drawn = draw_cell t.model logits prng in
-      canvas.(step).(voice) <- drawn;
-      next, { step; voice; logits; uniform; drawn } :: draws
-    in
-    let prng, draws =
-      Diffusion.over_hidden_cells (prng, []) ~steps:t.steps ~hidden ~f:draw_hidden_cell
-    in
-    ( { t with
-        pass = t.pass + 1
-      ; canvas
-      ; prng
-      ; clamps =
-          { Clamps.activations = t.clamps.activations + counters.hits
-          ; activations_seen = t.clamps.activations_seen + counters.seen
-          ; peak = max t.clamps.peak counters.peak
-          }
-      }
-    , { before; hidden; draws = List.rev draws } )
-  ;;
-
-  let rec run t = if t.pass >= t.walk then t.canvas else run (fst (next_pass t))
-end
-
-module Drift = struct
-  type stats =
-    { passes : int
-    ; cells : int
-    ; same_peak : int
-    ; same_draw : int
-    ; mean_cosine : float
-    ; activations_clamped : float
-    ; activation_peak : float
-    }
-
-  (* what the comparison counts over the cells it has seen *)
-  type tally =
-    { cells : int
-    ; same_peak : int
-    ; same_draw : int
-    ; cosine_sum : float
-    }
-
-  let counted_nothing = { cells = 0; same_peak = 0; same_draw = 0; cosine_sum = 0.0 }
-
-  (* the state the report folds: the engine, and what the comparison has counted *)
-  type walk =
-    { engine : Engine.t
-    ; tally : tally
-    }
-
-  let walk params ~steps ~walk ~seed =
-    let model = Model.of_params params in
-    (* one cell of a pass against the float logits of the same cell, on the very uniform
-       the engine took *)
-    let count_cell float_said tally { Engine.step; voice; logits; uniform; drawn } =
-      let raw = Diffusion.column float_said ~step ~voice in
-      let float_class = Policy.draw_class raw ~temperature:1.0 ~min_p:0.0 ~uniform in
-      { cells = tally.cells + 1
-      ; same_peak =
-          (tally.same_peak + if Nn_quantized.Tensor.same_peak logits raw then 1 else 0)
-      ; same_draw = (tally.same_draw + if float_class = drawn then 1 else 0)
-      ; cosine_sum = tally.cosine_sum +. Nn_quantized.Tensor.cosine logits raw
-      }
-    in
-    let take_pass w (_ : int) =
-      let engine, (pass : Engine.pass) = Engine.next_pass w.engine in
-      (* the float model, teacher-forced on the engine's canvas and the engine's mask: one
-         context, thus what parts the two is the arithmetic alone *)
-      let float_said =
-        Nx.to_array (Diffusion.logits params ~classes:pass.before ~hidden:pass.hidden)
-      in
-      { engine; tally = List.fold pass.draws ~init:w.tally ~f:(count_cell float_said) }
-    in
-    let opening =
-      { engine = Engine.init model ~steps ~walk ~seed; tally = counted_nothing }
-    in
-    let walked = List.fold (List.range 0 walk) ~init:opening ~f:take_pass in
-    let { cells; same_peak; same_draw; cosine_sum } = walked.tally in
-    let clamps = Engine.clamps walked.engine in
-    { passes = walk
-    ; cells
-    ; same_peak
-    ; same_draw
-    ; mean_cosine = (if cells = 0 then 1.0 else cosine_sum /. Float.of_int cells)
-    ; activations_clamped = Clamps.share clamps.activations clamps.activations_seen
-    ; activation_peak = Float.of_int clamps.peak /. Float.of_int activation_one
-    }
-  ;;
 end
 
 (* ==================================================================== *)
@@ -514,7 +287,7 @@ end
 (* ==================================================================== *)
 
 let%expect_test "the quantized model holds its shape" =
-  let model = Model.For_test.init Model.For_test.config ~seed:11 in
+  let model = Model.For_test.drawn Model.For_test.config ~seed:11 in
   printf
     "check_shape: %s\n"
     (Mgen_nn.Checkpoint.refusal (fun () -> Model.check_shape model));
@@ -534,7 +307,7 @@ let%expect_test "the quantized model holds its shape" =
 ;;
 
 let%expect_test "a broken model refuses loudly" =
-  let model = Model.For_test.init Model.For_test.config ~seed:11 in
+  let model = Model.For_test.drawn Model.For_test.config ~seed:11 in
   let refuse broken =
     printf "%s\n" (Mgen_nn.Checkpoint.refusal (fun () -> Model.check_shape broken))
   in
@@ -547,68 +320,4 @@ let%expect_test "a broken model refuses loudly" =
       layers = Array.append (Array.sub model.layers ~pos:0 ~len:3) [| chopped |]
     };
   [%expect {| the constants of layer 3 do not cover its channels |}]
-;;
-
-let%expect_test "the two openings are one opening" =
-  (* a seed inside 32 bits folds to itself, thus the float walk and the engine start on
-     the same state, consume the same uniforms, and state the same opening canvas *)
-  let params = Diffusion.Params.init Model.For_test.config ~seed:3 in
-  let model = Model.of_params params in
-  let engine = Engine.init model ~steps:16 ~walk:1 ~seed:7 in
-  let float_opening = Diffusion.gibbs params ~steps:16 ~walk:0 ~temperature:1.0 ~seed:7 in
-  printf
-    "the engine opens where the float walk opens: %b\n"
-    (Array.equal (Array.equal ( = )) (Engine.canvas engine) float_opening);
-  [%expect {| the engine opens where the float walk opens: true |}]
-;;
-
-let%expect_test "the engine walk is the seed and nothing else" =
-  let model = Model.For_test.init Model.For_test.config ~seed:3 in
-  let draw seed = Engine.run (Engine.init model ~steps:8 ~walk:3 ~seed) in
-  let same a b = Array.equal (Array.equal ( = )) a b in
-  printf "one seed, one canvas: %b\n" (same (draw 5) (draw 5));
-  printf "another seed, another canvas: %b\n" (not (same (draw 5) (draw 6)));
-  [%expect
-    {|
-    one seed, one canvas: true
-    another seed, another canvas: true
-    |}]
-;;
-
-let%expect_test "the drift of a drawn model: the twin tracks the float reference" =
-  (* an init model at norm scale 1.0, thus no checkpoint enters and the drawn trunk holds
-     the O(1) activations a trained norm holds — at the trainer's opening tenth a drawn
-     trunk decays tenfold at every layer and the report reads the resolution floor of the
-     activation format instead of the arithmetic. The era's numbers on the elected
-     checkpoint are the drift tool's; these pin the mechanics. *)
-  let params = Diffusion.Params.init ~norm_scale:1.0 Model.For_test.config ~seed:3 in
-  let { Drift.passes
-      ; cells
-      ; same_peak
-      ; same_draw
-      ; mean_cosine
-      ; activations_clamped
-      ; activation_peak
-      }
-    =
-    Drift.walk params ~steps:16 ~walk:4 ~seed:7
-  in
-  let share count = Float.of_int count /. Float.of_int (max 1 cells) in
-  printf "%d passes redrew %d cells\n" passes cells;
-  printf
-    "top1 %.3f same_draw %.3f cosine %.4f clamped %.4f peak %.2f\n"
-    (share same_peak)
-    (share same_draw)
-    mean_cosine
-    activations_clamped
-    activation_peak;
-  (* MEASURED NUMBERS AND NOT THRESHOLDS, the rule of the drift gates: a diff here says
-     the integers moved — judge whether it is a re-measurement or a bug. The larger sweep
-     is [test/test_diffusion_drift.ml]; the era's numbers on the elected checkpoint are
-     the drift tool's. *)
-  [%expect
-    {|
-    4 passes redrew 120 cells
-    top1 0.967 same_draw 0.958 cosine 0.9980 clamped 0.0000 peak 3.95
-    |}]
 ;;
