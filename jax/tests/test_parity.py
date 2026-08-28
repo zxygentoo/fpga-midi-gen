@@ -1,15 +1,25 @@
-"""The parity gates of the JAX seam: the two places the trainer meets the reference.
+"""The parity gates of the JAX seam: what holds the two sides of a model together.
 
-Era five runs the same two gates over its own tools; the classes at the foot of the file
-carry the paths and the shape flags that differ, and the bodies are shared.
+Four kinds of gate stand here, and they are not the same kind of thing.
 
-The trainer lives here and the reference lives in OCaml. A GPU run only means something
-if the two forwards agree, and a seed only names one walk if the two draws agree. Nothing
-else in this tree pins them together -- the unit tests hold each side against itself.
+G0, THE FLOAT MODEL, one for each era. A number MEASURED and pinned, and not a threshold:
+the loss of the era's float model over its canonical windows. It reads the forward alone
+-- every table, every fold of the norm, every plane, and the reader that loaded them --
+thus a rewrite above the seam that moves no number reads it back. Each one is pinned
+BEFORE the rewrite that must read it back.
 
-Gate A, the loss. `check_transformer loss` states the loss of the OCaml float model over the
-canonical valid windows, and this demands the same number of the JAX forward on the same
-windows. A pass proves the two forwards agree everywhere the loss can see. The shape
+G1, THE QUANTIZER THROUGH THE NETLIST, one for each era. The elaboration reads the
+contract file the JAX quantizer writes, and the Verilog it states must be the golden's
+byte for byte: one rounding, one exponent or one fold out of place moves a weight, and a
+moved weight moves the netlist. It is the gate of the quantizer and it costs one second.
+Between G0 and G1 a change to a model has nowhere to hide.
+
+Gate A and gate C are the WELDS of the two frozen eras, and they hold the JAX trainer to
+the OCaml float model beside it. They die with that model.
+
+Gate A, the loss. `check_transformer loss` states the loss of the OCaml float model over
+the canonical valid windows, and this demands the same number of the JAX forward on the
+same windows. A pass proves the two forwards agree everywhere the loss can see. The shape
 travels in the OCaml output and this side states none of its own: held apart, the heads
 and the span would go on matching a default while one side moved, and the gate would pass
 two different models.
@@ -20,11 +30,12 @@ draw is where a rewrite is plausibly wrong and still makes music: a peak over th
 set, a min-p floor applied before the temperature, an inclusive compare in the cumulative
 walk. Each shifts the distribution a little and nothing raises.
 
-Both gates need a checkpoint that git ignores and binaries that dune builds. They SKIP
+Every gate needs a checkpoint that git ignores and binaries that dune builds. They SKIP
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
 disagree. From the repository root:
 
     dune build bin/check_transformer.exe bin/play_transformer.exe
+    dune build board/nexys-4/gen_verilog.exe
 """
 
 import hashlib
@@ -69,6 +80,107 @@ def run(*argv):
     return done.stdout
 
 
+def contract_file(era, checkpoint, tmp_path):
+    """the contract file of the era's golden checkpoint, written by its JAX quantizer"""
+    path = tmp_path / (checkpoint.stem + ".int8")
+    run(
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{era}.infer",
+        "quantize",
+        "--ckpt",
+        str(checkpoint),
+        "--out",
+        str(path),
+    )
+    return path
+
+
+def netlist_md5(argv, tmp_path):
+    """the md5 of the Verilog the elaborator states into [tmp_path]"""
+    run(*argv, str(tmp_path))
+    return hashlib.md5((tmp_path / "top.v").read_bytes()).hexdigest()
+
+
+def windows_of(corpus, shape):
+    """the canonical valid windows of an era, as classes and phases"""
+    rows = data.eval_rows(corpus["valid"], shape["context"], shape["windows"])
+    assert len(rows) == shape["windows"], "the corpus cut a different count of windows"
+    classes, phases = data.stack_rows(rows)
+    return jnp.asarray(classes), jnp.asarray(phases)
+
+
+def seat_loss(nll):
+    """nats for each step, which is the sum over the seats and the mean over the steps"""
+    return float(jnp.mean(jnp.sum(nll, axis=-1)))
+
+
+# ==================================================================== #
+# Era four: the transformer                                            #
+# ==================================================================== #
+
+# The shape of the canonical reading, as `check_transformer loss` printed it on
+# 2026-08-28. The file states the width and the layer count; the heads, the context and
+# the slope span are the draw of the era, thus G0 must carry them after the tool dies.
+TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
+
+# The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
+# functional model `transformer/model.py` carries before the Flax round. The OCaml
+# reference beside it stated the same 1.628177.
+TRANSFORMER_LOSS = 1.628177
+
+# The netlist of the elected checkpoint, MEASURED 2026-08-28 on `develop bb3b943`: era
+# four's own `gen_verilog` of `7c3d356^` (with `_train/transformer/` before the checkpoint
+# name) over HEAD's `top.ml`, with `~e` read as `~model`. The netlist moved at the
+# unification round -- the one divider, the nine-bit `Mac` functor -- and the build-log
+# records it as MET +0.005 at default directives.
+TRANSFORMER_NETLIST_MD5 = "4ab6e292c6c26ca0befa68fb6026d3f5"
+
+GATE_TRANSFORMER = BUILT / "gate_transformer.exe"
+
+
+def test_g0_the_transformer_reads_its_measured_loss():
+    """THE FLOAT MODEL DOES NOT MOVE. The windows are deterministic and no draw enters,
+    thus the number reads the forward alone."""
+    need(CHECKPOINT, CORPUS)
+    classes, phases = windows_of(data.load_corpus(CORPUS), TRANSFORMER_SHAPE)
+    params = model.load_params(str(CHECKPOINT))
+    here = seat_loss(
+        model.seat_nll(
+            params,
+            classes,
+            phases,
+            heads=TRANSFORMER_SHAPE["heads"],
+            span=TRANSFORMER_SHAPE["span"],
+        )
+    )
+    assert here == pytest.approx(TRANSFORMER_LOSS, abs=TOLERANCE), (
+        f"the model reads {here:.6f} and the elected checkpoint measured "
+        f"{TRANSFORMER_LOSS:.6f}"
+    )
+
+
+def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
+    """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
+    seat and phase tables first -- they share one exponent -- and then the layer ROM."""
+    need(CHECKPOINT, GATE_TRANSFORMER)
+    said = netlist_md5(
+        [
+            str(GATE_TRANSFORMER),
+            "verilog",
+            "-int8",
+            str(contract_file("transformer", CHECKPOINT, tmp_path)),
+        ],
+        tmp_path,
+    )
+    assert said == TRANSFORMER_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {said} and the golden is "
+        f"{TRANSFORMER_NETLIST_MD5}"
+    )
+
+
 def test_gate_a_the_loss_of_the_two_forwards_agrees():
     need(CHECKPOINT, CORPUS, CORPUS_JSON, CHECK_TRANSFORMER)
     stated = run(
@@ -92,8 +204,7 @@ def test_gate_a_the_loss_of_the_two_forwards_agrees():
     nll = model.seat_nll(
         params, jnp.asarray(classes), jnp.asarray(phases), heads=heads, span=span
     )
-    # nats for each step, which is the sum over the seats and the mean over the steps
-    here = float(jnp.mean(jnp.sum(nll, axis=-1)))
+    here = seat_loss(nll)
     there = float(said["loss"])
     assert here == pytest.approx(there, abs=TOLERANCE), (
         f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
@@ -139,7 +250,7 @@ def test_gate_c_the_two_walks_are_the_same_stream(seed):
 
 
 # ==================================================================== #
-# Era five: the same two gates, over the state-space model             #
+# Era five: the same gates, over the state-space model                 #
 # ==================================================================== #
 
 # the elected model of the era: six blocks, the Zamba head, the feed-forward. The plan and
@@ -149,6 +260,59 @@ MAMBA_CHECKPOINT = (
 )
 CHECK_MAMBA = BUILT / "check_mamba.exe"
 MAMBA_PLAYER = BUILT / "play_mamba.exe"
+
+# The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28. Only
+# two numbers stand here: every width, the plan and the span come out of the file, and the
+# context is a choice of the REFEREE -- a window of the recurrence opens on a zero state
+# and the model has no context length at all.
+MAMBA_SHAPE = {"windows": 75, "context": 256}
+
+# The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
+# functional model `mamba/model.py` carries before the Flax round. The OCaml reference
+# beside it stated the same 1.640810.
+MAMBA_LOSS = 1.640810
+
+# The netlist of the elected checkpoint, MEASURED 2026-08-28 on `develop bb3b943`: era
+# five's own `gen_verilog` of `46b1243^` over HEAD's `top.ml`, with `~e` read as `~model`.
+# It is the number the unification round proved on 2026-08-23; five days of refactors to
+# `lib/nn` and `lib/core` did not move it.
+MAMBA_NETLIST_MD5 = "a648db223e3cb91896c23c0881f24634"
+
+GATE_MAMBA = BUILT / "gate_mamba.exe"
+
+
+def test_g0_the_mamba_reads_its_measured_loss():
+    """THE FLOAT MODEL DOES NOT MOVE. The recurrence states no shape of its own: every
+    width comes out of the file, thus the number reads the forward alone."""
+    need(MAMBA_CHECKPOINT, CORPUS)
+    from mamba import model as mamba_model
+
+    classes, phases = windows_of(data.load_corpus(CORPUS), MAMBA_SHAPE)
+    params = mamba_model.load_params(str(MAMBA_CHECKPOINT))
+    here = seat_loss(mamba_model.seat_nll(params, classes, phases))
+    assert here == pytest.approx(MAMBA_LOSS, abs=TOLERANCE), (
+        f"the model reads {here:.6f} and the elected checkpoint measured "
+        f"{MAMBA_LOSS:.6f}"
+    )
+
+
+def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
+    """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
+    decay tensors first -- one ulp of `exp` moves a q_value by one -- and then the ROM."""
+    need(MAMBA_CHECKPOINT, GATE_MAMBA)
+    said = netlist_md5(
+        [
+            str(GATE_MAMBA),
+            "verilog",
+            "-int8",
+            str(contract_file("mamba", MAMBA_CHECKPOINT, tmp_path)),
+        ],
+        tmp_path,
+    )
+    assert said == MAMBA_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {said} and the golden is "
+        f"{MAMBA_NETLIST_MD5}"
+    )
 
 
 def test_gate_a_the_mamba_forwards_agree():
@@ -177,7 +341,7 @@ def test_gate_a_the_mamba_forwards_agree():
     classes, phases = data.stack_rows(rows)
 
     nll = mamba_model.seat_nll(params, jnp.asarray(classes), jnp.asarray(phases))
-    here = float(jnp.mean(jnp.sum(nll, axis=-1)))
+    here = seat_loss(nll)
     there = float(said["loss"])
     assert here == pytest.approx(there, abs=TOLERANCE), (
         f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
@@ -229,11 +393,6 @@ def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
 # TWO GATES STAND HERE AND NEITHER OF THEM IS OCAML'S ANY MORE. The two temporary gates
 # that welded the two integer twins -- the walk and the drift report -- went with the OCaml
 # twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is what stays.
-#
-# G0 holds the FLOAT MODEL to a number measured before the Flax round rewrote it, and G1
-# holds the QUANTIZATION through the netlist the flash carries. Between them a change to
-# either model has nowhere to hide: G0 reads every kernel and every fold of the norm, and
-# G1 reads every rounding and every exponent, all the way to the bytes of the Verilog.
 
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
 PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
@@ -241,9 +400,12 @@ GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.e
 
 # The masked loss of the golden checkpoint over the sheets below, MEASURED 2026-08-28
 # against the functional model that `diffusion/model.py` carried before the Flax round.
-# It is a pinned number and not a threshold: a diff here says the float model moved.
-GOLDEN_LOSS = 0.193459
+DIFFUSION_LOSS = 0.193459
 DIFFUSION_CROP = 128
+
+# the netlist the flash holds: the golden candidate at T 128, G 5, N 512, MEASURED
+# 2026-08-28 by this gate on `develop bb3b943`
+DIFFUSION_NETLIST_MD5 = "4e367cef6e38b2ae1f06ab3cf42a9c42"
 
 
 def diffusion_gate_masks(sheets, crop):
@@ -296,31 +458,10 @@ def test_g0_the_float_model_reads_its_measured_loss():
         nll = np.asarray(sheet_model.nll_of_logits(said, jnp.asarray(classes[rows])))
         values += [float(row[mask].mean()) for row, mask in zip(nll, hidden[rows])]
     here = float(np.mean(values))
-    assert here == pytest.approx(GOLDEN_LOSS, abs=TOLERANCE), (
-        f"the model reads {here:.6f} and the golden checkpoint measured {GOLDEN_LOSS:.6f}"
+    assert here == pytest.approx(DIFFUSION_LOSS, abs=TOLERANCE), (
+        f"the model reads {here:.6f} and the golden checkpoint measured "
+        f"{DIFFUSION_LOSS:.6f}"
     )
-
-
-# the netlist the flash holds: the golden candidate at T 128, G 5, N 512
-GOLDEN_NETLIST_MD5 = "4e367cef6e38b2ae1f06ab3cf42a9c42"
-
-
-def quantized_checkpoint(tmp_path):
-    """the contract file of the golden candidate, written by the JAX quantizer"""
-    path = tmp_path / "l48-h20-100k.int8"
-    run(
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "diffusion.infer",
-        "quantize",
-        "--ckpt",
-        str(DIFFUSION_CHECKPOINT),
-        "--out",
-        str(path),
-    )
-    return path
 
 
 def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
@@ -332,9 +473,15 @@ def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
     quantization parted; diff the norm ROM first -- the gains and the biases -- and then the
     weight ROM."""
     need(DIFFUSION_CHECKPOINT, GEN_VERILOG)
-    run(str(GEN_VERILOG), "-int8", str(quantized_checkpoint(tmp_path)), str(tmp_path))
-    said = hashlib.md5((tmp_path / "top.v").read_bytes()).hexdigest()
-    assert said == GOLDEN_NETLIST_MD5, (
+    said = netlist_md5(
+        [
+            str(GEN_VERILOG),
+            "-int8",
+            str(contract_file("diffusion", DIFFUSION_CHECKPOINT, tmp_path)),
+        ],
+        tmp_path,
+    )
+    assert said == DIFFUSION_NETLIST_MD5, (
         f"the JAX quantizer states the netlist {said} and the golden is "
-        f"{GOLDEN_NETLIST_MD5}"
+        f"{DIFFUSION_NETLIST_MD5}"
     )
