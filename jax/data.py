@@ -27,7 +27,7 @@ BAR_STEPS = 16
 SEATS = 4
 SPLITS = ("train", "valid", "test")
 
-# The vocabulary of the model, from docs/transformer_model.md: class 0 is silence and
+# The vocabulary of the model, from docs/transformer.md: class 0 is silence and
 # class 1 + i is the pitch PITCH_LOW + i. The corpus states 36 to 81 and the shift rule
 # holds each voice inside its own observed range, thus 47 classes cover the music and the
 # 48th is spare. Four tables of 48 rows put the six-layer model at 93 percent of the block
@@ -87,7 +87,7 @@ def pitches_of_classes(classes):
 
 
 def decode(frames):
-    """The decode of docs/transformer_model.md: the sequencer holds the set of pitches that
+    """The decode of docs/transformer.md: the sequencer holds the set of pitches that
     sound, and a frame states the set that must sound. The releases are the first set minus
     the second, the strikes are the second minus the first, and every release goes before
     every strike.
