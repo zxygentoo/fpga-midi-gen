@@ -5,13 +5,14 @@
     the model seat and nothing else: [Socket] takes any source of [Source_intf] and gives
     the line, and it holds the masked sheet of [docs/diffusion_rtl.md] — a run start draws
     one sheet whole, a step reads one of its frames, and the sequencer decodes the frame
-    into the messages of the wire. The model arrives as [e] at elaboration — the bitstream
-    carries the weights, thus [create] takes the elaboration of one checkpoint at one
-    geometry and [gen_verilog] names both.
+    into the messages of the wire.
 
-    NOTHING HERE NAMES AN ERA. [Source] and [Elaboration] are whatever the library this
-    module opens provides, thus the seat moves with one line of the dune file and the
-    source of the era before it stays in the tree, buildable and gated.
+    NOTHING HERE NAMES AN ERA. THE SEAT IS A PARAMETER: [create] takes the source itself,
+    already carrying its own model — the bitstream carries the weights, thus an era hands
+    over the elaboration of one checkpoint at one geometry. [gen_verilog] names era six
+    and each era's gate driver names its own, thus every era's top level can be elaborated
+    while one of them holds the board, and the netlist gate of a frozen era keeps
+    standing.
 
     The board shows two things: the run state on [led 0] and MIDI activity on [led 1]. The
     two are not the same lamp, because the model states nothing until it has something to
@@ -38,7 +39,7 @@ let midi_clocks_per_bit = 3200
 let clocks_per_ms = 100_000
 let button_debounce_ms = 10
 
-let create ~e () =
+let create ~source () =
   let clk = input "clk" 1 in
   let rstn = input "btnCpuReset" 1 in
   let rx_pin = input "RsRx" 1 in
@@ -95,7 +96,7 @@ let create ~e () =
     Socket.create
       ~clocks_per_ms
       ~clocks_per_bit:midi_clocks_per_bit
-      ~source:(Source.create ~e ~seed:control_regs.params.seed)
+      ~source:(source ~seed:control_regs.params.seed)
       { Socket.I.clock = clk; clear; params = control_regs.params }
   in
   let uart_tx =

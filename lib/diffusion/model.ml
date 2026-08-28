@@ -187,14 +187,8 @@ let rom_tensors { layers; temper = (_ : Nn_quantized.Constants.scale) } =
 
 let rom_bits model = Nn_quantized.rom_bits (rom_tensors model)
 
-(* the exclusive prefix scan: the ROM's bases are one reading of it and the elaboration's
-   banks are the others *)
-let bases_of sizes =
-  Array.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base)
-;;
-
 let rom_bases model =
-  bases_of
+  Nn_quantized.bases_of
     (Array.of_list_map (rom_tensors model) ~f:(fun { q; e = (_ : int) } -> Array.length q))
 ;;
 

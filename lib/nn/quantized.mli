@@ -175,6 +175,11 @@ val max_exponent : float -> int
     order, one byte for each weight, two's complement. *)
 val rom_bits : quantized list -> Hardcaml.Bits.t array
 
+(** [bases_of sizes] is where each of a run of sizes opens: the exclusive prefix scan,
+    [| 0; sizes.(0); sizes.(0) + sizes.(1); ... |]. Every era's [rom_bases] is one reading
+    of it and the elaborations' banks are the others, thus the rule stands in one place. *)
+val bases_of : int array -> int array
+
 (** [policy ~temperature ~min_p] is the sampling policy in the integer forms of the
     machines: the temper — log2(e) / T, its Q one below [Constants.log2e]'s for headroom
     on an 18-bit port — and the min-p share of the peak weight 2^15. It checks the bounds

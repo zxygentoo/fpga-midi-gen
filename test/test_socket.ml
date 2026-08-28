@@ -28,6 +28,7 @@ module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
+module Model = Mgen_transformer.Model
 module Quantized = Mgen_transformer.Quantized
 module Source = Mgen_transformer.Source
 
@@ -36,7 +37,13 @@ module Source = Mgen_transformer.Source
    period below must be longer than that — the sequencer holds the boundary until the
    source is idle, and a period that is too short would only stretch the step and prove
    nothing about the decode. *)
-let model = Quantized.Model.For_test.(init config ~seed:11)
+let model = Model.For_test.drawn Model.For_test.shape ~seed:11
+
+(* THE ORACLE OF THIS SIMULATION IS STILL OCAML'S. [Quantized.Engine] draws the same walk
+   from the same drawn weights, thus the two models here are one model in two types; step
+   three of the all-era cut replaces the engine with the circuit's own bench harness, as
+   era six's socket simulation already reads it, and this bridge goes with it. *)
+let engine_model = Quantized.Model.For_test.(init config ~seed:11)
 let clocks_per_ms = 4
 let step_ms = 9000
 
@@ -96,7 +103,7 @@ let reference_messages ~seed ~channel ~velocity ~steps =
   let (_ : Quantized.Engine.t), frames =
     List.fold_map
       (List.range 0 steps)
-      ~init:(Quantized.Engine.init model ~seed)
+      ~init:(Quantized.Engine.init engine_model ~seed)
       ~f:(fun engine (_ : int) ->
         let engine, step = Quantized.Engine.next_step engine in
         engine, step.Quantized.Engine.frame)

@@ -427,9 +427,11 @@ let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
   then invalid_argf "a sheet of %d steps cannot carry a fused pair" steps ();
   let layers =
     let weight_bases =
-      Model.bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
+      Nn_quantized.bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
-    let norm_bases = Model.bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
+    let norm_bases =
+      Nn_quantized.bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes))
+    in
     Array.mapi twin ~f:(fun at (l : Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs

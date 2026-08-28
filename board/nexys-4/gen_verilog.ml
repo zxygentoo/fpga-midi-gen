@@ -14,6 +14,11 @@
    `test_g1_the_quantizer_states_the_golden_netlist` — the netlist of this program must
    stay the netlist the flash carries.
 
+   THIS PROGRAM NAMES THE ERA OF THE BOARD, and it is the only place that does: [Top]
+   takes the source as an argument. A frozen era's own top level is elaborated by its gate
+   driver, `bin/gate_<era>.exe verilog`, thus its netlist gate keeps standing while era
+   six holds the seat.
+
    THE SHAPE OF THE MODEL COMES FROM THE FILE and the GEOMETRY comes from this one call. A
    contract file states L and H in its own tensor shapes. The three numbers below are the
    ones no file can hold — the steps of a sheet, the lanes of a group, and the passes of
@@ -51,7 +56,9 @@ let command =
        let e = Mgen_diffusion.Elaboration.create model ~steps ~lanes ~walk in
        print_endline (Mgen_diffusion.Elaboration.to_string e);
        let rtl =
-         Hardcaml.Rtl.create Verilog [ Mgen_nexys4.Top.create ~e () ]
+         Hardcaml.Rtl.create
+           Verilog
+           [ Mgen_nexys4.Top.create ~source:(Mgen_diffusion.Source.create ~e) () ]
          |> Hardcaml.Rtl.full_hierarchy
          |> Rope.to_string
        in

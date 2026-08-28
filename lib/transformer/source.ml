@@ -132,8 +132,8 @@ module Op = struct
   type t =
     (* The five rows of the input add row for row — the seat row of each of the four
        seats, and the bar phase — thus one exponent covers them all and the walk reads two
-       bases. [Quantized.Model.check_shape] holds the rule, and [create] calls it before
-       it reads a base. The seat rows are addressed by the classes the chain drew. *)
+       bases. [Model.check_shape] holds the rule, and [create] calls it before it reads a
+       base. The seat rows are addressed by the classes the chain drew. *)
     | Embed of
         { seats : int
         ; phase : int
@@ -183,8 +183,8 @@ module Op = struct
 
   (* The analytic cost of one op, in cycles from its go to its finish, both the cycle a
      predecessor's finish runs. [n] is the filled slot count of the ring at this step. *)
-  let cycles (config : Transformer.Config.t) ~n (op : t) =
-    let { Transformer.Config.d; heads; _ } = config in
+  let cycles (model : Model.t) ~n (op : t) =
+    let { Model.d; heads; _ } = model in
     let head_d = d / heads in
     let classes = Vocab.classes in
     match op with
@@ -242,20 +242,13 @@ type program =
   ; forward : Op.t list
   }
 
-let schedule (model : Quantized.Model.t) : program =
-  let { Transformer.Config.d
-      ; layers
-      ; heads = (_ : int)
-      ; context = (_ : int)
-      ; slope_span = (_ : int)
-      }
-    =
-    model.config
-  in
+let schedule (model : Model.t) : program =
+  let d = model.d in
+  let layers = Model.layers model in
   let dff = 4 * d in
   let classes = Vocab.classes in
-  let bases = Quantized.Model.rom_bases model in
-  let tensor_at (q : Quantized.Model.quantized) base = { Op.base; e = q.e } in
+  let bases = Model.rom_bases model in
+  let tensor_at (q : Model.quantized) base = { Op.base; e = q.e } in
   (* every matvec reads [`Y] into [d] rows of [d] terms, inner-major; the defaults hold
      for all but the two FFN weights and the seat readout *)
   let matvec ?(src = `Y) ?(outer_major = false) ?(inner = d) ?(outer = d) w base landing =
@@ -263,7 +256,7 @@ let schedule (model : Quantized.Model.t) : program =
   in
   let layer l =
     let w = model.params.layers.(l) in
-    let b = bases.Transformer.Params_data.layers.(l) in
+    let b = bases.Model.Params_data.layers.(l) in
     [ Op.Rms_norm
     ; matvec w.wq b.wq To_q
     ; matvec w.wk b.wk (To_ring { k = true; layer = l })
@@ -315,16 +308,16 @@ module State = struct
   [@@deriving compare ~localize, enumerate, sexp_of]
 end
 
-let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
-  let { Quantized.Model.config; params; temper; min_weight } = model in
-  let { Transformer.Config.d; heads; context = slots; slope_span = span; layers } =
-    config
+let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
+  let { Model.d; heads; context = slots; slope_span = span; params; temper; min_weight } =
+    model
   in
+  let layers = Model.layers model in
   let head_d = d / heads in
   let dff = 4 * d in
   let classes = Vocab.classes in
   (* the shift rules of the reference; the packing below derives every width *)
-  Quantized.Model.check_shape model;
+  Model.check_shape model;
   (* the bar phase is a slice of the step counter, as every period of this design is *)
   assert (Int.is_pow2 Jsb.bar_steps);
   let dbits = Int.floor_log2 d in
@@ -338,15 +331,15 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* vram serves the scores, the FFN hidden, the logits and the sampler weights *)
   let vram_size = Int.max classes (Int.max dff slots) in
   let vbits = address_bits_for vram_size in
-  let score_shift = Quantized.Constants.score_shift ~head_d in
+  let score_shift = Model.Constants.score_shift ~head_d in
   let prog = schedule model in
   let forward_length = List.length prog.forward in
   let pc_bits = address_bits_for (forward_length + List.length prog.chain) in
-  let rom_bits = Quantized.Model.rom_bits model in
+  let rom_bits = Model.rom_bits model in
   let rom_addr_bits = address_bits_for (Array.length rom_bits) in
   let rom_const at = of_unsigned_int ~width:rom_addr_bits at in
   let min32 = of_signed_int ~width:32 (-(1 lsl 31)) in
-  let eps48 = of_unsigned_int ~width:48 Quantized.Constants.eps_q in
+  let eps48 = of_unsigned_int ~width:48 Model.Constants.eps_q in
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let sm = State_machine.create (module State) spec in
@@ -527,7 +520,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
-  (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
+  (* The read of a ring restores the eight zero low bits that [Model.coarse_to_ring]
      dropped at the write. Every memory the walk reads stands two registers deep, and
      [nohold] freezes each stage with the walk's tags; the small RAMs keep the
      one-register tap for the bespoke chains.
@@ -665,8 +658,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
     mux
       hd.value
       (List.init heads ~f:(fun head ->
-         let exponent = Quantized.Constants.slope_exponent ~span ~heads ~head in
-         sll (uresize mac.row ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
+         let exponent = Model.Constants.slope_exponent ~span ~heads ~head in
+         sll (uresize mac.row ~width:32) ~by:(Model.Constants.y_q - exponent)))
   in
   (* The derived values of L1, named once. A builder runs for each op of the program —
      [2 * layers + 1] [Rms_norm] and [layers] [Attend], thus five and two at two layers
@@ -761,7 +754,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
      walk advances. The scale carries its own Q, thus the port and the shift under it
      cannot disagree. The tick numbers of the multiply and of the exp2 read live here
      alone — the dormant debt of the module comment has one home. *)
-  let exp_weight_chain ~addr ~(scale : Quantized.Constants.scale) ~land_ ~advance =
+  let exp_weight_chain ~addr ~(scale : Model.Constants.scale) ~land_ ~advance =
     let at_addr = uresize addr ~width:vbits in
     [ vram_raddr <-- at_addr
     ; mul_a <-- sel_bottom diff.value ~width:25
@@ -801,7 +794,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ; hram_wdata
           <-- sel_bottom
                 (sresize hramd ~width:48
-                 +: rescale ~from ~target:Quantized.Constants.h_q rmw_sum.value)
+                 +: rescale ~from ~target:Model.Constants.h_q rmw_sum.value)
                 ~width:32
         ; when_ done_p.value ([ done_p <-- gnd ] @ finish)
         ]
@@ -839,7 +832,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
             ; hram_waddr <-- mac_row_d
             ; hram_wdata
               <-- sel_bottom
-                    (rescale ~from:e ~target:Quantized.Constants.h_q mac.sum)
+                    (rescale ~from:e ~target:Model.Constants.h_q mac.sum)
                     ~width:32
             ]
         ; when_ mac.done_ finish
@@ -932,11 +925,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         , common @ [ when_ mac.row_done writes; when_ mac.done_ finish ] )
       in
       let to_kv v =
-        clamp16
-          (rescale
-             ~from:(Quantized.Constants.y_q + w.e)
-             ~target:Quantized.Constants.kv_q
-             v)
+        clamp16 (rescale ~from:(Model.Constants.y_q + w.e) ~target:Model.Constants.kv_q v)
       in
       (match landing with
        | To_q ->
@@ -950,10 +939,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
            ]
        | To_hidden ->
          let shifted =
-           rescale
-             ~from:(Quantized.Constants.y_q + w.e)
-             ~target:Quantized.Constants.hid_q
-             mac.sum
+           rescale ~from:(Model.Constants.y_q + w.e) ~target:Model.Constants.hid_q mac.sum
          in
          let relu = mux2 (shifted <+ zero 48) (zero 48) shifted in
          simple
@@ -974,8 +960,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        | Add_to_h ->
          let from_q =
            match src with
-           | `Y -> Quantized.Constants.kv_q
-           | `Hidden -> Quantized.Constants.hid_q
+           | `Y -> Model.Constants.kv_q
+           | `Hidden -> Model.Constants.hid_q
          in
          join_entry, common @ join_to_h ~from:(from_q + w.e) ~finish)
     | Attend { layer } ->
@@ -1020,7 +1006,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
       let weigh_ages =
         exp_weight_chain
           ~addr:ii_slot
-          ~scale:Quantized.Constants.log2e
+          ~scale:Model.Constants.log2e
           ~land_:[ vram_wdata <-- uresize exp2_e ~width:32; den <-- den_next ]
           ~advance:
             [ if_
@@ -1243,10 +1229,10 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
 (* ==================================================================== *)
 
 let%expect_test "the program is data: the state table prints" =
-  let config =
-    { Transformer.Config.d = 16; layers = 1; heads = 4; context = 16; slope_span = 8 }
+  let shape =
+    { Model.For_test.d = 16; layers = 1; heads = 4; context = 16; slope_span = 8 }
   in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let model = Model.For_test.drawn shape ~seed:11 in
   let { chain; forward } = schedule model in
   let show tag ops =
     List.iteri ops ~f:(fun index op ->
@@ -1254,9 +1240,7 @@ let%expect_test "the program is data: the state table prints" =
   in
   show "f" forward;
   show "c" chain;
-  let baseline =
-    schedule (Quantized.Model.For_test.init Transformer.Config.baseline ~seed:11)
-  in
+  let baseline = schedule (Model.For_test.drawn Model.For_test.elected ~seed:11) in
   Stdio.printf
     "baseline: %d forward ops, %d chain ops\n"
     (List.length baseline.forward)
@@ -1294,7 +1278,17 @@ let first_divergence circuit reference =
 (* The frame comparison: the circuit against the reference, step for step, on drawn
    weights. This is the gate that holds the circuit to [Quantized], and the walk crosses
    the lead-in — the first drawn step is the one that reads a context of silence. *)
-let frames_agree ~model ~seed ~steps =
+(* THE ORACLE OF THIS BENCH IS STILL OCAML'S. [Quantized.Engine] draws the same walk from
+   the same drawn weights, thus the two models below are one model in two types; step 3
+   replaces the engine with the JAX twin through [bin/gate_transformer.exe], and this
+   bridge goes with it. *)
+let config_of ({ d; layers; heads; context; slope_span } : Model.For_test.shape) =
+  { Transformer.Config.d; layers; heads; context; slope_span }
+;;
+
+let frames_agree ~shape ~weights ~seed ~steps =
+  let model = Model.For_test.drawn shape ~seed:weights in
+  let engine = Quantized.Model.For_test.init (config_of shape) ~seed:weights in
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
   let inp = Cyclesim.inputs sim in
@@ -1330,7 +1324,7 @@ let frames_agree ~model ~seed ~steps =
   let (_ : Quantized.Engine.t), reference =
     List.fold_map
       (List.range 0 steps)
-      ~init:(Quantized.Engine.init model ~seed)
+      ~init:(Quantized.Engine.init engine ~seed)
       ~f:(fun engine (_ : int) ->
         let engine, step = Quantized.Engine.next_step engine in
         engine, step.Quantized.Engine.frame)
@@ -1350,14 +1344,14 @@ let frames_agree ~model ~seed ~steps =
    layer stands above the slot and the dimension. The layer field is empty at one layer,
    thus the gate below prints these widths — the shape of a gate decides which half of
    [ring_row] the simulation ever elaborates, and that fact belongs in the gate. *)
-let ring_geometry (config : Transformer.Config.t) =
-  let rows = config.layers * config.context * config.d in
-  let dbits = Int.floor_log2 config.d in
-  let slot_bits = Int.floor_log2 config.context in
+let ring_geometry (shape : Model.For_test.shape) =
+  let rows = shape.layers * shape.context * shape.d in
+  let dbits = Int.floor_log2 shape.d in
+  let slot_bits = Int.floor_log2 shape.context in
   let ring_bits = address_bits_for rows in
   Stdio.printf
     "layers %d: %d ring rows, ring_bits %d = layer_bits %d + slot_bits %d + dbits %d\n"
-    config.layers
+    shape.layers
     rows
     ring_bits
     (ring_bits - slot_bits - dbits)
@@ -1366,9 +1360,9 @@ let ring_geometry (config : Transformer.Config.t) =
 ;;
 
 let%expect_test "the source agrees with the reference, frame for frame" =
-  let config = Quantized.Model.For_test.config in
-  ring_geometry config;
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:42 ~steps:20;
+  let shape = Model.For_test.shape in
+  ring_geometry shape;
+  frames_agree ~shape ~weights:11 ~seed:42 ~steps:20;
   [%expect
     {|
     layers 1: 512 ring rows, ring_bits 9 = layer_bits 0 + slot_bits 4 + dbits 5
@@ -1394,8 +1388,7 @@ let%expect_test "the source agrees with the reference, frame for frame" =
    the trained model in flash, measured 2026-08-19: all the slide switches down is a
    silent board. *)
 let%expect_test "the source agrees with the reference at the seed 0" =
-  let config = Quantized.Model.For_test.config in
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:0 ~steps:20;
+  frames_agree ~shape:Model.For_test.shape ~weights:11 ~seed:0 ~steps:20;
   [%expect
     {|
     step  0  00000000
@@ -1427,11 +1420,11 @@ let%expect_test "the source agrees with the reference at the seed 0" =
    its uniform alone. The steps after it part. Each gate compares a circuit against its
    own reference in any case. *)
 let%expect_test "the source agrees with the reference at two layers" =
-  let config =
-    { Transformer.Config.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 }
+  let shape =
+    { Model.For_test.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 }
   in
-  ring_geometry config;
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:23) ~seed:42 ~steps:24;
+  ring_geometry shape;
+  frames_agree ~shape ~weights:23 ~seed:42 ~steps:24;
   [%expect
     {|
     layers 2: 512 ring rows, ring_bits 9 = layer_bits 1 + slot_bits 4 + dbits 4
@@ -1456,16 +1449,15 @@ let%expect_test "the source agrees with the reference at two layers" =
    bench spends dropping the strobe. The ring's fill [n] is the step index, capped at the
    slot count. *)
 let bench ~steps () =
-  let config = Quantized.Model.For_test.config in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let model = Model.For_test.drawn Model.For_test.shape ~seed:11 in
   let prog = schedule model in
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let slots = config.context in
+  let slots = model.Model.context in
   let sum_ops ops ~n =
-    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles config ~n op)
+    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles model ~n op)
   in
   let count_until_idle () =
     let cycles = ref 0 in

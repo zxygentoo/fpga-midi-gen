@@ -128,11 +128,6 @@ val rom_bits : t -> Hardcaml.Bits.t array
 (** the byte base of each kernel inside the image, in layer order *)
 val rom_bases : t -> int array
 
-(** [bases_of sizes] is where each of a run of sizes opens: the exclusive prefix scan,
-    [| 0; sizes.(0); sizes.(0) + sizes.(1); ... |]. [rom_bases] is one reading of it and
-    the elaboration's banks are the others, thus the rule stands in one place. *)
-val bases_of : int array -> int array
-
 (** {1 The walk} *)
 
 (** The register of each seat as classes: what [opening_sheet] draws inside. The circuit

@@ -230,6 +230,7 @@ def test_gate_c_the_two_walks_are_the_same_stream(seed):
         "python",
         "-m",
         "transformer.infer",
+        "sample",
         "--ckpt",
         str(CHECKPOINT),
         "--seeds",

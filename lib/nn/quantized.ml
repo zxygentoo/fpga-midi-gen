@@ -237,6 +237,12 @@ let rom_bits tensors =
     Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
 ;;
 
+(* the exclusive prefix scan: a ROM's bases are one reading of it and the elaborations'
+   banks are the others *)
+let bases_of sizes =
+  Array.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base)
+;;
+
 (* The policy in the integer forms of the machines; the rules of the float sampler. The
    temper is log2(e) / T, and its Q is one below the Q of [Constants.log2e]. The extra bit
    is headroom for the temperature: the circuits multiply by this constant on an 18-bit
