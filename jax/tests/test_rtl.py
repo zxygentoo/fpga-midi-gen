@@ -23,6 +23,13 @@ Two gates, and each one exists because a whole class of fault does not move a fr
   gate's offset, an operand taken on the address side of a two-cycle read, and a ring run
   off its end -- and none of them moved a frame.
 
+P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK. Its input is data: the driver draws
+each class over P and prints the sheet it drew, thus a narrow P is a legal sheet and the
+composition layer's P-parametric paths -- the class bits, the store map, the ring, the tag
+width, the drain rule at a short chain -- keep an oracle at more than one width. THE WALK
+CASES STAY AT P 48: a walk draws inside `model.seat_openings`, whose registers reach class
+46, and a narrower column would be a different walk and not the same walk at another P.
+
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
 
@@ -44,7 +51,7 @@ DRIVER = ROOT / "_build" / "default" / "bin" / "gate_diffusion.exe"
 VOICES = model.VOICES
 
 
-def drive(subcommand, path, *, steps, lanes, walk, seed):
+def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
     """the driver's report, one line as a list of its words"""
     if not DRIVER.exists():
         pytest.skip(f"absent, nothing to gate: {DRIVER.name}")
@@ -62,6 +69,8 @@ def drive(subcommand, path, *, steps, lanes, walk, seed):
             str(walk),
             "-seed",
             str(seed),
+            "-rows",
+            str(rows),
         ],
         capture_output=True,
         text=True,
@@ -192,25 +201,33 @@ def stem_input(lines, steps):
 
 
 @pytest.mark.parametrize(
-    "name,layers,width,lanes,steps,weight_seed",
+    "name,layers,width,lanes,steps,weight_seed,rows",
     [
-        ("H 8, G 2, two pairs, T 6", 6, 8, 2, 6, 1),
-        ("H 7, G 3, one pair, T 5", 4, 7, 3, 5, 2),
+        # P 8 IS A SIMULATION'S P AND NOT THE BOARD'S. A stream case tests the composition
+        # layer, and every address of it -- the store map, the ring, the bank select, the
+        # weight stride -- is P-parametric. Eight rows run the same shapes at a quarter of
+        # the column width, and the case below holds the board's own P as well.
+        ("H 8, G 2, two pairs, T 6", 6, 8, 2, 6, 1, 8),
+        ("H 7, G 3, one pair, T 5", 4, 7, 3, 5, 2, 8),
         # AN IMAGE THAT REALLY BANKS: 1 080 words plan as 1 024 and 512, thus this case
         # reads through the bank mux where the two above read through one bank alone.
-        ("H 8, G 4, three pairs, T 6", 8, 8, 4, 6, 3),
+        ("H 8, G 4, three pairs, T 6", 8, 8, 4, 6, 3, 8),
         # A STORE THAT REALLY BANKS: 129 steps of 8 channels make a store of 1 032 columns,
         # which plans as 1 024 and 512, thus this case reads and writes THROUGH the store's
         # bank mux and its write select.
-        ("H 8, G 2, one pair, T 129", 4, 8, 2, 129, 4),
+        ("H 8, G 2, one pair, T 129", 4, 8, 2, 129, 4, 8),
         # THE RING WRAPS TWICE. Five columns over four ring slots is one wrap; two pairs
         # and the head behind them read every wrapped column, thus a ring one column short
         # -- or a lag of one instead of two -- writes over a column that is still live.
-        ("H 8, G 2, two pairs, T 5", 6, 8, 2, 5, 5),
+        ("H 8, G 2, two pairs, T 5", 6, 8, 2, 5, 5, 8),
+        # AND THE SAME BANKING STORE AT THE BOARD'S OWN P. Six class bits and not three, a
+        # chain of 48 stages and not 8, and the tag width the build really carries: what
+        # the five cases above hold at a narrow P, this one holds at the elected one.
+        ("H 8, G 2, one pair, T 129, P 48", 4, 8, 2, 129, 4, model.ROWS),
     ],
 )
 def test_the_store_writes_are_the_twins(
-    tmp_path, name, layers, width, lanes, steps, weight_seed
+    tmp_path, name, layers, width, lanes, steps, weight_seed, rows
 ):
     """Every column the engine writes, against the twin's own `layer_writes`: the address
     stands in the elaboration's map, the datum equals the twin's, and each destination
@@ -220,9 +237,11 @@ def test_the_store_writes_are_the_twins(
         tmp_path, weight_seed=weight_seed, layers=layers, width=width
     )
     # the walk of the driver's own stream gate: it names the first mask's threshold alone
-    lines = drive("stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed)
+    lines = drive(
+        "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
+    )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, quantized.counters())
+    want = twin.layer_writes(classes, hidden, quantized.counters(), rows=rows)
     checked = 0
     for word in lines:
         if word[0] == "write":

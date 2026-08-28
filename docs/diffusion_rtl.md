@@ -1549,13 +1549,24 @@ honest:
   number (the drift of drawn weights reads the format floor, a known trap)
   and never for a
   rung.
-- **Every elaboration parameter has a test shape.** P — the 48 pitch rows
-  — is a parameter of the CIRCUIT like the rest, pinned to 48 by the board.
-  The twin holds P at `Model.rows`, thus Gate B compares at P 48 and the
-  tiny shapes come from T, L, H, G and N. **Parameterizing the twin is
-  DEFERRED and not refused**: it moves a frozen reference, and nothing moves
-  the reference before a circuit works. When one works, the twin takes P as
-  well and the test shapes get smaller.
+- **Every elaboration parameter has a test shape, P included.** P — the 48
+  pitch rows — is a parameter of the CIRCUIT like the rest, pinned to 48 by
+  the board. The twin takes it too: `plane_activations`, `_writes`,
+  `__call__` and `layer_writes` each take `rows`, defaulting to `ROWS`.
+
+  **Instrument 3, the stream, runs at P 8 and at P 48.** Its input is DATA
+  and not a walk — the driver draws each class over P by
+  `Sheet.For_test.stem_input` and prints the sheet it drew — thus a narrow P
+  is a legal sheet, and the composition layer's P-parametric paths (the class
+  bits, the store map, the ring, the tag width, the drain rule at a short
+  chain) keep an oracle at more than one width. **Instrument 2, the walk,
+  runs at P 48 alone**: a walk draws inside `Model.seat_openings`, whose
+  registers reach class 46, and a narrower column would be a different walk
+  and not the same walk at another P.
+
+  **P bought coverage and not time.** The RTL gates cost 9.9 s before the
+  round and 10.6 s after it: the walk cases dominate and did not move, and
+  the sixth stream case is what the extra second bought.
 
 ## The two phases
 

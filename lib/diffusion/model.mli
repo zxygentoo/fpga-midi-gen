@@ -202,4 +202,14 @@ module For_test : sig
 
   (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)
   val rom_tensors : t -> quantized list
+
+  (** [over_cells state ~steps ~f] draws one uniform for each cell in [cell_order] and
+      hands each to [f ~step ~voice]. It is the fold [opening_sheet] and [hidden_cells]
+      stand on, exported so that [Sheet.For_test.stem_input] draws by the same rule and
+      never a second statement of it. *)
+  val over_cells
+    :  Prng.state
+    -> steps:int
+    -> f:(step:int -> voice:int -> float -> unit)
+    -> Prng.state
 end

@@ -28,8 +28,8 @@
      composition layer, and none of them moved a frame. *)
 
 open Core
-module Prng = Mgen_core.Prng
 module Model = Mgen_diffusion.Model
+module Sheet = Mgen_diffusion.Sheet
 module Elaboration = Mgen_diffusion.Elaboration
 module Forward = Mgen_diffusion.Forward
 module Source = Mgen_diffusion.Source
@@ -111,27 +111,18 @@ let walk_command =
 (* The stream *)
 (* ==================================================================== *)
 
-(* THE STEM'S INPUT AT ONE SEED, as the stream gate has always built it: the opening the
-   walk draws, the first mask of a walk of [walk] passes, and the twin's own decode of the
-   two. The sheet and the mask are printed, thus the Python side builds the same input
-   from the same two facts and never redraws them. *)
-let stem_input e ~seed =
-  let steps = e.Elaboration.steps in
-  let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
-  let threshold = Model.anneal_threshold ~step:0 ~walk:e.walk in
-  let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
-  sheet, hidden
-;;
-
 let run_stream e ~seed =
   let steps = e.Elaboration.steps in
   let rows = e.rows in
-  let sheet, hidden = stem_input e ~seed in
+  (* THE STEM'S INPUT AT ONE SEED: [Sheet.For_test.stem_input]'s rule, which fits P by
+     construction. The sheet and the mask are printed, thus the Python side builds the
+     same input from the same two facts and never redraws them. *)
+  let sheet, hidden = Sheet.For_test.stem_input ~steps ~rows ~walk:e.walk ~seed in
   Array.iteri sheet ~f:(fun step seats ->
     Array.iteri seats ~f:(fun seat cell ->
       printf "sheet %d %d %d\n" step seat cell;
       printf "hidden %d %d %d\n" step seat (Bool.to_int hidden.(step).(seat))));
-  let stem = Mgen_diffusion.Sheet.For_test.plane_activations sheet hidden ~steps ~rows in
+  let stem = Sheet.For_test.plane_activations sheet hidden ~steps ~rows in
   let module Bench =
     Forward.For_test.Bench (struct
       let e = e
@@ -139,8 +130,7 @@ let run_stream e ~seed =
   in
   let pass =
     Bench.run
-      ~planes:(fun ~step ~plane ->
-        Mgen_diffusion.Sheet.For_test.plane_column stem ~step ~plane ~rows)
+      ~planes:(fun ~step ~plane -> Sheet.For_test.plane_column stem ~step ~plane ~rows)
       ()
   in
   (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.

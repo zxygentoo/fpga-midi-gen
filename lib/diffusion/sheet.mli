@@ -108,4 +108,24 @@ module For_test : sig
       activations of one step and one plane, row 0 first. Every tensor the circuit writes
       reads as [steps; rows; channels], thus this decode states the plane count alone. *)
   val plane_column : int array -> step:int -> plane:int -> rows:int -> int array
+
+  (** [stem_input ~steps ~rows ~walk ~seed] is the sheet and the mask the stream gate
+      feeds the engine: one uniform for each cell in [Model.cell_order], the class
+      [floor (u * rows)], then the mask of pass 0 at
+      [Model.anneal_threshold ~step:0 ~walk].
+
+      THE STREAM GATE'S INPUT IS DATA AND NOT A WALK. Nothing downstream cares that the
+      sheet is a chorale's opening — it cares that every class fits the column and that
+      the twin and the circuit read the same sheet — thus the classes are drawn over P and
+      NOT inside [Model.seat_openings]. A seat register reaches class 46, and at a P under
+      47 [plane_activations] writes such a class into the next step's region of the tensor
+      or past its end; a class drawn over [rows] fits P by construction, at every P a gate
+      can ask for. The walk's own gate draws the real opening, because a walk is what it
+      tests. *)
+  val stem_input
+    :  steps:int
+    -> rows:int
+    -> walk:int
+    -> seed:int
+    -> int array array * bool array array
 end

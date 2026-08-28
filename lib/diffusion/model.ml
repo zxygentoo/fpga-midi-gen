@@ -358,6 +358,7 @@ module For_test = struct
   ;;
 
   let rom_tensors = rom_tensors
+  let over_cells = over_cells
 end
 
 (* ==================================================================== *)

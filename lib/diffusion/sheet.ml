@@ -56,9 +56,28 @@ let plane_column x ~step ~plane ~rows =
   tensor_column x ~step ~channel:plane ~channels:planes ~rows
 ;;
 
+(* THE STREAM GATE'S INPUT, AND IT IS DATA AND NOT A WALK. Nothing downstream cares that
+   the sheet is a chorale's opening — it cares that every class fits the column and that
+   the twin and the circuit read the same sheet. THE SEAT REGISTERS ARE THEREFORE NOT
+   DRAWN HERE: [Model.opening_sheet] draws inside [Model.seat_openings], which reaches
+   class 46, and at a P under 47 [plane_activations] would then write that class into the
+   next step's region of the tensor or past its end. A class drawn over [rows] fits P by
+   construction, at every P a gate can ask for. *)
+let stem_input ~steps ~rows ~walk ~seed =
+  let sheet = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
+  let state =
+    Model.For_test.over_cells (Prng.create_folded ~seed) ~steps ~f:(fun ~step ~voice u ->
+      sheet.(step).(voice) <- Int.of_float (Float.round_down (u *. Float.of_int rows)))
+  in
+  let threshold = Model.anneal_threshold ~step:0 ~walk in
+  let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
+  sheet, hidden
+;;
+
 module For_test = struct
   let plane_activations = plane_activations
   let plane_column = plane_column
+  let stem_input = stem_input
 end
 
 module Make (Shape : Shape) = struct

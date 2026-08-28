@@ -338,19 +338,6 @@ class ResidualPair(nnx.Module):
         return jax.nn.relu(x + second), [seen_first, seen_second]
 
 
-def pair_pass(remat, training):
-    """The residual pair as one call of the trunk runs it, rematerialised or not.
-
-    The pair is the unit of rematerialisation, thus a trunk this deep keeps 31 tensors for the
-    backward pass instead of a few hundred. [training] closes into the callable because it
-    decides the SHAPE of the pass and not a value inside it."""
-
-    def forward(pair, x):
-        return pair(x, training)
-
-    return nnx.remat(forward) if remat else forward
-
-
 class Trunk(nnx.Module):
     """The skeleton both models of the era carry: a stem, the residual pairs, a head.
 
@@ -398,7 +385,15 @@ class Coconet(Trunk):
 
         At inference the statistics are the population it was handed and the caller drops
         them; in training they are the batch's own and the trainer folds them."""
-        run_pair = pair_pass(remat, training)
+
+        # THE PAIR IS THE UNIT OF REMATERIALISATION, thus a trunk this deep keeps 31
+        # tensors for the backward pass instead of a few hundred. [training] closes in
+        # because it decides the SHAPE of the pass and not a value inside it, and the
+        # closure costs nothing: [__call__] is traced once for each shape under nnx.jit.
+        def run_pair(pair, x):
+            return pair(x, training)
+
+        run_pair = nnx.remat(run_pair) if remat else run_pair
         h, stem = self.stem(sheet, training)
         h = jax.nn.relu(h)
         seen = [stem]

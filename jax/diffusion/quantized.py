@@ -369,13 +369,16 @@ class QuantizedCoconet(sheet.Trunk):
             temper=Temper.of(temperature),
         )
 
-    def _writes(self, classes, hidden, tally):
+    def _writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
         """the destination tensor of EVERY layer as written, in the layer order.
 
         IT IS A GENERATOR AND THE TRUNK IS NOT WALKED TWICE: `__call__` keeps the last of it
         and `layer_writes` keeps them all, thus a forward pass holds one destination tensor
-        and never the trunk's 48."""
-        x = self.stem(plane_activations(classes, hidden), True, tally)
+        and never the trunk's 48.
+
+        `rows` is P; it reaches the stem's decode alone, because every layer after it takes
+        the shape it is handed."""
+        x = self.stem(plane_activations(classes, hidden, rows=rows), True, tally)
         yield x
         for pair in self.pairs:
             first, x = pair(x, tally)
@@ -383,21 +386,21 @@ class QuantizedCoconet(sheet.Trunk):
             yield x
         yield self.head(x, False, tally)
 
-    def __call__(self, classes, hidden, tally):
-        """the logits of one pass over the batch: `[sheets, steps, ROWS, VOICES]` in the
+    def __call__(self, classes, hidden, tally, *, rows=sheet.ROWS):
+        """the logits of one pass over the batch: `[sheets, steps, rows, VOICES]` in the
         activation format, because the head takes no ReLU and keeps it"""
         # the head's write is the last of them, and the deque holds one tensor where a
         # list would hold the trunk's 48
-        return deque(self._writes(classes, hidden, tally), maxlen=1)[0]
+        return deque(self._writes(classes, hidden, tally, rows=rows), maxlen=1)[0]
 
-    def layer_writes(self, classes, hidden, tally):
+    def layer_writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
         """the destination tensor of every layer AS WRITTEN, in the layer order — the stem's,
         then for each pair its opening's tensor and its close's JOINED tensor, and the head's
         logits last.
 
         IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `__call__` is the last of
         this list, thus the list is the arithmetic itself and never a second reading of it."""
-        return list(self._writes(classes, hidden, tally))
+        return list(self._writes(classes, hidden, tally, rows=rows))
 
 
 def paired(layers):
@@ -522,13 +525,19 @@ def load(path):
 # ---------------------------------------------------------------------
 
 
-def plane_activations(classes, hidden):
-    """the stem's input tensor, `[sheets, steps, ROWS, 2 * VOICES]` in the activation format.
+def plane_activations(classes, hidden, rows=sheet.ROWS):
+    """the stem's input tensor, `[sheets, steps, rows, 2 * VOICES]` in the activation format.
 
     A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its class
     row of plane `voice`, and a hidden cell writes it in EVERY row of plane `VOICES + voice`.
-    It is `model.planes` in integers, plane for plane."""
-    rows = np.arange(sheet.ROWS)[None, None, :, None]
+    It is `model.planes` in integers, plane for plane.
+
+    `rows` IS P, THE CIRCUIT'S PARAMETER, and a walk never passes it: the seat registers of
+    `model.opening_sheet` reach class 46 and fit no sheet narrower than `ROWS`. What passes a
+    narrow P is the stream gate, whose input is data — see `tests/test_rtl.py`."""
+    if int(classes.max()) >= rows:
+        raise ValueError(f"a class of {int(classes.max())} in a column of {rows} rows")
+    rows = np.arange(rows)[None, None, :, None]
     roll = rows == classes[:, :, None, :]
     masked = hidden[:, :, None, :]
     planes = np.concatenate(

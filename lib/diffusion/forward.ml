@@ -997,12 +997,11 @@ struct
   ;;
 end
 
-(* the stem's input at one seed: the opening, the first mask, and the decode of the two —
-   what the sheet answers the stem's fetch with *)
-let stem_input ~steps ~rows ~walk ~seed =
-  let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
-  let threshold = Model.anneal_threshold ~step:0 ~walk in
-  let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
+(* what the sheet answers the stem's fetch with: the gate's own sheet and mask, decoded.
+   The rule is [Sheet.For_test.stem_input]'s, because the stream gate of the driver reads
+   the same one. *)
+let stem_planes ~steps ~rows ~walk ~seed =
+  let sheet, hidden = Sheet.For_test.stem_input ~steps ~rows ~walk ~seed in
   let stem = Sheet.For_test.plane_activations sheet hidden ~steps ~rows in
   fun ~step ~plane -> Sheet.For_test.plane_column stem ~step ~plane ~rows
 ;;
@@ -1202,7 +1201,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
         let e = elaboration
       end)
     in
-    let planes = stem_input ~steps ~rows:elaboration.rows ~walk ~seed in
+    let planes = stem_planes ~steps ~rows:elaboration.rows ~walk ~seed in
     let (_ : Hardcaml_waveterm.Waveform.t option), pass =
       B.run ~read_logits:false ~planes ()
     in
