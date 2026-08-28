@@ -9,6 +9,7 @@ open Core
 open Hardcaml
 open Signal
 module Nn_quantized = Mgen_nn.Quantized
+module Placement = Mgen_nn.Placement
 
 module type Shape = sig
   val rows : int
@@ -25,13 +26,6 @@ let first_row_latency = accumulate_latency + 2
 let activation_bits = Model.activation_bits
 let accumulator_bits = Model.accumulator_bits
 let weight_bits = 8
-
-(* The placement family — see column_array.mli. The three stand HERE, beside the lanes
-   that hold the primitives, rather than once in each unit that obeys them. *)
-let no_dsp product = add_attribute product (Rtl_attribute.Vivado.use_dsp false)
-let replica copy = add_attribute copy (Rtl_attribute.Vivado.dont_touch true)
-let slice_rows = 8
-let slices_for ~rows = (rows + slice_rows - 1) / slice_rows
 
 module Make (Shape : Shape) = struct
   let rows = Shape.rows
@@ -94,10 +88,11 @@ module Make (Shape : Shape) = struct
        B port, leaving the broadcast net ONE driver of 528 pins with no flop in the fabric
        to replicate: 12 ns of route. The bank IS that operand register, stated in fabric,
        one copy for each slice of rows. The depth of the pipe does not move. *)
-    let slices = slices_for ~rows in
+    let slices = Placement.slices_for ~rows in
     let operand_b =
       Array.init lanes ~f:(fun lane ->
-        Array.init slices ~f:(fun (_ : int) -> replica (reg dspec (weight lane))))
+        Array.init slices ~f:(fun (_ : int) ->
+          Placement.replica (reg dspec (weight lane))))
     in
     (* The operand and product registers FREE-RUN and only the sum is gated: that is how
        the DSP is meant to be driven. The flags ride the pipe beside the operands. *)
@@ -107,7 +102,7 @@ module Make (Shape : Shape) = struct
       Array.init rows ~f:(fun at ->
         let a = operand_a.(at) in
         Array.init lanes ~f:(fun lane ->
-          let b = operand_b.(lane).(at / slice_rows) in
+          let b = operand_b.(lane).(at / Placement.slice_rows) in
           let product = reg dspec (a *+ b) in
           let term = sresize product ~width:accumulator_bits in
           reg_fb dspec ~enable:taking ~width:accumulator_bits ~f:(fun sum ->
@@ -122,7 +117,7 @@ module Make (Shape : Shape) = struct
        chain at fanout 6 019. One copy for each chain stage instead — 48 drivers of about
        128 pins, laid out beside their own stage. The drain walk keeps [capture] itself. *)
     let capture_bank =
-      Array.init rows ~f:(fun (_ : int) -> replica (reg spec pre_capture))
+      Array.init rows ~f:(fun (_ : int) -> Placement.replica (reg spec pre_capture))
     in
     let open Always in
     let row = Variable.reg spec ~width:row_bits in

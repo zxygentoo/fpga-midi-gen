@@ -45,30 +45,6 @@ module type Shape = sig
   val lanes : int
 end
 
-(** {1 The placement family}
-
-    Three rules the whole era states to Vivado through this unit, because this unit holds
-    the primitives they are about. *)
-
-(** [no_dsp product] pins a product into LUTs. THE ARRAY OWNS THE DSPS — the fused rung is
-    48 by 5, the device's whole 240 — thus every other unit pins its products away from
-    them. *)
-val no_dsp : Signal.t -> Signal.t
-
-(** [replica copy] states one copy of a broadcast and keeps it apart from its siblings. No
-    net of this scale keeps a single driver, thus a broadcast stands as one register for
-    each slice of its consumers and every copy is [dont_touch] — so the tools neither
-    merge the copies back into one net nor absorb them into what they feed. *)
-val replica : Signal.t -> Signal.t
-
-(** the rows one replica slice covers: 8. It is a placement fact of the device and not of
-    a model, thus a caller that banks a column of its own slices on this value. *)
-val slice_rows : int
-
-(** [slices_for ~rows] is the replica slices a column of [rows] takes:
-    [ceil (rows / slice_rows)]. *)
-val slices_for : rows:int -> int
-
 module Make (Shape : Shape) : sig
   module I : sig
     type 'a t =

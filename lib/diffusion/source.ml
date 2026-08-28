@@ -15,6 +15,7 @@
 open Core
 open Hardcaml
 open Signal
+module Placement = Mgen_nn.Placement
 module I = Source_intf.I
 module O = Source_intf.O
 
@@ -179,7 +180,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (sel_bottom u.value ~width:(uniform_bits - byte_bits) @: prng_byte)
       u.value
   in
-  let uniform_replica name = Column_array.replica (reg dspec next_u) -- name in
+  let uniform_replica name = Placement.replica (reg dspec next_u) -- name in
   let u_open = uniform_replica "uniform_open" in
   let u_mask = uniform_replica "uniform_mask" in
   let u_draw = uniform_replica "uniform_draw" in
@@ -262,7 +263,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     let register = of_seat ~width:width_bits (fun o -> o.Model.width) in
     (* the array owns the DSPs, thus this product is pinned like every other one outside
        it *)
-    let product = Column_array.no_dsp (u_open *: register) in
+    let product = Placement.no_dsp (u_open *: register) in
     let index = select product ~high:(uniform_bits + width_bits - 1) ~low:uniform_bits in
     low +: uresize index ~width:class_bits
   in

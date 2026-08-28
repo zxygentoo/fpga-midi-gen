@@ -7,6 +7,7 @@ open Core
 open Hardcaml
 open Signal
 module Nn_quantized = Mgen_nn.Quantized
+module Placement = Mgen_nn.Placement
 
 module type Shape = sig
   val classes : int
@@ -125,7 +126,7 @@ module Make (Shape : Shape) = struct
         reg
           dspec
           (sra
-             (Column_array.no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value))
+             (Placement.no_dsp (shifted *+ of_signed_int ~width:18 temper.q_value))
              ~by:temper.q)
       in
       let wide = negate tempered in
@@ -179,8 +180,8 @@ module Make (Shape : Shape) = struct
                    whole design at −0.140. [(hi * 2^12 + lo) * total] is [hi * total]
                    shifted twelve plus [lo * total] — exact over the integers, thus the
                    pick still always lands and no last-class arm stands below. *)
-                half_high <-- Column_array.no_dsp (uniform_high *: total.value)
-              ; half_low <-- Column_array.no_dsp (uniform_low *: total.value)
+                half_high <-- Placement.no_dsp (uniform_high *: total.value)
+              ; half_low <-- Placement.no_dsp (uniform_low *: total.value)
               ; sm.set_next Settle
               ] )
           ; ( Settle

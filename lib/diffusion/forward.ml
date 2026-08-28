@@ -14,6 +14,7 @@
 open Core
 open Hardcaml
 open Signal
+module Placement = Mgen_nn.Placement
 
 (* the activation format of the twin: what a column carries in each row *)
 let activation_bits = Model.activation_bits
@@ -111,21 +112,21 @@ struct
   (* THE TWO MAPS ARE THE ELABORATION'S, ELABORATED — not a second statement of them. The
      array owns the DSPs, thus every address product is pinned, and the rule is fixed here
      one time rather than at each of the five addresses below. *)
-  let column_address = Elaboration.Rtl.column_address ~pin:Column_array.no_dsp e
-  let ring_address = Elaboration.Rtl.ring_address ~pin:Column_array.no_dsp e
-  let channel_of = Elaboration.Rtl.channel_of ~pin:Column_array.no_dsp e
+  let column_address = Elaboration.Rtl.column_address ~pin:Placement.no_dsp e
+  let ring_address = Elaboration.Rtl.ring_address ~pin:Placement.no_dsp e
+  let channel_of = Elaboration.Rtl.channel_of ~pin:Placement.no_dsp e
 
   (* A COLUMN BANK IS SLICED AND ITS TAKE STANDS IN REPLICAS: one decode driving the 768
      register pins of a whole column cost up to 12 ns of route. Each slice's take is its
      own copy of the same condition, thus no driver reaches more than
-     [Column_array.slice_rows] rows. The values and the writes stay whole columns. *)
-  let column_slices = Column_array.slices_for ~rows
+     [Placement.slice_rows] rows. The values and the writes stay whole columns. *)
+  let column_slices = Placement.slices_for ~rows
 
-  (* the replica slices of a word of [bits]: [Column_array.slice_rows] rows of activations
+  (* the replica slices of a word of [bits]: [Placement.slice_rows] rows of activations
      each, and the last one short. A column bank takes these of a column; the bank mux of
      a store takes the same slices of the same word. *)
   let word_slices bits =
-    let span = Column_array.slice_rows * activation_bits in
+    let span = Placement.slice_rows * activation_bits in
     List.init
       ((bits + span - 1) / span)
       ~f:(fun s ->
@@ -140,8 +141,7 @@ struct
   (* [replicas ~count make] is [count] statements of the same signal, all but the first
      [dont_touch] so the tools keep the copies apart *)
   let replicas ~count make =
-    List.init count ~f:(fun s ->
-      if s = 0 then make () else Column_array.replica (make ()))
+    List.init count ~f:(fun s -> if s = 0 then make () else Placement.replica (make ()))
   ;;
 
   let replicated_takes make = replicas ~count:column_slices make
@@ -378,7 +378,7 @@ struct
       let read_bank at (bank : Elaboration.bank) =
         let bits = address_bits_for bank.depth in
         (multiport_memory
-           ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
+           ~attributes:[ Placement.block_ram ]
            ?initialize_to:(Option.map image ~f:(fun words -> words bank))
            bank.depth
            ~write_ports:
@@ -517,7 +517,7 @@ struct
     let band_takes =
       let pre = pipeline spec ~n:(Epilogue.latency - 1) drained.drained in
       List.init lanes ~f:(fun (_ : int) ->
-        List.init column_slices ~f:(fun (_ : int) -> Column_array.replica (reg spec pre)))
+        List.init column_slices ~f:(fun (_ : int) -> Placement.replica (reg spec pre)))
     in
     (* ---------------------------------------------------------------- *)
     (* THE BAND LOADS. The residual columns and the norm words of the group whose terms

@@ -236,10 +236,11 @@ val to_string : t -> string
     at [Bits] by a test and elaborated at [Signal] by the circuit.
 
     **THE PIN IS A LABELLED ARGUMENT** and not a functor argument. The address maps carry
-    a multiply that must stay out of the DSPs ([Column_array.no_dsp]), but [add_attribute]
-    is [Signal]'s alone and means nothing at [Bits], thus the pin cannot live inside
-    [Comb]; as a functor argument it would make [Epilogue], which multiplies nothing, name
-    the array's rule for no reason. A caller fixes it once by partial application. *)
+    a multiply that must stay out of the DSPs ([Mgen_nn.Placement.no_dsp]), but
+    [add_attribute] is [Signal]'s alone and means nothing at [Bits], thus the pin cannot
+    live inside [Comb]; as a functor argument it would make [Epilogue], which multiplies
+    nothing, name the array's rule for no reason. A caller fixes it once by partial
+    application. *)
 module Rtl : sig
   module Make (Comb : Hardcaml.Comb.S) : sig
     (** [column_address ~pin t ~step ~channel] is [column_address] as a circuit, at

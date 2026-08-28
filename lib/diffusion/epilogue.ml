@@ -4,6 +4,7 @@ open Core
 open Hardcaml
 open Signal
 module Nn_quantized = Mgen_nn.Quantized
+module Placement = Mgen_nn.Placement
 
 module type Shape = sig
   val rows : int
@@ -94,10 +95,10 @@ module Make (Shape : Shape) = struct
          the leading zero states. No value moves; one register does. *)
       let accumulated = slice i.sums accumulator_bits in
       let gain_high =
-        reg dspec (Column_array.no_dsp (accumulated *+ sel_top gain ~width:8))
+        reg dspec (Placement.no_dsp (accumulated *+ sel_top gain ~width:8))
       in
       let gain_low =
-        reg dspec (Column_array.no_dsp (accumulated *+ (gnd @: sel_bottom gain ~width:8)))
+        reg dspec (Placement.no_dsp (accumulated *+ (gnd @: sel_bottom gain ~width:8)))
       in
       let product =
         reg
