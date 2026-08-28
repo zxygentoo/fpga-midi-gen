@@ -1,8 +1,11 @@
 (** The state-space model as a circuit: the note source of era five.
 
-    The block computes the integers of [Quantized], operation for operation. [Quantized]
-    is the reference, and the frame comparison in this module proves the match: the frames
-    of the circuit must equal the frames of [Quantized.Engine], step for step.
+    The block computes the integers of the JAX twin, operation for operation.
+    [jax/mamba/quantized.py] is the reference, and the gates of
+    [jax/tests/test_rtl_mamba.py] prove the match through [bin/gate_mamba.exe]: the frames
+    of the circuit must equal the frames of the twin, step for step, and every write of
+    the h RAM must equal the twin's own. Neither side can pass a gate by agreeing with
+    itself.
 
     One step of music is one step of the recurrence and one frame on the socket. Nothing
     here chooses a seat and nothing masks a draw: a frame states which voice holds which
@@ -48,10 +51,10 @@ open Hardcaml
 module I = Source_intf.I
 module O = Source_intf.O
 
-(** [create ~model ~seed i] is the block. [model] is the quantized model of the
-    elaboration: the ROM image, the tensor bases, every exponent and every per-head
-    constant come from it, and the shape it carries decides the width of every counter and
-    address. The elaboration checks the shape rules of the packing loudly. [seed] is the
-    32-bit seed of the walk, read at [rewind], thus one seed names one sequence in the
-    simulation and on the board. *)
-val create : model:Quantized.Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
+(** [create ~model ~seed i] is the block. [model] is the model of the CONTRACT FILE: the
+    ROM image, the tensor bases, every exponent, every per-head constant and every shape
+    number come from it, and they decide the width of every counter and address. The
+    elaboration checks the shape rules of the packing loudly. [seed] is the 32-bit seed of
+    the walk, read at [rewind], thus one seed names one sequence in the simulation and on
+    the board. *)
+val create : model:Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t

@@ -368,6 +368,7 @@ def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
         "python",
         "-m",
         "mamba.infer",
+        "sample",
         "--ckpt",
         str(MAMBA_CHECKPOINT),
         "--seeds",

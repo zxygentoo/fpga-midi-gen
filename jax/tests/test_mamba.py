@@ -8,7 +8,13 @@ approximation, thus the two must agree to float noise, and this is where that is
 The gate reads the WHOLE forward and not the block alone: the convolution, the state, the
 gated norm and the residual joins all have a window form, and a difference in any of them
 lands here.
+
+THE CONTRACT FILE stands at the foot of this module: what crosses the seam to the
+elaboration, and the rules the circuit cannot hold. `test_parity.py` holds the quantizer
+through the netlist and `test_quantized.py` holds the integer rules it stands on.
 """
+
+import math
 
 import jax
 import jax.numpy as jnp
@@ -16,7 +22,8 @@ import numpy as np
 import pytest
 
 import data
-from mamba import model, train
+import nn
+from mamba import model, quantized, train
 
 # Six layers of float32 over a window of 64 steps, reduced in two different orders: the
 # window form sums a row of the decay matrix where the step form carries a state forward.
@@ -114,10 +121,10 @@ def test_the_sampler_walks_the_step_form():
     from mamba import infer
 
     params = drawn_params()
-    walk = infer.sample(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
+    walk = infer.draw(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
     assert walk.shape == (1, 24, data.SEATS)
     assert np.all(walk[0, : data.BAR_STEPS] == 0), "the lead-in is silence"
-    again = infer.sample(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
+    again = infer.draw(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
     assert np.array_equal(walk, again), "the same seed must give the same walk"
 
 
@@ -277,3 +284,84 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
     dt = train.half_life_ladder(heads, span) / decay
     lives = np.asarray(jnp.log(2.0) / (dt * decay))
     assert np.allclose(lives, [4.0, 16.0, 64.0, 256.0], rtol=1e-5)
+
+
+# ==================================================================== #
+# The contract file: the seam to the elaboration                       #
+# ==================================================================== #
+
+
+def quantized_plan(spelt="MZF", ring=8):
+    """the twin of a drawn model of that plan, at the small test shape"""
+    return quantized.Quantized.of(plan_of(spelt), ring=ring)
+
+
+def test_the_image_is_not_the_checkpoint_order():
+    """A BLOCK HOLDS SIX TENSORS IN A CHECKPOINT AND THREE OF THEM NEVER REACH THE ROM.
+    `a_log`, `dt_bias` and `d_skip` hold one value for each head, and an int8 tensor cannot
+    carry them: they fold into the constants the ops carry instead. The two orders are two
+    structures and neither is implied by the other."""
+    twin = quantized_plan("MZF")
+    # two tables, then three, four and two
+    assert len(twin.tensors) == len(nn.TABLES) + 3 + 4 + 2
+    assert twin.decay.shape == twin.dt_bias.shape == twin.d_skip.shape
+    assert twin.decay.shape == (1, twin.heads)
+
+
+def test_w_in_is_stored_transposed():
+    """The circuit reaches a weight by CONCATENATING the two walk counters, which is the
+    row-major address only when the dimension under the outer counter is a power of two.
+    `d` is one; the projection is not. Storing the tensor the other way round puts `d`
+    under the outer counter."""
+    params = plan_of("M")
+    twin = quantized.Quantized.of(params)
+    at = quantized.image_at(twin, 0)
+    rows, cols = twin.tensors[at][0].shape
+    assert (rows, cols) == tuple(reversed(params["layers"][0]["w_in"].shape))
+    assert cols == twin.d
+
+
+def test_the_decay_reads_the_libms_exponential():
+    """ONE ULP DECIDES A ROM BYTE. The OCaml quantizer read the exponential through the C
+    library's `exp`, and `math.exp` is that library; `np.exp`'s vectorized path may differ
+    by one ulp, and one ulp there moves a `q_value` by one. The gate states the rule as
+    arithmetic, and `test_parity.py`'s G1 states it through the netlist."""
+    for a_log in (-1.5, 0.0, 0.5, 2.7):
+        a = math.exp(a_log)
+        want = int(nn.round_half_up(math.ldexp(a / math.log(2.0), 12)))
+        assert quantized.decay_scale(a_log) == want
+    # a decay rate the port cannot hold saturates and never wraps
+    assert quantized.decay_scale(20.0) == quantized.DECAY_HIGH
+
+
+def test_the_contract_file_round_trips_exactly(tmp_path):
+    """`save` then `load` is the identity, THE PLAN INCLUDED: it comes back out of the
+    shapes and no tensor states it, thus the reader of this side and the reader of the
+    elaboration walk the image alike."""
+    twin = quantized_plan("MZFM")
+    path = tmp_path / "tiny.int8"
+    quantized.save(path, twin)
+    read = quantized.load(path)
+    assert read.plan == twin.plan
+    assert (read.span, read.ring) == (twin.span, twin.ring)
+    assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
+    assert read.min_weight == twin.min_weight
+    for name in ("decay", "dt_bias", "d_skip"):
+        assert np.array_equal(getattr(read, name), getattr(twin, name))
+    for (here, e), (there, then) in zip(read.tensors, twin.tensors):
+        assert np.array_equal(here, there) and e == then
+
+
+def test_era_fours_attention_is_no_layer_of_this_model():
+    """A square query is era four's plain attention, which measured null in this trunk
+    three times. It is refused where a build fails loudly."""
+    with pytest.raises(ValueError, match="square query"):
+        quantized.Quantized.of(plan_of("MA"))
+
+
+def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():
+    """The ring is the one number that is no fact of the training run: it is the depth at
+    INFERENCE and a choice of the player. The circuit wraps it by a mask, thus a depth that
+    is not a power of two has no circuit at all."""
+    with pytest.raises(ValueError, match="ring"):
+        quantized.check_shape(quantized_plan("MZF", ring=12))

@@ -30,10 +30,10 @@ import data
 import midi
 import prng
 from nn import draw_frame
-from mamba import model
+from mamba import model, quantized
 
 
-def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
+def draw(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     [ring] is the depth of the attention layer's keys and values, and it exists only where
@@ -72,7 +72,12 @@ def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT)
     return np.stack(frames, axis=1)
 
 
-@click.command(help=__doc__)
+@click.group(help=__doc__)
+def main():
+    pass
+
+
+@main.command(help=draw.__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
@@ -94,7 +99,7 @@ def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT)
 @click.option("--step-ms", default=200)
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
-def main(
+def sample(
     ckpt,
     seeds,
     steps,
@@ -109,7 +114,7 @@ def main(
     velocity,
 ):
     params = model.load_params(ckpt)
-    walks = sample(
+    walks = draw(
         params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p,
         ring=ring,
     )
@@ -134,6 +139,39 @@ def main(
         if len(seeds) > 1:
             click.echo(f"# seed {seed}")
         click.echo("\n".join(midi.step_line(step, events) for step, events in enumerate(walk)))
+
+
+@main.command()
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", required=True, type=click.Path(dir_okay=False))
+@click.option(
+    "--ring",
+    default=quantized.ELECTED_RING,
+    help="the depth of the attention layer's key and value ring, in steps. It is a "
+    "choice of the INFERENCE and no fact of the training run, thus the file carries it.",
+)
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=quantized.ELECTED_MIN_P)
+def quantize(ckpt, out, ring, temperature, min_p):
+    """Write the contract file of one checkpoint: the quantized model, and nothing else.
+
+    It is the only thing that crosses the seam for a build. Every width and the plan come
+    out of the checkpoint's own shapes; the ring is the one number no training run states,
+    and the temperature and the floor bake into the temper and the min-p share."""
+    params = model.load_params(ckpt)
+    twin = quantized.Quantized.of(
+        params, ring=ring, temperature=temperature, min_p=min_p
+    )
+    quantized.save(out, twin)
+    plan = "".join(quantized.LETTERS[kind] for kind in twin.plan)
+    click.echo(
+        f"wrote {out}: d {twin.d}, plan {plan}, {twin.heads} heads, "
+        f"span {twin.span}, ring {twin.ring}"
+    )
+    click.echo(
+        f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
+        f"temperature {twin.temper.temperature}, min weight {twin.min_weight}"
+    )
 
 
 if __name__ == "__main__":
