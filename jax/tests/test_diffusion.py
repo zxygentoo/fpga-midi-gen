@@ -1,4 +1,4 @@
-"""The masked canvas of the diffusion era: the roll, the mask, the loss and the measure.
+"""The masked sheet of the diffusion era: the roll, the mask, the loss and the measure.
 
 Four things here can fail silently, and each one would still train, still sample and still
 play -- it would play the wrong piece, or read a number that means nothing:
@@ -7,7 +7,7 @@ play -- it would play the wrong piece, or read a number that means nothing:
   and the corpus itself are pinned.
 - the mask. The masked count decides the whole objective; a mask that never hid everything,
   or that hid the pitch rows of a cell unevenly, would train a different model.
-- the loss reweighting. One over the masked count is per CANVAS, and a batch-wide divisor
+- the loss reweighting. One over the masked count is per SHEET, and a batch-wide divisor
   reads the same at every step and is wrong at all of them.
 - Algorithm 1. A referee that computes a different number than the paper's reads nothing,
   and the batched form of it is subtle: its frames must be independent given the ordering.
@@ -16,6 +16,7 @@ play -- it would play the wrong piece, or read a number that means nothing:
 import itertools
 import math
 import re
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -23,13 +24,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from click.testing import CliRunner
+from flax import nnx
+from safetensors.numpy import load_file, save_file
 
 import data
 import measure
-import nn
 import prng
-from diffusion import infer, model, train
-from diffusion import measure as canvas
+from diffusion import infer, model, quantized, train
+from diffusion import measure as sheet
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
 PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
@@ -39,7 +41,7 @@ needs_corpus = pytest.mark.skipif(not PIECES.exists(), reason="needs corpus_tool
 def tiny(seed=0, layers=6, width=8):
     """a model small enough for a test; the layer count still holds the paper's shape --
     a stem, two residual pairs and a head"""
-    return train.draw_params(jax.random.PRNGKey(seed), layers, width)
+    return model.Coconet(layers, width, rngs=nnx.Rngs(seed))
 
 
 # ---------------------------------------------------------------------
@@ -53,10 +55,10 @@ def test_a_column_of_the_roll_holds_one_row():
     classes = np.arange(model.ROWS, dtype=np.int32)[None, :, None]
     classes = np.tile(classes, (1, 1, model.VOICES))
     hidden = np.zeros(classes.shape, dtype=bool)
-    canvas = np.asarray(model.planes(classes, hidden))
-    assert canvas.shape == (1, model.ROWS, model.ROWS, 2 * model.VOICES)
-    assert (canvas[..., : model.VOICES].sum(axis=-2) == 1).all()
-    assert (canvas[..., model.VOICES :] == 0.0).all()
+    sheet = np.asarray(model.planes(classes, hidden))
+    assert sheet.shape == (1, model.ROWS, model.ROWS, 2 * model.VOICES)
+    assert (sheet[..., : model.VOICES].sum(axis=-2) == 1).all()
+    assert (sheet[..., model.VOICES :] == 0.0).all()
 
 
 def test_a_neighbour_pitch_is_a_neighbour_row():
@@ -64,10 +66,10 @@ def test_a_neighbour_pitch_is_a_neighbour_row():
     thus a convolution over the rows sees an interval as one shape wherever it stands.
 
     This is the paper's inductive bias -- the near-invariance of counterpoint to translation
-    in pitch -- and the canvases of the proto round had none of it."""
+    in pitch -- and the sheets of the proto round had none of it."""
     classes = np.array([[[10, 11, 20, 21]]], dtype=np.int32)
-    canvas = np.asarray(model.planes(classes, np.zeros(classes.shape, dtype=bool)))
-    rows = [int(np.argmax(canvas[0, 0, :, seat])) for seat in range(model.VOICES)]
+    sheet = np.asarray(model.planes(classes, np.zeros(classes.shape, dtype=bool)))
+    rows = [int(np.argmax(sheet[0, 0, :, seat])) for seat in range(model.VOICES)]
     assert rows == [10, 11, 20, 21]
 
 
@@ -76,8 +78,8 @@ def test_a_masked_cell_shows_zero_in_the_roll_and_one_in_its_plane():
     hot where the model must state a pitch, and it is hot up the whole pitch axis"""
     classes = np.array([[[1, 2, 3, 4]]], dtype=np.int32)
     hidden = np.array([[[True, False, False, True]]])
-    canvas = np.asarray(model.planes(classes, hidden))
-    roll, mask = canvas[..., : model.VOICES], canvas[..., model.VOICES :]
+    sheet = np.asarray(model.planes(classes, hidden))
+    roll, mask = sheet[..., : model.VOICES], sheet[..., model.VOICES :]
     assert (roll[0, 0, :, 0] == 0.0).all() and (roll[0, 0, :, 3] == 0.0).all()
     assert roll[0, 0, 2, 1] == 1.0 and roll[0, 0, 3, 2] == 1.0
     # the mask is a fact of the CELL, thus it stands in every row of the column
@@ -131,12 +133,12 @@ def test_the_anneal_falls_from_the_top_and_settles_on_the_floor():
 def test_the_net_states_a_distribution_for_every_cell():
     """the softmax runs over the pitch rows, thus every voice of every step carries one --
     the masked cells and the context alike"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
     hidden = model.orderless_masks(jax.random.PRNGKey(2), 2, 16)
-    said, seen = model.logits(params, stats, model.planes(classes, hidden))
+    said, seen = coconet(model.planes(classes, hidden))
     assert said.shape == (2, 16, model.ROWS, model.VOICES)
-    assert len(seen) == len(params["layers"])
+    assert len(seen) == len(coconet.every_layer())
     total = jnp.sum(jax.nn.softmax(said, axis=-2), axis=-2)
     assert np.allclose(np.asarray(total), 1.0, atol=1e-5)
 
@@ -144,36 +146,53 @@ def test_the_net_states_a_distribution_for_every_cell():
 def test_rematerialisation_changes_nothing_but_the_memory():
     """the pair is the unit of remat, thus the trunk keeps 31 tensors instead of hundreds;
     what it computes must not move"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
-    canvas = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(3), 2, 16))
-    plain, _ = model.logits(params, stats, canvas, training=True)
-    kept, _ = model.logits(params, stats, canvas, training=True, remat=True)
+    sheet = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(3), 2, 16))
+    plain, _ = coconet(sheet, training=True)
+    kept, _ = coconet(sheet, training=True, remat=True)
     assert np.allclose(np.asarray(plain), np.asarray(kept), atol=1e-5)
 
 
 def test_the_paper_size_holds_nine_million_parameters():
     """the shape of the round, counted and not assumed: 64 layers of 3 by 3 at 128
     channels, a stem of 2I planes and a head of I"""
-    params, _ = tiny(layers=model.LAYERS, width=model.WIDTH)
-    assert len(params["layers"]) == model.LAYERS
-    assert 9.0e6 < model.parameter_count(params) < 9.3e6
+    coconet = tiny(layers=model.LAYERS, width=model.WIDTH)
+    assert len(coconet.every_layer()) == model.LAYERS
+    assert len(coconet.pairs) == (model.LAYERS - 2) // 2
+    assert 9.0e6 < coconet.parameter_count() < 9.3e6
+
+
+def flat_tensors(coconet):
+    """the whole model as one list, in the order [Coconet.save] writes it"""
+    return [np.asarray(t) for layer in coconet.every_layer() for t in layer.tensors()]
 
 
 def test_the_checkpoint_states_the_weights_and_the_statistics(tmp_path):
     """The reader takes the layer count from the tensor count and the width from the
     shapes. The population statistics travel inside the file, because a model cannot state
     a probability without them."""
-    params, stats = tiny(seed=3)
-    stats = [{key: value + 0.5 for key, value in stat.items()} for stat in stats]
-    path = str(tmp_path / "canvas.ckpt")
-    nn.save_checkpoint(path, model.flat_tensors(params, stats))
-    read_params, read_stats = model.load_params(path)
-    pairs = zip(
-        model.flat_tensors(params, stats), model.flat_tensors(read_params, read_stats)
-    )
-    assert all(np.array_equal(np.asarray(a), np.asarray(b)) for a, b in pairs)
-    assert len(model.flat_tensors(read_params, read_stats)) == 6 * model.LAYER_TENSORS
+    coconet = tiny(seed=3)
+    # a population that is not the opening, thus a reader that dropped it would be caught
+    for layer in coconet.every_layer():
+        layer.norm.mean[...] = layer.norm.mean[...] + 0.5
+        layer.norm.variance[...] = layer.norm.variance[...] + 0.5
+    path = str(tmp_path / "sheet.ckpt")
+    coconet.save(path)
+    read = model.Coconet.load(path)
+    pairs = zip(flat_tensors(coconet), flat_tensors(read))
+    assert all(np.array_equal(a, b) for a, b in pairs)
+    assert len(flat_tensors(read)) == 6 * model.LAYER_TENSORS
+
+
+def test_the_tree_holds_no_half_pair():
+    """THE LAYER COUNT IS EVEN AND AT LEAST FOUR, and the tree is what says so. The
+    functional form this module replaced stated the trunk by stride, and an odd count read
+    its last layer BOTH as the close of a pair and as the head -- silently, and only in
+    the arithmetic."""
+    for layers in (3, 5, 7):
+        with pytest.raises(ValueError, match="no sheet model"):
+            model.Coconet(layers, 8, rngs=nnx.Rngs(0))
 
 
 def test_the_population_warms_before_it_settles():
@@ -188,18 +207,19 @@ def test_the_population_warms_before_it_settles():
 
 def test_the_population_statistics_decide_the_answer():
     """A pass that is not training must read the statistics it was handed and no others.
-    If it read the batch's own, one canvas of a Gibbs walk would depend on what else stood
+    If it read the batch's own, one sheet of a Gibbs walk would depend on what else stood
     beside it in the batch, and a referee could not reproduce a number."""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
-    canvas = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(4), 2, 16))
-    said, _ = model.logits(params, stats, canvas)
-    moved = [{"mean": s["mean"] + 1.0, "variance": s["variance"]} for s in stats]
-    other, _ = model.logits(params, moved, canvas)
-    assert not np.allclose(np.asarray(said), np.asarray(other))
-    # and one canvas alone must give what it gave inside the pair
-    alone, _ = model.logits(params, stats, canvas[:1])
+    sheet = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(4), 2, 16))
+    said, _ = coconet(sheet)
+    # one sheet alone must give what it gave inside the pair
+    alone, _ = coconet(sheet[:1])
     assert np.allclose(np.asarray(alone), np.asarray(said[:1]), atol=1e-5)
+    for layer in coconet.every_layer():
+        layer.norm.mean[...] = layer.norm.mean[...] + 1.0
+    other, _ = coconet(sheet)
+    assert not np.allclose(np.asarray(said), np.asarray(other))
 
 
 # ---------------------------------------------------------------------
@@ -210,11 +230,11 @@ def test_the_population_statistics_decide_the_answer():
 def test_the_loss_reads_the_masked_cells_and_no_others():
     """the paper's equation 9 sums over the complement of the context; a loss that read the
     context too would be the code release's default and not the paper's"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((1, 8, model.VOICES), dtype=np.int32)
     hidden = np.zeros((1, 8, model.VOICES), dtype=bool)
     hidden[0, 0, 0] = True
-    said, _ = model.logits(params, stats, model.planes(classes, hidden))
+    said, _ = coconet(model.planes(classes, hidden))
     logp = jax.nn.log_softmax(said, axis=-2)
     one = -float(logp[0, 0, classes[0, 0, 0], 0])
     assert float(train.masked_nll(said, jnp.asarray(classes), jnp.asarray(hidden))) == (
@@ -222,13 +242,13 @@ def test_the_loss_reads_the_masked_cells_and_no_others():
     )
 
 
-def test_the_loss_divides_by_the_count_of_each_canvas():
-    """One over the masked count is PER CANVAS. A canvas with one cell hidden and one with
+def test_the_loss_divides_by_the_count_of_each_sheet():
+    """One over the masked count is PER SHEET. A sheet with one cell hidden and one with
     sixteen must weigh the same, thus a batch-wide divisor is wrong -- and it is wrong in a
     way that reads plausible at every step.
 
-    Canvas 0 states nothing and costs log(ROWS) at its single masked cell; canvas 1 is
-    certain and costs nothing at all sixteen of its own. The per-canvas divisor reads half
+    Sheet 0 states nothing and costs log(ROWS) at its single masked cell; sheet 1 is
+    certain and costs nothing at all sixteen of its own. The per-sheet divisor reads half
     of log(ROWS); a batch-wide one would read a seventeenth of it."""
     flat = jnp.zeros((4, model.ROWS, model.VOICES))
     sure = jnp.broadcast_to(
@@ -247,10 +267,10 @@ def test_the_loss_divides_by_the_count_of_each_canvas():
 def test_an_untrained_model_reads_the_uniform_prior():
     """a model that has learned nothing must state log(ROWS) nats for each masked cell, and
     a loss that reads far from it at step zero has a scale fault"""
-    params, stats = tiny(layers=8, width=16)
+    coconet = tiny(layers=8, width=16)
     classes = np.zeros((4, 16, model.VOICES), dtype=np.int32)
     hidden = model.orderless_masks(jax.random.PRNGKey(5), 4, 16)
-    said, _ = model.logits(params, stats, model.planes(classes, hidden), training=True)
+    said, _ = coconet(model.planes(classes, hidden), training=True)
     value = float(train.masked_nll(said, jnp.asarray(classes), hidden))
     assert abs(value - np.log(model.ROWS)) < 0.3
 
@@ -261,7 +281,7 @@ def test_an_untrained_model_reads_the_uniform_prior():
 
 
 def held(pitches):
-    """one canvas of two steps holding one sonority; None is a rest, seat 0 first"""
+    """one sheet of two steps holding one sonority; None is a rest, seat 0 first"""
     classes = [
         data.SILENCE if pitch is None else pitch - data.PITCH_LOW + 1 for pitch in pitches
     ]
@@ -270,7 +290,7 @@ def held(pitches):
 
 def test_the_battery_counts_a_triad_and_names_a_dissonance():
     """the two instruments that carry a chord, on chords whose answer is known by hand"""
-    # a C major triad with the root doubled, then a cluster; a canvas is two steps because
+    # a C major triad with the root doubled, then a cluster; a sheet is two steps because
     # the hold instrument reads the step before and one step has none
     row = measure.structure(held([36, 43, 52, 60]))
     assert row["triads"] == pytest.approx(100.0)
@@ -283,7 +303,7 @@ def test_the_battery_counts_a_triad_and_names_a_dissonance():
 
 def test_the_battery_counts_triads_over_the_thick_steps_alone():
     """The method of the proto round, and the reason it is the method: a dyad sits inside
-    some triad for free, thus counting every step flatters a thin canvas. A step of two
+    some triad for free, thus counting every step flatters a thin sheet. A step of two
     voices must not reach the number at all."""
     row = measure.structure(held([36, 43, None, None]))
     assert row["triads"] == pytest.approx(0.0)  # no step carries three voices
@@ -336,7 +356,7 @@ def test_the_clash_counts_the_frame_and_not_the_pair():
 
 
 def moving(first, second):
-    """one canvas of two steps, each a list of pitches with None for a rest"""
+    """one sheet of two steps, each a list of pitches with None for a rest"""
     return np.stack([held(first)[0, 0], held(second)[0, 0]])[None]
 
 
@@ -354,16 +374,16 @@ def test_the_parallel_rate_is_per_moving_pair_and_not_per_sounding_one():
     a model for holding its notes, which the span round of 2026-08-25 caught it doing: the
     rate halved while the onsets fell a fifth below the corpus.
 
-    One canvas of four steps holds one parallel fifth and one held step. Under the pairs
+    One sheet of four steps holds one parallel fifth and one held step. Under the pairs
     that move it reads the whole of the motion; under the pairs that sound it would read
-    half of it, for a canvas that wrote exactly the same fault."""
-    canvas = np.stack(
+    half of it, for a sheet that wrote exactly the same fault."""
+    sheet = np.stack(
         [
             held(row)[0, 0]
             for row in ([48, 55, 64, 72], [50, 57, 64, 72], [50, 57, 64, 72])
         ]
     )[None]
-    read = measure.structure(canvas)["parallels"]
+    read = measure.structure(sheet)["parallels"]
     # the bass and the tenor move together over step 1 and stand still over step 2, thus
     # one of the two live steps of that pair moves and the fault owns all of it
     assert read["fifths"] == pytest.approx(1000.0)
@@ -413,7 +433,7 @@ def test_the_likelihood_keeps_its_frames():
     """The mean is Algorithm 1's return and the frames are the tail. A referee that
     averaged them away could not see a model that is wrong rarely and badly."""
     forward = certain_forward(7)
-    frames = canvas.piece_nll(
+    frames = sheet.piece_nll(
         forward, np.full((16, model.VOICES), 7, np.int32), np.random.default_rng(0), 2, 8
     )
     assert frames.shape == (16,)
@@ -425,7 +445,7 @@ def test_the_tail_reads_the_percentiles_and_the_loud_frames():
     not"""
     frames = np.full((20, 5), 0.2)
     frames[0, 0] = 40.0
-    line = canvas.tail_line(frames)
+    line = sheet.tail_line(frames)
     assert "median 0.200" in line
     assert re.search(r"above 2 nats\s+1\.0 \+- ", line), line
 
@@ -436,7 +456,7 @@ def test_the_tail_error_resamples_the_pieces_and_not_the_frames():
     from every other."""
     frames = np.full((20, 5), 0.2)
     frames[0] = 40.0  # one WHOLE piece is the disaster, thus the piece is the unit
-    read = canvas.tail_shape(frames)
+    read = sheet.tail_shape(frames)
     assert read["loud"] == pytest.approx(5.0)
     # a binomial over 20 pieces reads 4.9 percent here; over 100 frames it would read 2.2
     assert read["loud error"] > 3.5
@@ -461,7 +481,7 @@ def test_the_register_sees_a_texture_that_slid_where_nothing_else_does():
 
 
 def test_the_register_tells_drift_from_over_ranging():
-    """The mean says a voice has moved and the spread says it wanders; a canvas that holds
+    """The mean says a voice has moved and the spread says it wanders; a sheet that holds
     one chord has no spread at all, and one that alternates two has the half-distance."""
     still = measure.structure(held([50, 59, 65, 71]))["register"]
     assert all(seat["spread"] == pytest.approx(0.0) for seat in still["seats"])
@@ -485,7 +505,7 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     read against the corpus and the corpus is pinned here. These are the sixteenth-grid
     figures; the proto round measured the eighth grid and its dissonance reads the same
     10.2 percent."""
-    row = measure.structure(canvas.corpus_canvases(str(PIECES), "train", model.CROP, 0))
+    row = measure.structure(sheet.corpus_sheets(str(PIECES), "train", model.CROP, 0))
     assert row["voices"][4] == pytest.approx(99.8, abs=0.1)
     assert row["triads"] == pytest.approx(63.9, abs=0.2)
     assert row["dissonant"] == pytest.approx(10.3, abs=0.2)
@@ -523,14 +543,14 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
 def test_the_ordering_covers_every_frame_and_every_voice():
     """Algorithm 1 walks a permutation of the frames and a permutation of the voices inside
     each. A repeat would score one cell two times and never score another."""
-    frames, voices = canvas.frame_ordering(np.random.default_rng(0), 32)
+    frames, voices = sheet.frame_ordering(np.random.default_rng(0), 32)
     assert sorted(frames.tolist()) == list(range(32))
     assert all(sorted(row.tolist()) == list(range(model.VOICES)) for row in voices)
 
 
 def test_algorithm_one_reads_the_true_frames_before_it_and_nothing_after():
     """The mask of the batched form, which is the whole reason the referee is affordable.
-    Canvas l of the stack must reveal exactly the frames that stand before position l in
+    Sheet l of the stack must reveal exactly the frames that stand before position l in
     the ordering; a mask that leaked one frame from after it would read a number far under
     the paper's and look like a triumph."""
     steps = 8
@@ -545,15 +565,11 @@ def test_algorithm_one_reads_the_true_frames_before_it_and_nothing_after():
 
 def test_algorithm_one_scores_every_frame_one_time():
     """the return is nats for each frame, thus every frame must be reached and none twice"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((16, model.VOICES), dtype=np.int32)
-    forward = jax.jit(
-        lambda c, h: jax.nn.log_softmax(
-            model.logits(params, stats, model.planes(c, h))[0], axis=-2
-        )
-    )
+    forward = partial(sheet.log_probabilities, coconet)
     rng = np.random.default_rng(0)
-    lls = canvas.framewise_lls(forward, classes, canvas.frame_ordering(rng, 16), 8)
+    lls = sheet.framewise_lls(forward, classes, sheet.frame_ordering(rng, 16), 8)
     assert lls.shape == (16,)
     # every frame holds four voices, thus no frame can be less likely than four uniforms
     assert (lls <= 0.0).all()
@@ -581,15 +597,15 @@ def test_algorithm_one_adds_the_four_voices_of_a_frame():
     """The frame is the unit of the measurement, thus its four voices add and the return is
     nats for each frame and not for each cell.
 
-    A canvas of the row the stub is sure of costs nearly nothing. A canvas of any other row
+    A sheet of the row the stub is sure of costs nearly nothing. A sheet of any other row
     costs four times the log probability the stub leaves that row -- one for each voice."""
-    ordering = canvas.frame_ordering(np.random.default_rng(0), 8)
+    ordering = sheet.frame_ordering(np.random.default_rng(0), 8)
     forward = certain_forward(7)
     agrees = np.full((8, model.VOICES), 7, dtype=np.int32)
-    assert float(-np.mean(canvas.framewise_lls(forward, agrees, ordering, 8))) < 0.01
+    assert float(-np.mean(sheet.framewise_lls(forward, agrees, ordering, 8))) < 0.01
     misses = np.full((8, model.VOICES), 9, dtype=np.int32)
     assert float(
-        -np.mean(canvas.framewise_lls(forward, misses, ordering, 8))
+        -np.mean(sheet.framewise_lls(forward, misses, ordering, 8))
     ) == pytest.approx(model.VOICES * 30.0, rel=0.05)
 
 
@@ -598,27 +614,27 @@ def test_algorithm_one_adds_the_four_voices_of_a_frame():
 # ---------------------------------------------------------------------
 
 
-def test_the_walk_rewrites_the_canvas():
+def test_the_walk_rewrites_the_sheet():
     """a walk of a few passes must change the opening it was handed -- a sampler that
-    left every cell standing never fired -- and it must state a canvas of the same
+    left every cell standing never fired -- and it must state a sheet of the same
     shape, every cell a class of the vocabulary"""
-    params, stats = tiny()
-    states, given = infer.opening_canvas(prng.states([1, 2]), 8)
-    drawn, _ = infer.gibbs(params, stats, given, states, walk=4, temperature=1.0)
+    coconet = tiny()
+    states, given = model.opening_sheet(prng.states([1, 2]), 8)
+    drawn, _ = infer.gibbs(coconet, given, states, walk=4, temperature=1.0)
     assert drawn.shape == given.shape
     assert (drawn != given).any()
     assert drawn.min() >= 0 and drawn.max() < model.ROWS
 
 
-def test_a_canvas_walks_the_same_alone_or_in_a_batch():
-    """One seed names one CANVAS, whatever stands beside it: each walk holds its own
+def test_a_sheet_walks_the_same_alone_or_in_a_batch():
+    """One seed names one SHEET, whatever stands beside it: each walk holds its own
     generator, thus a batch is independent pieces and a sweep's seed crosses to a solo
     audition unchanged. The old sampler could not say this -- its seed named the batch."""
-    params, stats = tiny()
+    coconet = tiny()
 
     def walk(seeds):
-        states, given = infer.opening_canvas(prng.states(seeds), 8)
-        drawn, _ = infer.gibbs(params, stats, given, states, walk=3, temperature=1.0)
+        states, given = model.opening_sheet(prng.states(seeds), 8)
+        drawn, _ = infer.gibbs(coconet, given, states, walk=3, temperature=1.0)
         return drawn
 
     alone = walk([7])
@@ -632,16 +648,16 @@ def test_the_tempered_pick_is_the_policy_pick():
     grid lands on the LAST class that holds weight -- never past it."""
     raw = np.array([[0.0, -1.0, -10.0], [-10.0, 0.0, -1.0]])
     top = float(0xFFFFFF) * 2.0**-24
-    assert list(infer.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
+    assert list(model.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
     # a class ten nats under the peak weighs 4.5e-5 of it, which the top of the grid
     # reaches -- the same case Policy's own gate walks
-    assert list(infer.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
+    assert list(model.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
     # the middle of the grid stays on the heavy classes
-    assert list(infer.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
+    assert list(model.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
 
 
-def test_several_canvases_take_a_file_each():
-    """A batch is a set of whole pieces and not one piece in parts. One canvas keeps the
+def test_several_sheets_take_a_file_each():
+    """A batch is a set of whole pieces and not one piece in parts. One sheet keeps the
     name the caller gave, thus a single audition writes exactly the file it was asked
     for."""
     assert infer.audition_path("eight.mid", 0, 1) == "eight.mid"
@@ -654,7 +670,7 @@ def test_the_seeded_opening_puts_every_voice_in_its_own_register():
     from this corpus than a rest is, thus the draw is over each seat's own range and not
     over the whole roll -- and a cell the Bernoulli leaves standing then states a NOTE,
     which is what 99.8 percent of the corpus's cells state."""
-    _, drawn = infer.opening_canvas(prng.states([7, 8, 9, 10]), 32)
+    _, drawn = model.opening_sheet(prng.states([7, 8, 9, 10]), 32)
     assert drawn.shape == (4, 32, model.VOICES)
     assert not (drawn == data.SILENCE).any()
     pitches = data.pitches_of_classes(drawn)
@@ -664,11 +680,11 @@ def test_the_seeded_opening_puts_every_voice_in_its_own_register():
 
 
 def test_the_seeded_opening_is_the_seed_and_nothing_else():
-    """the project's rule: the seed is an input, and one seed gives one canvas here, in
+    """the project's rule: the seed is an input, and one seed gives one sheet here, in
     the OCaml reference and on the board"""
 
     def drawn(seeds):
-        return infer.opening_canvas(prng.states(seeds), 16)[1]
+        return model.opening_sheet(prng.states(seeds), 16)[1]
 
     assert np.array_equal(drawn([3, 4]), drawn([3, 4]))
     assert not np.array_equal(drawn([3, 4]), drawn([4, 3]))
@@ -691,7 +707,7 @@ def test_the_crops_drop_the_piece_that_is_too_short():
 def test_a_crop_never_reads_the_padded_tail():
     """The padding is a fact of the file and never a fact of the music. A crop that ran into
     it would teach the model the tail prior that owned 53 percent of the proto round's
-    canvas."""
+    sheet."""
     pieces = data.load_pieces(str(PIECES))
     crops = data.Crops(pieces["train"], model.CROP)
     rng = np.random.default_rng(0)
@@ -738,3 +754,138 @@ def test_the_loss_falls_over_a_short_run():
     # a model that has learned nothing reads log(48) = 3.87 nats for each masked cell
     assert losses[0] > 3.5, done.output
     assert losses[-1] < losses[0] - 0.5, f"the loss did not fall: {losses}"
+
+
+# ==================================================================== #
+# The integer twin: the scalar rules, and the contract file            #
+# ==================================================================== #
+
+# THE TWIN IS HELD BY THREE THINGS AND THESE ARE THE SMALLEST OF THEM. `test_rtl.py` holds
+# it against the circuit, write for write; `test_drift.py` holds it against the float model
+# it quantizes; and `test_parity.py`'s G1 holds the quantizer through the netlist the flash
+# carries. What stands here is the arithmetic each of those would break on FIRST -- a
+# rounding, an exponent, a table entry -- so that a failure names the rule and not the walk.
+
+
+@pytest.mark.parametrize(
+    "peak,exponent",
+    [(0.0, 14), (0.02, 12), (0.08, 10), (127.0, 0), (127.49, 0), (127.5, -1), (1e9, -23)],
+)
+def test_the_exponent_rule_holds_at_its_boundaries(peak, exponent):
+    """The largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
+    every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
+    exponent has to step down. A tie rounds UP and never away from zero, which is Base's
+    `Float.iround_nearest_exn` and not Python's `round`."""
+    assert quantized.max_exponent(peak) == exponent
+
+
+def test_the_byte_is_symmetric_and_ties_round_up():
+    """The byte is two's complement and the negative end is not used: the clamp is -127 and
+    not -128, thus the image is symmetric and a negated weight is a negated byte."""
+    q, e = quantized.quantize(np.array([0.02, -0.01, 0.0]))
+    assert (list(q), e) == ([82, -41, 0], 12)
+    assert quantized.round_half_up([-5.5, -2.5, 2.5, 5.5]).tolist() == [-5, -2, 3, 6]
+
+
+def test_the_exp2_table_is_the_shared_table():
+    """exp2 of -j/256 in Q15, the one table the samplers of every era read. Entry 0 is the
+    peak 2^15, a full fractional step halves, and the last entry sits one table step above
+    one half. The whole table was compared entry for entry against
+    `Nn_quantized.Constants.exp2_bits` when it was written, and no entry differed: the two
+    libm implementations agree here."""
+    table = quantized.EXP2_TABLE
+    assert (table[0], table[128], table[255]) == (32768, 23170, 16428)
+    assert quantized.exp2_of_magnitude(np.int64(4096)) == 16384
+    # a magnitude of 16 or more is zero, and the shift may not run past the host word
+    assert quantized.exp2_of_magnitude(np.int64(1 << 20)) == 0
+
+
+def test_the_temper_is_log2e_over_the_temperature():
+    """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
+    temperature, because the circuits carry this constant on an 18-bit signed port."""
+    assert quantized.temper_of(1.0) == (23637, 14)
+    assert quantized.temper_of(0.5) == (47274, 14)
+    with pytest.raises(ValueError):
+        quantized.temper_of(0.0)
+
+
+def test_the_twin_carries_the_float_models_skeleton():
+    """THE TWO TREES ARE ONE TREE, and that is what makes the twin auditable: a reader
+    puts `coconet.pairs[k].first` beside `twin.pairs[k].first` and reads one layer against
+    its own quantization, with nothing to align by hand."""
+    coconet = model.Coconet.drawn(5, 6, 8)
+    twin = quantized.QuantizedCoconet.of(coconet)
+    assert len(twin.pairs) == len(coconet.pairs)
+    for here, there in zip(twin.every_layer(), coconet.every_layer()):
+        assert here.kernel.shape == there.conv.kernel.shape
+        assert here.outputs == len(there.norm.scale[...])
+    # the stem reads the planes, the head states the voices, and each pair is two layers
+    assert twin.stem.inputs == 2 * model.VOICES
+    assert twin.head.outputs == model.VOICES
+    assert twin.pairs[0].first.outputs == twin.pairs[0].second.inputs
+
+
+def test_the_contract_file_round_trips_exactly(tmp_path):
+    """`save` then `load` is the identity: the seam carries the whole model and nothing of
+    it is re-derived on either side of the file."""
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8), 0.9)
+    path = tmp_path / "round-trip.int8"
+    quantized.save(path, twin)
+    read = quantized.load(path)
+    assert read.temper == twin.temper
+    assert len(read.pairs) == len(twin.pairs)
+    for here, there in zip(read.every_layer(), twin.every_layer()):
+        assert here.e == there.e
+        assert np.array_equal(np.asarray(here.kernel[...]), np.asarray(there.kernel[...]))
+        assert np.array_equal(here.gain_q_value[...], there.gain_q_value[...])
+        assert np.array_equal(here.gain_q[...], there.gain_q[...])
+        assert np.array_equal(here.bias[...], there.bias[...])
+
+
+def rebuilt(twin, **parts):
+    """the same twin with some of its parts replaced -- the tree's `_replace`"""
+    held = {
+        "stem": twin.stem,
+        "pairs": list(twin.pairs),
+        "head": twin.head,
+        "temper": twin.temper,
+    }
+    return quantized.QuantizedCoconet(**{**held, **parts})
+
+
+def test_a_broken_model_refuses_loudly():
+    """`check_shape` states the rules its consumers assume, and the elaboration calls it
+    where a bad shape must fail loudly.
+
+    THE SHORT AND THE ODD TRUNK ARE NOT AMONG THEM ANY MORE: a [QuantizedCoconet] is a
+    stem, whole pairs and a head by construction, thus neither can be built. What a file
+    of the wrong tensor count meets is `load`, and the test below holds that."""
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    head = twin.head
+    chopped = quantized.QuantizedNormedConv(
+        kernel=head.kernel[...],
+        e=head.e,
+        gain_q_value=head.gain_q_value[...],
+        gain_q=head.gain_q[...],
+        bias=head.bias[...][:2],
+    )
+    with pytest.raises(ValueError, match="do not cover its channels"):
+        quantized.check_shape(rebuilt(twin, head=chopped))
+    # a head that reads a width the pair before it did not write
+    narrow = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 4))
+    with pytest.raises(ValueError, match="the layer before it"):
+        quantized.check_shape(rebuilt(twin, head=narrow.head))
+
+
+def test_a_contract_file_of_the_wrong_shape_refuses_loudly(tmp_path):
+    """The file is a FLAT list and the tree is not, thus the count is checked where the
+    two meet: a file that holds no whole residual pairs is no model of this era."""
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    path = tmp_path / "short.int8"
+    quantized.save(path, twin)
+    tensors = load_file(str(path))
+    for name in (str(quantized.LAYER_TENSORS * 5 + on) for on in range(5)):
+        del tensors[name]
+    save_file(tensors, str(path))
+    with pytest.raises(ValueError, match="no quantized sheet model"):
+        quantized.load(path)

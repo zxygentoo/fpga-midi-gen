@@ -209,7 +209,7 @@ def adamw(state, params, grads, t, lr, *, clip, weight_decay):
     the step count, which the bias correction reads.
 
     It stands apart from [make_step] because the update rule is one thing and the shape of
-    a step is another: the canvas era carries the batch-norm population statistics beside
+    a step is another: the sheet era carries the batch-norm population statistics beside
     the two moments, and its step is its own while the rule here stays shared."""
     m, v = state
     if clip > 0.0:

@@ -1,0 +1,307 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1372" viewBox="0 0 1560 1372" role="img" aria-label="Block schematic of the diffusion source: the elaboration, the walk and its one generator, the canvas with three faces, the column engine with its memories bands array and epilogue, the draw, and the five broadcast families the round answered">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+      --hot: #b91c1c; --hot-fill: #fdecec;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .h  { font-size: 15px; font-weight: 700; }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .hs { font-size: 10.5px; fill: var(--hot); }
+    .hb { font-size: 11px; font-weight: 700; fill: var(--hot); }
+    .n  { font-size: 11px; font-weight: 700; fill: #ffffff; }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .outacc  { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke: var(--line); stroke-width: 1; fill: none; opacity: .8; }
+    .elab    { stroke: var(--accent); stroke-width: 1.3; fill: none; stroke-dasharray: 6 4; }
+    .state   { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .hotwire { stroke: var(--hot); stroke-width: 2.4; fill: none; }
+    .pip     { fill: var(--hot); }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+    <marker id="e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+    <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--hot)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1560" height="1372" fill="var(--bg)"/>
+
+  <text class="h" x="28" y="32">The diffusion machine — era six, rung 3 on the Nexys 4</text>
+  <text class="s" x="28" y="52">One canvas of T steps by four seats. A rewind draws it whole through N passes of blocked Gibbs; a step plays one of its frames. docs/diffusion_rtl.md is the design.</text>
+
+  <!-- L1: the elaboration -->
+  <rect class="outacc" x="150" y="70" width="1250" height="58" rx="8"/>
+  <text class="b" x="164" y="92" style="fill:var(--accent)">L1 · Elaboration.t<tspan class="s"> — a value, and THE ONLY MODULE THAT READS THE MODEL. A new checkpoint moves one line of gen_verilog and nothing else.</tspan></text>
+  <text class="s" x="164" y="112">the layer table, 64 rows · the weight image in DWELL order · the norm words, gain and shift and bias at one address · the anneal table · the seat openings · the temper</text>
+  <text class="s" x="1416" y="92">rung 3</text>
+  <text class="s" x="1416" y="108">l48-h20-100k</text>
+  <text class="s" x="1416" y="124">T 128 · P 48</text>
+  <text class="s" x="1416" y="140">H 16 · G 4 · N 512</text>
+
+  <!-- the source -->
+  <rect class="outacc" x="150" y="150" width="1250" height="978" rx="8"/>
+  <text class="b" x="164" y="172" style="fill:var(--accent)">Source<tspan class="s"> — the era's face to Source_intf, unchanged. ONE unit: the FSM, the generator, the openings, the alpha ROM, the draw service and the socket.</tspan></text>
+
+  <!-- the ports -->
+  <text class="t" x="144" y="216" text-anchor="end">rewind</text>
+  <text class="s" x="144" y="232" text-anchor="end">loads SEED</text>
+  <line class="wire" x1="150" y1="211" x2="180" y2="211" marker-end="url(#a)"/>
+  <text class="t" x="144" y="268" text-anchor="end">step</text>
+  <text class="s" x="144" y="284" text-anchor="end">one frame</text>
+  <line class="wire" x1="150" y1="263" x2="180" y2="263" marker-end="url(#a)"/>
+
+  <!-- L4: the walk -->
+  <rect class="blk" x="180" y="190" width="560" height="150" rx="5"/>
+  <text class="b" x="194" y="212">L4 · the walk</text>
+  <text class="s" x="194" y="230">one rest, thus rewind is read where idle stands and the generator's load rides it</text>
+
+  <rect class="state" x="196" y="246" width="98" height="32" rx="4"/>
+  <text class="t" x="245" y="266" text-anchor="middle">Idle · PLAY</text>
+  <line class="wire" x1="294" y1="262" x2="312" y2="262" marker-end="url(#a)"/>
+  <rect class="state" x="312" y="246" width="76" height="32" rx="4"/>
+  <text class="t" x="350" y="266" text-anchor="middle">OPEN</text>
+  <line class="wire" x1="388" y1="262" x2="406" y2="262" marker-end="url(#a)"/>
+  <rect class="state" x="406" y="246" width="76" height="32" rx="4"/>
+  <text class="t" x="444" y="266" text-anchor="middle">MASK</text>
+  <line class="wire" x1="482" y1="262" x2="500" y2="262" marker-end="url(#a)"/>
+  <rect class="state" x="500" y="246" width="82" height="32" rx="4"/>
+  <text class="t" x="541" y="266" text-anchor="middle">SERVE</text>
+  <polyline class="elab" points="541,246 541,236 406,236 406,244" marker-end="url(#e)"/>
+  <text class="s" x="600" y="266" style="fill:var(--accent)">× N passes</text>
+  <polyline class="wire" points="541,278 541,296 245,296 245,280" marker-end="url(#a)"/>
+  <text class="s" x="194" y="316">OPEN and MASK are ONE cell walk with two write faces; the frame that WRITES</text>
+  <text class="s" x="194" y="332">stands two cycles behind the frame that DRAWS, thus a phase costs two more</text>
+
+  <!-- the generator -->
+  <rect class="blk" x="756" y="190" width="300" height="150" rx="5"/>
+  <text class="b" x="770" y="212">Prng.Rtl · the one generator</text>
+  <text class="s" x="770" y="232">xorshift32, one step a cycle. It serves the</text>
+  <text class="s" x="770" y="248">opening, every mask and every draw IN ONE</text>
+  <text class="s" x="770" y="264">ORDER — the consumption order is the rule.</text>
+  <text class="s" x="770" y="288" style="fill:var(--hot)">u24 &lt;- (u24 &lt;&lt; 8) | byte, HIGH BYTE FIRST,</text>
+  <text class="s" x="770" y="304" style="fill:var(--hot)">and a byte lands one cycle behind its step</text>
+  <text class="s" x="770" y="328">the opening: low + ((k · width) &gt;&gt; 24), LUTs</text>
+
+  <!-- the alpha rom -->
+  <rect class="blk" x="1072" y="190" width="314" height="150" rx="5"/>
+  <text class="b" x="1086" y="212">the alpha ROM</text>
+  <text class="s" x="1086" y="232">N entries of 24 bits: the annealed schedule</text>
+  <text class="s" x="1086" y="248">of the paper, on the generator's own grid</text>
+  <text class="s" x="1086" y="274">hidden = k &lt; alpha[pass]</text>
+  <text class="s" x="1086" y="300">read at the start of the pass through the</text>
+  <text class="s" x="1086" y="316">registered read — the address before the</text>
+  <text class="s" x="1086" y="332">memory, which is era four's rule</text>
+
+  <!-- the canvas -->
+  <rect class="blk" x="180" y="366" width="250" height="290" rx="5"/>
+  <text class="b" x="194" y="388">Canvas</text>
+  <text class="s" x="194" y="406">T × 4 cells, registers: a class and</text>
+  <text class="s" x="194" y="422">a mask bit for each. Written IN</text>
+  <text class="s" x="194" y="438">PLACE, and no clear anywhere.</text>
+
+  <rect class="outline" x="194" y="452" width="222" height="58" rx="4"/>
+  <text class="t" x="206" y="472">the cell port</text>
+  <text class="s" x="206" y="488">one address, three users, and</text>
+  <text class="s" x="206" y="502">no contention BY STATE</text>
+
+  <rect class="outline" x="194" y="520" width="222" height="58" rx="4"/>
+  <text class="t" x="206" y="540">the stem face</text>
+  <text class="s" x="206" y="556">a plane column, P × int16,</text>
+  <text class="s" x="206" y="570">whole and combinational</text>
+
+  <rect class="outline" x="194" y="588" width="222" height="56" rx="4"/>
+  <text class="t" x="206" y="608">the score face</text>
+  <text class="s" x="206" y="624">Vocab.Rtl → one frame; past</text>
+  <text class="s" x="206" y="638">T - 1, four zero bytes</text>
+
+  <!-- the cost -->
+  <rect class="outline" x="180" y="684" width="250" height="164" rx="5"/>
+  <text class="b" x="194" y="706">one pass at the rung</text>
+  <text class="s" x="194" y="724">the elaboration's count, exact</text>
+  <text class="t" x="194" y="748">4 631 040 cycles less the draw</text>
+  <text class="s" x="194" y="768">forward 4 629 504 · cell walk 1 536</text>
+  <text class="s" x="194" y="784">rung 1, measured whole in Cyclesim,</text>
+  <text class="s" x="194" y="806">ran inside a percent of its count —</text>
+  <text class="s" x="194" y="822">the same machine, a longer table.</text>
+  <text class="s" x="194" y="838">N 512 ≈ 23.7 s of a 25.6 s score.</text>
+
+  <!-- the column engine -->
+  <rect class="outline" x="460" y="366" width="926" height="570" rx="6"/>
+  <text class="b" x="474" y="388">Forward · the column engine<tspan class="s"> — one pass over the canvas as it stands. It takes the elaboration itself, thus no width is stated twice.</tspan></text>
+  <text class="s" x="474" y="406">the dwell is the column, then the output group, then the input channel, then the tap — nine cycles of work, and every fetch of the rotation hides under it</text>
+
+  <!-- the memories -->
+  <rect class="blk" x="474" y="420" width="266" height="62" rx="4"/>
+  <text class="t" x="486" y="440">X, the store, and the Y ring</text>
+  <text class="s" x="486" y="458">T · H columns of P × 16 bits;</text>
+  <text class="s" x="486" y="474">the map is the elaboration's</text>
+
+  <rect class="blk" x="754" y="420" width="266" height="62" rx="4"/>
+  <text class="t" x="766" y="440">the norm ROM</text>
+  <text class="s" x="766" y="458">gain, shift and bias at ONE</text>
+  <text class="s" x="766" y="474">address, never out of step</text>
+
+  <rect class="blk" x="1034" y="420" width="266" height="62" rx="4"/>
+  <text class="t" x="1046" y="440">the weight ROM · two banks</text>
+  <text class="s" x="1046" y="458">the dwell order, thus the address</text>
+  <text class="s" x="1046" y="474">ONLY COUNTS · 32 768 + 1 024 of 33 588</text>
+
+  <!-- the bands -->
+  <rect class="blk" x="474" y="522" width="266" height="62" rx="4"/>
+  <text class="t" x="486" y="542">the window · three slots</text>
+  <text class="s" x="486" y="560">rotated IN PLACE: t-1, t, t+1;</text>
+  <text class="s" x="486" y="576">beyond the roll, a zero column</text>
+  <circle class="pip" cx="722" cy="534" r="10"/>
+  <text class="n" x="722" y="538" text-anchor="middle">5</text>
+
+  <rect class="blk" x="754" y="522" width="266" height="62" rx="4"/>
+  <text class="t" x="766" y="542">the norm bank</text>
+  <text class="s" x="766" y="560">G entries a group; one band</text>
+  <text class="s" x="766" y="576">serves every group</text>
+
+  <rect class="blk" x="1034" y="522" width="266" height="62" rx="4"/>
+  <text class="t" x="1046" y="542">the residual band</text>
+  <text class="s" x="1046" y="560">G columns of X for the join</text>
+  <text class="s" x="1046" y="576">of a closing pair</text>
+  <circle class="pip" cx="1282" cy="534" r="10"/>
+  <text class="n" x="1282" y="538" text-anchor="middle">4</text>
+
+  <!-- the array -->
+  <rect class="blk" x="474" y="618" width="826" height="152" rx="4"/>
+  <text class="b" x="486" y="640">L2 · Column_array — P rows × G lanes = 192 DSP48, one for each lane</text>
+  <text class="s" x="486" y="658">weight-stationary: ONE WEIGHT READ FEEDS P LANES. Two broadcast trees — the weight to every row, the column to every</text>
+  <text class="s" x="486" y="674">lane — and the accumulation stands INSIDE the DSP over the 9·Cin dwell, thus no adder tree stands anywhere.</text>
+  <line class="thin" x1="486" y1="690" x2="1288" y2="690"/>
+  <text class="t" x="486" y="710">the drain chain · P stages</text>
+  <text class="s" x="486" y="726">the array's output port: without it that port is P by G by 32 bits, which is neither wireable nor testable alone.</text>
+  <text class="s" x="486" y="742">ONE capture register drives every stage of it.</text>
+  <circle class="pip" cx="1272" cy="712" r="10"/>
+  <text class="n" x="1272" y="716" text-anchor="middle">3</text>
+
+  <!-- the epilogue and the writes -->
+  <rect class="blk" x="474" y="794" width="406" height="88" rx="4"/>
+  <text class="b" x="486" y="816">L3 · Epilogue</text>
+  <text class="s" x="486" y="834">the folded norm — gain, shift, bias — then the</text>
+  <text class="s" x="486" y="850">ReLU, the clamp, and the residual add of a close</text>
+  <text class="s" x="486" y="872" style="fill:var(--muted)">fed by the norm bank and the residual band above</text>
+
+  <rect class="blk" x="894" y="794" width="406" height="88" rx="4"/>
+  <text class="b" x="906" y="816">the output band → the column write</text>
+  <text class="s" x="906" y="834">G columns buffered, then one write a cycle when</text>
+  <text class="s" x="906" y="850">the band stands whole. A pass leaves the stores</text>
+  <text class="s" x="906" y="866">as it found them, except X — thus no clear.</text>
+
+  <!-- the logit file -->
+  <rect class="blk" x="474" y="892" width="826" height="34" rx="4"/>
+  <text class="b" x="486" y="908">the logit file · four columns of P × int16 — THE HEAD WRITES ONE STEP AND NOT A TENSOR</text>
+  <text class="s" x="486" y="922">step_ready is a LEVEL and NO TAG CROSSES THE SEAM: the walk counts its own acknowledgements, and that count IS the step.</text>
+
+  <!-- the spine -->
+  <line class="wire" x1="607" y1="482" x2="607" y2="520" marker-end="url(#a)"/>
+  <line class="wire" x1="887" y1="482" x2="887" y2="520" marker-end="url(#a)"/>
+  <polyline class="wire" points="700,482 700,500 1167,500 1167,520" marker-end="url(#a)"/>
+  <line class="wire" x1="607" y1="584" x2="607" y2="616" marker-end="url(#a)"/>
+  <line class="wire" x1="607" y1="770" x2="607" y2="792" marker-end="url(#a)"/>
+  <line class="wire" x1="880" y1="838" x2="892" y2="838" marker-end="url(#a)"/>
+  <line class="wire" x1="607" y1="882" x2="607" y2="890" marker-end="url(#a)"/>
+
+  <!-- the stem, into the window -->
+  <polyline class="wire" points="430,549 450,549 450,555 472,555" marker-end="url(#a)"/>
+  <text class="s" x="432" y="540">stem</text>
+
+  <!-- HOT 2: the weight net, down the right channel -->
+  <polyline class="hotwire" points="1300,451 1338,451 1338,660 1302,660" marker-end="url(#h)"/>
+  <circle class="pip" cx="1338" cy="600" r="10"/>
+  <text class="n" x="1338" y="604" text-anchor="middle">2</text>
+
+  <!-- the draw -->
+  <rect class="blk" x="460" y="954" width="926" height="122" rx="5"/>
+  <text class="b" x="474" y="976">Draw · one cell's logits and one uniform into one class</text>
+  <text class="s" x="474" y="994">era four's pipeline, and THE PICK ALWAYS LANDS — the peak's own weight is the whole of Q15, thus no last-class arm stands below.</text>
+
+  <rect class="outline" x="474" y="1006" width="196" height="56" rx="4"/>
+  <text class="t" x="486" y="1026">the peak</text>
+  <text class="s" x="486" y="1042">P cycles. The draw takes</text>
+  <text class="s" x="486" y="1056">its own, never handed in.</text>
+  <line class="wire" x1="670" y1="1034" x2="688" y2="1034" marker-end="url(#a)"/>
+
+  <rect class="outline" x="688" y="1006" width="220" height="56" rx="4"/>
+  <text class="t" x="700" y="1026">the tempered weights</text>
+  <text class="s" x="700" y="1042">exp2 over the era's own</text>
+  <text class="s" x="700" y="1056">fork, one magnitude a cycle</text>
+  <circle class="pip" cx="896" cy="1014" r="10"/>
+  <text class="n" x="896" y="1018" text-anchor="middle">1</text>
+  <line class="wire" x1="908" y1="1034" x2="926" y2="1034" marker-end="url(#a)"/>
+
+  <rect class="outline" x="926" y="1006" width="196" height="56" rx="4"/>
+  <text class="t" x="938" y="1026">the threshold</text>
+  <text class="s" x="938" y="1042">(u24 · total) &gt;&gt; 24, and</text>
+  <text class="s" x="938" y="1056">it stands under the total</text>
+  <line class="wire" x1="1122" y1="1034" x2="1140" y2="1034" marker-end="url(#a)"/>
+
+  <rect class="outline" x="1140" y="1006" width="232" height="56" rx="4"/>
+  <text class="t" x="1152" y="1026">the pick</text>
+  <text class="s" x="1152" y="1042">154 cycles at P 48, always —</text>
+  <text class="s" x="1152" y="1056">a bound is not stated</text>
+
+  <line class="wire" x1="760" y1="926" x2="760" y2="952" marker-end="url(#a)"/>
+  <text class="s" x="768" y="944">the seat's logits, standing still exactly while the level stands</text>
+
+  <!-- the drawn class, back to the canvas -->
+  <polyline class="hotwire" points="460,1076 460,1100 164,1100 164,481 180,481" marker-end="url(#h)"/>
+  <text class="s" x="186" y="1092">the drawn class → the cell port</text>
+
+  <!-- the frame, out to the socket -->
+  <polyline class="wire" points="430,616 444,616 444,1084 1400,1084" marker-end="url(#a)"/>
+  <text class="t" x="1416" y="1080">frame · valid</text>
+  <text class="s" x="1416" y="1096">four voice codes,</text>
+  <text class="s" x="1416" y="1112">seat 0 the low byte,</text>
+  <text class="s" x="1416" y="1128">one cycle behind step</text>
+  <text class="s" x="1416" y="1150">idle — the rest,</text>
+  <text class="s" x="1416" y="1166">and the PLAY phase</text>
+
+  <!-- the measured band -->
+  <rect class="outline" x="150" y="1156" width="1250" height="200" rx="6"/>
+  <text class="b" x="164" y="1178">Ring 3, the broadcast round and the ROM round — THE MACHINE MEETS on the real part, and every resource lands on the model.</text>
+
+  <text class="t" x="164" y="1204">192 DSP48 (80%)</text>
+  <text class="s" x="164" y="1220">one for each lane, exactly, and every</text>
+  <text class="s" x="164" y="1234">absorption of era four's trap still</text>
+  <text class="s" x="164" y="1248">holds — the B port alone now runs</text>
+  <text class="s" x="164" y="1262">direct, from the replica bank</text>
+
+  <text class="t" x="440" y="1204">108.5 block RAM (80.4%) · 240 of 240 DSPs</text>
+  <text class="s" x="440" y="1220">108.5 of 135: 54 the X store, 11 the Y ring,</text>
+  <text class="s" x="440" y="1234">40 + 2 the weight banks, 1 the norms, and</text>
+  <text class="s" x="440" y="1248">the anneal and exp2 in two RAMB18</text>
+  <text class="s" x="440" y="1262">25 476 LUTs · 27 888 registers</text>
+
+  <text class="t" x="740" y="1204" style="fill:var(--accent)">WNS +0.147 — MET</text>
+  <text class="s" x="740" y="1220">0 failing endpoints of 72 826, hold +0.013</text>
+  <text class="s" x="740" y="1234">ring 3 first read −6.125, 11 002 failing;</text>
+  <text class="s" x="740" y="1248">the broadcast round answered it, and each</text>
+  <text class="s" x="740" y="1262">rung banked met on one roll: +0.007, +0.008</text>
+
+  <text class="hb" x="1064" y="1204">the five families, and what answered each</text>
+  <text class="hs" x="1064" y="1220">① the draw's magnitude cone, cut in four</text>
+  <text class="hs" x="1064" y="1234">② the weight bytes: a mux, then a replica</text>
+  <text class="hs" x="1064" y="1248">③ the capture select, a bank a stage</text>
+  <text class="hs" x="1064" y="1262">④ band_row, a replica a slice</text>
+  <text class="hs" x="1064" y="1276">⑤ the window slots and the bands, sliced</text>
+
+  <text class="s" x="164" y="1296">NO ARRAY-SCALE NET KEEPS A SINGLE DRIVER, and that is the whole of the broadcast round. Ring 3 first read −6.125 on a family of five: one RAMB36 output bit drove 528 pins at</text>
+  <text class="s" x="164" y="1312">12.4 ns of PURE ROUTE, because the rule that buys the zero logic levels — the data register absorbed INTO the BRAM — leaves no flop in the fabric to replicate. The answer is a</text>
+  <text class="s" x="164" y="1328">dont_touch replica bank at every slice of eight rows, and the draw's 21-level magnitude cone cut into four registers. A ROM PAYS FOR ITS WHOLE ADDRESS SPACE and no warning says</text>
+  <text class="s" x="164" y="1344">so either: this rung's image padded 36 144 words to 65 536 and lost EVERY ROM to fabric at 42 599 LUTs, until the elaboration banked it. Rung 1 banked: +0.007 at 96.0 tiles, 21 331 LUTs.</text>
+</svg>

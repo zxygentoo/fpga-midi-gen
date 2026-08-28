@@ -30,11 +30,24 @@ let next state =
   state, state land 0xff
 ;;
 
+let byte_bits = 8
+let uniform_bytes = 3
+let uniform_bits = uniform_bytes * byte_bits
+
+(* the first byte is the highest: the word is the bytes in the order of the walk *)
+let uniform_word state =
+  List.fold
+    (List.range 0 uniform_bytes)
+    ~init:(state, 0)
+    ~f:(fun (state, word) (_ : int) ->
+      let state, byte = next state in
+      state, (word lsl byte_bits) lor byte)
+;;
+
+(* [ldexp] is exact: the word has [uniform_bits] bits and a double holds 53 *)
 let uniform state =
-  let state, high = next state in
-  let state, middle = next state in
-  let state, low = next state in
-  state, Float.of_int ((((high * 256) + middle) * 256) + low) *. 0x1p-24
+  let state, word = uniform_word state in
+  state, Float.ldexp (Float.of_int word) (-uniform_bits)
 ;;
 
 (* A walk, not an [init]: the order of the elements of [init] is free, thus it cannot
@@ -293,3 +306,22 @@ let%expect_test "the circuit walks with the software" =
     1000 steps agree: true
     |}]
 ;;
+
+(* What a seeded gate needs — see prng.mli. The draws map the generator's grid onto a
+   range and never take a modulo of a byte. *)
+module For_test = struct
+  let draw state ~limit =
+    let state, u = run uniform state in
+    state, Int.of_float (u *. Float.of_int ((2 * limit) + 1)) - limit
+  ;;
+
+  let draw_between state ~low ~high =
+    let state, u = run uniform state in
+    state, low + Int.of_float (u *. Float.of_int (high - low + 1))
+  ;;
+
+  let draw_array state ~len ~limit =
+    Array.fold_map (Array.create ~len 0) ~init:state ~f:(fun state (_ : int) ->
+      draw state ~limit)
+  ;;
+end

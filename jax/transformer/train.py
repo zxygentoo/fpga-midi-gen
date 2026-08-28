@@ -1,4 +1,4 @@
-"""The trainer of the step-frame model of docs/transformer_model.md.
+"""The trainer of the step-frame model of docs/transformer.md.
 
 Run it from the jax directory as a module:
 

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document gives the design of the model of era six: a MASKED CANVAS.
+This document gives the design of the model of era six: a MASKED SHEET.
 Eight measures of four voices stand as one piano roll, some of its cells are
 hidden, and the model states a distribution over the pitch of every cell at
 once. Nothing here is causal and nothing is written left to right — a piece
@@ -20,7 +20,7 @@ can get from outside itself. "The lineage since the paper" below states what
 the field learned in between, and which of it the era takes.
 
 **THE DELIVERABLE IS THE CURVE OF QUALITY AGAINST N.** The board draws one
-canvas while the last one plays, thus the passes it can afford are counted
+sheet while the last one plays, thus the passes it can afford are counted
 and the curve alone says whether the masked era reaches the RTL. Everything
 else here serves that number: the ladder finds the shape, the referees say
 what a shape is worth, and the ear elects.
@@ -33,27 +33,27 @@ failed on. The paper's size is the last rung and it is the reference: it
 never goes on the board, and its number is what says this stack is right.
 
 Not in this round: whole pieces, endings, the length mask, the RTL. The
-canvas is 128 sixteenth steps and one chorale in a hundred fits inside it,
-thus a canvas is a crop and it stops where the corpus was cut instead of
+sheet is 128 sixteenth steps and one chorale in a hundred fits inside it,
+thus a sheet is a crop and it stops where the corpus was cut instead of
 ARRIVING. That is the open musical problem the era inherits, it is the
 reason for the fade and the rest on the audition wire, and the round that
 answers it is in "Deferred". The findings of `feat/diffusion-proto` are
 built into this one: the piano roll reads pitch, the padded tail starves the
-canvas, and the trunk completes where it does not invent.
+sheet, and the trunk completes where it does not invent.
 
 ## Why the masked objective
 
 The Gaussian round failed in ways that belong to its objective, not to the
-canvas. A mean-square loss states the mean of the pitches that fit, which is
+sheet. A mean-square loss states the mean of the pitches that fit, which is
 not a pitch: the drawn cells stood a coin toss from the lattice. The padded
-tail gave silence a 53 percent prior, and the loss hedged the canvas thin.
+tail gave silence a 53 percent prior, and the loss hedged the sheet thin.
 Both terms leave with the objective. A softmax over the pitch rows cannot
 state a mean — a sample is a pitch, every time. And blocked Gibbs spends its
 walk in the completion regime, which is the regime the proto proved: a trunk
-that finishes a noised corpus canvas into real chorale texture, and rewrites
+that finishes a noised corpus sheet into real chorale texture, and rewrites
 under a growing context what a one-way chain freezes early.
 
-## The canvas
+## The sheet
 
 The sixteenth grid, as the paper states. A training example is a crop of
 T = 128 steps — eight measures — taken uniformly inside one piece. One piece
@@ -89,7 +89,7 @@ This size never goes near the board. It states the ceiling and it is the
 reference of the round; what reaches the board is a rung far below it, and
 the ladder below states how far. The pitch axis is the paper's reason:
 contrapuntal rules are near-invariant to translation in time and in pitch —
-the equivariance the proto's channel canvases had to learn from 228
+the equivariance the proto's channel sheets had to learn from 228
 chorales, and did not.
 
 ## The ladder
@@ -150,8 +150,8 @@ bar either way and L 64 reaches four, which is a whole chorale phrase; that
 is the axis era four's open defect stands on — the silences that stop without
 arriving. A crop holds no cadence, thus the next round measures it.
 
-The canvas passes one window affords, against the MAC lanes. One canvas is
-25.6 seconds of music at the audition's step, and the next canvas is drawn
+The sheet passes one window affords, against the MAC lanes. One sheet is
+25.6 seconds of music at the audition's step, and the next sheet is drawn
 while this one plays:
 
 | L | H | 1 lane | 2 | 4 | 8 | 16 | 32 |
@@ -181,7 +181,7 @@ The paper's own line reads "|C| ~ U(1, D)" for the context. That is its slip
 and not its model: its reweighting term D − d + 1 IS the masked count, and a
 context of all D cells divides by zero. The code release settles it —
 `OrderlessMaskoutMethod` draws `k = choice(D) + 1` cells to mask. The divisor
-is per canvas, because each canvas of a batch drew its own count.
+is per sheet, because each sheet of a batch drew its own count.
 
 The code release also carries one default that the paper's equation 9 does
 not: it puts the context cells inside the loss too. This round follows the
@@ -194,9 +194,11 @@ and no L2 anywhere. Batch norm and the best-by-valid checkpoint are its whole
 regularization. The rate is in neither the paper nor a flag — the release
 carries `2**-4` and `2**-6` and halves on a plateau of five epochs. The
 plateau rule does not carry over: the trainer runs the warmup and cosine
-decay of `nn.schedule`, as every era of this project trains, and the sweep
-below stands on that schedule. Measured 2026-08-24 at two ends of the ladder,
-over 1,500 steps, in valid nats for each masked cell:
+decay every era of this project trains under, and the sweep below stands on
+that schedule. The sweep was measured under `nn.schedule`; the trainer states
+the same curve through optax now, and `test_train.py` holds the two equal at
+every step. Measured 2026-08-24 at two ends of the ladder, over 1,500 steps,
+in valid nats for each masked cell:
 
 | shape | 3e-4 | 1e-3 | 3e-3 | 1.6e-2 | 3e-2 | 6e-2 |
 |---|---|---|---|---|---|---|
@@ -237,7 +239,7 @@ to keep it that way. The paper starts on "an empty (zero everywhere) piano
 roll" and its roll has no silence row, thus an empty cell there states
 nothing. THIS roll holds silence as a class, so an empty cell states a REST
 with the authority of context, and the corpus rests in 0.35 percent of its
-cells; at alpha_max 0.9 the opening Bernoulli leaves a tenth of the canvas
+cells; at alpha_max 0.9 the opening Bernoulli leaves a tenth of the sheet
 standing and a tenth of it would be a lie. The round paid for that with an
 opening step that masked the whole free region — one step unlike every other,
 and a branch the RTL would have to carry.
@@ -248,7 +250,7 @@ pitch drawn from the seed, each voice inside its own register of
 — and four voices sounding is 99.8 percent of the corpus. The release ships
 this initialiser itself, as `UniformRandomSampler` beside `ZeroSampler`.
 
-Measured 2026-08-25 on L 48 by H 20 over 256 canvases, THE TWO OPENINGS ARE
+Measured 2026-08-25 on L 48 by H 20 over 256 sheets, THE TWO OPENINGS ARE
 THE SAME INSTRUMENT. On the parallels they part by under half an error at
 every N above 32, and at N 32 the silent opening leads by 1.6 and 1.3 errors,
 which is not significant across ten comparisons and sits at a budget the
@@ -259,7 +261,7 @@ measured on it and carry forward unchanged.
 
 **The curve of the round is quality against N**, over N in 32, 64, 128, 256
 and 512, read by the referees below. The board's silence window affords tens
-of canvas passes, thus this curve alone decides whether the masked era
+of sheet passes, thus this curve alone decides whether the masked era
 reaches the RTL.
 
 ## The referees
@@ -276,7 +278,7 @@ reaches the RTL.
      ordering, and on the model's own answers for the voices before it
      inside the frame. Algorithm 1 restores the ground truth at each frame
      boundary. Therefore the frames are independent given the ordering, and
-     the referee costs I forward passes over a stack of T canvases, not I
+     the referee costs I forward passes over a stack of T sheets, not I
      times T passes.
    - The model's own answer is written as the ARGMAX. The paper's Algorithm
      1 draws there; its code release takes the argmax, and the code release
@@ -300,7 +302,7 @@ reaches the RTL.
    median runs 9.97 at the smallest rung to 11.25 at the largest, thus
    CAPACITY BUYS THE ORDINARY FRAME AND NOT THE EXCEPTIONAL ONE.
 
-   Read the tail against what it measures. These are CORPUS canvases, thus a
+   Read the tail against what it measures. These are CORPUS sheets, thus a
    frame of high nats is a frame where Bach surprised the model and not one
    where the model wrote something strange.
 
@@ -338,7 +340,7 @@ reaches the RTL.
    alone. The corpus reads **1.37 fifths and 1.06 octaves for each thousand
    pairs that move, with 15.2 percent of its pairs moving**.
 
-   A parallel is a rare event. 64 canvases hold a Poisson error near a sixth
+   A parallel is a rare event. 64 sheets hold a Poisson error near a sixth
    of the count, thus a comparison between two models wants 256.
 3. **The ear.** Gibbs draws of eight measures through the audition rig —
    the excerpt length the paper's raters heard. A harmonization audition —
@@ -347,7 +349,7 @@ reaches the RTL.
    is the whole-piece round's thesis, and the mask planes give it back for
    one flag whenever that round wants it.
 
-   `--gap` puts a silence between two canvases on the wire and `--fade`
+   `--gap` puts a silence between two sheets on the wire and `--fade`
    takes the velocity down over the last bar of one, two bars and one bar
    by default. The fade reaches only the notes that BEGIN inside its
    window — velocity is a fact of the onset, and the S-1 makes a control
@@ -355,11 +357,11 @@ reaches the RTL.
    not chosen: a crop's last note has been sounding 4.5 steps in the mean,
    so a bar catches 99 percent of the final notes where four steps catches
    67 and finds no onset at all in 18 percent of crops. The gap doubled
-   when the fade arrived, because a canvas that ends quiet has less to
+   when the fade arrived, because a sheet that ends quiet has less to
    part from. A batch is several INDEPENDENT draws and each one is a whole
    piece; with nothing between them the second opens on the first one's
    last chord, which no performance does. The ear set the bar on
-   2026-08-25 and reported what the silence CANNOT do: a canvas is a crop
+   2026-08-25 and reported what the silence CANNOT do: a sheet is a crop
    and it stops where the corpus was cut, thus it does not arrive, and no
    silence after a phrase that never closed makes it sound closed. That is
    the deferred whole-piece round below, and it is the open musical
@@ -417,7 +419,7 @@ ceiling's 9.9× is its 62 times the parameters and not its H 128.
 Every vertical instrument says these models have arrived — the ceiling reads
 triads 62.6 against the corpus's 62.7, dissonance 10.5 against 10.7, hold
 76.5 against 77.3. What happens BETWEEN two chords has not arrived at all.
-At N 512 over 256 canvases, for each thousand pairs that move together:
+At N 512 over 256 sheets, for each thousand pairs that move together:
 
 | | 5ths | octaves |
 |---|---|---|
@@ -459,7 +461,7 @@ exactly as the mean does and separate them no better. The 99th does not move
 with capacity at all: the CEILING — the ear's own first choice — holds the
 best mean, median and 90th and **the heaviest 99th of the whole ladder**,
 and the ratio of the 99th to the median climbs 9.97 → 11.19 → 14.66 as the
-rungs grow. These are CORPUS canvases, thus a frame of high nats is one
+rungs grow. These are CORPUS sheets, thus a frame of high nats is one
 where BACH surprised the model and not one where the model wrote something
 strange.
 
@@ -481,12 +483,12 @@ Wrong less often and more badly is a trade the mean cannot see.
 - **Valid nats and framewise nats do not map across shapes.** L 106 by H 12
   holds the best valid of any rung outside the ceiling and is 0.59 of an
   error BEHIND the board rung on Algorithm 1. Elect on the referee.
-- **A parallel is a rare event.** At 64 canvases its Poisson error is near a
+- **A parallel is a rare event.** At 64 sheets its Poisson error is near a
   sixth of the count; draw 256 before quoting a comparison between two
   models.
-- **The bar phase of a training canvas is uniformly randomised.** 65.2
+- **The bar phase of a training sheet is uniformly randomised.** 65.2
   percent of chorales are a whole number of bars plus a quarter-note
-  anacrusis, and `Crops.crop` draws its start uniformly — so a canvas begins
+  anacrusis, and `Crops.crop` draws its start uniformly — so a sheet begins
   on a random beat and THE MODEL CAN LEARN NO METRE FROM POSITION. Aligning
   crops to the real downbeats is a cheap untested lever.
 - **The likelihood referee at the paper's size writes nothing for 39
@@ -507,8 +509,8 @@ Measured 2026-08-24 on the RTX 3060 (12 GB), at the paper's shape:
 | one training step, batch 16 | the card runs out of memory |
 | 30,000 steps at batch 8 | 2.7 hours |
 | the likelihood referee, one test piece | 29 s, thus 37 minutes for all 77 |
-| one Gibbs step, four canvases | 47 ms |
-| the whole N curve, four canvases | 47 s |
+| one Gibbs step, four sheets | 47 ms |
+| the whole N curve, four sheets | 47 s |
 
 Rematerialisation of each residual pair costs 28 percent of the step and
 buys the memory that a batch of 16 needs. A batch of 8 fits without it,
@@ -529,12 +531,12 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
 - `jax/data.py` — the piece reader, and `Crops`, the uniform crop taken
   inside the true length. It drops the one train chorale that is shorter
   than the crop, thus the round trains on 228.
-- `jax/diffusion/model.py`, `train.py`, `infer.py` — the canvas, the trainer
+- `jax/diffusion/model.py`, `train.py`, `infer.py` — the sheet, the trainer
   and the walk. `infer.py` draws and measures nothing itself.
 - `jax/measure.py` — THE COMMON HOME of the instruments, as `jax/nn.py` is of
-  the network. Everything in it is arithmetic over a `[canvases, steps,
+  the network. Everything in it is arithmetic over a `[sheets, steps,
   SEATS]` array of class indices and none of it knows which era drew them: a
-  Gibbs canvas, a walk of the packed stream and a corpus crop all read the
+  Gibbs sheet, a walk of the packed stream and a corpus crop all read the
   same way, and a single walk is a stack of one.
 - `jax/diffusion/measure.py` — what this era measures with its OWN model,
   which is the paper's Algorithm 1 and the tail of it. Its sibling
@@ -545,7 +547,7 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
 
 ## Deferred
 
-- **THE STRETCH GOAL, AFTER THE INT8 RTL SHIPS: int4, the 17-bar canvas and
+- **THE STRETCH GOAL, AFTER THE INT8 RTL SHIPS: int4, the 17-bar sheet and
   the mix, which are one round and not three.** The int8 board holds
   L 48 by H 20 at T 128, and T 128 holds one whole chorale in a hundred.
   T 272 is 17 bars and holds 77 percent of them, and at int8 it forces
@@ -632,8 +634,8 @@ put it. The starts stand on an axis of `steps + span − 1`, thus exactly
 `span` of them reach every cell and no cell near an edge is masked less
 often, and ONE start is forced because the loss divides by the masked count
 and a Bernoulli draw at the smallest share comes up empty three times in
-four. The mix is a coin FOR EACH CANVAS between that draw and the paper's,
-never a mix over cells: a canvas asks one question or the other, and the
+four. The mix is a coin FOR EACH SHEET between that draw and the paper's,
+never a mix over cells: a sheet asks one question or the other, and the
 masked share of each stays the paper's. The valid probe keeps the lone-cell
 draw whatever the run trains on, or two runs are two numbers of two
 different tasks.
@@ -642,7 +644,7 @@ Three advances remain, and they are levers of a later round:
 
 - **The Halton order** (Besnier et al., 2025). A precomputed
   low-discrepancy sequence states the unmask order, in place of confidence
-  or chance. It spreads the unmasking over the canvas, it cuts the error
+  or chance. It spreads the unmasking over the sheet, it cuts the error
   propagation, and it needs no retraining. For the RTL it is the strongest
   of the four: the order is a ROM read, there is no sort, and the seed
   keeps its determinism. It joins the MaskGIT reserve of the deferred

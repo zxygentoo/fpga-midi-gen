@@ -12,9 +12,9 @@ music:
   window is always full and every position weighs one. The two batching policies are the
   training draw (a uniform stream, then a uniform window) and the fixed evaluation windows
   of the referee (the canonical stream, stride context, from its start).
-- THE PIECES, `pieces.safetensors`, for the canvas of era six: whole chorales on one grid,
+- THE PIECES, `pieces.safetensors`, for the sheet of era six: whole chorales on one grid,
   one row for each, padded to the longest, with the true length and the legal shift range
-  beside the cells. The canvas draw crops inside the true length, thus the padding is a
+  beside the cells. The sheet draw crops inside the true length, thus the padding is a
   fact of the file and never a fact of the music.
 
 There are no masks. No frame is illegal, thus nothing guards a draw.
@@ -27,7 +27,7 @@ BAR_STEPS = 16
 SEATS = 4
 SPLITS = ("train", "valid", "test")
 
-# The vocabulary of the model, from docs/transformer_model.md: class 0 is silence and
+# The vocabulary of the model, from docs/transformer.md: class 0 is silence and
 # class 1 + i is the pitch PITCH_LOW + i. The corpus states 36 to 81 and the shift rule
 # holds each voice inside its own observed range, thus 47 classes cover the music and the
 # 48th is spare. Four tables of 48 rows put the six-layer model at 93 percent of the block
@@ -35,7 +35,7 @@ SPLITS = ("train", "valid", "test")
 CLASSES = 48
 PITCH_LOW = 36
 # the top of the same corpus study: the classes 1 to 46 cover PITCH_LOW to here, and the
-# piano roll of the canvas era holds one row for each of them
+# piano roll of the sheet era holds one row for each of them
 PITCH_HIGH = 81
 SILENCE = 0
 
@@ -87,7 +87,7 @@ def pitches_of_classes(classes):
 
 
 def decode(frames):
-    """The decode of docs/transformer_model.md: the sequencer holds the set of pitches that
+    """The decode of docs/transformer.md: the sequencer holds the set of pitches that
     sound, and a frame states the set that must sound. The releases are the first set minus
     the second, the strikes are the second minus the first, and every release goes before
     every strike.
@@ -199,7 +199,7 @@ class Pieces:
     a rectangular tensor is one shape and the chorales are not; [Crops] reads inside the
     true length and no model ever sees it. That is the whole difference from the proto
     round of feat/diffusion-proto, where the tail WAS the training signal and owned 53.2
-    percent of the columns of a canvas.
+    percent of the columns of a sheet.
 
     [shifts] is unread this round -- the paper of docs/diffusion.md states no transposition
     augmentation and the pitch axis of the trunk carries the equivariance instead. It stays
@@ -218,7 +218,7 @@ def load_pieces(path):
 
 
 class Crops:
-    """The canvas draw of docs/diffusion.md: a uniform piece, then a uniform crop of it.
+    """The sheet draw of docs/diffusion.md: a uniform piece, then a uniform crop of it.
 
     A crop is [length] steps taken inside the true length of a piece, thus it never reads
     the padded tail. A piece shorter than the crop is dropped -- one of the 229 train

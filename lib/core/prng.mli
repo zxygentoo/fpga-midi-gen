@@ -55,9 +55,28 @@ val all : 'a t list -> 'a list t
     for byte. *)
 val next : int t
 
-(** Three steps, and one draw of the uniform distribution over \[0, 1). The three bytes
-    make a grid of 2 ** -24, which is fine enough to hold the tail of a Box-Muller draw
-    that one byte would cut at 3.3 sigma.
+(** the bits of one step's draw: 8 *)
+val byte_bits : int
+
+(** the steps one uniform takes: 3. A circuit that assembles a uniform a byte a cycle
+    counts them. *)
+val uniform_bytes : int
+
+(** the bits of the grid a uniform stands on: [uniform_bytes * byte_bits], 24.
+
+    THE GRID HAS ONE HOME. A threshold, an anneal table and a draw port are all sized on
+    it, and each reads the width here rather than states 24 again. *)
+val uniform_bits : int
+
+(** [uniform_bytes] steps, and the word they make: the first byte highest, a value on
+    [0, 2 ** uniform_bits). It is the uniform AS THE CIRCUITS TAKE IT — a walk hands its
+    draw a word and never a float — thus [uniform] is this word on the grid, and the two
+    cannot part. *)
+val uniform_word : int t
+
+(** [uniform_word] on the grid: one draw of the uniform distribution over \[0, 1). The
+    three bytes make a grid of 2 ** -24, which is fine enough to hold the tail of a
+    Box-Muller draw that one byte would cut at 3.3 sigma.
 
     The grid holds 0. Therefore a caller that takes the logarithm of a draw must hold that
     case. *)
@@ -107,4 +126,27 @@ module Rtl : sig
       question — the panel can set it and the walk then stands still by design. [load]
       wins over [step] in the same cycle. *)
   val create : Signal.t I.t -> Signal.t O.t
+end
+
+(** What a seeded gate needs: the draws it takes.
+
+    Every random thing in this repository comes from this module and the seed is an input,
+    thus a fuzz that finds a fault finds it again. The draws carry the state as the rest
+    of the module does, and a caller sequences them by threading it; they map the grid of
+    [uniform] onto a range and never take a modulo of a byte. The moves that put a drawn
+    value on a simulation port stand in [Harness], beside the rest of the bench.
+
+    It stands here, beside the generator, and not in the library of one era: a gate is a
+    gate in every era, and the era that copied these would be the era whose fuzz drifted
+    from the one before it. *)
+module For_test : sig
+  (** [draw state ~limit] is one value in [-limit, limit] and the state behind it. *)
+  val draw : state -> limit:int -> state * int
+
+  (** [draw_between state ~low ~high] is one value in [low, high], both ends included. *)
+  val draw_between : state -> low:int -> high:int -> state * int
+
+  (** [draw_array state ~len ~limit] is [len] values of [draw], in the order the generator
+      states them. *)
+  val draw_array : state -> len:int -> limit:int -> state * int array
 end

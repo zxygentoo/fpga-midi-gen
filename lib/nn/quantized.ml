@@ -114,8 +114,15 @@ end
 (* The scalar rules of the engines *)
 (* ==================================================================== *)
 
-let clamp16 v = Int.clamp_exn v ~min:(-32768) ~max:32767
-let clamps16 v = v > 32767 || v < -32768
+(* THE RAILS OF INT16, NAMED ONE TIME. The two scalar clamps here, the circuit below and
+   era six's clamps read them from these two values, thus a unit that wrote a rail of its
+   own could not part from the twin in silence. The frozen eras still write 32767 out at
+   [transformer/source.ml] and [mamba/source.ml]; adoption there moves their netlists, and
+   it belongs to their own round. *)
+let int16_high = 32767
+let int16_low = -32768
+let clamp16 v = Int.clamp_exn v ~min:int16_low ~max:int16_high
+let clamps16 v = v > int16_high || v < int16_low
 
 (* the reductions of the engines: [sum n f] is the MAC — the sum of [f i] over
    [0 .. n - 1] — and [max_over n f] is the peak scan *)
@@ -165,6 +172,34 @@ let softplus v =
   let v = clamp16 v in
   clamp16 (Int.max 0 v + Constants.softplus_table.(Constants.softplus_index v))
 ;;
+
+(* ==================================================================== *)
+(* The rules as circuits *)
+(* ==================================================================== *)
+
+module Rtl = struct
+  open Hardcaml.Signal
+
+  (* the width the clamp writes: the int16 its rails name *)
+  let bits = 16
+
+  (* [clamp16] of the twin, as a circuit: the value saturates and never wraps. A wrap here
+     would be silently wrong music, and the clamp is what the format election stands on.
+     THE COMPARE STANDS AT THE OPERAND'S OWN WIDTH — an [sresize ~width:32] before it
+     would truncate a 48-bit product and hand a wrapped value to a clamp that then sees
+     nothing to clamp. *)
+  let clamp16 wide =
+    (* the rails twice over: at the width of the value for the compare, and at 16 bits for
+       what the clamp writes *)
+    let clamped value = of_signed_int ~width:bits value in
+    let high = of_signed_int ~width:(width wide) int16_high in
+    let low = of_signed_int ~width:(width wide) int16_low in
+    mux2
+      (wide >+ high)
+      (clamped int16_high)
+      (mux2 (wide <+ low) (clamped int16_low) (sresize wide ~width:bits))
+  ;;
+end
 
 (* ==================================================================== *)
 (* The quantization of a checkpoint *)
@@ -279,6 +314,62 @@ let%expect_test "the exponent of a tensor, and the clamp of the byte" =
     1e+09  -> -23
     at e 0: (127 -127 5 -5 0)
     at its own e 12: (82 -41 0)
+    |}]
+;;
+
+let%expect_test "the clamp saturates at both rails, at a narrow width and at a wide one" =
+  (* THE 48-BIT CASE IS THE ONE THIS FORM EXISTS FOR. Era six's epilogue clamps a gain
+     product 48 bits wide; a clamp that resized to 32 before the compare would wrap 2^47
+     down to something inside the rails and pass it. Width 20 is the other end: the rails
+     still fit the operand, thus the compare is the same compare. *)
+  let clamped ~width:w value =
+    let wide = Hardcaml.Signal.input "wide" w in
+    let circuit =
+      Hardcaml.Circuit.create_exn
+        ~name:"clamp16"
+        [ Hardcaml.Signal.output "clamped" (Rtl.clamp16 wide) ]
+    in
+    let sim = Hardcaml.Cyclesim.create circuit in
+    Hardcaml.Cyclesim.in_port sim "wide" := Hardcaml.Bits.of_signed_int ~width:w value;
+    Hardcaml.Cyclesim.cycle sim;
+    Hardcaml.Bits.to_signed_int !(Hardcaml.Cyclesim.out_port sim "clamped")
+  in
+  let at ~width:w =
+    let show value = Stdio.printf "%d -> %d\n" value (clamped ~width:w value) in
+    Stdio.printf "at width %d:\n" w;
+    (* the rails themselves pass, and one step past each saturates. The extremes of the
+       operand are the wrap the compare must see. *)
+    List.iter
+      [ int16_high
+      ; int16_high + 1
+      ; int16_low
+      ; int16_low - 1
+      ; 0
+      ; (1 lsl (w - 1)) - 1
+      ; -(1 lsl (w - 1))
+      ]
+      ~f:show
+  in
+  at ~width:20;
+  at ~width:48;
+  [%expect
+    {|
+    at width 20:
+    32767 -> 32767
+    32768 -> 32767
+    -32768 -> -32768
+    -32769 -> -32768
+    0 -> 0
+    524287 -> 32767
+    -524288 -> -32768
+    at width 48:
+    32767 -> 32767
+    32768 -> 32767
+    -32768 -> -32768
+    -32769 -> -32768
+    0 -> 0
+    140737488355327 -> 32767
+    -140737488355328 -> -32768
     |}]
 ;;
 

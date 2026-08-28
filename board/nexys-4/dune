@@ -1,15 +1,33 @@
 ; The one line that names the era of the seat. [Top] speaks of [Source] and of
-; [Quantized.Model] and of nothing narrower, thus the library it opens decides which model
-; the bitstream carries; the transformer stays in the tree untouched.
+; [Elaboration] and of nothing narrower, thus the library it opens decides which model the
+; bitstream carries; the eras before it stay in the tree untouched.
 
 (library
  (name mgen_nexys4)
  (modules top)
- (libraries hardcaml mgen_board mgen_mamba)
+ (libraries hardcaml mgen_board mgen_diffusion)
  (flags
-  (:standard -open Mgen_board -open Mgen_mamba)))
+  (:standard -open Mgen_board -open Mgen_diffusion)))
 
 (executable
  (name gen_verilog)
  (modules gen_verilog)
- (libraries core core_unix hardcaml jane_rope mgen_mamba mgen_nexys4))
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  hardcaml
+  jane_rope
+  mgen_diffusion
+  mgen_nexys4))
+
+; The out-of-context probe: one unit alone, for a timing and utilization reading before
+; the machine around it exists. It carries no model — the column array takes its weights
+; as ports — thus it names no checkpoint.
+
+(executable
+ (name gen_probe)
+ (modules gen_probe)
+ (libraries core core_unix hardcaml jane_rope mgen_nn mgen_diffusion))

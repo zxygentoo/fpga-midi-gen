@@ -59,16 +59,19 @@
   (pps ppx_let))
  (libraries core core_unix core_unix.command_unix mgen_corpus mgen_mamba))
 
-(executable
- (name play_diffusion)
- (modules play_diffusion)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_diffusion))
+; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
+; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
+; jax/tests/test_rtl.py, thus nothing here states what the circuit should have done.
 
 (executable
- (name check_diffusion)
- (modules check_diffusion)
+ (name gate_diffusion)
+ (modules gate_diffusion)
  (preprocess
   (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_corpus mgen_diffusion))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  hardcaml
+  mgen_core
+  mgen_diffusion))

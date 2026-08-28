@@ -30,7 +30,7 @@ let send_note_off fd ~channel ~note = send fd (note_off_bytes ~channel ~note)
 let fade_floor = 0.25
 
 let fading ~step ~steps ~fade =
-  (* a canvas shorter than the window fades across the whole of itself; without the clamp
+  (* a sheet shorter than the window fades across the whole of itself; without the clamp
      it would OPEN partway down the ramp and never sound its full stroke *)
   let fade = min fade steps in
   let left = steps - step in
@@ -46,7 +46,7 @@ let faded_velocity ~velocity ~step ~steps ~fade =
 ;;
 
 let%expect_test "the fade leaves the music before it alone" =
-  (* the gesture is the last bar of a canvas and nothing else: a step outside the window
+  (* the gesture is the last bar of a sheet and nothing else: a step outside the window
      keeps the whole stroke, and the window opens at the step whose distance from the end
      is the fade itself *)
   let at step = fading ~step ~steps:128 ~fade:16 in
@@ -78,7 +78,7 @@ let%expect_test "the fade falls to the floor and never below it" =
     |}]
 ;;
 
-let%expect_test "the fade only falls, none is the full stroke, and a short canvas ramps \
+let%expect_test "the fade only falls, none is the full stroke, and a short sheet ramps \
                  whole"
   =
   let falling steps fade =
@@ -95,10 +95,10 @@ let%expect_test "the fade only falls, none is the full stroke, and a short canva
     "no fade is the full stroke: %b\n"
     (List.for_all (List.range 0 128) ~f:(fun step ->
        Float.(fading ~step ~steps:128 ~fade:0 = 1.0)));
-  (* the window is the last [fade] steps or the whole canvas, whichever is shorter; a walk
+  (* the window is the last [fade] steps or the whole sheet, whichever is shorter; a walk
      of four steps must not divide by a fade of sixteen *)
   printf
-    "a short canvas opens whole and ends on the floor: %b %b %b\n"
+    "a short sheet opens whole and ends on the floor: %b %b %b\n"
     Float.(fading ~step:0 ~steps:4 ~fade:16 = 1.0)
     Float.(fading ~step:3 ~steps:4 ~fade:16 = fade_floor)
     (falling 4 16);
@@ -106,7 +106,7 @@ let%expect_test "the fade only falls, none is the full stroke, and a short canva
     {|
     only falls: true
     no fade is the full stroke: true
-    a short canvas opens whole and ends on the floor: true true true
+    a short sheet opens whole and ends on the floor: true true true
     |}]
 ;;
 

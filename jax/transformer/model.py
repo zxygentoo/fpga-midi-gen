@@ -1,4 +1,4 @@
-"""The step-frame transformer of docs/transformer_model.md.
+"""The step-frame transformer of docs/transformer.md.
 
 One step of music is one position. Four voice classes enter through four tables that sum,
 and they leave through the same four tables in a chain from the soprano down.

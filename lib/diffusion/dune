@@ -1,14 +1,26 @@
 (library
  (name mgen_diffusion)
- ; Era six below the JAX seam: the float reference of the masked canvas and its integer
- ; twin. The units and the shared rules come from mgen_nn, as the unification round put
- ; them. Mgen_nn is not opened — its [Quantized] would shadow this library's own — thus
- ; everything is named through it.
- (libraries base core stdio hardcaml nx nx.io mgen_core mgen_nn mgen_corpus)
+ ; Era six below the JAX seam: the circuit of the masked sheet, and the model as the
+ ; circuit reads it. The units and the shared rules come from mgen_nn, as the unification
+ ; round put them. Mgen_nn is NOT opened, and no module of this library shadows one of its
+ ; any more: opening it would put [Quantized] in scope unqualified beside the
+ ; [Nn_quantized] alias that every unit here reads it by, and one name for one thing is
+ ; the point.
+ (libraries
+  base
+  core
+  stdio
+  hardcaml
+  hardcaml_waveterm
+  nx
+  nx.io
+  mgen_core
+  mgen_nn
+  mgen_corpus)
  (flags
   (:standard -open Mgen_core -open Mgen_corpus))
  (inline_tests
   (flags
    (:standard -source-tree-root .)))
  (preprocess
-  (pps ppx_expect ppx_sexp_conv)))
+  (pps ppx_hardcaml ppx_expect ppx_compare ppx_enumerate ppx_sexp_conv)))

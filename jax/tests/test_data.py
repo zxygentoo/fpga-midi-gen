@@ -1,17 +1,25 @@
-"""The step frame: the class map, the decode and the chain.
+"""The vocabulary and the decode of jax/data.py: what a class means, and what a stream of
+frames states on the wire.
 
-The decode has an OCaml twin in Frame.events_of_frames of lib/core/frame.ml, and the eight
-cases here are the eight of its expect test and of docs/transformer_model.md. Both were
-measured against the packed corpus and give its texture -- onsets/step 0.81, single-ON
-0.10, median 4.0, under a quarter 0.37 -- which is the number the token era recorded.
+NEITHER OF THEM BELONGS TO AN ERA, which is why they stand in a file of their own. The
+corpus loader reads every piece through [classes_of_codes], the battery of measure.py
+reads every pitch through [pitches_of_classes], and all three eras speak through [decode].
+A break in any of them is wrong music under a model that is perfectly correct.
+
+THE CLASS MAP is where the wire's MIDI pitch meets the model's vocabulary. The two are
+different questions -- the wire states any pitch and the model does not -- and a map wrong
+by one semitone or one seat round trips nothing.
+
+THE DECODE has an OCaml twin in Frame.events_of_frames of lib/core/frame.ml, and the eight
+cases here are the eight of its expect test and of docs/transformer.md. Both were measured
+against the packed corpus and give its texture -- onsets/step 0.81, single-ON 0.10, median
+4.0, under a quarter 0.37 -- which is the number the token era recorded.
 """
 
-import jax
 import numpy as np
 import pytest
 
 import data
-from transformer import model
 
 
 def frame(seats):
@@ -43,7 +51,7 @@ def test_a_pitch_outside_the_vocabulary_refuses():
 
 
 def test_the_decode_makes_the_eight_cases():
-    """the table of docs/transformer_model.md, and the expect test of Frame"""
+    """the table of docs/transformer.md, and the expect test of Frame"""
     cases = {
         "hold": ([frame([60, -1, -1, -1])] * 2, []),
         "strike": ([SILENT, frame([60, -1, -1, -1])], [("on", 60)]),
@@ -81,32 +89,3 @@ def test_the_decode_keeps_its_three_properties():
                 assert pitch in sounding, "a release of a pitch that does not sound"
                 sounding.discard(pitch)
         assert len(sounding) <= data.SEATS, "five notes sound at the same time"
-
-
-def test_the_chain_conditions_downward():
-    """Each seat reads what the seats above it drew, and nothing reads a seat below.
-
-    A chain wired the wrong way round is silent: the shapes stay right, the loss still
-    falls, and the model only loses the joint choice that is the whole reason for it."""
-    params = {
-        "seats": jax.random.normal(jax.random.PRNGKey(0), (data.SEATS, data.CLASSES, 8))
-    }
-    h = np.zeros((1, 3, 8), dtype=np.float32) + 0.5
-    base = np.ones((1, 3, data.SEATS), dtype=np.int32)
-
-    def logits(drawn):
-        return np.asarray(model.seat_logits(params, h, drawn))
-
-    # the soprano is drawn first, thus it conditions on nothing and every seat under it
-    # moves when it changes
-    soprano = base.copy()
-    soprano[..., 3] = 2
-    from_base, from_soprano = logits(base), logits(soprano)
-    assert np.allclose(from_base[..., 3, :], from_soprano[..., 3, :])
-    for seat in (2, 1, 0):
-        assert not np.allclose(from_base[..., seat, :], from_soprano[..., seat, :])
-
-    # the bass is drawn last, thus no seat reads it and the whole readout stands still
-    bass = base.copy()
-    bass[..., 0] = 2
-    assert np.allclose(from_base, logits(bass))
