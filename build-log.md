@@ -848,3 +848,94 @@ netlist rolls; the number that matters is MET at default directives, on
 a closed era that ships from the flash and is not rebuilt. No bitstream
 was written and the tree carries the era-five seat, restored and proven
 byte-identical after the switch.
+
+## 2026-08-25 — era six, the masked sheet (feat/diffusion-jax)
+
+**The model that completes instead of inventing.** Round one, a Gaussian
+DDPM over a piano roll, was dead on the ear and stays on
+`feat/diffusion-proto` with its autopsy. Round two took Coconet's shape:
+a convolutional net over a sheet of T steps by 48 classes with pitch as
+an AXIS and silence as a class, the orderless-NADE loss over hidden
+cells, and independent blocked Gibbs under Yao et al.'s annealed mask.
+Every draw of the walk comes from the shared xorshift32 of `jax/prng.py`
+in one consumption order — the opening, each mask, each redraw — thus
+one seed names one sheet here, in OCaml and on the board.
+
+**The referee compares outside the repository.** Algorithm 1, framewise,
+five orderings in probability space: 0.5884 ± 0.017 nats against the
+paper's 0.57 ± 0.01. The ladder said depth is reach and width is a
+floor, and the ear elected `l48-h20-100k` — valid 0.4422, framewise
+0.6139 ± 0.0151, triads on the corpus. The walk opens on a seeded sheet
+inside each seat's register and not on silence, measured the same
+instrument over 256 sheets. Merged as `fcb749a`.
+
+**The OCaml reference round** (`f86b96b`, 2026-08-26): the float
+reference and the int8 twin in `lib/diffusion`. Gate A agreed to the
+sixth decimal (0.189632), Gate C printed the same step lines, and the
+drift of the golden candidate at int8 read top-1 97.2 %, cosine 0.9998,
+same-draw 95.1 %, zero clamps. The finding: Q12 activations were WRONG
+— a trained residual trunk grows its activations to a peak of 313 on
+the seeded openings — and Q6 is the measured format, with a margin of
+1.6.
+
+## 2026-08-28 — era six on the board: the column engine (feat/diffusion-rtl)
+
+**One machine, no op layer.** The elaboration reads the contract file's
+own tensor shapes; the circuit is a column engine of 48 rows by G lanes
+— weight-stationary, the DSP accumulating over the 9·Cin dwell, a
+three-column window fed under the running dwell — an epilogue that
+clamps twice where a pair closes, era four's draw pipeline over one
+class counter, a sheet with three faces (the walk, the stem, the score)
+and the walk FSM around them. Six stages, each with its instruments;
+the sheet agreement compares PER PHASE and the stream gate WRITE FOR
+WRITE, because era five's faults moved no frame.
+
+**Three traps, each convicted on silicon.** Ring 3 failed at −6.125 on
+broadcast nets with one driver; the replica banks per eight-row slice
+took it to +0.010 MET, the board played on 2026-08-27, and the capture
+of 268 messages at seed 47872 was byte-exact in order — Gate B whole at
+rung 1. Vivado padded the rung-2 ROM to 65 536 words and demoted EVERY
+ROM to fabric with no warning; banking by powers of two put rung 1 at
+96 tiles / +0.007 and rung 2 (`l64-h16`) at 124 tiles / +0.008, and
+that build went to the flash. The service cut's build met by +0.004
+only because `phys_opt` moved clock skew inside the uniform's shift
+register — three different sheets at one seed — and STA met by a
+picosecond is not met; three replicas of the uniform, one for each
+consumer, gave +0.018 / +0.029 and two byte-exact captures.
+
+**The golden candidate fits.** The stores bank like the ROM (108 tiles
+at the rung-3 shape, +0.122), the fused pair keeps Y as a four-column
+ring with B two columns behind A, and the timing cuts close it:
+`l48-h20` at T 128, G 5, N 512 — +0.147 MET on one tree, 108.5 tiles,
+236 messages byte-exact — IN THE FLASH since 2026-08-28.
+
+## 2026-08-28 — the OCaml cut and the Flax shape (feat/diffusion-ocaml-cut)
+
+**The welds go.** The OCaml float model and the OCaml int8 twin were
+only the seam between JAX and the RTL; both are deleted, the integer
+twin is `jax/diffusion/quantized.py`, and the RTL gates run under
+`uv run pytest` driving `bin/gate_diffusion.exe` — the driver prints
+what the circuit did, Python states what it must have done, and neither
+side can pass by agreeing with itself. `top.v` stayed md5-identical
+(`4e367cef`) through every round below, thus the flash never moved.
+
+**The net is a tree.** `Coconet` is a Flax NNX module — a stem, the
+residual pairs, a head — and the twin carries the same skeleton under
+the same names; an odd layer count became unrepresentable. The trainer
+is optax's AdamW, held equal to `nn.adamw` leaf for leaf and step for
+step, thus no retrain; the three JAX packages moved to 0.11.1 together
+and the card reads 370 ms/step against 432. G0 pinned the float model
+at 0.193459 before and after.
+
+**Then the small rounds:** two simplify passes and a comment pass; the
+placement family became `Mgen_nn.Placement`; the int16 rails are named
+once and the clamp's circuit is `Mgen_nn.Quantized.Rtl.clamp16`, with a
+48-bit gate the frozen eras' own clamps would fail; the twin takes P,
+and the stream gate runs at P 8 and P 48 — coverage, not time: the RTL
+gates cost 9.9 s before and 10.6 s after. 148 tests became 162.
+
+What waits for the all-era branch: the same cut for eras four and five,
+the frozen eras' adoption of the shared clamp and placement, the alpha
+ROM as `Signal.rom`, the frames as interfaces, one safetensors reader,
+the Exp2 fork's backport, and the walk under `lax.scan`. The branch
+merged into develop with this entry.

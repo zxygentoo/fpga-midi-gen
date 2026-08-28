@@ -82,12 +82,23 @@ This project makes MIDI on an FPGA. An external synthesizer plays it.
 
 ## Toolchain
 
-OCaml for all code. Hardcaml for the RTL.
+OCaml for the circuit, the elaboration, the drivers and the corpus tools.
+Hardcaml for the RTL. Python (JAX) for the models: the trainers, the float
+models, the integer twins and the oracle gates, all in `jax/`.
 
 - opam switch: `5.2.0+ox` (OxCaml)
 - Hardcaml version: `v0.18~preview`
 - Vivado: hardware synthesis
 - dune
+- `uv` runs everything in `jax/`: `uv run pytest`, `uv run ruff check`,
+  `uv run python -m diffusion.infer`. Never bare `python` or `pip`.
+- `jax`, `jaxlib` and `jax-cuda12-plugin` move together or not at all. A
+  plugin one release behind the runtime is refused, and the trainer falls
+  back to the CPU with no message, ten times slower.
+- Era six is Flax NNX and optax. The frozen eras keep `nn.adamw`,
+  `nn.schedule` and `nn.train`.
+- `ruff` at line-length 90, the width of ocamlformat. E501 is not selected,
+  thus ruff does not check the width of a docstring.
 
 ## Hardware
 
@@ -189,57 +200,81 @@ It is not 48000 Hz.
 
 # Layout
 
-- `bin/` — executables: drivers, model trainer and other tools.
-- `board/` — RTL, configuration and scripts. Each board has a directory, for
-  example `board/nexys-4`.
-- `board/_generated/` — Verilog from the Hardcaml top level. Git ignores it.
-- `board/_build/` — the Vivado work directory. Git ignores it.
-- `docs/` — the design documents.
-- `lib/` — the core library and the RTL.
-- `test/` — integration tests and above: simulation tests, formal checks.
+- `lib/` — the OCaml libraries, software and RTL together:
+  - `lib/core` — the host control constants, MIDI, the frame, the PRNG, the
+    Cyclesim harness, the player.
+  - `lib/board` — the UART, COBS, the control port and transport, the
+    sequencer, the socket, the seed switches.
+  - `lib/corpus` — the chorales (`Jsb`) and the vocabulary (`Vocab`).
+  - `lib/nn` — what is one thing across the eras: the units, the fixed-point
+    rules, the sampling policy, the placement rules, the checkpoint seam.
+  - one directory for each era: `pink`, `transformer`, `mamba`, `diffusion`.
+- `bin/` — executables: the board driver (`board_tool`), the players and the
+  referees of the eras, the corpus tool, the driver of the RTL gate.
+- `board/` — the top level, the configuration and the scripts of each board,
+  for example `board/nexys-4`. `board/_generated/` holds the Verilog and
+  `board/_build/` the Vivado work; git ignores both.
+- `jax/` — the Python side: `data.py`, `nn.py`, `prng.py`, `midi.py` and
+  `measure.py` are common, each era has a directory, and `tests/` holds the
+  oracle gates. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
+- `corpus/` — the chorale corpus.
+- `_train/` — the training runs: the logs and the checkpoints. Git ignores
+  it. Every run pipes to `_train/NAME.log` beside its checkpoint.
+- `docs/` — the design documents: `<era>.md` for the model and `<era>_rtl.md`
+  for the circuit. A work order is process: write it in `docs/`, never commit
+  it, and delete it when its round is done.
+- `test/` — the integration tests: the socket simulations and the frozen
+  eras' drift gates.
 
 # Design
 
 ```
+JAX (train, quantize) -> contract file -> Elaboration -> bitstream
 Model (RTL/Hardcaml) -- host control -- Drivers (OCaml)
 ```
 
-- Model: the FPGA does the inference. Train the model on the host computer if
-  it is necessary. Possible models are a Markov chain, an RNN and a UNet.
+- Model: the FPGA does the inference. The host trains the model in JAX,
+  `infer.py quantize` writes the int8 contract file, `Elaboration` reads it,
+  and the bitstream carries the weights. The weights are not runtime state.
+- Six eras so far: pink noise (era one), a Markov chain (era two — a failed
+  experiment, on `feat/markov-model` only), a transformer (eras three and
+  four), a Mamba hybrid (era five), and the masked sheet of Coconet (era six,
+  in the flash). The records are `docs/<era>.md` and `docs/<era>_rtl.md`.
 - Host control: one interface for all drivers — the control registers and a
   read/write wire protocol on the UART. The specification is
-  `docs/host_control.md`. The model weights are not runtime state: the
-  bitstream initializes them.
+  `docs/host_control.md`.
 - Drivers: self-check, control and other functions.
 
 Rules:
 
-- `lib/control_intf.ml` defines all constants of the host control one time.
-  The RTL elaboration and the drivers must use the constants from that module,
-  and `Control_frame` is the wire codec that carries them. If
-  `docs/host_control.md` and `lib/control_intf.ml` do not agree, correct one
-  of them before you continue.
+- `lib/core/control_intf.ml` defines all constants of the host control one
+  time. The RTL elaboration and the drivers must use the constants from that
+  module, and `lib/board/control_frame.ml` is the wire codec that carries
+  them. If `docs/host_control.md` and `lib/core/control_intf.ml` do not
+  agree, correct one of them before you continue.
 - The host control has no runtime version. The driver and the bitstream must
   come from the same repository state. If the board behavior does not agree
   with the specification, program the board again with the current bitstream.
 
 # Tests
 
-Run all tests with `dune runtest`.
+Run all tests with `dune runtest`, and then `uv run pytest` in `jax/`.
 
 - Unit tests are expect tests (`ppx_expect`), in the module that they test.
 - A waveform expect test is visual documentation. If a waveform can show the
   behavior of a module clearly, write one.
-- `test/` holds integration tests and above: simulation tests with Cyclesim,
-  formal verification.
+- `test/` holds the integration tests: the socket simulations with Cyclesim,
+  and the frozen eras' drift gates.
 
-- The reference model is an audition tool: train, run it on the host, send
-  the MIDI to the S-1 through USB, listen. The FPGA is not in this loop.
-  The reference model does not have to equal the circuit bit for bit.
+- The FLOAT model is an audition tool: train, run it on the host, send the
+  MIDI to the S-1 through USB, listen. The FPGA is not in this loop, and the
+  float model does not have to equal the circuit.
+- The INTEGER twin must equal the circuit bit for bit. That is Gate B: the
+  unit gates and the cycle benches under `dune runtest`, the walk gate and
+  the stream gate against the twin under `uv run pytest`, and the capture of
+  the board's MIDI at the panel seed against the twin's.
 - The circuit is tested with Cyclesim, block by block: the PRNG, the
   sampler, the timer. Exact test vectors are easy at the block level.
-- If a reference model is exact with no extra work, the stream comparison
-  against Cyclesim is a cheap extra test. The Markov chain is this case.
 - **A gate that needs a MODEL AS AN ORACLE runs under `uv run pytest` in
   `jax/`, and `dune runtest` holds the unit gates.** An era whose integer
   twin lives in JAX (era six is the first) keeps Cyclesim in OCaml and puts
@@ -255,12 +290,21 @@ Run all tests with `dune runtest`.
 
 # Traps
 
-- A harmonic product spectrum can find a sub-harmonic and report a note one
-  octave too low. Limit the search to the range of the scale.
+- Vivado pads an inferred memory to a power of two and says nothing. A
+  memory the budget cannot hold is demoted to LUTs, silently, whatever its
+  attribute says. Bank the memories by powers of two, and read the block RAM
+  tile census and the LUT count, not the warnings.
+- STA met by a picosecond is not met. A build that meets setup only because
+  `phys_opt` adjusted the clock skew (`Physopt 32-703`) on a data path, or
+  that holds by under about 10 ps, plays a different piece on each run.
+  Refuse it and place again.
 
 # Gitflow
 
 - This repository uses git-flow, with the branches `main` and `develop`, and
   the prefix `feat/` for features.
-- The pre-commit gates are: `dune fmt` makes no change, and `dune build`
-  completes with no error and no warning.
+- The pre-commit gates are: `dune fmt` makes no change, `dune build`
+  completes with no error and no warning, and — when `jax/` moves —
+  `uv run ruff check` finds nothing and `uv run pytest` passes.
+- A change to the RTL is netlist-identical (the `top.v` md5 gate of
+  `jax/tests/test_parity.py`) or it owes a Vivado build before it merges.
