@@ -1,6 +1,4 @@
-(* The column engine — see forward.mli for the contract and docs/diffusion_rtl.md, "The
-   dwell", "The drain" and "The memories and their ports", for the design. What stands
-   here is the WHY of each rule.
+(* The column engine — see forward.mli, and docs/diffusion_rtl.md for the design.
 
    TWO FRAMES, TWO CYCLES APART, AND EVERY RULE OF THIS UNIT SITS IN ONE OF THEM. The LEAD
    frame addresses the memories; the NOW frame — the lead delayed by two — is where the
@@ -117,13 +115,10 @@ struct
   let ring_address = Elaboration.Rtl.ring_address ~pin:Column_array.no_dsp e
   let channel_of = Elaboration.Rtl.channel_of ~pin:Column_array.no_dsp e
 
-  (* A COLUMN BANK IS SLICED, AND ITS TAKE STANDS IN REPLICAS — ring 3's broadcast
-     families: one decode or one strobe drove the 768 register pins of a whole column, at
-     up to 12 ns of route. A bank is [column_slices] register slices, and each slice's
-     take is its own copy of the same condition, [dont_touch] so the tools keep the copies
-     apart — no driver reaches more than [Column_array.slice_rows] rows, and the placer
-     lays each beside its slice. The values and the writes stay whole columns; the slicing
-     is invisible outside these helpers. *)
+  (* A COLUMN BANK IS SLICED AND ITS TAKE STANDS IN REPLICAS: one decode driving the 768
+     register pins of a whole column cost up to 12 ns of route. Each slice's take is its
+     own copy of the same condition, thus no driver reaches more than
+     [Column_array.slice_rows] rows. The values and the writes stay whole columns. *)
   let column_slices = Column_array.slices_for ~rows
 
   (* the replica slices of a word of [bits]: [Column_array.slice_rows] rows of activations
@@ -169,12 +164,10 @@ struct
     (* ---------------------------------------------------------------- *)
     (* the layer, and the facts the table states about it *)
     (* ---------------------------------------------------------------- *)
-    (* THE TURN IS THE REGISTER; THE LAYER TRAVELS IN THE FRAMES. A layer used to end
-       before the next began, thus one register named it and every fact muxed by it.
-       Inside a pair the lead frame can be in B while the now frame is still in A and the
-       flush trails both, thus what the machine holds is the TURN and each frame carries
-       its own phase. [Elaboration.Rtl.layer_of] turns the two into the table's index, and
-       the table's mux is the one it always was. *)
+    (* THE TURN IS THE REGISTER; THE LAYER TRAVELS IN THE FRAMES. Inside a pair the lead
+       frame can be in B while the now frame is still in A and the flush trails both, thus
+       what the machine holds is the TURN and each frame carries its own phase.
+       [Elaboration.Rtl.layer_of] turns the two into the table's index. *)
     let turn = Variable.reg spec ~width:turn_bits in
     let layer_of ~phase = Elaboration.Rtl.layer_of e ~turn:turn.value ~phase in
     let fact at ~width f =
@@ -218,10 +211,8 @@ struct
     let lead_group = Variable.reg spec ~width:group_bits in
     let lead_cin = Variable.reg spec ~width:cin_bits in
     let lead_cycle = Variable.reg spec ~width:tap_bits in
-    (* the preamble fetches the FIRST block instead of the next one, and holds the nest
-       still while it does: one short preamble at each TURN — not at each layer — and the
-       rotation then hides every fetch of the turn under a running dwell, at a phase
-       change as at a column change *)
+    (* the preamble fetches the FIRST block instead of the next one and holds the nest
+       still while it does: one short preamble at each TURN, not at each layer *)
     let priming = Variable.reg spec ~width:1 in
     let lead_layer = layer_of ~phase:lead_phase.value in
     let cin_count = fact lead_layer ~width:cin_bits (fun l -> l.inputs) in
@@ -246,18 +237,15 @@ struct
         }
     in
     let next = walk.next in
-    (* THE FETCH FRAME IS THE LEAD ADVANCED BY ONE CHANNEL, and at the close of a block
-       that is the NEXT BLOCK'S — its channel, its column and its PHASE. The phase is what
-       is new: the columns fetched under B's last channel are A's, and they come from a
-       different memory and a different column. *)
+    (* THE FETCH FRAME IS THE LEAD ADVANCED BY ONE CHANNEL, thus at the close of a block
+       it is the NEXT BLOCK'S — its channel, its column and its PHASE. The columns fetched
+       under B's last channel are A's, from another memory and another column. *)
     (* THE FETCH FRAME STANDS BEHIND A REGISTER, AND IT COSTS NO CYCLE. The fetch of slot
-       [s] goes out at lead cycle [3 s + 2] — 2, 5 and 8 — while the lead nest advances at
-       cycle 0, thus these coordinates have two cycles of slack that a combinational
-       [next_block] threw away. Registered, they stand from cycle 1 and every fetch reads
-       them at 2 or later; inside a channel they do not move, thus the delay changes no
-       value anywhere. The cone behind them — [next_block], the [s - 2] of [column_of],
-       [column_address] and a bank's [uresize] — was the fused round's own timing family,
-       eleven levels into a store's address pins at −0.118. *)
+       [s] goes out at lead cycle [3 s + 2] while the lead nest advances at cycle 0, thus
+       these coordinates have two cycles of slack a combinational [next_block] threw away.
+       Registered, they stand from cycle 1 and do not move inside a channel. The cone
+       behind them was the fused round's own timing family: eleven levels into a store's
+       address pins at −0.118. *)
     let fetch_cin = hold (mux2 priming.value lead_cin.value next.cin) in
     let fetch_s = hold (mux2 priming.value lead_s.value next.step) in
     let fetch_phase = hold (mux2 priming.value lead_phase.value next.phase) in
@@ -267,10 +255,9 @@ struct
        and the head are turns of phase A alone *)
     let column_of ~s ~phase = sel_bottom (mux2 phase (s -:. 2) s) ~width:step_bits in
     let fetch_step = column_of ~s:fetch_s ~phase:fetch_phase in
-    (* THE TAP ORDER IS DY-MAJOR, AND THE ROTATION LEANS ON IT: tap [k] takes the time
-       slot [k / 3] and the pitch shift [k mod 3]. The fetch of slot [s] goes out at the
-       lead cycle [3 s + 2] and lands when [now] reaches that same cycle, which is the
-       slot's own last read. *)
+    (* THE TAP ORDER IS DY-MAJOR AND THE ROTATION LEANS ON IT: the fetch of slot [s] goes
+       out at lead cycle [3 s + 2] and lands when [now] reaches that same cycle, which is
+       the slot's own last read *)
     let by_cycle cycle table =
       mux cycle (List.map table ~f:(fun v -> of_unsigned_int ~width:2 v))
     in
@@ -293,11 +280,9 @@ struct
     let tap_ring_address = ring_address ~step:tap_step ~channel:fetch_cin in
     (* the fetch travels to the NOW frame beside its data: the zero flag says the slot
        takes zero, and the step and the plane are what the sheet answers *)
-    (* THE SOURCE OF A FETCHED COLUMN TRAVELS WITH THE FETCH. Which memory a column comes
-       from is a fact of the FETCH's layer and not of the slot's: the columns that land
-       under B's last input channel are A's and come from X, and a slot that read the
-       layer register would take Y. The bit rides beside the zero flag, and the slot takes
-       what its own fetch named. *)
+    (* THE SOURCE OF A FETCHED COLUMN TRAVELS WITH THE FETCH: the columns that land under
+       B's last input channel are A's and come from X, and a slot that read the layer
+       register would take Y. *)
     let fetch_word =
       concat_lsb
         [ out_of_roll; tap_step; sel_bottom fetch_cin ~width:plane_bits; fetch_reads_y ]
@@ -314,10 +299,8 @@ struct
     (* ---------------------------------------------------------------- *)
     (* THE NOW FRAME: the term that really happens *)
     (* ---------------------------------------------------------------- *)
-    (* THE NOW FRAME CARRIES THE PHASE AND THE SEMANTIC COLUMN. The phase names the layer
-       every rule of this frame reads; the column is what the band load and the state
-       machine mean by a step, and [s] never leaves the lead frame. [ends] rides too: the
-       turn closes on the now frame's own last block and not on a column count. *)
+    (* THE NOW FRAME CARRIES THE PHASE AND THE SEMANTIC COLUMN; [s] never leaves the lead
+       frame. [ends] rides too: the turn closes on the now frame's own last block. *)
     let lead_column = column_of ~s:lead_s.value ~phase:lead_phase.value in
     let lead_word =
       concat_lsb
@@ -347,18 +330,13 @@ struct
     let now_last_group =
       now_group ==: fact now_layer ~width:group_bits (fun l -> l.groups) -:. 1
     in
-    (* THE DRAIN IS A FRAME OF ITS OWN, AND IT CARRIES THE PHASE TOO. The chain of a group
-       empties over [rows] cycles behind the term that captured it, and the epilogue
-       answers three behind that — thus THE LAST GROUP OF A BLOCK DRAINS UNDER THE NEXT
-       BLOCK, which inside a pair is the other layer. A join flag read from the now frame
-       would then add A's residual to nothing and drop B's, and the ReLU would follow the
-       wrong layer; the twin sees a column of zeros where it wants the residual.
-
-       It was invisible while a layer was the unit of the walk: a layer's last group
-       drained under [Turn], where the layer register still stood at its own value. The
-       phase is captured where the array captures the sums, and it holds until the
-       epilogue of that group is done — a whole dwell away, which the dwell floor
-       guarantees. *)
+    (* THE DRAIN IS A FRAME OF ITS OWN, AND IT CARRIES THE PHASE TOO. A group's chain
+       empties over [rows] cycles behind the term that captured it and the epilogue
+       answers three behind that, thus THE LAST GROUP OF A BLOCK DRAINS UNDER THE NEXT
+       BLOCK — inside a pair, the other layer. A join flag read from the now frame would
+       add A's residual to nothing and drop B's. The phase is captured where the array
+       captures the sums and holds until that group's epilogue is done, a whole dwell
+       away. *)
     let drain_phase = Variable.reg spec ~width:1 in
     let drain_layer = layer_of ~phase:drain_phase.value in
     let takes_relu =
@@ -371,36 +349,24 @@ struct
     (* the memories: the address registers before them and the data registers behind them,
        which is era four's rule and the reason every read of this unit is two cycles *)
     (* ---------------------------------------------------------------- *)
-    (* ONE BANKED MEMORY PORT, AND BOTH MEMORY CLASSES READ THROUGH IT. The weight ROM and
-       the two activation stores differ in one thing — the ROM's banks carry an image and
-       the stores' banks are written — thus one port states the rule for both and neither
-       can drift from it.
+    (* ONE BANKED MEMORY PORT, AND BOTH MEMORY CLASSES READ THROUGH IT — the weight ROM,
+       whose banks carry an image, and the two stores, whose banks are written.
 
-       READ ERA FOUR'S WAY: [hold] stands on the address and again on the data, thus the
-       tools cannot retime the data register onto the address pins and rebuild the address
-       cone inside each primitive. THE DATA HOLD STANDS INSIDE THE BANK, because it is the
-       block RAM's own latch: evict it into fabric and Vivado absorbs the ADDRESS hold
-       into the latch instead, and the whole address cone lands on the pins. The first
-       banked build measured exactly that — 1424 registers into fabric, an eight-level
-       cone on a store's address pins, and setup lost by 0.354.
+       [hold] stands on the address and again on the data, thus the tools cannot retime
+       the data register onto the address pins and rebuild the address cone inside each
+       primitive. THE DATA HOLD STANDS INSIDE THE BANK, because it is the block RAM's own
+       latch: evict it into fabric and Vivado absorbs the ADDRESS hold into the latch
+       instead, and the whole address cone lands on the pins. The first banked build
+       measured 1424 registers into fabric and lost setup by 0.354.
 
-       AND EACH MEMORY STANDS IN THE BANKS ITS PLAN STATES. Vivado rounds the depth of a
-       RAM up to a power of two as it rounds a ROM's, and warns of nothing: the rung-3
-       measurement build of 2026-08-27 mapped a store of 1280 columns as [2048x768], the
-       same 43 tiles rung 2 pays for 2048. One memory for each bank; the one address feeds
-       all of them as it stands, because a base is a multiple of its own bank's depth and
-       the offset is therefore the low bits; and a write reaches the bank its own address
+       THE MUX STANDS BEHIND THE DATA HOLDS, thus the select rides two [hold]s and no
+       cycle is added. It rides one replica for each slice of the word, as every
+       array-scale take does. Every base is a multiple of its own bank's depth, thus the
+       one address feeds every bank as it stands and a write reaches the bank its address
        selects.
 
-       THE MUX STANDS BEHIND THE DATA HOLDS, thus the select rides two [hold]s — one in
-       step with the address hold and one with the data hold. No cycle is added: the read
-       is the two it always was, and nothing stands between a bank and its own latch. The
-       select rides one replica for each slice of the word: a weight word of [lanes] bytes
-       is one slice, a column of 768 bits is six, as every array-scale take.
-
-       WITH ONE BANK NONE OF THIS ELABORATES — no mux, no select, and the write enable
-       passes as it stands — thus a shape that does not bank builds the memory it always
-       did. *)
+       WITH ONE BANK NONE OF THIS ELABORATES, thus a shape that does not bank builds the
+       memory it always did. *)
     let block_memory ?image ~banks ~address ~write_enable ~write_address ~write_data () =
       let bank_write_enable =
         if Array.length banks = 1
@@ -452,14 +418,9 @@ struct
        column's dwell walks a layer's whole range straight through and the address reloads
        one time for each column. *)
     let weight_address = Variable.reg spec ~width:weight_address_bits in
-    (* THE WEIGHT ROM STANDS IN THE BANKS ITS PLAN STATES, and the port above is the whole
-       of what the circuit owes that plan. Vivado pads an inferred ROM to its full address
-       space and warns of nothing: rung 2 asked 64 tiles against 49 free and the mapper
-       demoted every ROM of the design to fabric. The one counter feeds every bank as it
-       stands, and the mux stands behind the data holds, thus nothing stands between the
-       counter and the memories nor between a bank and its own latch. The mux is also
-       BEFORE the operand replicas of the array, thus the replica bank still breaks the
-       broadcast and the mux's own fanout is the replica count and no more. *)
+    (* The port above is the whole of what the circuit owes the ROM's bank plan. The mux
+       stands BEFORE the operand replicas of the array, thus the replica bank still breaks
+       the broadcast and the mux's own fanout is the replica count and no more. *)
     let weights =
       block_memory
         ~image:(Elaboration.weight_bank_image e)
@@ -563,10 +524,8 @@ struct
        are running now are fetched the moment the drain BEFORE it has read its last row,
        thus one buffer serves both and a dwell that covers its drain covers this too. *)
     (* ---------------------------------------------------------------- *)
-    (* THE LOAD CARRIES ITS OWN PHASE, as it carries its own column and group. It fires
-       inside a dwell and holds for [lanes] cycles; the now frame is stable across those,
-       but the load's decisions — which norms, and whether X owes it a residual — belong
-       to the block it was fired for and are captured with it. *)
+    (* THE LOAD CARRIES ITS OWN PHASE, column and group: its decisions — which norms, and
+       whether X owes it a residual — belong to the block it was fired for. *)
     let loading = Variable.reg spec ~width:1 in
     let load_index = Variable.reg spec ~width:lane_bits in
     let load_step = Variable.reg spec ~width:step_bits in
@@ -612,10 +571,7 @@ struct
        parentheses are load-bearing — [--] binds tighter than [&:], thus a name written
        without them lands on the last operand and the gate reads a signal nobody meant.
 
-       ONE FLUSH NEST STATES BOTH DESTINATIONS, thus ONE address probe does. Y no longer
-       holds a tensor and its port takes a ring address, but the COLUMN a write means is
-       the flush nest's own and it is the same for X and for Y; a second name on it would
-       be a signal nothing drives, and Hardcaml prunes those. *)
+       ONE FLUSH NEST STATES BOTH DESTINATIONS, thus ONE address probe does. *)
     let flush_address =
       column_address ~step:flush_step ~channel:flush_channel -- "flush_address"
     in
@@ -623,12 +579,10 @@ struct
     let y_write = (store_write &: writes_y) -- "y_write" in
     let x_data = flush_column -- "x_data" in
     let y_data = flush_column -- "y_data" in
-    (* THE X PORT IS ARBITRATED BY THE CYCLE AND NOT BY THE LAYER. It used to be the
-       layer's: a join layer pointed X at the residual for its whole run, because its taps
-       read Y and nothing else wanted the port. Fused, the fetch of the next A block goes
-       out under B's LAST INPUT CHANNEL and needs X while the now frame is still in B.
-       Thus the residual takes the port only in the cycles the load really addresses it,
-       and the dwell floor of the elaboration is what keeps the two windows apart. *)
+    (* THE X PORT IS ARBITRATED BY THE CYCLE AND NOT BY THE LAYER: the fetch of the next A
+       block goes out under B's LAST INPUT CHANNEL and needs X while the now frame is
+       still in B. The residual therefore takes the port only in the cycles the load
+       really addresses it, and the elaboration's dwell floor keeps the two windows apart. *)
     let x_read =
       block_memory
         ~banks:e.store_banks
@@ -756,10 +710,8 @@ struct
         ]
     in
     let band_load =
-      (* THE BAND LOAD. The drain before this dwell has just read its last residual row,
-         thus the buffer is free and the columns of this dwell's group may land in it. It
-         walks under [run] like the frames it is timed against, and the resume of a wait
-         states it again rather than carry a half-walked one across. *)
+      (* the drain before this dwell has just read its last residual row, thus the buffer
+         is free. A wait states the load again rather than carry a half-walked one across. *)
       if_
         (start_load.value |: (run &: last_drained))
         [ (* THE START STANDS OUTSIDE [run]. A layer's first group is asked for while the
@@ -785,11 +737,9 @@ struct
          tag has to travel the length of the drain. *)
       when_ band_whole [ flushing <-- vdd; flush_index <--. 0 ]
     in
-    (* THE FLUSH WALKS THE BLOCK ORDER TOO, AND BY THE SAME RULE. The flushes stand in the
-       order the dwells do, thus this nest must turn a phase where the lead nest turned
-       one. It has no input channels of its own — a flush walks lanes — thus it enters
-       [next_block] with its channel already at the last, and every advance is a whole
-       block. *)
+    (* THE FLUSH WALKS THE BLOCK ORDER TOO: the flushes stand in the order the dwells do.
+       It has no input channels of its own — a flush walks lanes — thus it enters
+       [next_block] with its channel already at the last. *)
     let flush_cin_count = fact flush_layer ~width:cin_bits (fun l -> l.inputs) in
     let flush_group_count = fact flush_layer ~width:group_bits (fun l -> l.groups) in
     let flush_walk =
@@ -825,15 +775,12 @@ struct
         (flush_done &: is_head &: (flush_group.value ==: flush_group_count -:. 1))
         [ step_ready <-- vdd ]
     in
-    (* A TURN OPENS THE SAME WAY WHEREVER IT OPENS: the first turn out of [Idle] and every
-       turn after it in [Turn] zero one set of counters and prime one way. The two arms
-       state it one time, thus a counter this machine grows cannot be zeroed in one of
-       them and forgotten in the other.
+    (* A turn opens the same way out of [Idle] and out of [Turn], thus a counter this
+       machine grows cannot be zeroed in one arm and forgotten in the other.
 
-       EACH IS A FUNCTION AND NOT A LIST, and the elaboration is the reason: an assignment
-       carries the constant signal it was built from, thus one shared list would hand both
-       arms one set of constants and renumber every signal behind them. Two calls build
-       what the two arms always built. *)
+       EACH IS A FUNCTION AND NOT A LIST: an assignment carries the constant signal it was
+       built from, thus one shared list would hand both arms one set of constants and
+       renumber every signal behind them. *)
     let open_counters () =
       [ lead_s <--. 0
       ; lead_phase <--. 0
@@ -916,22 +863,17 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* INSTRUMENT 3, AND ITS NAMES ARE A CONTRACT. The gate probes the store write signals by
-   name — [x_write], [y_write], [flush_address], [x_data] and [y_data] — thus a rename
-   cannot silently blind it. ONE FLUSH NEST STATES BOTH DESTINATIONS, thus one address
-   probe does. Era five's four datapath faults all lived in exactly this layer and none of
-   them moved a frame; that is why the instrument exists.
+(* THE PROBE NAMES ARE A CONTRACT: the gate reads the store write signals by name, thus a
+   rename cannot silently blind it.
 
-   The sheet is MODELLED and not instantiated: [Sheet] carries its own gate, thus the
-   bench answers the stem's plane column with the twin's own decode and keeps this gate
-   about the engine.
+   The sheet is MODELLED and not instantiated — [Sheet] carries its own gate — thus this
+   bench stays about the engine.
 
-   THE MODEL IS ONE CYCLE LATE AND THAT IS SOUND HERE, NOT A SEAM. [Sheet] answers
-   combinationally in the cycle its address stands; this bench reads the address after a
-   cycle and answers in the next one. The two agree because the landed address is
-   BLOCK-STABLE: it holds through the load cycle and the cycle before it, thus a column
-   read one cycle early is the same column. What the shortcut does not exercise is the
-   combinational path itself, and that waits for the sheet agreement of S4. *)
+   THE MODEL IS ONE CYCLE LATE AND THAT IS SOUND HERE. [Sheet] answers combinationally in
+   the cycle its address stands; this bench reads the address after a cycle and answers in
+   the next. The two agree because the landed address is BLOCK-STABLE, thus a column read
+   one cycle early is the same column. What the shortcut does not exercise is the
+   combinational path itself. *)
 module Bench (M : sig
     val e : Elaboration.t
   end) =
@@ -969,11 +911,8 @@ struct
      of one step and one plane. The stream gate hands the twin's own decode over; a
      picture at a shape the twin does not hold hands over one of its own. *)
   let run ?(trace = false) ?(read_logits = true) ~planes () =
-    (* This is the largest circuit of the library and the gates run tens of thousands of
-       cycles through it, thus it takes the long bench's configuration —
-       [Harness.long_bench] holds what it sets and why. Every signal the probes look up
-       and every signal the waveforms display carries a [--] name, thus the named trace
-       reaches all of them. *)
+    (* the largest circuit of the library, run for tens of thousands of cycles — see
+       [Harness.long_bench]. Every probed and displayed signal carries a [--] name. *)
     let sim = Sim.create ~config:Harness.long_bench Engine.create in
     let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
@@ -1016,11 +955,9 @@ struct
               ~plane:(Bits.to_unsigned_int !(out.plane)))
            ~width:activation_bits
     in
-    (* THE SEAT SWEEP COSTS CYCLES AND THAT IS THE POINT. The machine is frozen while the
-       level stands, thus the file stands still and one cycle for each seat reads it
-       whole. A sweep inside one cycle does not: the simulator answers a port with the
-       input the last cycle carried, and every seat then reads the seat the sweep read
-       before it — which this bench first read as three seats of four agreeing. *)
+    (* THE SEAT SWEEP COSTS CYCLES AND THAT IS THE POINT: the simulator answers a port
+       with the input the LAST cycle carried, thus a sweep inside one cycle reads every
+       seat one behind. The machine is frozen while the level stands. *)
     let cycle () =
       plain ();
       if not (Bits.to_bool !(out.step_ready))
@@ -1060,11 +997,8 @@ struct
   ;;
 end
 
-(* THE STEM'S INPUT AT ONE SEED: the opening the walk draws, the first mask of a walk of
-   [walk] passes, and the decode of the two — what the sheet answers the stem's fetch
-   with. The cycle bench below reads it, and the STREAM gate that once read it beside the
-   sheet and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
-   columns lives. *)
+(* the stem's input at one seed: the opening, the first mask, and the decode of the two —
+   what the sheet answers the stem's fetch with *)
 let stem_input ~steps ~rows ~walk ~seed =
   let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
   let threshold = Model.anneal_threshold ~step:0 ~walk in
@@ -1074,23 +1008,19 @@ let stem_input ~steps ~rows ~walk ~seed =
 ;;
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
-  (* THE SCHEDULE'S VISUAL GATE, at a shape a picture can hold: P 6, G 2, T 3 and a trunk
-     of three channels — the narrowest the fused floor admits at P 6. The stem is the
-     widest dwell of any layer — its input channels are the eight planes, and no shape
-     makes them fewer — thus its first column is the whole of the rotation in one place.
+  (* THE SCHEDULE'S VISUAL GATE at a shape a picture can hold. The stem is the widest
+     dwell of any layer — its input channels are the eight planes — thus its first column
+     is the whole of the rotation in one place.
 
-     WINDOW ONE is the preamble and the first block. The lead cycle counts 0 to 8 with no
-     term under it, and the three fetches it sends at 0, 3 and 6 land at [slot_0],
-     [slot_1] and [slot_2] two cycles later — the last of them one cycle before the first
-     term. The terms then run a block a channel with no gap, and every slot reloads nine
-     cycles behind the load before it, on the edge of its own last read: that is the
-     rotation.
+     WINDOW ONE is the preamble and the first block: the three fetches sent at lead cycles
+     0, 3 and 6 land two cycles later, the last one cycle before the first term. The terms
+     then run a block a channel with no gap, and every slot reloads nine cycles behind the
+     load before it, on the edge of its own last read — that is the rotation.
 
-     WINDOW TWO is the close of that column. [term_last] captures the array; [drained]
-     stands [rows] cycles later and the epilogue answers three behind it; the column
-     writes go out one a cycle when the band stands whole. THE NEXT DWELL IS ALREADY
-     RUNNING UNDER ALL OF IT — [term] never falls — which is what "the dwells stand back
-     to back" means and what the exact cycle counts lean on. *)
+     WINDOW TWO is the close of that column: [term_last] captures the array, [drained]
+     stands [rows] cycles later, the epilogue answers three behind it. THE NEXT DWELL IS
+     ALREADY RUNNING UNDER ALL OF IT — [term] never falls — which is what "the dwells
+     stand back to back" means and what the exact cycle counts lean on. *)
   let model = Model.For_test.drawn ~layers:4 ~width:3 ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:3 ~lanes:2 ~walk:4 in
   let module B =
@@ -1192,16 +1122,13 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
 ;;
 
 let%expect_test "the pair interleaves, and the picture is the schedule" =
-  (* THE SCHEDULE'S OWN PICTURE. One pair at a shape a window can hold: P 6, G 2, T 4 and
-     a trunk of three channels. What the waves state is the ORDER — [lead_phase] falls for
-     A and rises for B, and [lead_column] is the sheet column each block works on — thus
-     A0, A1, A2 B0, A3 B1, B2, B3 stands in one place, with the lag of two visible as the
-     distance between a rise of [lead_phase] and the column it names.
+  (* ONE PAIR, AND WHAT THE WAVES STATE IS THE ORDER: [lead_phase] falls for A and rises
+     for B, and [lead_column] is the sheet column each block works on, thus A0, A1, A2 B0,
+     A3 B1, B2, B3 stands in one place.
 
-     [y_write] AND [x_write] SAY WHERE EACH BLOCK'S COLUMNS WENT: an A block writes the
-     ring and a B block writes X, and they alternate from the third block on. The flush
-     trails the dwell by a drain and an epilogue, thus a write stands under the block
-     AFTER the one that made it — which is the whole reason the lag is two and not one. *)
+     [y_write] AND [x_write] SAY WHERE EACH BLOCK'S COLUMNS WENT. The flush trails the
+     dwell by a drain and an epilogue, thus a write stands under the block AFTER the one
+     that made it — the whole reason the lag is two and not one. *)
   let model = Model.For_test.drawn ~layers:4 ~width:3 ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:4 ~lanes:2 ~walk:4 in
   let module B =
@@ -1255,22 +1182,14 @@ let%expect_test "the pair interleaves, and the picture is the schedule" =
 ;;
 
 let%expect_test "the cycles of one forward, against the cost model" =
-  (* INSTRUMENT 4'S DYNAMIC HALF. [Elaboration.forward_cycles] counts the dwells of every
-     layer and one drain tail behind each of them, and it is a COUNT and not a bound: it
-     assumes the dwells stand back to back, thus every fetch of the rotation hides under a
-     running dwell. What it does not count is the preamble of each layer and the turn
-     behind it, and this bench is the first measured number for them.
+  (* WHAT THE COST MODEL DOES NOT COUNT: the preamble of each layer and the turn behind
+     it. The harness ties [step_taken] to [step_ready], thus no draw is waited on.
 
-     The harness ties [step_taken] to [step_ready], thus no draw is waited on and what
-     stands is the machine's own.
-
-     WHAT THE NUMBERS SAY. The preamble is nine cycles at each layer and NOTHING ELSE
-     GROWS: it does not follow the columns, the groups or the channels, thus every fetch
-     of the rotation but the first of a layer hides under a running dwell — which is the
-     claim of "The dwell" in the design, measured. The turn stands at or under the drain
-     tails the model already counts. What is left is the head's wait, and it is PHASE I'S
-     SERIALIZATION PRICED: about [rows] + 9 cycles at every step, growing with T and with
-     nothing else, which is the number the overlap of Phase II would buy back.
+     The preamble is nine cycles at each layer and NOTHING ELSE GROWS — it does not follow
+     the columns, the groups or the channels — which is the claim of "The dwell" in the
+     design, measured. The turn stands at or under the drain tails the model already
+     counts. What is left is the head's wait: PHASE I'S SERIALIZATION PRICED at about
+     [rows] + 9 cycles a step, which the overlap of Phase II would buy back.
 
      IF THE ROTATION EVER FAILS TO HIDE A FETCH the preamble line grows with the dwells
      and not with the layers, and then the design moves and not this bench. *)
@@ -1328,10 +1247,8 @@ let%expect_test "the cycles of one forward, against the cost model" =
 (* ==================================================================== *)
 
 module For_test = struct
-  (* THE BENCH, NARROWED TO WHAT THE DRIVER OF THE RTL GATE READS: one pass, the columns
-     the stores took in the order they went out, and the logit columns the head offered.
-     The cycle tallies and the waveforms of the expect tests above stay inside. The driver
-     is [bin/gate_diffusion.ml] and the gate is [jax/tests/test_rtl.py]. *)
+  (* narrowed to what the RTL gate's driver reads: one pass, the columns the stores took
+     in the order they went out, and the logit columns the head offered *)
   module Bench (M : sig
       val e : Elaboration.t
     end) =

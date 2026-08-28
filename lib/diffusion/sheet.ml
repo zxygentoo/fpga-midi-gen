@@ -1,8 +1,5 @@
-(* The sheet — see sheet.mli for the contract, and docs/diffusion_rtl.md, "The memories
-   and their ports" and "The seam to the sequencer", for its place. What stands here is
-   the WHY of each rule.
+(* The sheet — see sheet.mli.
 
-   One register for each cell's class, one for its mask bit, and three readers over them.
    THE DECODE STANDS AFTER THE MUX AND NEVER BEFORE IT: a face names one step, thus it
    costs one [steps]-way mux of the packed cells and then one decode of the cell it found.
    A sheet held as decoded planes would be [steps] decodes and a mux of the whole plane
@@ -24,10 +21,7 @@ let activation_bits = Model.activation_bits
 (* The stem's decode, in software *)
 (* ==================================================================== *)
 
-(* THE SOFTWARE HALF OF THIS UNIT, and the reason it stands here: the plane face of the
-   circuit must equal this decode, thus the two are one unit's two statements of one rule.
-   The integer twin of the era is [jax/diffusion/quantized.py], and what a gate below the
-   seam needs of it is exactly this decode. *)
+(* The plane face of the circuit must equal this decode, thus the two stand together. *)
 
 let voices = Model.voices
 let planes = Model.planes
@@ -35,10 +29,8 @@ let planes = Model.planes
 (* the one of the activation format, which a hot row of a plane carries *)
 let activation_one = 1 lsl Model.activation_q
 
-(* THE INPUT PLANES IN THE ACTIVATION FORMAT: a cell of the masked roll is 0 or one,
-   exact. [rows] is P and not [Model.rows]: the circuit takes its own P from [Shape], thus
-   the software half takes it too and a bench at a narrow P compares against the tensor
-   that P really writes. *)
+(* [rows] is P and not [Model.rows]: the circuit takes its own P from [Shape], thus the
+   software half takes it too. *)
 let plane_activations sheet hidden ~steps ~rows =
   let x = Array.create ~len:(steps * rows * planes) 0 in
   for step = 0 to steps - 1 do
@@ -54,16 +46,12 @@ let plane_activations sheet hidden ~steps ~rows =
   x
 ;;
 
-(* ONE COLUMN OF ANY TENSOR OF THE ERA: the [rows] values that one step and one channel
-   hold, read out of the flat array of a [steps; rows; channels] tensor. Every tensor the
-   circuit writes has that one shape — the stem's planes, a layer's output, the head's
-   logits — thus the index rule stands here one time and no reader slices one by hand. *)
+(* Every tensor the circuit writes reads as [steps; rows; channels] — the stem's planes, a
+   layer's output, the head's logits — thus the index rule stands here one time. *)
 let tensor_column x ~step ~channel ~channels ~rows =
   Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
 ;;
 
-(* one column of the stem's input tensor: [tensor_column] at the PLANE count, which is the
-   only thing this decode adds to the index rule *)
 let plane_column x ~step ~plane ~rows =
   tensor_column x ~step ~channel:plane ~channels:planes ~rows
 ;;
@@ -117,13 +105,11 @@ module Make (Shape : Shape) = struct
   ;;
 
   let create (i : _ I.t) : _ O.t =
-    (* THE MEMORIES TAKE NO CLEAR, thus the whole unit takes none. The opening writes
-       every class and a mask draw writes every bit before anything reads either, and the
-       reset of the board runs an opening — a cleared sheet is a sheet no walk ever sees. *)
+    (* no clear: the opening writes every class and a mask draw every bit before anything
+       reads either, and the board's reset runs an opening *)
     let spec = Reg_spec.create ~clock:i.clock () in
-    (* ONE DECODE FOR THE WHOLE SHEET. The walk names one cell, thus the two onehots stand
-       once and a cell's write enable is one AND of two bits — and not a comparator at
-       each of the [steps] by [voices] registers. *)
+    (* ONE DECODE FOR THE WHOLE SHEET: a cell's write enable is one AND of two bits, and
+       not a comparator at each of the [steps] by [voices] registers *)
     let step_named = binary_to_onehot i.cell_step in
     let seat_named = binary_to_onehot i.cell_seat in
     let cell ~step ~seat =
@@ -139,13 +125,12 @@ module Make (Shape : Shape) = struct
       let word = mux step_address sheet in
       mux seat_address (List.init voices ~f:(seat_of_step word))
     in
-    (* THE WALK'S FACE: the mask bit of the cell the walk names. The classes leave by the
-       two decodes below, thus this face reads one bit and states nothing. *)
+    (* the walk's face: one bit, and no decode *)
     let hidden =
       hidden_of_cell (cell_at ~step_address:i.cell_step ~seat_address:i.cell_seat)
     in
-    (* THE STEM'S FACE. [Frame.voices] is four, thus a plane index IS the face bit above
-       the seat: neither the seat nor the face costs a subtract. *)
+    (* the stem's face. [Frame.voices] is four, thus a plane index IS the face bit above
+       the seat and neither costs a subtract. *)
     let read =
       cell_at
         ~step_address:i.plane_step
@@ -161,8 +146,8 @@ module Make (Shape : Shape) = struct
         (sel_bottom (binary_to_onehot (class_of_cell read)) ~width:rows
          &: repeat ~:hides ~count:rows)
     in
-    (* one row of the column, in the twin's activation format: a cell of the masked roll
-       is 0 or one, exact, thus a hot row is the one of [Model.activation_q] *)
+    (* a cell of the masked roll is 0 or one, exact, thus a hot row is the one of
+       [Model.activation_q] *)
     let activation_of_row row =
       concat_msb
         [ zero (activation_bits - Model.activation_q - 1)
@@ -170,9 +155,7 @@ module Make (Shape : Shape) = struct
         ; zero Model.activation_q
         ]
     in
-    (* THE SCORE'S FACE: the four classes of one step become four voice codes, seat 0 in
-       the low byte. The map is [Vocab]'s and the packing is [Frame]'s; this unit restates
-       neither. *)
+    (* the score's face. The map is [Vocab]'s and the packing is [Frame]'s. *)
     let scored = mux i.score_step sheet in
     let code_of_seat seat =
       Vocab.Rtl.code_of_class (class_of_cell (seat_of_step scored seat))
@@ -188,11 +171,10 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Model.opening_sheet] and
-   [Model.hidden_cells] state what the walk writes, [plane_activations] above states what
-   the stem must read, and [Model.frames_of_sheet] states what the sequencer must play —
-   thus the gate compares the circuit against the functions themselves and never against a
-   second reading of them. *)
+(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED: [Model.opening_sheet],
+   [Model.hidden_cells], [plane_activations] and [Model.frames_of_sheet]. The gate
+   compares the circuit against the functions themselves and never a second reading of
+   them. *)
 module Bench (Shape : Shape) = struct
   module Sheet = Make (Shape)
   module Sim = Cyclesim.With_interface (Sheet.I) (Sheet.O)
@@ -215,19 +197,18 @@ module Bench (Shape : Shape) = struct
     ; frame : int
     }
 
-  (* The sheet the three writes of a pass leave: a redraw lands on the cells the mask hid
-     and nowhere else, which is the walk's own rule. *)
+  (* the sheet the three writes of a pass leave: a redraw lands on the cells the mask hid
+     and nowhere else *)
   let redrawn ~opening ~hidden ~redraw =
     Array.mapi opening ~f:(fun step seats ->
       Array.mapi seats ~f:(fun seat held ->
         if hidden.(step).(seat) then redraw.(step).(seat) else held))
   ;;
 
-  (* [filled ~opening ~hidden ~redraw] is a simulation whose sheet holds ONE PASS: the
-     opening's classes cell by cell, then the mask bits cell by cell, then the classes of
-     the cells the mask hid — the three writes of a pass, in the order the walk takes them
-     and in [Model.cell_order] inside each one. A bench that wrote the classes one time
-     would never see a class write land beside a mask bit that must not move. *)
+  (* A simulation whose sheet holds ONE PASS: the opening's classes, then the mask bits,
+     then the classes of the cells the mask hid — the three writes in the order the walk
+     takes them, over [Model.cell_order] inside each. A bench that wrote the classes one
+     time would never see a class write land beside a mask bit that must not move. *)
   let filled ?(trace = false) ~opening ~hidden ~redraw () =
     let sim =
       Sim.create
@@ -264,8 +245,8 @@ module Bench (Shape : Shape) = struct
     waves, sim
   ;;
 
-  (* [ask sim read] is the three faces at the three addresses, in one cycle. The strobes
-     stand low, thus the sheet does not move under a read. *)
+  (* the three faces at the three addresses, in one cycle; the strobes stand low, thus the
+     sheet does not move under a read *)
   let ask (sim : Sim.t) { cell = step, seat; column = plane_step, plane; score } =
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
@@ -287,10 +268,9 @@ module Bench (Shape : Shape) = struct
     ; frames : int
     }
 
-  (* [check ~opening ~hidden ~redraw] runs the pass into the memory and then sweeps the
-     three faces TOGETHER: a read cycle names a cell, a plane column and a step that have
-     nothing to do with each other, and the sweep of [steps * planes] cycles visits every
-     address of every face. *)
+  (* the pass into the memory, then the three faces swept TOGETHER: one read cycle names a
+     cell, a plane column and a step that have nothing to do with each other, and the
+     sweep visits every address of every face *)
   let check ~opening ~hidden ~redraw =
     let sim = snd (filled ~opening ~hidden ~redraw ()) in
     let sheet = redrawn ~opening ~hidden ~redraw in
@@ -323,13 +303,10 @@ module Bench (Shape : Shape) = struct
 end
 
 let%expect_test "the three faces answer the sheet one pass of the walk writes" =
-  (* ONE PASS OF THE WALK, WRITTEN AND THEN READ BACK THROUGH ALL THREE FACES. Every write
-     is the walk's own — [opening_sheet] inside the register of each seat, [hidden_cells]
-     under the annealed threshold, and a second opening standing for the redraws of the
-     hidden cells — thus the memory holds what the machine will put in it and not a drawn
-     pattern. The passes stand at the ends of the schedule: pass 0 hides nearly every cell
-     and the last pass hides nearly none, thus both faces meet hidden cells and standing
-     ones. *)
+  (* Every write is the walk's own, thus the memory holds what the machine will put in it
+     and not a drawn pattern. The passes stand at the ends of the schedule: pass 0 hides
+     nearly every cell and the last hides nearly none, thus both faces meet hidden cells
+     and standing ones. *)
   let case ~steps ~pass ~walk ~seed =
     let module B =
       Bench (struct
@@ -340,8 +317,8 @@ let%expect_test "the three faces answer the sheet one pass of the walk writes" =
     let state, opening = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
     let threshold = Model.anneal_threshold ~step:pass ~walk in
     let state, hidden = Model.hidden_cells state ~steps ~threshold in
-    (* the redraw is a second opening: a class inside the register of each seat, which is
-       the range a draw of the model states as well *)
+    (* the redraw is a second opening: a class inside each seat's register, the range a
+       draw of the model states as well *)
     let (_ : Prng.state), redraw = Model.opening_sheet state ~steps in
     let hides = Array.sum (module Int) hidden ~f:(Array.count ~f:Fn.id) in
     let { B.masks; columns; frames } = B.check ~opening ~hidden ~redraw in
@@ -372,17 +349,14 @@ let%expect_test "the three faces answer the sheet one pass of the walk writes" =
 ;;
 
 let%expect_test "the waveform of one pass and the three faces" =
-  (* Two steps of six classes, and one whole pass: the walk writes the opening cell by
-     cell, then the mask bits cell by cell, then the two cells the mask hid — and the
-     three faces then answer at three unrelated addresses. The picture is the WRITES AND
-     THE FACES; the text below it is what each read said, because a plane column does not
-     fit a wave column.
+  (* Two steps of six classes and one whole pass. The picture is the WRITES AND THE FACES;
+     the text below it is what each read said, because a plane column does not fit a wave
+     column.
 
-     [hidden] stands through the redraw's class writes, which is the one thing an
-     opening-only fill could never show. Read 1 and read 2 are the same hidden cell on its
-     two planes: THE REDRAW LANDED IN IT — the frame carries class 5 at seat 2 — and its
-     class plane is still empty while its mask plane is whole, which is the decode and not
-     the memory. *)
+     [hidden] stands through the redraw's class writes, which an opening-only fill could
+     never show. Reads 1 and 2 are the same hidden cell on its two planes: THE REDRAW
+     LANDED IN IT — the frame carries class 5 at seat 2 — and its class plane is still
+     empty while its mask plane is whole, which is the decode and not the memory. *)
   let module B =
     Bench (struct
       let steps = 2

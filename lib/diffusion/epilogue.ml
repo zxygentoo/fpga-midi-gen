@@ -1,10 +1,4 @@
-(* L3 of the diffusion source — see epilogue.mli for the contract and
-   docs/diffusion_rtl.md, "The epilogue", for the design. What stands here is the WHY of
-   each rule.
-
-   The unit is the tail of the twin's [layer_forward] and nothing else: [lanes] identical
-   lanes, each one a norm, a ReLU, a clamp and — where the layer closes a pair — a
-   residual add under a second clamp. It holds no memory and no walk. *)
+(* The epilogue — see epilogue.mli, and docs/diffusion_rtl.md for the design. *)
 
 open Core
 open Hardcaml
@@ -16,17 +10,12 @@ module type Shape = sig
   val lanes : int
 end
 
-(* The pipe: the multiply, then the shift with the bias, then the ReLU with the first
-   clamp, then the residual with the second. A 32 by 16 multiply and a 48-bit variable
-   shift do not stand in one cycle at 100 MHz beside each other — and ring 3 read the
-   shift, the bias and the clamp together at 19 levels, failing in context — thus the
-   stages are five and the tag rides beside them. The split is the round's licensed
-   reserve: no caller counts the depth, because the tag travels.
-
-   THE MULTIPLY ITSELF TOOK TWO OF THE FIVE at the fused rung 3. In LUTs — the array owns
-   every DSP — a 32 by 16 product is the widest cone of this unit, and the census of the
-   golden candidate named it at −0.090 over ten endpoints. It stands in two stages now,
-   split by the GAIN'S BYTES, and the product is the same product. *)
+(* FIVE STAGES, AND TIMING IS THE ONLY REASON. A 32 by 16 multiply and a 48-bit variable
+   shift do not stand in one cycle at 100 MHz beside each other: ring 3 read the shift,
+   the bias and the clamp together at 19 levels and failed in context, and the multiply
+   alone censused at −0.090 over ten endpoints at the fused rung. The multiply therefore
+   takes two of the five, split by the GAIN'S BYTES, and the product is the same product.
+   No caller pays for the depth, because the tag travels. *)
 let latency = 5
 
 (* the activation format the twin states, and the accumulator the array hands over *)
@@ -90,9 +79,8 @@ module Make (Shape : Shape) = struct
       let slice signal bits =
         select signal ~high:((at * bits) + bits - 1) ~low:(at * bits)
       in
-      (* THE FIELD ORDER IS THE ELABORATION'S, SLICED BY THE ELABORATION. The packer and
-         this slicing are one rule over [Comb], thus a word that changed shape could not
-         be packed one way and read another. *)
+      (* the packer and this slicing are one rule over [Comb], thus a word that changed
+         shape could not be packed one way and read another *)
       let { Elaboration.gain; shift; bias } =
         Elaboration.Rtl.norm_fields (slice i.norms Elaboration.norm_bits)
       in
@@ -118,8 +106,7 @@ module Make (Shape : Shape) = struct
            +: sresize gain_low ~width:product_bits)
       in
       (* STAGE 3 — [Constants.apply] with the bias. The shift is VARIABLE because a gain
-         carries its own q, and it goes toward negative infinity as the twin's arithmetic
-         shift does. *)
+         carries its own q, and it goes toward negative infinity as the twin's does. *)
       let scaled = log_shift ~f:sra product ~by:(pipeline dspec ~n:2 shift) in
       let biased =
         reg dspec (scaled +: sresize (pipeline dspec ~n:2 bias) ~width:(width scaled))
@@ -132,10 +119,8 @@ module Make (Shape : Shape) = struct
           biased
       in
       let conv = reg dspec (clamp16 ramped) in
-      (* STAGE 5 — the join. THE TWIN CLAMPS TWICE: it writes the convolution through its
-         counted clamp and then writes the sum through it again, thus a value that rode
-         the first clamp and then meets a residual gives a different answer under one
-         clamp than under two. Gate B is bit for bit. *)
+      (* STAGE 5 — the join. THE TWIN CLAMPS TWICE, and the expect test below shows why
+         that is arithmetic and not hygiene. *)
       let with_residual =
         sresize conv ~width:(activation_bits + 1)
         +: sresize
@@ -159,9 +144,8 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* THE REFERENCE IS THE TWIN, CALLED: [Constants.apply] and [clamp16] are the twin's own
-   functions, thus the gate compares the circuit against the arithmetic itself and never
-   against a second copy of it. *)
+(* THE REFERENCE IS THE TWIN, CALLED: [Constants.apply] and [clamp16] are its own
+   functions, thus the gate never compares against a second copy of them. *)
 module Bench (Shape : Shape) = struct
   module Lane = Make (Shape)
   module Sim = Cyclesim.With_interface (Lane.I) (Lane.O)
@@ -185,17 +169,15 @@ module Bench (Shape : Shape) = struct
       if join then Nn_quantized.clamp16 (Int.max 0 (residual.(at) + conv)) else conv)
   ;;
 
-  (* THE BENCH PACKS WITH THE ELABORATION'S OWN PACKER and never with a copy of it. A
-     mirror of the epilogue's slicing would agree with the epilogue whichever order the
-     image really takes, thus it would pass a flipped word — the lesson the weight image's
-     gate already learned. *)
+  (* THE BENCH PACKS WITH THE ELABORATION'S OWN PACKER: a mirror of the epilogue's slicing
+     would agree with the epilogue whichever order the image really takes, thus it would
+     pass a flipped word. *)
   let pack_norms norms biases =
     Bits.concat_lsb
       (List.init lanes ~f:(fun at -> Elaboration.norm_word norms.(at) ~bias:biases.(at)))
   ;;
 
-  (* [run rows ~relu ~join] drives the rows back to back and gives what left the pipe,
-     beside the tag each row entered with. *)
+  (* the rows driven back to back, and what left the pipe beside each row's tag *)
   let run work ~relu ~join =
     let sim = Sim.create Lane.create in
     let inp = Cyclesim.inputs sim in
@@ -245,16 +227,15 @@ module Bench (Shape : Shape) = struct
 end
 
 let%expect_test "the epilogue states what the twin's layer tail states" =
-  (* THE FUZZ, over the three shapes a layer can take. The sums run the whole int32 range
-     the array can hand over, the gains and the shifts the whole range the quantizer can
-     state, and the biases and the residual the whole int16 — thus the clamps fire, which
-     is the point: a value that never rides a clamp tests nothing about the clamps.
+  (* THE FUZZ, over the three shapes a layer can take. Every draw runs its whole range —
+     the sums int32, the gains and shifts what a quantizer can state, the biases and the
+     residual int16 — thus the clamps fire, which is the point.
 
      [relu] with [join] is not among them: a pair-closing convolution runs with no ReLU of
-     its own and the head takes neither, thus the pair never stands. *)
-  (* [work_rows] is how many drained rows the case drives, and it is NOT the shape's
-     [rows] two lines below: the tag walks 0 to 47 and begins again, thus a case may drive
-     more rows than a drain holds. *)
+     its own and the head takes neither.
+
+     [work_rows] is NOT the shape's [rows]: the tag walks 0 to 47 and begins again, thus a
+     case may drive more rows than a drain holds. *)
   let case ~lanes ~relu ~join ~work_rows =
     let module B =
       Bench (struct
@@ -263,8 +244,8 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
       end)
     in
     let draw_row state =
-      (* the rail the array's own gate proved it reaches, not a comfortable fraction of
-         it: the multiply's top operand bit is exercised and not argued *)
+      (* the rail the array's own gate proved it reaches: the multiply's top operand bit
+         is exercised and not argued *)
       let state, sums =
         Prng.For_test.draw_array state ~len:lanes ~limit:((1 lsl 31) - 1)
       in
@@ -276,8 +257,7 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
       , { B.sums
         ; norms =
             Array.mapi gains ~f:(fun at q_value ->
-              (* a shift is never negative — [Elaboration.create] refuses one — thus the
-                 draw takes its magnitude *)
+              (* [Elaboration.create] refuses a negative shift, thus the magnitude *)
               { Nn_quantized.Constants.q_value; q = Int.abs shifts.(at) })
         ; biases
         ; residual
@@ -315,11 +295,10 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
 ;;
 
 let%expect_test "the second clamp is arithmetic and not hygiene" =
-  (* THE DOUBLE CLAMP, ON A ROW THAT SHOWS IT. A convolution that overflows POSITIVE
-     meeting a NEGATIVE residual is where the two readings part: the twin clamps the
-     convolution to 32767 first, thus the sum is 22767; a circuit that clamped one time
-     would carry the whole 40000 into the sum and state 30000. Both stand inside int16,
-     thus the second clamp does not catch the difference — it IS the difference. *)
+  (* A convolution that overflows POSITIVE meeting a NEGATIVE residual is where one clamp
+     and two part: the twin clamps to 32767 first, thus the sum is 22767, where one clamp
+     would carry the whole 40000 in and state 30000. Both stand inside int16, thus the
+     second clamp does not catch the difference — it IS the difference. *)
   let module B =
     Bench (struct
       let rows = 48

@@ -21,26 +21,19 @@ carries the equivariance that the shifts used to buy. The elected checkpoint is 
 valid loss -- 228 pieces against nine million parameters memorize, and the valid curve is
 the only guard the round has.
 
-THE OPTIMIZER IS PLAIN ADAM, and it is plain Adam by arithmetic and not by a second code
-path: --wd is 0 by default, and AdamW with a weight decay of zero IS Adam. That is the
-paper's -- it is ISMIR 2017, where AdamW is arXiv 1711.05101 of November 2017 and ICLR 2019,
-and the code release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no
-L2 anywhere. Batch norm and the best-by-valid checkpoint are the whole of its regularisation.
+THE OPTIMIZER IS PLAIN ADAM, by arithmetic and not by a second code path: --wd is 0 by
+default, and AdamW with a weight decay of zero IS Adam. That is the paper's — the code
+release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no L2 anywhere,
+thus batch norm and the best-by-valid checkpoint are the whole of its regularisation.
 
-IT IS OPTAX'S ADAMW AND NOT THE HAND-ROLLED `nn.adamw`, and the two are the same rule:
-`scale_by_adam` bias-corrected with eps after the square root, then the decoupled decay,
-then the rate, behind a global-norm clip. `test_train.py` holds the two equal leaf for leaf
-at t 1 and t 1000 -- with and without the clip engaged, at a constant rate and under the
-schedule -- and holds the two curves equal at every step of the run. A rule that is proven
-equal owes no retrain. The frozen eras keep `nn.adamw` and `nn.schedule`; this trainer
-calls neither.
+IT IS OPTAX'S ADAMW AND NOT THE HAND-ROLLED `nn.adamw`, and `test_train.py` holds the two
+equal leaf for leaf. The frozen eras keep `nn.adamw` and `nn.schedule`; this trainer calls
+neither.
 
-THE RATE MOVES WITH THE RUNG. The release carries no flag for it: `lib_hparams` holds
-2**-4 marked "for sigmoids", with 2**-6 commented out above it, and halves on a plateau of
-five epochs. Measured 2026-08-24 under the warmup and cosine decay of [learning_rates], the
-board rung wants that commented 2**-6 = 1.6e-2 and the ceiling wants 3e-3. The default is
-the ceiling's rate, because every other default states the paper's shape; a rung passes
-its own, as docs/diffusion.md records them.
+THE RATE MOVES WITH THE RUNG, and the release carries no flag for it. Measured 2026-08-24
+under the warmup and cosine decay of [learning_rates], the board rung wants 1.6e-2 and the
+ceiling 3e-3. The default is the ceiling's, because every other default states the paper's
+shape; a rung passes its own, as docs/diffusion.md records them.
 """
 
 import time
@@ -70,17 +63,13 @@ def population_decay(t):
     """The share of itself the batch-norm population keeps at step [t].
 
     The population opens at mean 0 and variance 1. At the code release's flat 0.99 it needs
-    some hundreds of steps to reach the batch statistics, and every valid number before
-    that reads the prior and not the model: measured at step 250 of a 1,500-step probe,
-    valid stood at log 48 while the training loss had already fallen to 3.33. The warmed
-    decay of the standard recipe -- (1 + t) / (10 + t) until it passes the decay -- makes
-    the early population the running mean of every batch so far, and it settles onto the
-    release's rate at step 890.
+    some hundreds of steps to reach the batch statistics, and every valid number before that
+    reads the prior and not the model: at step 250 of a 1,500-step probe, valid stood at
+    log 48 while the training loss had already fallen to 3.33. The warmed decay makes the
+    early population the running mean of every batch so far, and settles onto the release's
+    rate at step 890. IT IS WHY THE NORM IS NOT `nnx.BatchNorm`.
 
-    IT IS WHY THE NORM IS NOT `nnx.BatchNorm`, whose population is an exponential moving
-    average at a fixed momentum from the first call.
-
-    Training never reads it. A training pass normalises by the batch's own statistics, thus
+    Training never reads it: a training pass normalises by the batch's own statistics, thus
     this moves the evaluation and the checkpoint and never the gradient."""
     return jnp.minimum(POP_DECAY, (1.0 + t) / (10.0 + t))
 
@@ -89,19 +78,15 @@ def learning_rates(peak, warmup, total):
     """The rate at every step of the run: linear from 0 to [peak] over [warmup] steps, then
     cosine from [peak] to 0 over the rest. A warmup of zero is a constant.
 
-    THE SCHEDULE IS READ ONE STEP LATE OR NOT AT ALL. The loop's step is 1 at the first
-    update and optax hands a schedule its own update count, which is 0 there; a curve read
-    at the raw count applies a rate of 0 to the first update and every later rate one step
-    behind. The `+ 1` is that correction, and `test_train.py` holds it two ways: the curve
-    against `nn.schedule` at every step, and -- because a curve gate cannot see whether the
-    OPTIMIZER reads it -- one update rule against the other under a moving rate, where
-    dropping the `+ 1` parts the two parameter trees at the first step by 3.2e-3 against a
-    float32 noise of 7.5e-8.
+    THE SCHEDULE IS READ ONE STEP LATE OR NOT AT ALL. Optax hands a schedule its own update
+    count, which is 0 at the first update where the loop's step is 1, thus a curve read at
+    the raw count applies a rate of 0 to the first update and every later rate one step
+    behind. The `+ 1` is that correction and `test_train.py` holds it two ways.
 
     THE TWO ENDS ARE `nn.schedule`'S OWN RULES AND NOT OPTAX'S. A warmup of zero is a
     constant peak, where `warmup_cosine_decay_schedule` would be a bare cosine decay; and a
-    run SHORTER THAN ITS OWN WARMUP -- which every short probe of this trainer is -- never
-    leaves the ramp, where optax refuses to build a cosine of a negative length at all."""
+    run SHORTER THAN ITS OWN WARMUP — which every short probe is — never leaves the ramp,
+    where optax refuses to build a cosine of a negative length at all."""
     if warmup == 0:
         curve = optax.constant_schedule(peak)
     elif total <= warmup:
@@ -130,37 +115,29 @@ def update_rule(*, peak, warmup, total, clip, weight_decay):
 
 
 def masked_nll(said, classes, hidden):
-    """The orderless NADE loss of one batch: the negative log-likelihood of the masked
-    cells, over the masked count, meaned over the sheets.
+    """The orderless NADE loss of one batch: the negative log-likelihood of the masked cells,
+    over the masked count, meaned over the sheets.
 
-    The divisor is the paper's one over |not-C| and it is per sheet, not per batch: every
-    sheet of the batch drew its own mask size, and a sheet with three cells hidden must
-    not weigh a hundredth of one with three hundred.
-
-    The count is never zero -- the draw masks at least one cell -- thus nothing guards the
-    division."""
+    The divisor is the paper's one over |not-C| and it is PER SHEET: every sheet drew its own
+    mask size, and one with three cells hidden must not weigh a hundredth of one with three
+    hundred. The count is never zero, thus nothing guards the division."""
     nll = model.nll_of_logits(said, classes)
     masked = hidden.astype(jnp.float32)
     return jnp.mean(jnp.sum(nll * masked, axis=(1, 2)) / jnp.sum(masked, axis=(1, 2)))
 
 
 def fold_population(coconet, seen, decay):
-    """The batch statistics of a training pass, folded into the populations of the norms
-    that read them, in the layer order.
-
-    IT STANDS OUTSIDE THE GRADIENT. A training pass normalises by the batch's own
-    statistics and reads no population at all, thus nothing downstream of the loss touches
-    one; the populations are `nnx.BatchStat` and no gradient reaches them in any case."""
+    """The batch statistics of a training pass, folded into the populations of the norms that
+    read them, in the layer order. IT STANDS OUTSIDE THE GRADIENT: a training pass reads no
+    population at all, and the populations are `nnx.BatchStat` in any case."""
     for layer, statistics in zip(coconet.every_layer(), seen):
         layer.norm.fold(statistics, decay)
 
 
 def make_step(remat):
-    """The jitted training step: the mask draw, the loss, one AdamW update, and the fold of
-    the batch statistics into the population.
-
-    The mask is drawn inside the step. It is fresh at every step, it reads no corpus, and
-    the device already holds the key."""
+    """The jitted training step: the mask draw, the loss, one AdamW update, and the fold of the
+    batch statistics into the population. The mask is drawn INSIDE the step — it reads no
+    corpus, and the device already holds the key."""
 
     @nnx.jit
     def step_fn(coconet, optimizer, t, classes, key):
@@ -192,13 +169,11 @@ def probe_batches(crops, batch):
     """The fixed rows of the valid curve: one crop of every valid piece and one orderless
     mask for each, drawn one time and never drawn again.
 
-    A training batch draws a fresh mask at every step, and the loss of a sheet depends
-    heavily on how much of it is hidden -- a sheet with one cell masked is nearly free and
-    one with all of them is nearly the prior. Two steps of the training number hardly
-    compare. The probes hold the mask still, and what moves in the number is the model.
+    A training batch draws a fresh mask at every step, and a sheet's loss depends heavily on
+    how much of it is hidden, thus two steps of the training number hardly compare. The
+    probes hold the mask still, and what moves in the number is the model.
 
-    The probe mean and the training mean do not compare WITH EACH OTHER. Read each against
-    itself over the run."""
+    The probe mean and the training mean do not compare WITH EACH OTHER."""
     classes = crops.every_piece(PROBE_SEED)
     hidden = model.orderless_masks(
         jax.random.PRNGKey(PROBE_SEED), len(classes), crops.length
@@ -210,11 +185,9 @@ def probe_batches(crops, batch):
 
 
 def eval_loss(coconet, batches):
-    """the mean over the probe sheets; the last batch is short, thus the mean is a sum
-    over a count and never a mean of means
-
-    The sums stay on the device until the loop ends, for the reason the training loop
-    keeps its losses there: a read at every batch blocks the dispatch of the next one."""
+    """the mean over the probe sheets; the last batch is short, thus the mean is a sum over a
+    count and never a mean of means. The sums stay on the device until the loop ends,
+    because a read at every batch blocks the dispatch of the next one."""
     total = 0.0
     sheets = 0
     for classes, hidden in batches:
@@ -242,10 +215,7 @@ def train(
     ckpt,
 ):
     """The loop of the round: the crop draw, the step, the fixed valid probes and the
-    best-by-valid checkpoint.
-
-    THE SCHEDULE IS INSIDE THE OPTIMIZER and not in this loop, thus no line here can write
-    its own peak and decay the rate geometrically to zero."""
+    best-by-valid checkpoint. THE SCHEDULE IS INSIDE THE OPTIMIZER and not in this loop."""
     pieces = data.load_pieces(corpus_path)
     crops = data.Crops(pieces["train"], crop)
     probe = probe_batches(data.Crops(pieces["valid"], crop), batch)

@@ -4,23 +4,19 @@
     uv run python -m diffusion.infer sample --ckpt C --seeds 7 --walk 32
 
 `sample` is the ear's path: draw, print the battery against the corpus row, and speak the
-music to the synthesizer or to a .mid. A batch is several whole pieces and not one piece
-in parts, thus --gap puts a silence between two of them on the wire, as a performer
-breathes between two chorales, and --fade takes the velocity down over the last bar of
-each. Neither makes a crop ARRIVE.
+music to the synthesizer or to a .mid. A batch is several whole pieces and not one piece in
+parts, thus --gap puts a silence between two of them on the wire and --fade takes the
+velocity down over the last bar of each. Neither makes a crop ARRIVE.
 
-EVERY DRAW OF THE WALK COMES FROM THE SHARED GENERATOR, jax/prng.py, the batched twin of
-the circuit's xorshift32, under the consumption order of docs/diffusion_rtl.md: one seed
-names one SHEET, its opening, its masks and its redraws, alone or in any batch. That is
-what gives the era the seed handoff -- a sweep here nominates a seed, and the OCaml
-reference and the board play the same piece -- and what Gate C of test_parity.py holds:
-this walk and lib/diffusion's print the same step lines. --seeds names the walks, as it
-names them in every era. Quality against N is the same seeds at two --walk values: the
-openings agree by construction, thus no sweep command exists.
+EVERY DRAW OF THE WALK COMES FROM THE SHARED GENERATOR, jax/prng.py, under the consumption
+order of docs/diffusion_rtl.md: one seed names one SHEET, its opening, its masks and its
+redraws, alone or in any batch. That is what gives the era the seed handoff: a sweep here
+nominates a seed, and the integer twin and the board play the same piece. Quality against
+N is the same seeds at two --walk values, thus no sweep command exists.
 
-CPU is the default platform here, and deliberately: a walk is a few hundred forward passes
-of one small sheet and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override
-it -- at N 512 and sixteen sheets the card is worth having.
+CPU IS THE DEFAULT PLATFORM, deliberately: a walk is a few hundred forward passes of one
+small sheet and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override it — at
+N 512 and sixteen sheets the card is worth having.
 """
 
 import os
@@ -42,25 +38,20 @@ from diffusion import model, quantized
 
 
 def gibbs(coconet, given, states, *, walk, temperature):
-    """Independent blocked Gibbs with the annealed schedule of Yao et al., on the shared
-    generator.
+    """Independent blocked Gibbs with the annealed schedule of Yao et al.
 
-    At pass n of [walk] each cell draws one uniform in the cell order and hides exactly
-    when [u * 2^24] falls under [floor(anneal(n, walk) * 2^24)] -- the threshold rule of
-    docs/diffusion_rtl.md, exact on the grid of the generator. One forward pass runs, and
-    each hidden cell draws one uniform in the cell order and redraws through
-    [model.tempered_pick]. The cells are not conditionally independent, which is exactly
-    why the schedule anneals: a high masking probability mixes fast and resamples badly,
-    and as it falls the block shrinks toward the one-variable-at-a-time chain it
-    approximates.
+    At pass n of [walk] each cell draws one uniform in the cell order and hides under the
+    threshold [model.anneal_threshold] states. One forward pass runs, and each hidden cell
+    draws one uniform and redraws through [model.tempered_pick]. The cells are not
+    conditionally independent, which is exactly why the schedule anneals: a high masking
+    probability mixes fast and resamples badly, and as it falls the block shrinks toward the
+    one-variable-at-a-time chain it approximates.
 
-    EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era, thus the
-    walk carries no mask over the mask and the machine of the next round carries none
-    either; conditioning returns with the whole-piece round.
+    EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era; conditioning
+    returns with the whole-piece round.
 
-    [states] holds one generator for each sheet, thus every sheet of a batch is one
-    reproducible piece: the walk of seed 7 is the walk of seed 7 in any company, here, in
-    the OCaml reference and on the board."""
+    [states] holds one generator for each sheet, thus the walk of seed 7 is the walk of seed
+    7 in any company, here and on the board."""
     _, steps, _ = given.shape
     classes = given.copy()
     for step in range(walk):
@@ -84,11 +75,8 @@ def gibbs(coconet, given, states, *, walk, temperature):
 
 
 def audition_path(path, at, count):
-    """The file one sheet writes: the name the caller gave when there is one sheet, and
-    that name numbered when there are several.
-
-    A batch is a set of whole pieces and not one piece in parts, thus each one takes a file
-    of its own and none of them is the batch."""
+    """The file one sheet writes: the caller's name when there is one sheet, and that name
+    numbered when there are several — a batch is a set of whole pieces."""
     if count == 1:
         return path
     name = Path(path)
@@ -98,12 +86,12 @@ def audition_path(path, at, count):
 def draw(coconet, *, crop, seeds, walk, temperature, twin):
     """one batch of sheets, and the seconds the walk cost.
 
-    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
-    -- and the temperature bakes into it, as the bitstream carries it. The two walks open
-    on different generators: the float walk folds its seed and the twin takes it as the
-    SEED cell does. A seed inside 32 bits names itself under both, thus an A/B at one seed
-    hears the quantization and nothing else; seed 0 is the exception the fold states, and
-    there the twin stands still while the float walk runs from the top state."""
+    [twin] draws the INTEGER twin of the circuit — the piece the board plays at this seed —
+    and the temperature bakes into it as the bitstream carries it. The two walks open on
+    different generators: the float walk folds its seed and the twin takes it as the SEED
+    cell does. A seed inside 32 bits names itself under both, thus an A/B at one seed hears
+    the quantization and nothing else; SEED 0 IS THE EXCEPTION, where the twin stands still
+    while the float walk runs from the top state."""
     if twin:
         engine = quantized.QuantizedCoconet.of(coconet, temperature)
         states, given = model.opening_sheet(quantized.engine_states(seeds), crop)
@@ -233,12 +221,9 @@ def sample(
 @click.option("--walk", default=32, help="N, the Gibbs passes to compare")
 @click.option("--temperature", default=1.0)
 def drift(ckpt, crop, seed, walk, temperature):
-    """What the quantization costs, measured on the walk the board takes.
-
-    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S sheet
-    and the ENGINE'S mask, thus the two read one context and what stands between them is the
-    arithmetic alone. The same-draw share reads the float draw on the very uniform the
-    engine took, thus a difference there is the arithmetic and never the generator."""
+    """What the quantization costs, measured on the walk the board takes: at every pass the
+    float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands between
+    the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
     states, given = model.opening_sheet(quantized.engine_states([seed]), crop)
     said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
@@ -266,10 +251,9 @@ def drift(ckpt, crop, seed, walk, temperature):
 def quantize(ckpt, out, temperature):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
-    It is the only thing that crosses the seam for a build -- the elaboration reads it
-    through Model.of_int8_checkpoint and the bitstream carries the result. The
-    population statistics and the float scales do not travel: the fold happens here, one
-    time. The temperature bakes into the temper, as the bitstream carries it."""
+    It is the only thing that crosses the seam for a build. The population statistics and the
+    float scales do not travel — the fold happens here, one time — and the temperature bakes
+    into the temper."""
     coconet = model.Coconet.load(ckpt)
     twin = quantized.QuantizedCoconet.of(coconet, temperature)
     quantized.save(out, twin)

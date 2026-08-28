@@ -1,7 +1,5 @@
-(* The model as the circuit reads it — see model.mli for the contract and
-   docs/diffusion_rtl.md for the design. The model the trainer states and the twin that
-   quantizes it are both in JAX; what stands here is what the CIRCUIT reads, and every
-   rule of it is one the RTL must equal rather than restate. *)
+(* The model as the circuit reads it — see model.mli, and docs/diffusion_rtl.md for the
+   design. *)
 
 open Core
 module Nn_quantized = Mgen_nn.Quantized
@@ -12,10 +10,6 @@ module Nn_quantized = Mgen_nn.Quantized
 
 let rows = Vocab.classes
 let voices = Frame.voices
-
-(* The planes the stem reads: one class plane and one mask plane for each seat. It is a
-   fact of the ROLL and not of any one unit, thus the sheet, the forward pass and
-   [check_shape] all read it here. *)
 let planes = 2 * voices
 
 (* ==================================================================== *)
@@ -32,23 +26,18 @@ let planes = 2 * voices
    poor. *)
 let activation_q = 6
 
-(* The WIDTHS of the format, beside its Q: an activation is int16, and the products of one
-   dwell sum into int32. They stand here because they are the other half of the sentence
-   [activation_q] opens — a unit that stated 16 of its own could part from the twin and no
-   compiler would say so — thus every unit of the circuit reads the format in one place. *)
+(* the widths of the format, beside its Q: an activation is int16 and the products of one
+   dwell sum into int32 *)
 let activation_bits = 16
 let accumulator_bits = 32
 
-(* The rails of the format, from its width: a value that passes them saturates and never
-   wraps. They stand here for the same reason the width does — a unit that wrote 32767 of
-   its own could part from the twin's [INT16_HIGH] and no compiler would say so. *)
+(* the rails, from the width: a unit that wrote 32767 of its own could part from the
+   twin's [INT16_HIGH] and no compiler would say so *)
 let activation_high = (1 lsl (activation_bits - 1)) - 1
 let activation_low = -(1 lsl (activation_bits - 1))
 
-(* The int32 accumulator of the machine is exact below this width: 9 C products of int8 by
-   int16 reach 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more can
-   pass it. It stands beside the widths because it is a bound of THIS format and not a
-   fact of any model: [check_shape] refuses a wider layer, thus the prose cannot rot. *)
+(* the accumulator is exact below this width: 9 C products of int8 by int16 reach 9 * 57 *
+   127 * 32767, under 2^31, and one channel more can pass it *)
 let widest_inputs = 57
 
 (* ==================================================================== *)
@@ -70,10 +59,8 @@ type t =
   ; temper : Nn_quantized.Constants.scale
   }
 
-(* The tensors of the contract file that are not layers: the sampling temper, and the Q
-   the file was quantized at. They stand beside the numbered layers and not inside
-   [__metadata__] BECAUSE [Nx_io] GIVES NO ACCESS TO IT — the loader hands back the
-   tensors alone — and the elaboration needs both numbers. *)
+(* The two tensors of the file that are not layers. They stand beside the numbered layers
+   and not inside [__metadata__] BECAUSE [Nx_io] GIVES NO ACCESS TO IT. *)
 let temper_tensor = "temper"
 let activation_tensor = "activation_q"
 
@@ -122,15 +109,12 @@ let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
     then invalid_argf "the constants of layer %d do not cover its channels" at ())
 ;;
 
-(* THE CONTRACT FILE, READ. [jax/diffusion/quantized.py] writes it and this is its only
-   reader: the quantization happens above the seam, one time, and the file carries the
-   result. Its layout and the reasons behind it are that module's docstring.
+(* THE CONTRACT FILE, READ. [jax/diffusion/quantized.py] writes it and its docstring holds
+   the layout.
 
-   EVERY TENSOR IS INT32, INCLUDING THE KERNEL. It is a fact of the reader and not a
-   taste: [Nx_io.load_safetensors] holds F32, F64, I32, F16 and BF16 and SKIPS every other
-   dtype with a warning on stderr, thus an int8 kernel would arrive here as a hole and the
-   model would refuse for the wrong reason. The values are the int8 image all the same,
-   and [check_shape] and [Elaboration.norm_word] hold every range. *)
+   EVERY TENSOR IS INT32, INCLUDING THE KERNEL, because [Nx_io.load_safetensors] SKIPS
+   every dtype it does not hold — an int8 kernel would arrive as a hole and the model
+   would refuse for the wrong reason. The values are the int8 image all the same. *)
 let of_int8_checkpoint path =
   let archive = Nx_io.load_safetensors path in
   let packed name =
@@ -202,9 +186,8 @@ let rom_tensors { layers; temper = (_ : Nn_quantized.Constants.scale) } =
 
 let rom_bits model = Nn_quantized.rom_bits (rom_tensors model)
 
-(* The exclusive prefix scan: where each of a run of sizes opens. It stands here because
-   the ROM's bases are one reading of it and the elaboration's weight and norm banks are
-   the others, and a base rule stated twice is a base rule that can part. *)
+(* the exclusive prefix scan: the ROM's bases are one reading of it and the elaboration's
+   banks are the others *)
 let bases_of sizes =
   Array.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base)
 ;;
@@ -218,17 +201,12 @@ let rom_bases model =
 (* The walk *)
 (* ==================================================================== *)
 
-(* the 24-bit grid of the generator: a uniform is [k * 2 ** -24], thus [u * grid] is the
-   integer [k] and a threshold compare over it is exact in a double *)
+(* the grid of the generator: a uniform is [k * 2 ** -24], thus [u * grid] is the integer
+   [k] and every compare over it is exact in a double *)
 let grid = Float.of_int (1 lsl Prng.uniform_bits)
 
-(* The register of each seat: the lowest and the highest pitch it sings anywhere in this
-   corpus, seat 0 the bass — [Jsb.voice_ranges] turned around, thus the corpus library's
-   own test pins it. The corpus table gives the soprano first, as the file does.
-
-   [opening_sheet] draws inside these, thus a cell the first Bernoulli leaves standing
-   states a note a chorale could hold. They are the RANGES of [jax/measure.py], stated as
-   pitches. *)
+(* the register of each seat, seat 0 the bass: [Jsb.voice_ranges] turned around, because
+   the corpus table gives the soprano first. They are the RANGES of [jax/measure.py]. *)
 let seat_ranges = Array.of_list (List.rev (Array.to_list Jsb.voice_ranges))
 
 type opening =
@@ -236,11 +214,8 @@ type opening =
   ; width : int
   }
 
-(* The register of each seat as classes: [seat_ranges] read through the class map of the
-   roll, which is one expression — the row of a pitch is its distance above
-   [Vocab.pitch_low], and row 0 is silence. [opening_sheet] draws inside these and the
-   elaboration of the circuit carries them, thus the opening of the walk and the opening
-   of the board are one rule and never a second reading of it. *)
+(* [seat_ranges] as classes: the row of a pitch is its distance above [Vocab.pitch_low],
+   and row 0 is silence *)
 let seat_openings =
   Array.map seat_ranges ~f:(fun (low, high) ->
     { low = low - Vocab.pitch_low + 1; width = high - low + 1 })
@@ -249,8 +224,7 @@ let seat_openings =
 let anneal_threshold ~step ~walk =
   let low = 0.1
   and high = 0.9 in
-  (* the paper's schedule, in the trainer's expression: both language sides evaluate the
-     same doubles, thus the thresholds agree bit for bit *)
+  (* the trainer's own expression, thus both language sides evaluate the same doubles *)
   let alpha =
     Float.max
       low
@@ -262,9 +236,8 @@ let anneal_threshold ~step ~walk =
 (* a threshold compare on the 24-bit grid: exact, because [u * grid] is an integer *)
 let under ~threshold u = Float.(u *. grid < of_int threshold)
 
-(* The cell order of the walk: one step at a time, and the seats inside a step. Every
-   uniform of the walk is drawn in this order and every hidden cell is drawn in it, thus
-   the integer twin takes the same walk by taking the same order. *)
+(* one step at a time, and the seats inside a step. Every uniform of the walk is drawn in
+   this order, thus the twin takes the same walk by taking the same order. *)
 let cell_order ~steps = List.cartesian_product (List.range 0 steps) (List.range 0 voices)
 
 (* one uniform for each cell in the cell order, folded into [f] *)
@@ -277,8 +250,8 @@ let over_cells state ~steps ~f =
 
 let opening_sheet state ~steps =
   let sheet = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
-  (* the product [u * width] is exact on the grid, thus the twin and the circuit state the
-     same class from the same uniform *)
+  (* [u * width] is exact on the grid, thus the twin and the circuit state one class from
+     one uniform *)
   let state =
     over_cells state ~steps ~f:(fun ~step ~voice u ->
       let { low; width } = seat_openings.(voice) in
@@ -310,36 +283,26 @@ let frames_of_sheet sheet =
 (* ==================================================================== *)
 
 module For_test = struct
-  (* THE EXPONENT OF A DRAWN KERNEL. Nothing below the seam reads it — the ROM carries [q]
-     alone and the norm word carries the gain's own shift — thus one constant serves every
-     drawn layer and its bytes stand for [q * 2^-14]. *)
+  (* Nothing below the seam reads a kernel's exponent — the ROM carries [q] alone — thus
+     one constant serves every drawn layer. *)
   let drawn_exponent = 14
 
-  (* the spread of a drawn kernel byte: a third of the byte, thus a draw of three sigma
-     still fits and the clamp of [quantize] is rare *)
+  (* a third of the byte, thus three sigma still fits and the clamp is rare *)
   let kernel_spread = 42.0
 
-  (* the spread of a drawn channel gain around one, and of a drawn bias in the activation
-     format: a quarter of the one, thus the channels differ and none of them dominates *)
+  (* a quarter of the one, thus the channels differ and none of them dominates *)
   let gain_spread = 0.25
   let bias_spread = Float.of_int (1 lsl activation_q) /. 4.0
 
-  (* THE DRAWN MODEL HOLDS ITS TRUNK AT O(1) ACTIVATIONS, AND THAT IS THE WHOLE OF THE
-     ARITHMETIC HERE. A kernel byte of spread [s] over the [9 * C] taps of a dwell carries
-     an activation of magnitude A into an accumulator of about [sqrt (9 C) * s * A]; the
-     gain has to take it back to A, thus the multiplier is [1 / (sqrt (9 C) * s)].
-
-     A GAIN DRAWN FLAT INSIDE INT16 WOULD SAY NOTHING. It would clamp every write of the
-     trunk or zero it, and the pictures, the frames and the cycle counts of the thirteen
-     tests that read a drawn model would all read a machine that no checkpoint makes. This
-     is the argument [jax/diffusion/model.py]'s [drawn_params] makes in floats, in the
-     integers the file now carries. *)
+  (* THE DRAWN MODEL HOLDS ITS TRUNK AT O(1) ACTIVATIONS, and that is the whole of the
+     arithmetic here. A kernel byte of spread [s] over the [9 * C] taps of a dwell carries
+     an activation of magnitude A into an accumulator of about [sqrt (9 C) * s * A], thus
+     the gain must be [1 / (sqrt (9 C) * s)] to take it back. A gain drawn flat inside
+     int16 would clamp every write of the trunk or zero it. *)
   let multiplier ~inputs = 1.0 /. (Float.sqrt (Float.of_int (9 * inputs)) *. kernel_spread)
 
-  (* The shift that puts the multiplier at a quarter of int16: the largest that keeps four
-     times it inside the format, thus a drawn channel gain varies around it and no
-     [q_value] leaves the width. It is the 16-bit exponent rule of the eras with the
-     headroom the draw wants. *)
+  (* the multiplier at a quarter of int16: the largest shift that keeps four times it
+     inside the format, thus a drawn gain varies around it and no [q_value] leaves *)
   let gain_shift value =
     let rec largest e =
       if Float.iround_nearest_exn (Float.ldexp value e) <= 8191 then e else largest (e - 1)
@@ -351,8 +314,8 @@ module For_test = struct
   let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
 
   let drawn ~layers ~width ~seed =
-    (* the input and output channels of each layer: the stem widens the planes, the trunk
-       holds the width, and the head narrows to the voices *)
+    (* the stem widens the planes, the trunk holds the width, the head narrows to the
+       voices *)
     let channels =
       List.init layers ~f:(fun at ->
         (if at = 0 then 2 * voices else width), if at = layers - 1 then voices else width)
@@ -437,8 +400,7 @@ let%expect_test "a broken model refuses loudly" =
 ;;
 
 let%expect_test "the opening puts every voice inside the register of its seat" =
-  (* the draw is over the seat's range and never the whole roll, thus a cell the first
-     masks leave standing states a note a chorale could hold *)
+  (* the draw is over the seat's range and never the whole roll *)
   let (_ : Prng.state), sheet = opening_sheet (Prng.create_folded ~seed:9) ~steps:64 in
   let inside =
     Array.for_all sheet ~f:(fun step ->
@@ -475,9 +437,8 @@ let%expect_test "the anneal thresholds: the paper's schedule on the 24-bit grid"
 ;;
 
 let%expect_test "a sheet becomes the frames of the wire" =
-  (* pitch 60 at the bass and pitch 81 at the soprano: the bass lands in the low byte, the
-     two silent seats carry no pitch, and the events follow the rule of the frame. The
-     class map is the roll's own, stated as [seat_openings] states it. *)
+  (* pitch 60 at the bass and pitch 81 at the soprano: the bass lands in the low byte and
+     the two silent seats carry no pitch *)
   let class_of_pitch pitch = pitch - Vocab.pitch_low + 1 in
   let sheet =
     [| [| class_of_pitch 60; Vocab.silence; Vocab.silence; class_of_pitch 81 |] |]

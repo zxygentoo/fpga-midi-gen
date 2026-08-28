@@ -9,11 +9,10 @@
     the design of this layer and its gates is [docs/diffusion_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/diffusion/model.py] and the
-    integer twin is [jax/diffusion/quantized.py]; the cut of 2026-08-28 (commit 5ed90f8)
-    moved them out of OCaml, and the gate that replaced them is [jax/tests/test_rtl.py] —
-    Python states what the circuit must do and [bin/gate_diffusion.ml] states what it did.
-    What stays here is what the CIRCUIT reads, and every one of those facts is a rule the
-    RTL must equal rather than restate:
+    integer twin is [jax/diffusion/quantized.py]; [jax/tests/test_rtl.py] states what the
+    circuit must do and [bin/gate_diffusion.ml] states what it did. What stays here is
+    what the CIRCUIT reads, and every one of those facts is a rule the RTL must equal
+    rather than restate:
 
     - **The formats**, which every unit of the machine slices on.
     - **The model as data**: the record the contract file carries, and its reader.
@@ -21,25 +20,20 @@
       the anneal rule.
     - **The frames**: what a sheet states to the sequencer.
 
-    Two things that look like they belong in the contract file do not, and stay here:
+    Two things stay here although they look like contract-file facts, and the walk gate
+    holds both:
 
-    - **The anneal table.** [anneal_threshold] depends on N, and N is a parameter of the
-      ELABORATION and not of the model — [gen_verilog] states it, and the gates run N 3,
-      4, 8 and 512 over one drawn model. A table in the file would tie a checkpoint to one
-      geometry.
+    - **The anneal table.** [anneal_threshold] depends on N, which is a parameter of the
+      ELABORATION and not of the model, thus a table in the file would tie a checkpoint to
+      one geometry.
     - **The seat registers.** [seat_openings] is [Jsb.voice_ranges] read through the class
-      map, thus the corpus library is the authority and its own test pins the ranges. A
-      file written by JAX would make [jax/measure.py]'s copy the master.
-
-    The walk gate holds both: a threshold apart from the twin's moves every mask of a
-    pass, and the opening's classes are compared cell for cell.
+      map, thus the corpus library is the authority. A file written by JAX would make
+      [jax/measure.py]'s copy the master.
 
     **THE CONSUMPTION ORDER IS THE CONTRACT** of [docs/diffusion_rtl.md]: the opening
     draws one uniform for each cell, each pass draws one for each cell (the masks) and
-    then one for each hidden cell (the classes), and the cells walk in [cell_order]
-    everywhere. Every cell of a sheet is free — nothing is given to a walk of this era.
-    One seed names one sheet — in JAX, here and on the board — and the same seed gives the
-    same piece. *)
+    then one for each hidden cell (the classes), over [cell_order] everywhere. Every cell
+    of a sheet is free. One seed names one sheet — in JAX, here and on the board. *)
 
 (** {1 The roll} *)
 
@@ -49,9 +43,7 @@ val rows : int
 (** the seats of a step: the voices of [Frame] *)
 val voices : int
 
-(** the planes the stem reads: one class plane and one mask plane for each seat. It is a
-    fact of the roll, thus the sheet and the forward pass read it here and never state a
-    doubling of their own. *)
+(** the planes the stem reads: one class plane and one mask plane for each seat *)
 val planes : int
 
 (** {1 The formats} *)
@@ -61,12 +53,11 @@ val planes : int
 val activation_q : int
 
 (** the width of the activation format: 16. It is the other half of [activation_q]'s
-    sentence, thus it stands beside it and every unit of the circuit slices on this one
-    value rather than on a 16 of its own. *)
+    sentence, thus every unit slices on this and never on a 16 of its own. *)
 val activation_bits : int
 
-(** the rails of the activation format, from [activation_bits]: a value that passes them
-    saturates and never wraps. Every clamp of the circuit reads them here. *)
+(** the rails of the activation format: a value that passes them saturates and never
+    wraps. Every clamp of the circuit reads them here. *)
 val activation_high : int
 
 val activation_low : int
@@ -77,9 +68,7 @@ val accumulator_bits : int
 
 (** THE WIDEST LAYER THE INT32 ACCUMULATOR IS EXACT FOR: 9 C products of int8 by int16
     reach under 2^31 at this many input channels and one channel more can pass it.
-    [check_shape] refuses a wider layer, thus the bound is a rule and not a comment. The
-    circuit reads it here — its accumulator is sized on this promise, and the gate of its
-    array drives the promise to its edge. *)
+    [check_shape] refuses a wider layer, thus the bound is a rule and not a comment. *)
 val widest_inputs : int
 
 (** {1 The model} *)
@@ -88,11 +77,9 @@ val widest_inputs : int
     and the exponent that reads them — [Mgen_nn.Quantized.quantized] *)
 type quantized = Mgen_nn.Quantized.quantized
 
-(** One layer as the machine holds it. The five float tensors of a checkpoint become three
-    facts: the kernel, and the two per-channel constant rows the norm folded into. The
-    gains are [Mgen_nn.Quantized.Constants.scale] values whose shift retires the weight
-    exponent, thus the accumulator goes to the activation format in one multiply; the
-    biases are int16 in the same format. *)
+(** One layer as the machine holds it: the kernel, and the two per-channel rows the norm
+    folded into. A gain's shift retires the weight exponent, thus the accumulator reaches
+    the activation format in one multiply; the biases are int16 in that format. *)
 type layer =
   { kernel : quantized
   ; gain : Mgen_nn.Quantized.Constants.scale array
@@ -114,8 +101,7 @@ type t =
     chain input to output, no layer reads more channels than the int32 accumulator is
     exact for, the stem reads the planes and the head states the voices, every kernel
     holds its count, and every constant row holds one entry for each output channel. The
-    record is open, thus a model no constructor here made can break a rule;
-    [Elaboration.create] calls this where a bad shape must fail loudly. *)
+    record is open, thus a model no constructor here made can break a rule. *)
 val check_shape : t -> unit
 
 (** [of_int8_checkpoint path] is the model of one CONTRACT FILE — the quantized model that
@@ -124,11 +110,10 @@ val check_shape : t -> unit
     nothing: it takes the kernels, the two per-channel rows and the temper as they stand,
     and [check_shape] holds every rule the consumers assume.
 
-    The layout is that module's docstring. Two of its facts are facts of THIS reader:
-    every tensor is int32, because [Nx_io] skips every dtype it does not hold and int8 is
-    one of them; and the temper and the Q travel as the named tensors ["temper"] and
-    ["activation_q"], because [Nx_io] gives no access to [__metadata__]. A file quantized
-    at another Q refuses here and not in the middle of a walk.
+    The layout is that module's docstring, and two of its facts are facts of THIS reader:
+    every tensor is int32, because [Nx_io] skips every dtype it does not hold; and the
+    temper and the Q travel as named tensors, because [Nx_io] gives no access to
+    [__metadata__]. A file quantized at another Q refuses here and not inside a walk.
 
     It raises [Invalid_argument] when the tensor count does not divide into layers, when a
     tensor is missing, or when a shape or a rule does not hold; the message names the
@@ -136,8 +121,8 @@ val check_shape : t -> unit
 val of_int8_checkpoint : string -> t
 
 (** the ROM image of the circuit: every kernel in checkpoint order, one byte for each
-    weight, two's complement. The gains and the biases are not in it — they are
-    per-channel constants of the elaboration, as era five's per-head constants were. *)
+    weight, two's complement. The gains and the biases are not in it — they are the
+    elaboration's per-channel constants. *)
 val rom_bits : t -> Hardcaml.Bits.t array
 
 (** the byte base of each kernel inside the image, in layer order *)
@@ -150,9 +135,8 @@ val bases_of : int array -> int array
 
 (** {1 The walk} *)
 
-(** The register of each seat as classes: what [opening_sheet] draws inside, stated one
-    time. The circuit reads these through its elaboration, thus the opening of the walk
-    and the opening of the board are one rule and never a second reading of it. *)
+(** The register of each seat as classes: what [opening_sheet] draws inside. The circuit
+    reads these through its elaboration, thus the walk and the board open by one rule. *)
 type opening =
   { low : int (** the lowest class of the seat's register *)
   ; width : int (** the classes of the register: [high - low + 1] *)
@@ -165,23 +149,21 @@ val seat_openings : opening array
 (** [anneal_threshold ~step ~walk] is the masking threshold of pass [step] of [walk], on
     the 24-bit grid of the generator: [floor (alpha * 2^24)] of the paper's annealed
     probability [alpha = max (0.1, 0.9 - 0.8 step / (0.7 walk))]. A cell hides exactly
-    when its uniform times 2^24 falls under this integer. JAX and this side compare
-    against the same number, and it is the entry the circuit's table holds. *)
+    when its uniform times 2^24 falls under this integer, and it is the entry the
+    circuit's table holds. *)
 val anneal_threshold : step:int -> walk:int -> int
 
 (** [cell_order ~steps] is the order the walk visits the cells of a sheet in: a step at a
     time, and the seats of a step inside it, as [step, voice] pairs.
 
     Every uniform of the walk is drawn in this order — the opening, each mask, and the
-    draw of each hidden cell — thus the integer twin of [jax/diffusion/quantized.py] takes
-    the same walk by taking the same order, and the circuit reads this rule rather than
-    restate it. *)
+    draw of each hidden cell — thus the twin takes the same walk by taking the same order. *)
 val cell_order : steps:int -> (int * int) list
 
 (** [opening_sheet state ~steps] is the seeded opening of the walk: one uniform for each
     cell in the cell order, the class [low + floor (u * width)] inside the register of the
-    cell's own seat. The twin's engine opens on the same rule in [infer.opening_sheet],
-    thus the two openings are one rule and one consumption. *)
+    cell's own seat. [jax/diffusion/model.py]'s [opening_sheet] is the same rule and the
+    same consumption. *)
 val opening_sheet : Prng.state -> steps:int -> Prng.state * int array array
 
 (** [hidden_cells state ~steps ~threshold] is the mask of one pass: one uniform for each
@@ -196,10 +178,8 @@ val hidden_cells
 (** {1 The frames} *)
 
 (** [frames_of_sheet sheet] is the frame of each step: the classes of a step become the
-    voice codes of one word, seat 0 in the low byte. [Frame.events_of_frames] then states
-    the events of the wire, and the step lines of the JAX audition print them — the decode
-    is the rule of the frame, and it is the same rule [jax/data.py] states, thus a walk
-    here and a walk there compare as text. *)
+    voice codes of one word, seat 0 in the low byte. It is the rule [jax/data.py] states,
+    thus a walk here and a walk there compare as text. *)
 val frames_of_sheet : int array array -> int array
 
 (** {1 The drawn model} *)
@@ -211,15 +191,13 @@ module For_test : sig
       the temper of temperature 1.0. It passes [check_shape], thus a test reads no file
       and quantizes nothing.
 
-      THE DRAWN TRUNK HOLDS O(1) ACTIVATIONS, and that is what makes the model worth
-      drawing: a gain drawn flat inside int16 would clamp every write of the trunk or zero
-      it, and the pictures, the frames and the cycle counts of the tests that read this
-      model would all read a machine that no checkpoint makes. The implementation states
-      the arithmetic that holds it.
+      THE DRAWN TRUNK HOLDS O(1) ACTIVATIONS, and that is what makes it worth drawing: a
+      gain drawn flat inside int16 would clamp every write of the trunk or zero it, and
+      the pictures, frames and cycle counts that read this model would read a machine no
+      checkpoint makes.
 
-      The tests that read it need a model OF A SHAPE — cycle counts, tile counts, the turn
-      order, the images' self-consistency, a picture — and none of them needs the twin's
-      arithmetic: the two gates that did are [jax/tests/test_rtl.py]'s. *)
+      Its readers need a model OF A SHAPE and never the twin's arithmetic; the gates that
+      need that are [jax/tests/test_rtl.py]'s. *)
   val drawn : layers:int -> width:int -> seed:int -> t
 
   (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)
