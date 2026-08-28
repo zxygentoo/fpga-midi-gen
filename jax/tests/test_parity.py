@@ -14,27 +14,30 @@ byte for byte: one rounding, one exponent or one fold out of place moves a weigh
 moved weight moves the netlist. It is the gate of the quantizer and it costs one second.
 Between G0 and G1 a change to a model has nowhere to hide.
 
-Gate A and gate C are the WELDS of the two frozen eras, and they hold the JAX trainer to
-the OCaml float model beside it. They die with that model.
+Gate A and gate C are the WELDS of a frozen era, and they hold the JAX trainer to the
+OCaml float model beside it. They die with that model, and ERA FOUR'S ARE GONE: G0 holds
+its forward to a measured number and `test_rtl_transformer.py` holds its draw to the
+circuit itself, thus nothing is left for a weld to say.
 
-Gate A, the loss. `check_transformer loss` states the loss of the OCaml float model over
-the canonical valid windows, and this demands the same number of the JAX forward on the
-same windows. A pass proves the two forwards agree everywhere the loss can see. The shape
-travels in the OCaml output and this side states none of its own: held apart, the heads
-and the span would go on matching a default while one side moved, and the gate would pass
-two different models.
+Gate A, the loss. `check_mamba loss` states the loss of the OCaml float model over the
+canonical valid windows, and this demands the same number of the JAX forward on the same
+windows. A pass proves the two forwards agree everywhere the loss can see. The shape
+travels in the OCaml output and this side states none of its own: held apart, two widths
+would go on matching a default while one side moved, and the gate would pass two different
+models.
 
-Gate C, the walk. `play_transformer` and `infer.py` print the same line for a step, thus
-the whole event stream compares as text. This is the gate the sampler needs, because the
-draw is where a rewrite is plausibly wrong and still makes music: a peak over the wrong
-set, a min-p floor applied before the temperature, an inclusive compare in the cumulative
-walk. Each shifts the distribution a little and nothing raises.
+Gate C, the walk. `play_mamba` and `infer.py` print the same line for a step, thus the
+whole event stream compares as text. This is the gate the sampler needs, because the draw
+is where a rewrite is plausibly wrong and still makes music: a peak over the wrong set, a
+min-p floor applied before the temperature, an inclusive compare in the cumulative walk.
+Each shifts the distribution a little and nothing raises.
 
 Every gate needs a checkpoint that git ignores and binaries that dune builds. They SKIP
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
 disagree. From the repository root:
 
-    dune build bin/check_transformer.exe bin/play_transformer.exe
+    dune build bin/check_mamba.exe bin/play_mamba.exe
+    dune build bin/gate_transformer.exe bin/gate_mamba.exe
     dune build board/nexys-4/gen_verilog.exe
 """
 
@@ -57,8 +60,6 @@ CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
 # the tool's default corpus path is relative to the repository root, and pytest runs in [jax]
 CORPUS_JSON = ROOT / "corpus" / "JSB-Chorales-dataset" / "Jsb16thSeparated.json"
 BUILT = ROOT / "_build" / "default" / "bin"
-CHECK_TRANSFORMER = BUILT / "check_transformer.exe"
-PLAYER = BUILT / "play_transformer.exe"
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
 # sides reduce in different orders. A disagreement that matters -- a different mask, a
@@ -178,75 +179,6 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
     assert said == TRANSFORMER_NETLIST_MD5, (
         f"the JAX quantizer states the netlist {said} and the golden is "
         f"{TRANSFORMER_NETLIST_MD5}"
-    )
-
-
-def test_gate_a_the_loss_of_the_two_forwards_agrees():
-    need(CHECKPOINT, CORPUS, CORPUS_JSON, CHECK_TRANSFORMER)
-    stated = run(
-        str(CHECK_TRANSFORMER),
-        "loss",
-        "-ckpt",
-        str(CHECKPOINT),
-        "-corpus",
-        str(CORPUS_JSON),
-    )
-    said = dict(re.findall(r"(\w+) (-?[\d.]+)", stated))
-    windows, context = int(said["windows"]), int(said["context"])
-    heads, span = int(said["heads"]), int(said["span"])
-
-    params = model.load_params(str(CHECKPOINT))
-    corpus = data.load_corpus(CORPUS)
-    rows = data.eval_rows(corpus["valid"], context, windows)
-    assert len(rows) == windows, "the two sides cut a different count of windows"
-    classes, phases = data.stack_rows(rows)
-
-    nll = model.seat_nll(
-        params, jnp.asarray(classes), jnp.asarray(phases), heads=heads, span=span
-    )
-    here = seat_loss(nll)
-    there = float(said["loss"])
-    assert here == pytest.approx(there, abs=TOLERANCE), (
-        f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
-    )
-
-
-@pytest.mark.parametrize("seed", [1, 7])
-def test_gate_c_the_two_walks_are_the_same_stream(seed):
-    need(CHECKPOINT, PLAYER)
-    steps = 64
-    theirs = run(
-        str(PLAYER),
-        "-ckpt",
-        str(CHECKPOINT),
-        "-seed",
-        str(seed),
-        "-steps",
-        str(steps),
-    )
-    ours = run(
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "transformer.infer",
-        "sample",
-        "--ckpt",
-        str(CHECKPOINT),
-        "--seeds",
-        str(seed),
-        "--steps",
-        str(steps),
-    )
-    lines = lambda text: [l for l in text.splitlines() if l.startswith("step")]
-    here, there = lines(ours), lines(theirs)
-    assert here, "the JAX walk printed no step lines"
-    assert len(here) == len(there) == steps, (
-        f"{len(here)} JAX steps against {len(there)} OCaml steps, wanted {steps}"
-    )
-    first = next((i for i, (a, b) in enumerate(zip(here, there)) if a != b), None)
-    assert first is None, (
-        f"the walks part at step {first}:\n  jax   {here[first]}\n  ocaml {there[first]}"
     )
 
 

@@ -58,17 +58,15 @@ def test_the_chain_conditions_downward():
 # ==================================================================== #
 
 
-def tiny(seed=5, d=8, layers=2, heads=2, context=16):
-    """a drawn model of the era's shape, small enough for a test"""
-    key = jax.random.PRNGKey(seed)
-    keys = jax.random.split(key, 2 + model.PER_LAYER * layers)
-    at = iter(keys)
-    params = {
-        "seats": jax.random.normal(next(at), (data.SEATS, data.CLASSES, d)) * 0.02,
-        "phase": jax.random.normal(next(at), (nn.PHASE_BUCKETS, d)) * 0.02,
+def drawn_params(seed=5, d=8, layers=2):
+    """the float params of a drawn model of the era's shape, small enough for a test"""
+    keys = iter(jax.random.split(jax.random.PRNGKey(seed), 2 + model.PER_LAYER * layers))
+    return {
+        "seats": jax.random.normal(next(keys), (data.SEATS, data.CLASSES, d)) * 0.02,
+        "phase": jax.random.normal(next(keys), (nn.PHASE_BUCKETS, d)) * 0.02,
         "layers": [
             {
-                name: jax.random.normal(next(at), shape) * 0.02
+                name: jax.random.normal(next(keys), shape) * 0.02
                 for name, shape in zip(
                     model.LAYER_TENSORS,
                     [(d, d), (d, d), (d, d), (d, d), (d, 4 * d), (4 * d, d)],
@@ -77,7 +75,13 @@ def tiny(seed=5, d=8, layers=2, heads=2, context=16):
             for _ in range(layers)
         ],
     }
-    return quantized.Quantized.of(params, heads=heads, context=context)
+
+
+def tiny(seed=5, d=8, layers=2, heads=2, context=16):
+    """the twin of a drawn model of the era's shape"""
+    return quantized.Quantized.of(
+        drawn_params(seed, d, layers), heads=heads, context=context
+    )
 
 
 def test_the_two_tables_share_one_exponent():

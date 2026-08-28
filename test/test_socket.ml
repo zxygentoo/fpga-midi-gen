@@ -29,7 +29,6 @@ module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
 module Model = Mgen_transformer.Model
-module Quantized = Mgen_transformer.Quantized
 module Source = Mgen_transformer.Source
 
 (* The model of the test: drawn weights in the test shape, thus the test reads no
@@ -38,12 +37,6 @@ module Source = Mgen_transformer.Source
    source is idle, and a period that is too short would only stretch the step and prove
    nothing about the decode. *)
 let model = Model.For_test.drawn Model.For_test.shape ~seed:11
-
-(* THE ORACLE OF THIS SIMULATION IS STILL OCAML'S. [Quantized.Engine] draws the same walk
-   from the same drawn weights, thus the two models here are one model in two types; step
-   three of the all-era cut replaces the engine with the circuit's own bench harness, as
-   era six's socket simulation already reads it, and this bridge goes with it. *)
-let engine_model = Quantized.Model.For_test.(init config ~seed:11)
 let clocks_per_ms = 4
 let step_ms = 9000
 
@@ -97,16 +90,21 @@ let harness () =
   inp, set, play
 ;;
 
-(* the messages of the reference: the frames the engine draws, the silent frame of the
-   stop behind them, and [Frame.events_of_frames] over the whole run *)
+(* the messages of the reference: the frames THE SOURCE ITSELF answers, driven bare, the
+   silent frame of the stop behind them, and [Frame.events_of_frames] over the whole run.
+
+   THIS SIMULATION HOLDS THE SEQUENCER AND THE WIRE AND NOT THE MODEL. The frames are the
+   frames either way — [Source]'s own frame bench proves them equal to the twin's — thus
+   the question here is whether the socket carries them: the decode, the step boundary and
+   the byte order. Era six's socket simulation reads its source the same way. *)
 let reference_messages ~seed ~channel ~velocity ~steps =
-  let (_ : Quantized.Engine.t), frames =
-    List.fold_map
-      (List.range 0 steps)
-      ~init:(Quantized.Engine.init engine_model ~seed)
-      ~f:(fun engine (_ : int) ->
-        let engine, step = Quantized.Engine.next_step engine in
-        engine, step.Quantized.Engine.frame)
+  let h = Source.For_test.Bench.harness ~model ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
+  let frames =
+    List.rev
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun got (_ : int) -> h.play () :: got))
   in
   Frame.events_of_frames (Array.of_list (frames @ [ Frame.silent ]))
   |> List.concat

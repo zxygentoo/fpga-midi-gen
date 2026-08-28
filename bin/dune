@@ -93,6 +93,7 @@
   hardcaml
   jane_rope
   mgen_core
+  mgen_corpus
   mgen_nexys4
   mgen_transformer))
 

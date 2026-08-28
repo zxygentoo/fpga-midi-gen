@@ -1286,40 +1286,60 @@ let config_of ({ d; layers; heads; context; slope_span } : Model.For_test.shape)
   { Transformer.Config.d; layers; heads; context; slope_span }
 ;;
 
+module For_test = struct
+  module Bench = struct
+    type t =
+      { rewind : unit -> unit
+      ; play : unit -> int
+      }
+
+    let harness ~model ~seed () =
+      let module Sim = Cyclesim.With_interface (I) (O) in
+      let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
+      let inp = Cyclesim.inputs sim in
+      let out = Cyclesim.outputs ~clock_edge:Before sim in
+      let budget = ref 5_000_000 in
+      let cycle () =
+        Cyclesim.cycle sim;
+        Int.decr budget;
+        if !budget <= 0 then failwith "the walk did not finish inside its budget"
+      in
+      let rewind () =
+        inp.rewind := Bits.vdd;
+        cycle ();
+        inp.rewind := Bits.gnd;
+        cycle ()
+      in
+      (* One step: the command, then the cycle [valid] answers it — the frame stands
+         there, because the chain that moves the drawn classes runs behind the forward
+         pass. *)
+      let play () =
+        inp.step := Bits.vdd;
+        cycle ();
+        inp.step := Bits.gnd;
+        cycle ();
+        if not (Bits.to_bool !(out.valid)) then failwith "the step was not answered";
+        let frame = Bits.to_int_trunc !(out.frame) in
+        while not (Bits.to_bool !(out.idle)) do
+          cycle ()
+        done;
+        frame
+      in
+      { rewind; play }
+    ;;
+  end
+end
+
 let frames_agree ~shape ~weights ~seed ~steps =
   let model = Model.For_test.drawn shape ~seed:weights in
   let engine = Quantized.Model.For_test.init (config_of shape) ~seed:weights in
-  let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let budget = ref 5_000_000 in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Int.decr budget;
-    assert (!budget > 0)
-  in
-  inp.rewind := Bits.vdd;
-  cycle ();
-  inp.rewind := Bits.gnd;
-  cycle ();
-  (* One step: the command, then the cycle [valid] answers it — the frame stands there,
-     because the chain that moves the drawn classes runs behind the forward pass. *)
-  let step () =
-    inp.step := Bits.vdd;
-    cycle ();
-    inp.step := Bits.gnd;
-    cycle ();
-    assert (Bits.to_bool !(out.valid));
-    let frame = Bits.to_int_trunc !(out.frame) in
-    while not (Bits.to_bool !(out.idle)) do
-      cycle ()
-    done;
-    frame
-  in
+  let h = For_test.Bench.harness ~model ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
   let circuit =
     List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> h.play () :: acc))
   in
   let (_ : Quantized.Engine.t), reference =
     List.fold_map

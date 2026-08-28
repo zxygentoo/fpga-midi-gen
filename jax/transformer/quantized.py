@@ -45,6 +45,7 @@ for a reader that has a Python tool in hand: the temperature, the min-p and the
 checkpoint are PROVENANCE, because the temper and the floor are already folded.
 """
 
+import math
 from typing import NamedTuple
 
 import numpy as np
@@ -53,6 +54,7 @@ from safetensors.numpy import load_file, save_file
 
 import data
 import nn
+import prng
 from transformer import model as step
 
 EXPONENTS = "exponents"
@@ -206,3 +208,382 @@ def load(path):
     )
     check_shape(twin)
     return twin
+
+
+# ---------------------------------------------------------------------
+# the integer engine: one running inference over a batch of seeds
+# ---------------------------------------------------------------------
+
+# The formats of the machine, `Model.Constants`. A Q number holds value * 2^-q.
+H_Q = 16  # the residual stream, in int32
+Y_Q = 12  # the normed vector, and the score of attention
+KV_Q = 12  # the query, the keys, the values and the context: the rings store these
+HID_Q = 10  # the feed-forward hidden vector after its ReLU
+EPS_Q = int(nn.round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
+LOG2E = nn.Temper(int(nn.round_half_up(math.ldexp(1.0 / math.log(2.0), 15))), 15, 1.0)
+
+# the silent lead-in of the boot, in steps: one bar, as the float sampler plays it
+LEAD = data.BAR_STEPS
+
+
+def rescale(value, *, at, to):
+    """value * 2^-at as value * 2^-to; the arithmetic shift floors, as the circuit's"""
+    if to >= at:
+        return value << (to - at)
+    return value >> (at - to)
+
+
+def apply_scale(scale, value):
+    """`Constants.apply`: value times a fixed-point multiplier, toward negative infinity"""
+    return (value * scale.q_value) >> scale.q
+
+
+def truncated(numerator, denominator):
+    """OCaml's `/` on integers, which goes TOWARD ZERO where numpy's `//` floors.
+
+    Every division of the circuit truncates, thus a floor here would part from it on the
+    negative half of the stream and nowhere else -- which is the kind of difference that
+    makes music and is still wrong."""
+    numerator = np.asarray(numerator, np.int64)
+    denominator = np.asarray(denominator, np.int64)
+    sign = np.sign(numerator) * np.sign(denominator)
+    return sign * (np.abs(numerator) // np.abs(denominator))
+
+
+def isqrt(values):
+    """floor of the square root, over an array: the one answer the [Isqrt] unit gives.
+
+    The float root is correct to a unit at these widths and the two steps settle it; the
+    loop is written all the same, because a silently wrong root is a silently wrong norm."""
+    values = np.asarray(values, np.int64)
+    guess = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
+    while True:
+        low = np.maximum(guess - ((guess * guess > values) & (guess > 0)), 0)
+        high = low + ((low + 1) * (low + 1) <= values)
+        if np.array_equal(high, guess):
+            return guess
+        guess = high
+
+
+def clamp16(value):
+    """the rails of int16: a value that passes them saturates and never wraps"""
+    return np.clip(value, nn.INT16_LOW, nn.INT16_HIGH)
+
+
+def exp2_q(value):
+    """`Nn_quantized.exp2_q`: 2^value in Q15 over a Q12 value that is 0 or less.
+
+    Era four exponentiates a nonpositive score, thus the negation stands here and the
+    shared table takes the magnitude."""
+    return nn.exp2_of_magnitude(-np.asarray(value, np.int64))
+
+
+class Engine(NamedTuple):
+    """One running inference over a batch of walks. Everything is frozen: a step gives the
+    engine after it, as `Quantized.Engine` does.
+
+    THE RINGS ARE THE CONTEXT. `kc` and `vc` hold the coarsened key and value rows of every
+    layer, one slot for each step of the window, and a walk never reads an unwritten slot:
+    `n` counts the filled slots and the wall is the walk itself."""
+
+    twin: Quantized
+    h: np.ndarray  # [walks, d], Q16 in int32
+    kc: np.ndarray  # [walks, layers, slots, d], Q12 int16
+    vc: np.ndarray
+    position: int  # one forward for each step, thus this counts the steps as well
+    states: np.ndarray  # [walks], the generator of each walk
+
+    @property
+    def d(self):
+        return self.twin.d
+
+
+def engine(twin, seeds):
+    """the origin of a batch of walks: an empty ring, no residual, and the generator at the
+    SEED AS IT STANDS, which is the board's SEED cell rule.
+
+    The lead-in is not here. It is the first steps of the walk itself, thus a caller that
+    counts steps counts the steps the float sampler counts."""
+    check_shape(twin)
+    walks, d = len(seeds), twin.d
+    rings = (walks, twin.layers, twin.context, d)
+    return Engine(
+        twin=twin,
+        h=np.zeros((walks, d), np.int64),
+        kc=np.zeros(rings, np.int64),
+        vc=np.zeros(rings, np.int64),
+        position=0,
+        states=nn.engine_states(seeds),
+    )
+
+
+def tensor_at(twin, at):
+    """one image tensor as int64, flat in the row-major order the ROM holds"""
+    return np.asarray(twin.tensors[at][0], np.int64).reshape(-1)
+
+
+def layer_tensors(twin, layer):
+    """the six tensors of one layer, by name, as (flat values, exponent)"""
+    base = len(nn.TABLES) + step.PER_LAYER * layer
+    return {
+        name: (tensor_at(twin, base + at), twin.tensors[base + at][1])
+        for at, name in enumerate(step.LAYER_TENSORS)
+    }
+
+
+def rms_norm(h, d):
+    """rms_norm of the residual stream: the sum squares a Q12 copy -- one DSP-sized product
+    -- then one isqrt, and one truncating division for each element."""
+    copy = h >> 4
+    total = (copy * copy).sum(axis=-1, keepdims=True)
+    mean = (total >> (d.bit_length() - 1)) + EPS_Q
+    return clamp16(truncated(h * 256, isqrt(mean)))
+
+
+def seat_row(twin, seat, index):
+    """the row of one seat inside the seat tensor, which holds the four tables in one, seat
+    0 first: the circuit reaches it with a shift and an add from the base of the tensor"""
+    return ((seat * data.CLASSES) + index) * twin.d
+
+
+def embed(twin, classes, phase):
+    """the embedding: the four seat rows and the phase row add in the shared exponent, then
+    shift to Q16"""
+    d, e = twin.d, twin.tensors[0][1]
+    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
+    table = tensor_at(twin, 1).reshape(-1, d)
+    value = np.broadcast_to(table[phase], (len(classes), d)).copy()
+    for seat in range(data.SEATS):
+        value = value + seats[seat, classes[:, seat]]
+    return rescale(value, at=e, to=H_Q)
+
+
+def attend(twin, kc, vc, *, layer, cur, filled, query):
+    """Attention of one layer over the newest [filled] steps of the rings: the merged
+    context of [query], head by head.
+
+    Age a reads slot (cur - a) & (slots - 1), thus the ALiBi distance is the age itself and
+    the causal wall is the walk."""
+    d, heads, slots = twin.d, twin.heads, twin.context
+    head_d = d // heads
+    ages = np.arange(filled)
+    rows = (cur - ages) & (slots - 1)
+    keys = kc[:, layer, rows, :]  # [walks, filled, d]
+    values = vc[:, layer, rows, :]
+    context = np.zeros((len(query), d), np.int64)
+    shift = (2 * KV_Q) - Y_Q + ((head_d.bit_length() - 1) // 2)
+    for head in range(heads):
+        band = slice(head * head_d, (head + 1) * head_d)
+        slope = (twin.slope_span * (head + 1)) // heads
+        raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
+        scores = (raw >> shift) - (ages << (Y_Q - slope))
+        peak = scores.max(axis=-1, keepdims=True)
+        weights = exp2_q(apply_scale(LOG2E, scores - peak))
+        total = weights.sum(axis=-1, keepdims=True)
+        merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
+        context[:, band] = clamp16(truncated(merged, total))
+    return context
+
+
+def forward(e, classes, phase):
+    """one step through the engine: the engine after it"""
+    twin = e.twin
+    d, slots = twin.d, twin.context
+    cur = e.position & (slots - 1)
+    filled = min(e.position + 1, slots)
+    kc, vc = e.kc.copy(), e.vc.copy()
+    h = embed(twin, classes, phase)
+    for layer in range(twin.layers):
+        w = layer_tensors(twin, layer)
+        y = rms_norm(h, d)
+
+        query, key, value = (projection(y, w[name], d) for name in ("wq", "wk", "wv"))
+        # THE RING KEEPS THE TOP BYTE of a Q12 row: the circuit stores eight bits and
+        # restores eight zero low bits at the read, thus the granularity is 2^-4 and the
+        # format stays Q12. The query does not pass here -- only the stored rows coarsen.
+        kc[:, layer, cur, :] = (key >> 8) << 8
+        vc[:, layer, cur, :] = (value >> 8) << 8
+        context = attend(
+            twin, kc, vc, layer=layer, cur=cur, filled=filled, query=query
+        )
+        h = join(h, w["wo"], values=context, at=KV_Q, d=d)
+        y = rms_norm(h, d)
+        values, exponent = w["w1"]
+        hidden = clamp16(
+            np.maximum(
+                rescale(y @ values.reshape(d, 4 * d), at=Y_Q + exponent, to=HID_Q), 0
+            )
+        )
+        h = join(h, w["w2"], values=hidden, at=HID_Q, d=d)
+    return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
+
+
+def projection(y, weight, d):
+    """one of the three projections of a step: one matvec column, Q12 in int16. The circuit
+    runs the three separately, on one MAC path."""
+    values, exponent = weight
+    return clamp16(rescale(y @ values.reshape(d, d), at=Y_Q + exponent, to=KV_Q))
+
+
+def join(h, weight, *, values, at, d):
+    """a residual join: [values] times the weight lands on the stream; the exponent of the
+    weight folds into the shift with [at], the format of [values]"""
+    matrix, exponent = weight
+    accumulated = values @ matrix.reshape(-1, d)
+    return h + rescale(accumulated, at=at + exponent, to=H_Q)
+
+
+def seat_logits(twin, stream, seat):
+    """the tied head of one seat: rms_norm of the stream the chain has written so far, then
+    that seat's table read backward; Q12 logits over the classes"""
+    d, e = twin.d, twin.tensors[0][1]
+    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
+    return (rms_norm(stream, d) @ seats[seat].T) >> e
+
+
+def add_row(twin, stream, seat, drawn):
+    """what the chain adds after a seat draws: the drawn row, in the format of the stream"""
+    d, e = twin.d, twin.tensors[0][1]
+    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
+    return stream + rescale(seats[seat, drawn], at=e, to=H_Q)
+
+
+def tempered_weights(twin, logits):
+    """the Q15 weight of every class of one seat, and the min-p floor over it.
+
+    The peak weighs 2^15, thus the floor is a plain share of it; a class the floor refuses
+    weighs nothing and the pick cannot land on it."""
+    peak = logits.max(axis=-1, keepdims=True)
+    weights = exp2_q(apply_scale(twin.temper, logits - peak))
+    return np.where(weights >= twin.min_weight, weights, 0)
+
+
+class Draw(NamedTuple):
+    """one draw of the chain, over the batch"""
+
+    seat: int
+    logits: np.ndarray  # [walks, CLASSES], Q12 -- what the drift report compares
+    word: np.ndarray  # [walks], the 24-bit uniform
+    drawn: np.ndarray  # [walks], the class
+
+
+def chain(e):
+    """One frame, drawn in a chain from the soprano down: each seat reads the stream that
+    the seats above it have written. The draws come back in the order they happened."""
+    twin = e.twin
+    stream, states, draws = e.h, e.states, []
+    everyone = np.ones(len(stream), bool)
+    for seat in reversed(range(data.SEATS)):
+        logits = seat_logits(twin, stream, seat)
+        states, word = prng.uniform_word(states, everyone)
+        drawn = nn.pick(tempered_weights(twin, logits), word)
+        if seat:
+            stream = add_row(twin, stream, seat, drawn)
+        draws.append(Draw(seat, logits, word, drawn))
+    return e._replace(states=states), draws
+
+
+def next_step(e):
+    """one step of the walk: the engine after it, the classes of the frame, and the draws.
+
+    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
+    from the generator. The model opens the music itself after it, thus the walk needs no
+    pitch and no table to begin."""
+    phase = e.position % data.BAR_STEPS
+    if e.position < LEAD:
+        classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
+        draws = []
+    else:
+        e, draws = chain(e)
+        classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
+    return forward(e, classes, phase), classes, draws
+
+
+def walk(twin, seeds, steps):
+    """the classes of each step of the walk, and the draws behind them.
+
+    It is the integer twin of the float sampler, and the lead-in counts inside [steps] as
+    it does there."""
+    e = engine(twin, seeds)
+    played, taken = [], []
+    for _ in range(steps):
+        e, classes, draws = next_step(e)
+        played.append(classes)
+        taken.append(draws)
+    return np.stack(played, axis=1), taken
+
+
+# ---------------------------------------------------------------------
+# what the quantization costs
+# ---------------------------------------------------------------------
+
+
+class Drift(NamedTuple):
+    """What the quantization costs, measured on the walk the board takes."""
+
+    steps: int  # the steps of the walk, the silent lead-in inside
+    draws: int  # four for each drawn step: one for each seat of the chain
+    same_peak: int  # the draws where both models elect the same class
+    same_draw: int  # the draws where both models pick the same class
+    mean_cosine: float
+
+
+def cosine(here, there):
+    """the cosine between an integer row and the float row of the same place"""
+    here = np.asarray(here, np.float64)
+    return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
+
+
+def drift(params, *, heads, context, steps, seed, span=nn.SLOPE_SPAN):
+    """The quantized walk, scored against the float model draw for draw.
+
+    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `params` itself, thus the pair
+    cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
+    quantized chain -- it reads the classes the engine drew and conditions each seat on the
+    classes the engine chose -- thus what the report measures is the quantization and never
+    a walk that parted for another reason.
+
+    The same-draw share reads the float draw on the very uniform the engine took, thus a
+    difference there is the arithmetic and not the generator."""
+    import jax.numpy as jnp
+
+    from transformer import model as float_model
+
+    twin = Quantized.of(params, heads=heads, context=context, slope_span=span)
+    e = engine(twin, [seed])
+    history = []
+    counted = same_peak = same_draw = 0
+    total = 0.0
+    for at in range(steps):
+        e, classes, chain_draws = next_step(e)
+        # THE HISTORY IS THE TWIN'S, and the float pass reads it: the window the model saw
+        # before this step is the window the engine's own ring held.
+        window = list(history)
+        history.append(classes[0])
+        if not chain_draws or not window:
+            continue
+        low = max(0, at - context)
+        rows = jnp.asarray(np.stack(window[low:])[None])
+        phases = jnp.asarray((np.arange(low, at) % nn.PHASE_BUCKETS)[None])
+        h = np.asarray(
+            float_model.hidden(params, rows, phases, heads=heads, span=span)
+        )[:, -1:, :]
+        floated = np.asarray(
+            nn.seat_logits(params, jnp.asarray(h), jnp.asarray(classes[None]))
+        )[0, 0].astype(np.float64)
+        for taken in chain_draws:
+            row = floated[taken.seat]
+            mine = taken.logits[0]
+            uniform = np.array([float(taken.word[0]) * 2.0**-prng.UNIFORM_BITS])
+            weights = nn.temper(row[None], ELECTED_TEMPERATURE, ELECTED_MIN_P)
+            counted += 1
+            same_peak += int(np.argmax(mine) == np.argmax(row))
+            same_draw += int(nn.pick_share(weights, uniform)[0] == taken.drawn[0])
+            total += cosine(mine, row)
+    return Drift(
+        steps=steps,
+        draws=counted,
+        same_peak=same_peak,
+        same_draw=same_draw,
+        mean_cosine=total / max(1, counted),
+    )

@@ -1,4 +1,9 @@
-"""What the quantization costs: the integer twin against the float model it quantizes.
+"""What the quantization costs: each integer twin against the float model it quantizes.
+
+Era six holds the file and the frozen eras stand at its foot. The shape of the gate is one
+shape -- a fixed sweep that pins MEASURED NUMBERS AND NOT THRESHOLDS, and a property part
+that draws seed pairs at a fixed generator and holds floors calibrated under the first
+measured minima -- and what differs is the feedback axis each era carries.
 
 `Coconet.drawn` and the quantization inside `quantized.drift` read the same draw, thus the
 comparison isolates the fixed-point scheme and the sweep reads no file that git ignores.
@@ -28,6 +33,8 @@ import pytest
 
 import nn
 from diffusion import model, quantized
+from tests.test_transformer import drawn_params as transformer_params
+from transformer import quantized as transformer_twin
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
 # the head, over a quarter of the board's sheet -- two measures
@@ -145,3 +152,99 @@ def test_the_floors_hold_on_drawn_seed_pairs(capsys):
             f"low top-1 {low_top1:.3f}  low same draw {low_draw:.3f}  "
             f"low cosine {low_cosine:.4f}"
         )
+
+
+# ==================================================================== #
+# Era four: the step-frame transformer                                 #
+# ==================================================================== #
+
+# THE FEEDBACK AXIS OF THIS ERA IS THE KV RING. A drawn key or value row is coarsened to
+# its top byte and stored, and every later step reads it back, thus an arithmetic error
+# lives in the ring for a whole window rather than dying with its step. The walk therefore
+# runs past the ring -- 40 steps over a window of 16 -- so that every trial wraps it.
+
+TRANSFORMER_SHAPE = {"d": 16, "layers": 2}
+TRANSFORMER_HEADS = 4
+TRANSFORMER_CONTEXT = 16
+TRANSFORMER_STEPS = 40
+
+
+def transformer_drift(weight_seed, walk_seed):
+    """the drift of one drawn model on one walk"""
+    return transformer_twin.drift(
+        transformer_params(weight_seed, **TRANSFORMER_SHAPE),
+        heads=TRANSFORMER_HEADS,
+        context=TRANSFORMER_CONTEXT,
+        steps=TRANSFORMER_STEPS,
+        seed=walk_seed,
+    )
+
+
+# for each weight seed, summed over the four walks: the top-1 count, the same-draw count,
+# the draws they were counted over, and the lowest mean cosine of the four
+TRANSFORMER_SWEPT = {
+    11: (358, 379, 384, 0.9975),
+    23: (370, 380, 384, 0.9981),
+    37: (356, 383, 384, 0.9968),
+    41: (352, 382, 384, 0.9972),
+}
+
+
+@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
+def test_the_transformer_sweep_states_its_measured_numbers(weight_seed):
+    """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved.
+
+    They were measured on this side and NOT carried over from the OCaml gate that stood
+    before it: the drawn weights come from a JAX draw now, thus the numbers are a
+    re-measurement of the same scheme on a different draw. The old table read 363, 355,
+    361 and 358 top-1 out of the same 384 draws."""
+    draws = same_peak = same_draw = 0
+    low_cosine = 1.0
+    for walk_seed in WALK_SEEDS:
+        said = transformer_drift(weight_seed, walk_seed)
+        draws += said.draws
+        same_peak += said.same_peak
+        same_draw += said.same_draw
+        low_cosine = min(low_cosine, said.mean_cosine)
+    wanted_peak, wanted_draw, wanted_draws, wanted_cosine = TRANSFORMER_SWEPT[weight_seed]
+    assert (same_peak, same_draw, draws) == (wanted_peak, wanted_draw, wanted_draws)
+    assert low_cosine == pytest.approx(wanted_cosine, abs=5e-5)
+
+
+# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
+# 2026-08-13 against the model of the token, held for the frame, and they stand where they
+# stood: the measured minima of this sweep read 0.823, 0.958 and 0.9951, far above them. A
+# floor tightened onto a measurement turns a re-draw of the set into a failure, and the
+# printed minima are what keeps the calibration honest instead.
+TRANSFORMER_TOP1_FLOOR = 0.55
+TRANSFORMER_SAME_DRAW_FLOOR = 0.80
+TRANSFORMER_COSINE_FLOOR = 0.98
+
+TRANSFORMER_TRIALS = 40
+
+
+def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
+    """The scheme against a set of drawn models, not the four the sweep pins. A fail is a
+    break of the scheme and not a re-draw of the set; the printed minima keep the
+    calibration honest.
+
+    The old OCaml gate read 0.833, 0.948 and 0.9943 over 100 pairs of its own draw; this
+    side reads 0.823, 0.958 and 0.9951 over 40 of a different draw. The two agree about
+    what the scheme costs, which is what the re-measurement had to show."""
+    generator = np.random.default_rng(7)
+    low_peak = low_draw = 1.0
+    low_cosine = 1.0
+    for _ in range(TRANSFORMER_TRIALS):
+        weight_seed, walk_seed = (int(v) for v in generator.integers(1, 1 << 20, 2))
+        said = transformer_drift(weight_seed, walk_seed)
+        low_peak = min(low_peak, said.same_peak / said.draws)
+        low_draw = min(low_draw, said.same_draw / said.draws)
+        low_cosine = min(low_cosine, said.mean_cosine)
+    with capsys.disabled():
+        print(
+            f"\n{TRANSFORMER_TRIALS} drawn seed pairs: low top-1 {low_peak:.3f}  "
+            f"low same draw {low_draw:.3f}  low cosine {low_cosine:.4f}"
+        )
+    assert low_peak >= TRANSFORMER_TOP1_FLOOR
+    assert low_draw >= TRANSFORMER_SAME_DRAW_FLOOR
+    assert low_cosine >= TRANSFORMER_COSINE_FLOOR

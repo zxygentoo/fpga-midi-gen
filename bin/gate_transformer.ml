@@ -46,12 +46,42 @@ let verilog_command =
        Out_channel.write_all (Filename.concat dir "top.v") ~data:rtl)
 ;;
 
+let seed_param =
+  let open Command.Param in
+  flag "-seed" (required int) ~doc:"N the seed of the walk"
+;;
+
+(* The walk, step by step. It prints the FRAME the socket face answered and the CLASSES
+   that frame states, through [Vocab]'s own decode: the vocabulary is the corpus library's
+   rule and it stays on this side, thus the twin holds no format of its own and states
+   classes alone. *)
+let walk_command =
+  Command.basic
+    ~summary:"one walk: the frame of each step, and the classes it states"
+    (let%map_open.Command model = model_param
+     and seed = seed_param
+     and steps = flag "-steps" (required int) ~doc:"N the steps of the walk" in
+     fun () ->
+       let h = Source.For_test.Bench.harness ~model:(model ()) ~seed () in
+       h.rewind ();
+       for step = 0 to steps - 1 do
+         let frame = h.play () in
+         printf
+           "step %d %08x %s\n"
+           step
+           frame
+           (String.concat
+              ~sep:" "
+              (List.map (Mgen_corpus.Vocab.classes_of_frame frame) ~f:Int.to_string))
+       done)
+;;
+
 let command =
   Command.group
     ~summary:
       "drive the circuit of era four and state what it did; \
        jax/tests/test_rtl_transformer.py states what it must have done"
-    [ "verilog", verilog_command ]
+    [ "walk", walk_command; "verilog", verilog_command ]
 ;;
 
 let () = Command_unix.run command
