@@ -31,9 +31,10 @@ let activation_q = 6
 let activation_bits = 16
 let accumulator_bits = 32
 
-(* the rails, from the width: a unit that wrote 32767 of its own could part from the
-   twin's [INT16_HIGH] and no compiler would say so *)
-let activation_high = (1 lsl (activation_bits - 1)) - 1
+(* the bottom rail of the format, which is also the opening value of the draw's peak scan:
+   nothing a logit can be stands below it. The clamp's own rails live in [Nn_quantized] —
+   [int16_high] and [int16_low] — because the clamp is the repository's and not this
+   era's. *)
 let activation_low = -(1 lsl (activation_bits - 1))
 
 (* the accumulator is exact below this width: 9 C products of int8 by int16 reach 9 * 57 *

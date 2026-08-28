@@ -89,11 +89,39 @@ module Tensor : sig
   val cosine : t -> floats -> float
 end
 
+(** the rails of int16: a value that passes them saturates and never wraps. The scalar
+    clamps below, [Rtl.clamp16] and every clamp of era six read them here, thus none of
+    them can write a rail of its own and part from the twin in silence. The frozen eras
+    still write 32767 out in their own sources; they adopt these in their own round,
+    because adoption moves a netlist. *)
+val int16_high : int
+
+val int16_low : int
+
 (** [clamp16 v] clamps to int16; [clamps16 v] is true where it would clamp — the detector
     of the clamp counters. *)
 val clamp16 : int -> int
 
 val clamps16 : int -> bool
+
+(** The rules of this module as circuits, where a circuit needs the same rule.
+
+    A value here and its software half above are TWO STATEMENTS of one rule — one over
+    [int] and one over [Signal] — and nothing in the types welds them. What they share is
+    the rails, and what holds them together is the expect test beside each one: it drives
+    the circuit at the rails and past them and states what the software says. Read the
+    pair as one rule, and change neither half without the other. *)
+module Rtl : sig
+  (** [clamp16 wide] saturates [wide] into an int16 and never wraps. A wrap would be
+      silently wrong music, and the clamp is what the format election stands on.
+
+      THE COMPARE STANDS AT [wide]'S OWN WIDTH, whatever that is: an [sresize ~width:32]
+      before the compare truncates a 48-bit product and hands the clamp a value that has
+      already wrapped, so there is nothing left for it to catch. Era six's epilogue clamps
+      a 48-bit gain product, thus this is the form era six takes; the frozen eras still
+      resize to 32 in their own sources. *)
+  val clamp16 : Hardcaml.Signal.t -> Hardcaml.Signal.t
+end
 
 (** the reductions of the engines: [sum n f] is the MAC — the sum of [f i] over
     [0 .. n - 1] — and [max_over n f] is the peak scan *)

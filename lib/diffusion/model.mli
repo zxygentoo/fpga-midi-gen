@@ -56,10 +56,10 @@ val activation_q : int
     sentence, thus every unit slices on this and never on a 16 of its own. *)
 val activation_bits : int
 
-(** the rails of the activation format: a value that passes them saturates and never
-    wraps. Every clamp of the circuit reads them here. *)
-val activation_high : int
-
+(** the bottom rail of the activation format, and the opening value of the draw's peak
+    scan: no logit stands below it. The rails the CLAMP compares against are
+    [Mgen_nn.Quantized.int16_high] and [int16_low], because saturating to int16 is the
+    repository's rule and not this era's. *)
 val activation_low : int
 
 (** the width of the accumulator one dwell sums into: 32. [widest_inputs] is the promise

@@ -26,22 +26,10 @@ let accumulator_bits = Model.accumulator_bits
 (* the whole gain product: an int32 sum by the gain the norm word carries *)
 let product_bits = accumulator_bits + Elaboration.gain_bits
 
-(* [clamp16] of the twin, as a circuit: the value saturates and never wraps. A wrap here
-   would be silently wrong music, and the clamp is what the format election stands on. *)
-let clamp16 wide =
-  (* the rails twice over: at the width of the value for the compare, and at the
-     activation format for what the clamp writes *)
-  let clamped value = of_signed_int ~width:activation_bits value in
-  let high = of_signed_int ~width:(width wide) Model.activation_high in
-  let low = of_signed_int ~width:(width wide) Model.activation_low in
-  mux2
-    (wide >+ high)
-    (clamped Model.activation_high)
-    (mux2
-       (wide <+ low)
-       (clamped Model.activation_low)
-       (sresize wide ~width:activation_bits))
-;;
+(* the shared clamp of the repository, which the twin's [Nn_quantized.clamp16] is the
+   scalar half of. The gain product is 48 bits wide, and the compare must stand at that
+   width. *)
+let clamp16 = Nn_quantized.Rtl.clamp16
 
 module Make (Shape : Shape) = struct
   let lanes = Shape.lanes
