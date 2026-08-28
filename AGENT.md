@@ -95,8 +95,9 @@ models, the integer twins and the oracle gates, all in `jax/`.
 - `jax`, `jaxlib` and `jax-cuda12-plugin` move together or not at all. A
   plugin one release behind the runtime is refused, and the trainer falls
   back to the CPU with no message, ten times slower.
-- Era six is Flax NNX and optax. The frozen eras keep `nn.adamw`,
-  `nn.schedule` and `nn.train`.
+- Every era is Flax NNX and optax. The rate curve and the update rule are
+  `nn.learning_rates` and `nn.update_rule`; each era's `train.py` keeps its
+  own loop.
 - `ruff` at line-length 90, the width of ocamlformat. E501 is not selected,
   thus ruff does not check the width of a docstring.
 

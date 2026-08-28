@@ -47,7 +47,7 @@ VOICES = measure.VOICE_NAMES
 # ==================================================================== #
 
 
-def losses(params, corpus_path=CORPUS, limit=128, batch=16):
+def losses(held, corpus_path=CORPUS, limit=128, batch=16):
     """The loss cut three ways, and the four seats.
 
     77.91 percent of the voice slots repeat the step before. They are easy, they dominate
@@ -67,7 +67,7 @@ def losses(params, corpus_path=CORPUS, limit=128, batch=16):
     seats = np.zeros(data.SEATS)
     for classes, phases in data.eval_batches(corpus["valid"], CONTEXT, limit, batch):
         classes, phases = jnp.asarray(classes), jnp.asarray(phases)
-        nll = model.seat_nll(params, classes, phases)
+        nll = held.seat_nll(classes, phases)
         by_step = jnp.sum(nll, axis=-1)
         moving = data.moving(classes) >= 2
         total += float(jnp.sum(by_step))
@@ -178,7 +178,7 @@ def main():
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--corpus", "corpus_path", default=CORPUS)
 def forced(ckpt, corpus_path):
-    row = losses(model.load_params(ckpt), corpus_path)
+    row = losses(model.Mamba.load(ckpt), corpus_path)
     for line in loss_lines(Path(ckpt).stem[:22], row):
         click.echo(line)
 
@@ -196,8 +196,10 @@ def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):
     from mamba import infer
 
     seeds = midi.parse_seeds(None, None, seeds)
-    walks = infer.sample(
-        model.load_params(ckpt),
+    # [infer.draw] and NOT [infer.sample], which is a click Command and cannot be called
+    # with a model
+    walks = infer.draw(
+        model.Mamba.load(ckpt),
         seeds=seeds,
         steps=steps,
         temperature=temperature,

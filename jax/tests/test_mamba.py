@@ -16,7 +16,6 @@ through the netlist and `test_quantized.py` holds the integer rules it stands on
 
 import math
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -31,43 +30,42 @@ from mamba import model, quantized, train
 # the state before the update -- moves the stream far past this.
 TOLERANCE = 2e-4
 
-SHAPE = dict(
-    d=32,
-    layers=3,
-    heads=2,
-    state=8,
-    expand=2,
-    conv_scale=0.5,
-    half_lives=None,
-    attention_at=(),
-)
+SHAPE = {
+    "d": 32,
+    "layers": 3,
+    "heads": 2,
+    "state": 8,
+    "expand": 2,
+    "conv_scale": 0.5,
+    "half_lives": None,
+    "attention_at": (),
+}
 
 
-def drawn_params(seed=3, taps=model.CONV_TAPS, **over):
-    """the float params of a drawn model at the small test shape, or a widening of it"""
-    return train.draw_params(jax.random.PRNGKey(seed), taps=taps, **(SHAPE | over))
+def drawn(seed=3, taps=model.CONV_TAPS, **over):
+    """a drawn float model at the small test shape, or a widening of it"""
+    return model.Mamba.drawn(seed, taps=taps, **(SHAPE | over))
 
 
 def plan_of(spelt, **over):
     """a drawn model of the plan spelt out, at the small test shape or a widening of it"""
     letters = [train.PLAN_LETTERS[c] for c in spelt.lower()]
-    return drawn_params(spelt=letters, layers=len(letters), **over)
+    return drawn(spelt=letters, layers=len(letters), **over)
 
 
 def drawn_window(rows, length):
     state = np.random.default_rng(11)
     classes = state.integers(0, data.CLASSES, (rows, length, data.SEATS)).astype(np.int32)
-    phases = np.tile(np.arange(length) % model.PHASE_BUCKETS, (rows, 1)).astype(np.int32)
+    phases = np.tile(np.arange(length) % nn.PHASE_BUCKETS, (rows, 1)).astype(np.int32)
     return jnp.asarray(classes), jnp.asarray(phases)
 
 
-def walk_by_steps(params, classes, phases):
+def walk_by_steps(held, classes, phases):
     """the window form's answer, taken one step at a time through [forward_step]"""
-    shape = model.shape_of(params)
-    carry = model.initial_carry(shape, classes.shape[0])
+    carry = held.initial_carry(classes.shape[0])
     rows = []
     for step in range(classes.shape[1]):
-        carry, h = model.forward_step(params, carry, classes[:, step], phases[:, step])
+        carry, h = held.forward_step(carry, classes[:, step], phases[:, step])
         rows.append(h)
     return jnp.stack(rows, axis=1)
 
@@ -77,10 +75,10 @@ def test_the_step_form_and_the_window_form_give_one_stream(taps):
     """K is a field of the checkpoint and not a constant, thus the gate runs at two widths:
     the tap ring of the step form and the pad of the window form both read it, and a width
     written into one of them alone lands here."""
-    params = drawn_params(taps=taps)
+    held = drawn(taps=taps)
     classes, phases = drawn_window(rows=2, length=64)
-    stepped = walk_by_steps(params, classes, phases)
-    windowed = model.hidden(params, classes, phases)
+    stepped = walk_by_steps(held, classes, phases)
+    windowed = held.hidden(classes, phases)
     assert stepped.shape == windowed.shape
     gap = float(jnp.max(jnp.abs(stepped - windowed)))
     scale = float(jnp.max(jnp.abs(windowed)))
@@ -91,12 +89,11 @@ def test_the_window_opens_on_a_zero_state():
     """A window is not a slice of a longer walk: it starts where the boot of the sampler
     starts. The first step of the window form must therefore equal one step of the step
     form from the origin, exactly, with no history behind either."""
-    params = drawn_params()
+    held = drawn()
     classes, phases = drawn_window(rows=2, length=8)
-    shape = model.shape_of(params)
-    carry = model.initial_carry(shape, classes.shape[0])
-    _, first = model.forward_step(params, carry, classes[:, 0], phases[:, 0])
-    windowed = model.hidden(params, classes, phases)[:, 0]
+    carry = held.initial_carry(classes.shape[0])
+    _, first = held.forward_step(carry, classes[:, 0], phases[:, 0])
+    windowed = held.hidden(classes, phases)[:, 0]
     assert float(jnp.max(jnp.abs(first - windowed))) < 1e-5
 
 
@@ -105,10 +102,14 @@ def test_the_convolution_reads_the_steps_behind_it(taps):
     """Tap k reads the step k back. The window form pads at the head, the step form holds
     a ring of K-1, and the gate is an impulse: a window that is zero but for step 0 must
     read the taps out in order down the channels. Nothing but [conv] states K."""
-    channels = 5
-    conv = jnp.asarray(np.arange(channels * taps, dtype=np.float32).reshape(channels, taps))
+    block = drawn(taps=taps).layers[0]
+    channels = block.conv.shape[0]
+    conv = jnp.asarray(
+        np.arange(channels * taps, dtype=np.float32).reshape(channels, taps)
+    )
+    block.conv[...] = conv
     u = jnp.zeros((1, taps + 3, channels)).at[0, 0].set(1.0)
-    windowed = model.convolve_window(conv, u)
+    windowed = block.convolve_window(u)
     # step t reads the impulse through tap t, thus the row at t is the tap column t
     for t in range(taps):
         assert np.allclose(np.asarray(windowed[0, t]), np.asarray(conv[:, t]))
@@ -121,11 +122,11 @@ def test_the_sampler_walks_the_step_form():
     drawn from nothing, and the same seed twice gives the same walk."""
     from mamba import infer
 
-    params = drawn_params()
-    walk = infer.draw(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
+    held = drawn()
+    walk = infer.draw(held, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
     assert walk.shape == (1, 24, data.SEATS)
     assert np.all(walk[0, : data.BAR_STEPS] == 0), "the lead-in is silence"
-    again = infer.draw(params, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
+    again = infer.draw(held, seeds=[7], steps=24, temperature=1.0, min_p=0.05)
     assert np.array_equal(walk, again), "the same seed must give the same walk"
 
 
@@ -133,10 +134,10 @@ def test_the_sampler_walks_the_step_form():
 def test_a_window_shorter_than_the_taps_still_agrees(taps, length):
     """The tap rule reads zero for a step the window does not have. A window shorter than
     K is where a pad written the other way round would show."""
-    params = drawn_params(taps=taps)
+    held = drawn(taps=taps)
     classes, phases = drawn_window(rows=1, length=length)
-    stepped = walk_by_steps(params, classes, phases)
-    windowed = model.hidden(params, classes, phases)
+    stepped = walk_by_steps(held, classes, phases)
+    windowed = held.hidden(classes, phases)
     assert float(jnp.max(jnp.abs(stepped - windowed))) < 1e-4
 
 
@@ -153,12 +154,11 @@ def test_a_hybrid_plan_agrees_step_for_step(attention_at):
 
     The plan varies because the position of the attention layer is the probe's own second
     question, and a form that only works in the middle of the stack is not a form."""
-    params = drawn_params(attention_at=attention_at)
-    shape = model.shape_of(params)
-    assert sum(1 for kind in shape.plan if kind == model.ATTN) == len(attention_at)
+    held = drawn(attention_at=attention_at)
+    assert sum(1 for kind in held.plan if kind == model.ATTN) == len(attention_at)
     classes, phases = drawn_window(rows=2, length=64)
-    stepped = walk_by_steps(params, classes, phases)
-    windowed = model.hidden(params, classes, phases)
+    stepped = walk_by_steps(held, classes, phases)
+    windowed = held.hidden(classes, phases)
     gap = float(jnp.max(jnp.abs(stepped - windowed)))
     scale = float(jnp.max(jnp.abs(windowed)))
     assert gap / scale < TOLERANCE, f"the two forms part by {gap:.3e} on {scale:.3e}"
@@ -176,10 +176,10 @@ def test_a_spelt_plan_agrees_step_for_step(spelt):
     The plans put Z first, last and in the middle, because a block whose input is the
     embedding is exactly the one that could accidentally work only where the stream still
     looks like the embedding."""
-    params = plan_of(spelt)
+    held = plan_of(spelt)
     classes, phases = drawn_window(rows=2, length=64)
-    stepped = walk_by_steps(params, classes, phases)
-    windowed = model.hidden(params, classes, phases)
+    stepped = walk_by_steps(held, classes, phases)
+    windowed = held.hidden(classes, phases)
     gap = float(jnp.max(jnp.abs(stepped - windowed)))
     scale = float(jnp.max(jnp.abs(windowed)))
     assert gap / scale < TOLERANCE, f"the two forms part by {gap:.3e} on {scale:.3e}"
@@ -192,13 +192,11 @@ def test_a_checkpoint_states_its_own_plan():
     import tempfile
 
     spelt = "MZFAM"
-    params = plan_of(spelt)
+    held = plan_of(spelt)
     with tempfile.NamedTemporaryFile(suffix=".ckpt") as f:
-        train.save_checkpoint(f.name, params)
-        read = model.load_params(f.name)
-    assert model.shape_of(read).plan == tuple(
-        train.PLAN_LETTERS[c] for c in spelt.lower()
-    )
+        held.save(f.name)
+        read = model.Mamba.load(f.name)
+    assert read.plan == tuple(train.PLAN_LETTERS[c] for c in spelt.lower())
 
 
 @pytest.mark.parametrize("chunk", [8, 16, 32])
@@ -214,20 +212,19 @@ def test_the_chunked_window_is_the_quadratic_window(chunk, length):
 
     The lengths run over a multiple of every chunk, a length shorter than one chunk, and
     two that divide by none of them."""
-    params = drawn_params()
-    shape = model.shape_of(params)
-    layer = params["layers"][0]
+    held = drawn()
+    shape, layer = held.shape, held.layers[0]
     rng = np.random.default_rng(5)
 
-    def drawn(*tail):
+    def rows(*tail):
         return jnp.asarray(rng.standard_normal((2, length, *tail)), jnp.float32)
 
-    x = drawn(shape.d_in)
-    b, c = drawn(shape.state), drawn(shape.state)
-    dt = jnp.abs(drawn(shape.heads)) * 0.1
-    a = jnp.exp(layer["a_log"])
-    quadratic = model.selective_window(shape, layer, x, b, c, dt, a)
-    chunked = model.selective_window_chunked(shape, layer, x, b, c, dt, a, chunk=chunk)
+    x = rows(shape.d_in)
+    b, c = rows(shape.state), rows(shape.state)
+    dt = jnp.abs(rows(shape.heads)) * 0.1
+    a = jnp.exp(layer.a_log[...])
+    quadratic = layer.selective_window(shape, x, b, c, dt, a)
+    chunked = layer.selective_window_chunked(shape, x, b, c, dt, a, chunk=chunk)
     assert chunked.shape == quadratic.shape
     gap = float(jnp.max(jnp.abs(chunked - quadratic)))
     scale = float(jnp.max(jnp.abs(quadratic)))
@@ -245,19 +242,17 @@ def test_the_span_rides_in_the_file_and_not_in_a_flag(span):
     older files, which carry no span at all and must still read at era four's elected 4."""
     import tempfile
 
-    params = plan_of("MMZF")
+    held = plan_of("MMZF", span=span)
     classes, phases = drawn_window(rows=2, length=24)
     with tempfile.NamedTemporaryFile(suffix=".ckpt") as f:
-        train.save_checkpoint(f.name, params, span=span)
-        read = model.load_params(f.name)
-    assert read[model.SPAN_KEY] == span
-    assert model.span_of(read) == span
-    assert model.span_of(params) == model.SLOPE_SPAN, "no span in the file is era four's"
-    from_file = model.hidden(read, classes, phases)
-    told = model.hidden(read, classes, phases, span=span)
-    assert float(jnp.max(jnp.abs(from_file - told))) == 0.0
+        held.save(f.name)
+        read = model.Mamba.load(f.name)
+    assert read.span == span
+    assert plan_of("MMZF").span == nn.SLOPE_SPAN, "a model with no flag is era four's"
+    from_file = read.hidden(classes, phases)
+    assert float(jnp.max(jnp.abs(from_file - held.hidden(classes, phases)))) == 0.0
     # and the span must actually MOVE the model, or the round trip proves nothing
-    other = model.hidden(read, classes, phases, span=32.0)
+    other = plan_of("MMZF", span=32.0).hidden(classes, phases)
     assert float(jnp.max(jnp.abs(from_file - other))) > 1e-6
 
 
@@ -266,13 +261,7 @@ def test_the_attention_swap_is_smaller_than_the_block_it_replaces():
     square matrices; the block it replaces carries the projection, the kernel and the
     output matrix. If a swap ever grows the model, the result stops being a clean answer
     to the compute question and this says so before a run does."""
-    trunk = drawn_params()
-    hybrid = drawn_params(attention_at=(1,))
-
-    def count(params):
-        return sum(int(np.prod(t.shape)) for t in jax.tree.leaves(params))
-
-    assert count(hybrid) < count(trunk)
+    assert drawn(attention_at=(1,)).parameter_count() < drawn().parameter_count()
 
 
 def test_the_half_life_ladder_opens_each_head_on_its_rung():
@@ -282,7 +271,7 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
     else in the trainer converts between the two."""
     heads, span = 4, (4.0, 256.0)
     decay = jnp.asarray([1.0, 2.0, 7.5, 16.0])
-    dt = train.half_life_ladder(heads, span) / decay
+    dt = model.half_life_ladder(heads, span) / decay
     lives = np.asarray(jnp.log(2.0) / (dt * decay))
     assert np.allclose(lives, [4.0, 16.0, 64.0, 256.0], rtol=1e-5)
 
@@ -294,7 +283,7 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
 
 def quantized_plan(spelt="MZF", ring=8):
     """the twin of a drawn model of that plan, at the small test shape"""
-    return quantized.Quantized.of(plan_of(spelt), ring=ring)
+    return quantized.QuantizedMamba.of(plan_of(spelt), ring=ring)
 
 
 def test_the_image_is_not_the_checkpoint_order():
@@ -304,9 +293,11 @@ def test_the_image_is_not_the_checkpoint_order():
     structures and neither is implied by the other."""
     twin = quantized_plan("MZF")
     # two tables, then three, four and two
-    assert len(twin.tensors) == len(nn.TABLES) + 3 + 4 + 2
-    assert twin.decay.shape == twin.dt_bias.shape == twin.d_skip.shape
-    assert twin.decay.shape == (1, twin.heads)
+    assert len(twin.every_tensor()) == len(nn.TABLES) + 3 + 4 + 2
+    # the three per-head rows stand on the BLOCK that drew them, thus no index aligns them
+    block = twin.blocks[0]
+    assert block.decay.shape == block.dt_bias.shape == block.d_skip.shape
+    assert block.decay.shape == (twin.heads,)
 
 
 def test_w_in_is_stored_transposed():
@@ -314,11 +305,10 @@ def test_w_in_is_stored_transposed():
     row-major address only when the dimension under the outer counter is a power of two.
     `d` is one; the projection is not. Storing the tensor the other way round puts `d`
     under the outer counter."""
-    params = plan_of("M")
-    twin = quantized.Quantized.of(params)
-    at = quantized.image_at(twin, 0)
-    rows, cols = twin.tensors[at][0].shape
-    assert (rows, cols) == tuple(reversed(params["layers"][0]["w_in"].shape))
+    held = plan_of("M")
+    twin = quantized.QuantizedMamba.of(held)
+    rows, cols = twin.blocks[0].w_in.values.shape
+    assert (rows, cols) == tuple(reversed(held.layers[0].w_in.shape))
     assert cols == twin.d
 
 
@@ -347,17 +337,18 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     assert (read.span, read.ring) == (twin.span, twin.ring)
     assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
     assert read.min_weight == twin.min_weight
-    for name in ("decay", "dt_bias", "d_skip"):
-        assert np.array_equal(getattr(read, name), getattr(twin, name))
-    for (here, e), (there, then) in zip(read.tensors, twin.tensors):
-        assert np.array_equal(here, there) and e == then
+    for here, there in zip(read.blocks, twin.blocks):
+        for mine, yours in zip(here.rows(), there.rows()):
+            assert np.array_equal(mine, yours)
+    for here, there in zip(read.every_tensor(), twin.every_tensor()):
+        assert np.array_equal(here.values, there.values) and here.e == there.e
 
 
 def test_era_fours_attention_is_no_layer_of_this_model():
     """A square query is era four's plain attention, which measured null in this trunk
     three times. It is refused where a build fails loudly."""
     with pytest.raises(ValueError, match="square query"):
-        quantized.Quantized.of(plan_of("MA"))
+        quantized.QuantizedMamba.of(plan_of("MA"))
 
 
 def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():

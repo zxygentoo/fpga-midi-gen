@@ -4,9 +4,11 @@ Run it from the jax directory as a module:
 
     uv run python -m mamba.train --steps 200
 
-The recipe opens where era four closed: the same AdamW of nn.py with a decoupled decay
-and a global-norm clip, the same batch draw -- a uniform stream, then a uniform window --
-and the same number out of every evaluation.
+The recipe opens where era four closed: the same `nn.update_rule` -- optax's AdamW with a
+decoupled decay and a global-norm clip under the warmup and cosine decay of
+`nn.learning_rates` -- the same batch draw, a uniform stream then a uniform window, and the
+same number out of every evaluation. THE SCHEDULE IS INSIDE THE OPTIMIZER and not in this
+loop.
 
 The loss is reported as NATS FOR EACH STEP -- the sum over the four seats -- because a
 per-prediction mean divides against a different count in each encoding and compares
@@ -20,13 +22,19 @@ The gradient takes the mean over the predictions and not the sum over the seats.
 blind to the scale, but the global-norm clip is not: a loss four times larger would make
 the clip bite four times harder, and the peak rate and the clip of the recipe would stop
 meaning what they meant.
+
+THE ERA IS FROZEN and this trainer is kept, not run: the elected checkpoint stands and no
+retrain is planned. THE DRAW IS THE MODEL'S -- `Mamba.drawn` -- because the gates of
+`tests/test_mamba.py` and `tests/test_drift.py` read the same opening.
 """
 
-
+import time
 
 import click
 import jax
 import jax.numpy as jnp
+import numpy as np
+from flax import nnx
 
 import data
 import nn
@@ -35,145 +43,179 @@ from mamba import model
 JAX_ROOT = nn.JAX_ROOT
 
 
-def half_life_ladder(heads, span):
-    """The dt of each head that puts its half-life on a log-spaced ladder.
+def make_step(dropout):
+    """The jitted training step: the loss over the batch, and one update under the
+    schedule. [dropout] closes in because it decides the SHAPE of the pass -- whether a
+    mask is drawn at all -- and not a value inside it."""
 
-    A trained state decays as `exp(-dt * a)` for each step, thus its half-life is
-    `ln 2 / (dt * a)`. The Mamba draw is uniform in dt and says nothing about the
-    half-life; this one names the ladder and solves for the dt that lands on it, over the
-    decay rate the head already drew. One head sits at each rung, log-spaced.
+    @nnx.jit
+    def step_fn(held, optimizer, classes, phases, key):
+        def loss(held):
+            return jnp.mean(held.seat_nll(classes, phases, dropout=dropout, key=key))
 
-    It exists because a measurement asked for it: over the elected prototype the trained
-    half-lives collapse -- no head above layer 2 holds a median of more than 7 steps -- and
-    a state that never learns a phrase-scale memory may simply have opened too far from
-    one."""
-    low, high = span
-    rungs = low * (high / low) ** (jnp.arange(heads, dtype=jnp.float32) / max(heads - 1, 1))
-    return jnp.log(2.0) / rungs
+        value, grads = nnx.value_and_grad(loss)(held)
+        optimizer.update(held, grads)
+        return value
+
+    return step_fn
 
 
-def draw_params(
-    key, *, d, layers, heads, state, taps, expand, conv_scale, half_lives,
-    attention_at, spelt=None,
-):
-    """The Mamba defaults, over era four's draw of the matrices.
+@nnx.jit
+def eval_fn(held, classes, phases):
+    """the evaluation sums of one batch: the per-step loss and the step count. The
+    moving-steps instrument lives in measure.py, where elections read it."""
+    steps = jnp.sum(held.seat_nll(classes, phases), axis=-1)
+    return jnp.sum(steps), jnp.size(steps)
 
-    [a_log] is the log of a uniform decay rate in [1, 16] and [dt_bias] the inverse
-    softplus of a uniform step in [0.001, 0.1], which is the initialization the Mamba
-    papers state. [d_skip] opens at one, thus a layer starts as the skip and learns its
-    state from there.
 
-    [half_lives] replaces the uniform draw of dt with the ladder of [half_life_ladder],
-    and it is the one lever this initialization holds.
+def eval_batches(split, context, limit, batch):
+    """The evaluation windows of one split, on the device.
 
-    [attention_at] names the layers that are era four's attention sublayer instead of a
-    block. Its four matrices take the same normal at 0.02 that every other matrix takes --
-    era four drew them that way and one rule covers the whole model.
-
-    THE CONVOLUTION TAKES 0.02 TOO, and it was measured. The argument against was fan-in:
-    four taps at 0.02 pass a fiftieth of their input, the SiLU under them sits near its own
-    origin, and B and C open so small that the state has little to learn from. 1/sqrt(K) is
-    the fan-in scale and the Mamba reference uses it. Over 4 000 steps of the baseline
-    shape it read 1.7311 valid against 0.02's 1.7113, thus the argument is wrong here: the
-    gated norm rescales the branch in any case, and the smaller draw is no worse. One rule
-    covers every matrix of this model."""
-
-    def normal(k, shape, scale=0.02):
-        return jax.random.normal(k, shape, dtype=jnp.float32) * scale
-
-    d_in = expand * d
-    channels = d_in + 2 * state
-    plan = spelt or [
-        model.ATTN if at in attention_at else model.MAMBA for at in range(layers)
+    They are fixed for the whole run, thus they cross to the device one time and not at
+    every evaluation."""
+    return [
+        (jnp.asarray(classes), jnp.asarray(phases))
+        for classes, phases in data.eval_batches(split, context, limit, batch)
     ]
-    count = len(model.TABLES) + sum(len(model.LAYER_TENSORS[kind]) for kind in plan)
-    keys = iter(jax.random.split(key, count))
-    params = {
-        "seats": normal(next(keys), (data.SEATS, data.CLASSES, d)),
-        "phase": normal(next(keys), (model.PHASE_BUCKETS, d)),
-    }
-
-    def attention(kind):
-        # the Zamba query and key read the stream beside the embedding, thus [2d, d]
-        wide = (2 * d, d) if kind == model.ZATTN else (d, d)
-        return {
-            "wq": normal(next(keys), wide),
-            "wk": normal(next(keys), wide),
-            "wv": normal(next(keys), (d, d)),
-            "wo": normal(next(keys), (d, d)),
-        }
-
-    def feed_forward():
-        return {
-            "w1": normal(next(keys), (d, 4 * d)),
-            "w2": normal(next(keys), (4 * d, d)),
-        }
-
-    def drawn(kind):
-        if kind == model.MLP:
-            return feed_forward()
-        if kind in (model.ATTN, model.ZATTN):
-            return attention(kind)
-        return layer()
-
-    def layer():
-        w_in = normal(next(keys), (d, 2 * d_in + 2 * state + heads))
-        conv = normal(next(keys), (channels, taps), conv_scale)
-        step = jax.random.uniform(next(keys), (heads,), minval=0.001, maxval=0.1)
-        decay = jax.random.uniform(next(keys), (heads,), minval=1.0, maxval=16.0)
-        # the draw above still runs and its key is still spent, thus a ladder run and its
-        # baseline differ in dt_bias and in no other tensor of the checkpoint
-        if half_lives is not None:
-            step = half_life_ladder(heads, half_lives) / decay
-        return {
-            "w_in": w_in,
-            "conv": conv,
-            # the inverse softplus of the drawn step: softplus(dt_bias) is that step again
-            "dt_bias": jnp.log(jnp.expm1(step)),
-            "a_log": jnp.log(decay),
-            "d_skip": jnp.ones((heads,), jnp.float32),
-            "w_out": normal(next(keys), (d_in, d)),
-        }
-
-    return params | {"layers": [drawn(kind) for kind in plan]}
 
 
-def save_checkpoint(path, params, span=None):
-    """the tables, then the layers each by its own kind, then the ALiBi span.
+def eval_loss(held, batches):
+    """nats for each step, the mean over the evaluation windows"""
+    total = 0.0
+    steps = 0
+    for classes, phases in batches:
+        sums = eval_fn(held, classes, phases)
+        total += float(sums[0])
+        steps += int(sums[1])
+    return total / max(steps, 1)
 
-    The span goes LAST and alone, thus an older file that does not carry it still reads:
-    the walk of [model.load_params] takes whole layer groups and then one scalar if one
-    is there. It is written even where no layer attends, which costs four bytes and keeps
-    one rule."""
-    nn.save_checkpoint(
-        path,
-        [params[name] for name in model.TABLES]
-        + [
-            layer[name]
-            for layer in params["layers"]
-            for name in model.LAYER_TENSORS[model.kind_of(layer)]
-        ],
-        span=span,
+
+def train(
+    held,
+    *,
+    corpus_path,
+    train_on,
+    context,
+    batch,
+    steps,
+    lr,
+    seed,
+    warmup,
+    clip,
+    weight_decay,
+    dropout,
+    half_lives,
+    log_every,
+    eval_every,
+    eval_limit,
+    ckpt,
+    average_top,
+):
+    """The loop of the era: the batch draw, the step, the two evaluations, the
+    best-by-valid checkpoint and the top-K average. [held] is the drawn model this run
+    opens on: the CLI builds it, because every flag of the shape is the model's own."""
+    corpus = data.load_corpus(corpus_path)
+    pool = data.train_pool(corpus, train_on)
+    train_eval = eval_batches(corpus["train"], context, eval_limit, batch)
+    valid_eval = eval_batches(corpus["valid"], context, eval_limit, batch)
+    rng = np.random.default_rng(seed)
+    key = jax.random.PRNGKey(seed)
+    optimizer = nnx.Optimizer(
+        held,
+        nn.update_rule(
+            peak=lr, warmup=warmup, total=steps, clip=clip, weight_decay=weight_decay
+        ),
+        wrt=nnx.Param,
+    )
+    step_fn = make_step(dropout)
+    corpus_steps = sum(int(split.index[row, 1]) for split, row in pool)
+    click.echo(
+        f"corpus: {len(pool)} pool streams, {corpus_steps} steps; eval rows: "
+        f"{sum(len(b[0]) for b in train_eval)} train, "
+        f"{sum(len(b[0]) for b in valid_eval)} valid"
+    )
+    click.echo(
+        f"shape: {held.describe()}; context {context}, dropout {dropout}, seed {seed}, "
+        f"dt half-lives {half_lives or 'the Mamba draw'}; "
+        f"parameters {held.parameter_count()}"
     )
 
+    best = float("inf")
+    top = []  # (valid, step, the flat host tensors) -- the K best snapshots for averaging
+    losses = []
+    started = time.perf_counter()
 
-def make_step(dropout, clip, weight_decay, span):
-    def loss(p, classes, phases, key):
-        return jnp.mean(
-            model.seat_nll(p, classes, phases, dropout=dropout, key=key, span=span)
+    def evaluate(step):
+        nonlocal best
+        train_all = eval_loss(held, train_eval)
+        valid_all = eval_loss(held, valid_eval)
+        mark = ""
+        if valid_all < best:
+            best = valid_all
+            mark = "  *"
+            if ckpt and train_on != "all":
+                held.save(ckpt)
+        # the snapshot crosses to the host only when it can stay: the sort would drop it
+        # again, and the copy is the whole model
+        if average_top > 0 and (len(top) < average_top or valid_all < top[-1][0]):
+            top.append((valid_all, step, [np.asarray(t) for t in held.every_tensor()]))
+            top.sort(key=lambda entry: entry[0])
+            del top[average_top:]
+        click.echo(
+            f"step {step:5d}  eval  train {train_all:.4f}  valid {valid_all:.4f}{mark}"
         )
 
-    return nn.make_step(loss, clip=clip, weight_decay=weight_decay)
+    for step in range(1, steps + 1):
+        classes, phases = data.train_batch(rng, pool, batch, context)
+        key, step_key = jax.random.split(key)
+        value = step_fn(
+            held, optimizer, jnp.asarray(classes), jnp.asarray(phases), step_key
+        )
+        # the device array, NOT float(value): a read blocks until the step finishes, and
+        # the loop then cannot overlap the next batch draw and its transfer with the
+        # compute of this one. The log below reads, thus the run-ahead stays inside one
+        # log window.
+        losses.append(value)
+        if step % log_every == 0 or step == 1:
+            # the training number is nats for each step too: the mean over the predictions
+            # times the four seats
+            mean = float(jnp.mean(jnp.stack(losses)))
+            click.echo(f"step {step:5d}  loss {data.SEATS * mean:.4f}")
+            losses = []
+        if step % eval_every == 0 or step == steps:
+            evaluate(step)
+
+    seconds = time.perf_counter() - started
+    click.echo(
+        f"time: {seconds:.0f} s, {seconds / steps * 1000:.0f} ms each step, "
+        f"the evaluations inside"
+    )
+    click.echo(f"best valid {best:.4f}")
+    if ckpt:
+        if train_on == "all":
+            held.save(ckpt)
+            click.echo(f"checkpoint of the last step: {ckpt}")
+        else:
+            click.echo(f"checkpoint of the best: {ckpt}")
+        if average_top > 0 and top:
+            averaged = [
+                np.mean(np.stack(tensors), axis=0)
+                for tensors in zip(*[entry[2] for entry in top])
+            ]
+            path = ckpt.replace(".ckpt", "-avg.ckpt")
+            nn.save_checkpoint(path, averaged, span=held.span)
+            click.echo(
+                f"average of {len(top)} best snapshots "
+                f"(steps {[entry[1] for entry in top]}): {path}"
+            )
 
 
-def make_eval(span):
-    def nll(params, classes, phases):
-        return model.seat_nll(params, classes, phases, span=span)
-
-    return nn.make_eval(nll)
-
-
-PLAN_LETTERS = {"m": model.MAMBA, "a": model.ATTN, "z": model.ZATTN, "f": model.MLP}
+PLAN_LETTERS = {
+    "m": model.MAMBA,
+    "a": model.ATTN,
+    "z": model.ZATTN,
+    "f": model.MLP,
+}
 
 
 def parse_plan(ctx, param, value):
@@ -219,7 +261,7 @@ def parse_half_lives(ctx, param, value):
 @click.option(
     "--alibi-span",
     "alibi_span",
-    default=model.SLOPE_SPAN,
+    default=nn.SLOPE_SPAN,
     type=float,
     help="the ALiBi exponent span of the attention layers: the slope of head k is "
     "2^-(span (k+1) / heads), thus a LARGER span reaches further. Era four elected 4 on "
@@ -239,8 +281,7 @@ def parse_half_lives(ctx, param, value):
     default="",
     callback=parse_attention_at,
     help="the layers that take era four's attention sublayer instead of a block, 0 "
-    "first; "
-    "empty is the trunk of six blocks",
+    "first; empty is the trunk of six blocks",
 )
 @click.option("--expand", default=model.EXPAND, help="d_in = expand * d")
 @click.option(
@@ -254,8 +295,8 @@ def parse_half_lives(ctx, param, value):
 @click.option(
     "--conv-scale",
     type=float,
-    default=0.02,
-    help="the draw of the convolution kernel; measured against 1/sqrt(K), see draw_params",
+    default=nn.DRAW_SCALE,
+    help="the draw of the convolution kernel; measured against 1/sqrt(K), see Mamba.drawn",
 )
 @click.option("--context", default=256, help="the training window, in steps")
 @click.option("--batch", default=16)
@@ -263,7 +304,7 @@ def parse_half_lives(ctx, param, value):
 @click.option("--lr", default=1e-3)
 @click.option("--seed", default=6)
 @click.option("--warmup", default=300)
-@click.option("--wd", default=0.01)
+@click.option("--wd", "weight_decay", default=0.01)
 @click.option("--clip", default=1.0)
 @click.option("--dropout", default=0.2)
 @click.option(
@@ -279,7 +320,6 @@ def parse_half_lives(ctx, param, value):
     help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
 )
 def main(
-    corpus_path,
     d,
     layers,
     heads,
@@ -288,28 +328,15 @@ def main(
     alibi_span,
     attention_at,
     spelt,
-    half_lives,
     expand,
     conv_scale,
-    context,
-    batch,
-    steps,
-    lr,
     seed,
-    warmup,
-    wd,
-    clip,
-    dropout,
-    train_on,
-    log_every,
-    eval_every,
-    eval_limit,
-    ckpt,
-    average_top,
+    half_lives,
+    **flags,
 ):
-    def draw(key):
-        return draw_params(
-            key,
+    train(
+        model.Mamba.drawn(
+            seed,
             d=d,
             layers=layers,
             heads=heads,
@@ -320,36 +347,11 @@ def main(
             half_lives=half_lives,
             attention_at=attention_at,
             spelt=spelt,
-        )
-
-    def save(path, params):
-        save_checkpoint(path, params, span=alibi_span)
-
-    def describe(params):
-        return (
-            f"shape: {model.shape_of(params)}, dropout {dropout}, seed {seed}, "
-            f"dt half-lives {half_lives or 'the Mamba draw'}, ALiBi span {alibi_span}"
-        )
-
-    nn.train(
-        corpus_path=corpus_path,
-        train_on=train_on,
-        context=context,
-        batch=batch,
-        steps=steps,
-        lr=lr,
+            span=alibi_span,
+        ),
         seed=seed,
-        warmup=warmup,
-        log_every=log_every,
-        eval_every=eval_every,
-        eval_limit=eval_limit,
-        ckpt=ckpt,
-        average_top=average_top,
-        draw_params=draw,
-        step_fn=make_step(dropout, clip, wd, alibi_span),
-        eval_fn=make_eval(alibi_span),
-        save_checkpoint=save,
-        describe=describe,
+        half_lives=half_lives,
+        **flags,
     )
 
 

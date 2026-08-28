@@ -201,8 +201,8 @@ def test_g0_the_mamba_reads_its_measured_loss():
     from mamba import model as mamba_model
 
     classes, phases = windows_of(data.load_corpus(CORPUS), MAMBA_SHAPE)
-    params = mamba_model.load_params(str(MAMBA_CHECKPOINT))
-    here = seat_loss(mamba_model.seat_nll(params, classes, phases))
+    held = mamba_model.Mamba.load(str(MAMBA_CHECKPOINT))
+    here = seat_loss(held.seat_nll(classes, phases))
     assert here == pytest.approx(MAMBA_LOSS, abs=TOLERANCE), (
         f"the model reads {here:.6f} and the elected checkpoint measured "
         f"{MAMBA_LOSS:.6f}"

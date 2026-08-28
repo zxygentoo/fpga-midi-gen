@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import nn
 from mamba import quantized
 from tests.test_mamba import plan_of
 
@@ -70,7 +71,7 @@ def drive(subcommand, path, *, seed, steps):
 def contract(tmp_path, spelt, *, ring=8, **shape):
     """a tiny model of the plan spelt out, drawn here and quantized here, as the file the
     driver reads"""
-    twin = quantized.Quantized.of(plan_of(spelt, **shape), ring=ring)
+    twin = quantized.QuantizedMamba.of(plan_of(spelt, **shape), ring=ring)
     path = tmp_path / "tiny.int8"
     quantized.save(path, twin)
     return path, quantized.load(path)
@@ -152,9 +153,9 @@ def test_the_lead_in_draws_nothing_and_moves_no_generator(tmp_path):
     that spent a uniform there would draw a different piece from the same seed, and every
     step of it would be legal music."""
     _, twin = contract(tmp_path, "MZF")
-    played, draws = quantized.walk(twin, [1, 7], quantized.LEAD + 2)
-    assert (played[:, : quantized.LEAD] == 0).all(), "the lead-in is not silent"
-    assert all(not taken for taken in draws[: quantized.LEAD]), "the lead-in drew"
+    played, draws = quantized.walk(twin, [1, 7], nn.LEAD + 2)
+    assert (played[:, : nn.LEAD] == 0).all(), "the lead-in is not silent"
+    assert all(not taken for taken in draws[: nn.LEAD]), "the lead-in drew"
     # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], quantized.LEAD + 2)
+    alone, _ = quantized.walk(twin, [7], nn.LEAD + 2)
     assert np.array_equal(alone[0], played[1])

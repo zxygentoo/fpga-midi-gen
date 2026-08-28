@@ -17,23 +17,22 @@ the wire side itself is midi.py, shared by both eras.
 """
 
 import os
-from pathlib import Path
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import click
-import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import nnx
 
 import data
 import midi
+import nn
 import prng
-from nn import draw_frame
 from mamba import model, quantized
 
 
-def draw(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
+def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twin=False):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     [ring] is the depth of the attention layer's keys and values, and it exists only where
@@ -46,14 +45,25 @@ def draw(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
     opens at zero, which is where a training window opens, thus the model meets the
     condition it trained on. The lead-in counts inside [steps] and stands at the head of
-    the music, because it is silence the walk really plays."""
+    the music, because it is silence the walk really plays.
+
+    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
+    -- and the temperature and the floor bake into it as the bitstream carries them. The
+    two walks open on different generators: the float walk folds its seed and the twin
+    takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
+    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION, where
+    the twin stands still while the float walk runs from the folded state."""
+    if twin:
+        engine = quantized.QuantizedMamba.of(
+            held, ring=ring, temperature=temperature, min_p=min_p
+        )
+        return quantized.walk(engine, seeds, steps)[0]
     batch = len(seeds)
-    shape = model.shape_of(params)
-    forward = jax.jit(
-        lambda carry, classes, phases: model.forward_step(params, carry, classes, phases)
+    forward = nnx.jit(
+        lambda held, carry, classes, phases: held.forward_step(carry, classes, phases)
     )
     rng = prng.states(seeds)
-    carry = model.initial_carry(shape, batch, context=ring)
+    carry = held.initial_carry(batch, context=ring)
     lead = data.BAR_STEPS
     silence = np.zeros((batch, data.SEATS), dtype=np.int32)
     frames = []
@@ -64,10 +74,10 @@ def draw(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
         if step < lead:
             frame = silence
         else:
-            rng, frame = draw_frame(params, h, rng, temperature, min_p)
+            rng, frame = held.head.draw_frame(h, rng, temperature, min_p)
         frames.append(frame)
-        phases = np.full(batch, step % model.PHASE_BUCKETS, dtype=np.int32)
-        carry, stream = forward(carry, jnp.asarray(frame), jnp.asarray(phases))
+        phases = np.full(batch, step % nn.PHASE_BUCKETS, dtype=np.int32)
+        carry, stream = forward(held, carry, jnp.asarray(frame), jnp.asarray(phases))
         h = np.asarray(stream).astype(np.float64)
     return np.stack(frames, axis=1)
 
@@ -93,6 +103,12 @@ def main():
     help="the depth of the attention layer's key and value ring, in steps. It is the "
     "one context this model has, and only where the plan attends at all.",
 )
+@click.option(
+    "--quantized",
+    "twin",
+    is_flag=True,
+    help="draw the integer twin of the circuit: the piece the board plays at this seed",
+)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=midi.DEVICE)
@@ -106,6 +122,7 @@ def sample(
     temperature,
     min_p,
     ring,
+    twin,
     to_synth,
     to_file,
     device,
@@ -113,10 +130,14 @@ def sample(
     channel,
     velocity,
 ):
-    params = model.load_params(ckpt)
     walks = draw(
-        params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p,
+        model.Mamba.load(ckpt),
+        seeds=seeds,
+        steps=steps,
+        temperature=temperature,
+        min_p=min_p,
         ring=ring,
+        twin=twin,
     )
     music = [data.decode(walk) for walk in walks]
 
@@ -158,9 +179,8 @@ def quantize(ckpt, out, ring, temperature, min_p):
     It is the only thing that crosses the seam for a build. Every width and the plan come
     out of the checkpoint's own shapes; the ring is the one number no training run states,
     and the temperature and the floor bake into the temper and the min-p share."""
-    params = model.load_params(ckpt)
-    twin = quantized.Quantized.of(
-        params, ring=ring, temperature=temperature, min_p=min_p
+    twin = quantized.QuantizedMamba.of(
+        model.Mamba.load(ckpt), ring=ring, temperature=temperature, min_p=min_p
     )
     quantized.save(out, twin)
     plan = "".join(quantized.LETTERS[kind] for kind in twin.plan)
