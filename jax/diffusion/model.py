@@ -488,6 +488,6 @@ def tempered_pick(raw, temperature, uniform):
     """The draw of one cell over the batch: `Mgen_nn.Policy.draw_class`, row for row.
     [raw] is [sheets, ROWS] float64.
 
-    The era draws with no min-p floor, thus the temper is the peak alone. `nn.pick`'s own
+    The era draws with no min-p floor, thus the temper is the peak alone. `nn.pick_share`'s own
     docstring holds the argument that no fallback is needed."""
-    return nn.pick(nn.temper(raw, temperature, 0.0), uniform)
+    return nn.pick_share(nn.temper(raw, temperature, 0.0), uniform)

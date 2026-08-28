@@ -757,56 +757,13 @@ def test_the_loss_falls_over_a_short_run():
 
 
 # ==================================================================== #
-# The integer twin: the scalar rules, and the contract file            #
+# The integer twin: the module tree and the contract file              #
 # ==================================================================== #
 
-# THE TWIN IS HELD BY THREE THINGS AND THESE ARE THE SMALLEST OF THEM. `test_rtl.py` holds
-# it against the circuit, write for write; `test_drift.py` holds it against the float model
-# it quantizes; and `test_parity.py`'s G1 holds the quantizer through the netlist the flash
-# carries. What stands here is the arithmetic each of those would break on FIRST -- a
-# rounding, an exponent, a table entry -- so that a failure names the rule and not the walk.
-
-
-@pytest.mark.parametrize(
-    "peak,exponent",
-    [(0.0, 14), (0.02, 12), (0.08, 10), (127.0, 0), (127.49, 0), (127.5, -1), (1e9, -23)],
-)
-def test_the_exponent_rule_holds_at_its_boundaries(peak, exponent):
-    """The largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
-    every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
-    exponent has to step down. A tie rounds UP and never away from zero, which is Base's
-    `Float.iround_nearest_exn` and not Python's `round`."""
-    assert quantized.max_exponent(peak) == exponent
-
-
-def test_the_byte_is_symmetric_and_ties_round_up():
-    """The byte is two's complement and the negative end is not used: the clamp is -127 and
-    not -128, thus the image is symmetric and a negated weight is a negated byte."""
-    q, e = quantized.quantize(np.array([0.02, -0.01, 0.0]))
-    assert (list(q), e) == ([82, -41, 0], 12)
-    assert quantized.round_half_up([-5.5, -2.5, 2.5, 5.5]).tolist() == [-5, -2, 3, 6]
-
-
-def test_the_exp2_table_is_the_shared_table():
-    """exp2 of -j/256 in Q15, the one table the samplers of every era read. Entry 0 is the
-    peak 2^15, a full fractional step halves, and the last entry sits one table step above
-    one half. The whole table was compared entry for entry against
-    `Nn_quantized.Constants.exp2_bits` when it was written, and no entry differed: the two
-    libm implementations agree here."""
-    table = quantized.EXP2_TABLE
-    assert (table[0], table[128], table[255]) == (32768, 23170, 16428)
-    assert quantized.exp2_of_magnitude(np.int64(4096)) == 16384
-    # a magnitude of 16 or more is zero, and the shift may not run past the host word
-    assert quantized.exp2_of_magnitude(np.int64(1 << 20)) == 0
-
-
-def test_the_temper_is_log2e_over_the_temperature():
-    """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
-    temperature, because the circuits carry this constant on an 18-bit signed port."""
-    assert quantized.temper_of(1.0) == (23637, 14)
-    assert quantized.temper_of(0.5) == (47274, 14)
-    with pytest.raises(ValueError):
-        quantized.temper_of(0.0)
+# The SCALAR rules the twin stands on -- the exponent, the rounding, the table, the temper
+# -- are shared with every era and stand in `test_quantized.py`. What is era six's own
+# stands here: the tree that carries the float model's skeleton, and the file that crosses
+# the seam.
 
 
 def test_the_twin_carries_the_float_models_skeleton():

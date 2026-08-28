@@ -1,17 +1,23 @@
-"""The common parts of the model families.
+"""The common parts of the eras, above the seam and below it.
 
-Both eras -- the step-frame transformer and the state-space model -- share one head, one
-position rule, one sampling chain and one trainer skeleton. What is one thing across them
-stands here one time: a rule changed here changes both models at once, which is the
-point. The model modules keep what is theirs alone -- the trunks, the parameter layouts
-and the checkpoint walks.
+ABOVE THE SEAM stand the float models: the step-frame transformer and the state-space
+model share one head, one position rule, one sampling chain and one trainer skeleton, and
+each model module keeps what is its own -- the trunk, the parameter layout and the
+checkpoint walk. BELOW IT stand the integer rules every TWIN is built on: the fixed-point
+rails, the exponent rule of a checkpoint, the sampling policy, the shared table and the
+integer draw, which are the twin of `lib/nn/quantized.ml`.
+
+What is one thing across the eras stands here one time: a rule changed here changes every
+model, or every twin, at once -- which is the point.
 
 Matmul precision is pinned to true float32 here, no TF32; every model imports this
 module, thus the pin holds everywhere.
 """
 
+import math
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 import jax
@@ -130,7 +136,7 @@ def temper(raw, temperature, min_p):
     return weights
 
 
-def pick(weights, uniform):
+def pick_share(weights, share):
     """The class whose running total passes the draw.
 
     It takes the uniform and not a draw, thus one function owns both sums and the total is
@@ -145,7 +151,7 @@ def pick(weights, uniform):
     total passed, thus the weight there is the difference of two totals across the draw. No
     fallback is necessary, and none is written."""
     running = np.cumsum(weights, axis=1)
-    return (running > (uniform * running[:, -1])[:, None]).argmax(axis=1)
+    return (running > (share * running[:, -1])[:, None]).argmax(axis=1)
 
 
 def draw_frame(params, h, state, temperature, min_p):
@@ -165,10 +171,197 @@ def draw_frame(params, h, state, temperature, min_p):
         raw = (_host_rms_norm(stream) @ seats[seat].T).astype(np.float64)
         weights = temper(raw, temperature, min_p)
         state, uniform = prng.uniform(state, True)
-        frame[:, seat] = pick(weights, uniform)
+        frame[:, seat] = pick_share(weights, uniform)
         if seat:
             stream = stream + seats[seat][frame[:, seat]]
     return state, frame
+
+
+# ---------------------------------------------------------------------
+# the integer rules of the twins
+# ---------------------------------------------------------------------
+
+# WHAT STANDS HERE IS THE PART OF THE INTEGER ARITHMETIC THAT IS ONE THING ACROSS THE
+# ERAS: the fixed-point rails, the exponent rule of a checkpoint, the sampling policy, the
+# shared table and the integer draw. Each era's twin keeps what is its own -- the
+# parameter structures, the state formats of a recurrence, and the engines themselves. A
+# rule written here is read by every twin and, through them, by every circuit.
+#
+# `lib/nn/quantized.ml` is the same module in OCaml and the elaborations read it. The two
+# are TWO STATEMENTS OF ONE RULE and nothing in the types welds them; what holds them
+# together is `tests/test_quantized.py`, which states the numbers both must give.
+
+# the rails of int16: a value that passes them saturates and never wraps. Every clamp of
+# every twin reads them here, thus none can write a rail of its own and part from its
+# circuit in silence.
+INT16_BITS = 16
+INT16_LOW = -(1 << (INT16_BITS - 1))
+INT16_HIGH = (1 << (INT16_BITS - 1)) - 1
+
+# the Q of log2(e), and the Q the temper takes: one below it. The extra bit is headroom for
+# the temperature -- the circuits carry this constant on an 18-bit signed port, thus the Q
+# of log2(e) would overflow that port under a temperature of about 0.36.
+LOG2E_Q = 15
+TEMPER_Q = LOG2E_Q - 1
+
+# the Q the exp2 unit reads its magnitudes at, and the Q of its answer
+EXP2_IN_Q = 12
+EXP2_OUT_Q = 15
+
+
+def round_half_up(x):
+    """Base's `Float.iround_nearest_exn`: floor(x + 0.5).
+
+    A TIE GOES TOWARD PLUS INFINITY, thus -2.5 is -2 and 2.5 is 3, where Python's `round`
+    and `numpy.rint` are half-to-even. Every rounding of every twin goes through here."""
+    return np.floor(np.asarray(x, np.float64) + 0.5)
+
+
+def largest_exponent(magnitude, *, opening, cap):
+    """The largest exponent, from [opening] down, that keeps round(magnitude * 2^e) at
+    [cap] or less.
+
+    [opening] caps the all-zero value, where every exponent fits. The predicate falls
+    monotonically in e, thus the first e that fits is the largest. Its readings differ
+    only in where they open and what they must fit."""
+    if magnitude <= 0.0:
+        return opening
+    e = opening
+    while round_half_up(np.ldexp(magnitude, e)) > cap:
+        e -= 1
+    return e
+
+
+def max_exponent(peak):
+    """`Nn_quantized.max_exponent`: the exponent of one int8 tensor -- from 14 down, the
+    largest that keeps round(peak * 2^e) inside the byte."""
+    return largest_exponent(peak, opening=14, cap=127)
+
+
+def quantize(weights, e=None):
+    """`Nn_quantized.quantize`: the int8 form of one tensor, and the exponent that reads it.
+
+    The byte is two's complement and the negative end is not used: the clamp is -127 and
+    not -128, thus the image is symmetric and a negated weight is a negated byte. [e]
+    overrides the exponent of the tensor's own peak, where tensors whose rows add share
+    one."""
+    weights = np.asarray(weights, np.float64)
+    if e is None:
+        e = max_exponent(float(np.abs(weights).max(initial=0.0)))
+    return np.clip(round_half_up(np.ldexp(weights, e)), -127, 127).astype(np.int32), e
+
+
+def fixed_q12(values, bound):
+    """a per-head number in Q12, clamped to the PORT that carries it.
+
+    Era five's `dt_bias` joins an int16 sum and its `d_skip` rides an 18-bit operand port,
+    thus the bound is a fact of the circuit and the caller states it."""
+    values = np.ldexp(np.asarray(values, np.float64), 12)
+    return np.clip(round_half_up(values), -bound, bound).astype(np.int32)
+
+
+def temper_of(temperature):
+    """`Nn_quantized.policy`: the sampling temper, log2(e) / T, as (q_value, q)."""
+    if temperature <= 0.0:
+        raise ValueError("the temperature is positive")
+    return int(round_half_up(np.ldexp(1.0 / math.log(2.0) / temperature, TEMPER_Q))), (
+        TEMPER_Q
+    )
+
+
+def min_weight_of(min_p):
+    """`Nn_quantized.policy`: the min-p floor as a share of the peak weight.
+
+    The peak weighs 2^`EXP2_OUT_Q` after the temper, thus the floor is a plain share of it
+    and the circuit compares two integers."""
+    if not 0.0 <= min_p < 1.0:
+        raise ValueError("min_p is 0 up to 1")
+    return int(round_half_up(min_p * float(1 << EXP2_OUT_Q)))
+
+
+class Temper(NamedTuple):
+    """The sampling temper as the bitstream carries it: log2(e) / T at [q].
+
+    The temperature is PROVENANCE and not arithmetic -- the temper is already folded -- thus
+    it travels in the metadata of a contract file alone, and a file written by an older
+    tool can read back with no temperature at all."""
+
+    q_value: int
+    q: int
+    temperature: float
+
+    @classmethod
+    def of(cls, temperature):
+        q_value, q = temper_of(temperature)
+        return cls(q_value, q, temperature)
+
+
+def write_tally():
+    """a running tally: the activation writes, the writes that rode the clamp, and the
+    hottest write BEFORE it.
+
+    A clamp that fires is the finding that says which format is wrong, thus it is counted and
+    never assumed away. The peak reads before the clamp, thus it answers the format question
+    directly."""
+    return {"seen": 0, "clamped": 0, "peak": 0}
+
+
+def tallied_write(tally, value):
+    """every activation write goes through here: the clamp is counted and the peak kept.
+
+    A peak inside the format proves that nothing clamped, thus the clip is skipped — the walk
+    writes millions of these and the short circuit is the whole of the difference."""
+    high, low = int(value.max()), int(value.min())
+    tally["seen"] += value.size
+    tally["peak"] = max(tally["peak"], high, -low)
+    if high <= INT16_HIGH and low >= INT16_LOW:
+        return value.astype(np.int32)
+    tally["clamped"] += int(np.count_nonzero(value > INT16_HIGH))
+    tally["clamped"] += int(np.count_nonzero(value < INT16_LOW))
+    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
+
+
+# the quantized exponential: exp2 of -j/256 in Q15 -- `Nn_quantized.Constants.exp2_table`,
+# the one table the samplers of every era read
+EXP2_TABLE = np.array(
+    [
+        int(round_half_up(float(1 << EXP2_OUT_Q) * 2.0 ** (-j / 256.0)))
+        for j in range(256)
+    ],
+    np.int64,
+)
+
+
+def exp2_of_magnitude(magnitude):
+    """`Nn_quantized.exp2_of_magnitude`: 2^-m in Q15 over a nonnegative Q12 magnitude.
+
+    The integer part shifts and the top eight bits of the fraction index the table; a
+    magnitude of 16 or more is 0. The shift is held under the width of the host word where
+    the answer is 0 anyway, because a shift past the width states nothing in either
+    language."""
+    whole = magnitude >> EXP2_IN_Q
+    entry = EXP2_TABLE[(magnitude >> (EXP2_IN_Q - 8)) & 255]
+    return np.where(whole >= 16, 0, entry >> np.minimum(whole, 62))
+
+
+def pick(weights, word):
+    """`Nn_quantized.draw`: the class a 24-bit uniform word lands, over the batch.
+
+    The total is the last running total and never a second sum of the same weights. THE PICK
+    ALWAYS LANDS: the peak weighs 2^15, thus the total is 2^15 or more, and the word falls
+    under 2^24, thus the threshold stands strictly under it. No fallback is written."""
+    running = np.cumsum(weights, axis=-1)
+    threshold = (np.asarray(word, np.int64) * running[..., -1]) >> prng.UNIFORM_BITS
+    return (running > threshold[..., None]).argmax(axis=-1)
+
+
+def engine_states(seeds):
+    """the generator of each walk: THE SEED AS IT STANDS, which is the board's SEED cell rule,
+    thus seed 0 is the walk that stands still as the circuit stands still on it.
+
+    `prng.states` folds instead, which is the float walk's rule: a seed inside 32 bits names
+    itself under both, and 0 is the one seed where the two walks are not one walk."""
+    return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
 # ---------------------------------------------------------------------

@@ -42,6 +42,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import nn
 from diffusion import model, quantized
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
@@ -106,12 +107,12 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = model.opening_sheet(quantized.engine_states([seed]), steps)
+    states, given = model.opening_sheet(nn.engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in cell_order(steps)
     ]
-    tally = quantized.counters()
+    tally = nn.write_tally()
     for at, taken in enumerate(
         quantized.passes(twin, states, given, walk=walk, tally=tally)
     ):
@@ -241,7 +242,7 @@ def test_the_store_writes_are_the_twins(
         "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
     )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, quantized.counters(), rows=rows)
+    want = twin.layer_writes(classes, hidden, nn.write_tally(), rows=rows)
     checked = 0
     for word in lines:
         if word[0] == "write":

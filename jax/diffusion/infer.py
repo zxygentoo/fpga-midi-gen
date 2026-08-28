@@ -32,6 +32,7 @@ import numpy as np
 
 import data
 import midi
+import nn
 import prng
 from diffusion import measure as sheet
 from diffusion import model, quantized
@@ -94,7 +95,7 @@ def draw(coconet, *, crop, seeds, walk, temperature, twin):
     while the float walk runs from the top state."""
     if twin:
         engine = quantized.QuantizedCoconet.of(coconet, temperature)
-        states, given = model.opening_sheet(quantized.engine_states(seeds), crop)
+        states, given = model.opening_sheet(nn.engine_states(seeds), crop)
 
         def walked():
             return quantized.gibbs(engine, states, given, walk=walk)[0]
@@ -225,7 +226,7 @@ def drift(ckpt, crop, seed, walk, temperature):
     float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands between
     the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
-    states, given = model.opening_sheet(quantized.engine_states([seed]), crop)
+    states, given = model.opening_sheet(nn.engine_states([seed]), crop)
     said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 

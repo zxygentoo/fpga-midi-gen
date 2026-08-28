@@ -15,6 +15,11 @@ THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal a
 differently ordered is a different machine: the gates of `tests/test_rtl.py` hold the
 circuit to these integers write for write.
 
+THE RULES THAT ARE NOT THIS ERA'S COME FROM `nn.py`: the exponent rule, the rounding, the
+int16 rails, the temper, the shared exp2 table, the counted write and the integer pick
+stand there, where every twin reads them. What stands here is era six's alone -- the
+activation format, the norm fold, the module tree, the contract file and the walk.
+
 The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
 
 - Weights are int8 under the exponent rule of the eras, `quantize`.
@@ -72,6 +77,19 @@ from safetensors.numpy import load_file, save_file
 
 import prng
 from diffusion import model as sheet
+from nn import (
+    EXP2_IN_Q,
+    INT16_HIGH,
+    INT16_LOW,
+    Temper,
+    exp2_of_magnitude,
+    largest_exponent,
+    pick,
+    quantize,
+    round_half_up,
+    tallied_write,
+    write_tally,
+)
 
 # ---------------------------------------------------------------------
 # the formats
@@ -82,10 +100,6 @@ from diffusion import model as sheet
 # point of the biases.
 ACTIVATION_Q = 6
 ACTIVATION_ONE = 1 << ACTIVATION_Q
-ACTIVATION_BITS = 16
-
-INT16_LOW = -(1 << (ACTIVATION_BITS - 1))
-INT16_HIGH = (1 << (ACTIVATION_BITS - 1)) - 1
 
 # THE WIDEST LAYER THE INT32 ACCUMULATOR IS EXACT FOR: 9 C products of int8 by int16 reach
 # 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more can pass it. The
@@ -95,59 +109,9 @@ WIDEST_INPUTS = 57
 # the planes the stem reads: one class plane and one mask plane for each seat
 PLANES = 2 * sheet.VOICES
 
-# the Q of log2(e), and the Q the temper takes: one below it. The extra bit is headroom for
-# the temperature -- the circuits carry this constant on an 18-bit signed port, thus the Q
-# of log2(e) would overflow that port under a temperature of about 0.36.
-LOG2E_Q = 15
-TEMPER_Q = LOG2E_Q - 1
-
-# the Q the exp2 unit reads its magnitudes at, and the Q of its answer
-EXP2_IN_Q = 12
-EXP2_OUT_Q = 15
-
-
-def round_half_up(x):
-    """Base's `Float.iround_nearest_exn`: floor(x + 0.5).
-
-    A TIE GOES TOWARD PLUS INFINITY, thus -2.5 is -2 and 2.5 is 3, where Python's `round`
-    and `numpy.rint` are half-to-even. Every rounding of this module goes through here."""
-    return np.floor(np.asarray(x, np.float64) + 0.5)
-
-
 # ---------------------------------------------------------------------
 # the quantization of a checkpoint
 # ---------------------------------------------------------------------
-
-
-def largest_exponent(magnitude, *, opening, cap):
-    """The largest exponent, from [opening] down, that keeps round(magnitude * 2^e) at
-    [cap] or less.
-
-    [opening] caps the all-zero value, where every exponent fits. The predicate falls
-    monotonically in e, thus the first e that fits is the largest. Its two readings differ
-    only in where they open and what they must fit."""
-    if magnitude <= 0.0:
-        return opening
-    e = opening
-    while round_half_up(np.ldexp(magnitude, e)) > cap:
-        e -= 1
-    return e
-
-
-def max_exponent(peak):
-    """`Nn_quantized.max_exponent`: the exponent of one int8 tensor -- from 14 down, the
-    largest that keeps round(peak * 2^e) inside the byte."""
-    return largest_exponent(peak, opening=14, cap=127)
-
-
-def quantize(weights):
-    """`Nn_quantized.quantize`: the int8 form of one tensor, and the exponent that reads it.
-
-    The byte is two's complement and the negative end is not used: the clamp is -127 and
-    not -128, thus the image is symmetric and a negated weight is a negated byte."""
-    weights = np.asarray(weights, np.float64)
-    e = max_exponent(float(np.abs(weights).max(initial=0.0)))
-    return np.clip(round_half_up(np.ldexp(weights, e)), -127, 127).astype(np.int32), e
 
 
 def gain_scale(value, weight_exponent):
@@ -158,62 +122,6 @@ def gain_scale(value, weight_exponent):
     the all-zero gain, as 14 caps the all-zero tensor."""
     e = largest_exponent(abs(value), opening=30, cap=32767)
     return int(round_half_up(np.ldexp(value, e))), e + weight_exponent
-
-
-def temper_of(temperature):
-    """`Nn_quantized.policy`: the sampling temper, log2(e) / T, as (q_value, q)."""
-    if temperature <= 0.0:
-        raise ValueError("the temperature is positive")
-    return int(round_half_up(np.ldexp(1.0 / math.log(2.0) / temperature, TEMPER_Q))), (
-        TEMPER_Q
-    )
-
-
-class Temper(NamedTuple):
-    """The sampling temper as the bitstream carries it: log2(e) / T at [q].
-
-    The temperature is PROVENANCE and not arithmetic -- the temper is already folded -- thus
-    it travels in the metadata of the contract file alone, and a file written by an older
-    tool can read back with no temperature at all."""
-
-    q_value: int
-    q: int
-    temperature: float
-
-    @classmethod
-    def of(cls, temperature):
-        q_value, q = temper_of(temperature)
-        return cls(q_value, q, temperature)
-
-
-# ---------------------------------------------------------------------
-# the counted activation write
-# ---------------------------------------------------------------------
-
-
-def counters():
-    """a running tally: the activation writes, the writes that rode the clamp, and the
-    hottest write BEFORE it.
-
-    A clamp that fires is the finding that says which format is wrong, thus it is counted and
-    never assumed away. The peak reads before the clamp, thus it answers the format question
-    directly."""
-    return {"seen": 0, "clamped": 0, "peak": 0}
-
-
-def write(tally, value):
-    """every activation write goes through here: the clamp is counted and the peak kept.
-
-    A peak inside the format proves that nothing clamped, thus the clip is skipped — the walk
-    writes millions of these and the short circuit is the whole of the difference."""
-    high, low = int(value.max()), int(value.min())
-    tally["seen"] += value.size
-    tally["peak"] = max(tally["peak"], high, -low)
-    if high <= INT16_HIGH and low >= INT16_LOW:
-        return value.astype(np.int32)
-    tally["clamped"] += int(np.count_nonzero(value > INT16_HIGH))
-    tally["clamped"] += int(np.count_nonzero(value < INT16_LOW))
-    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
 
 
 @jax.jit
@@ -303,7 +211,7 @@ class QuantizedNormedConv(nnx.Module):
         accumulated = np.asarray(accumulate(jnp.asarray(x), self.kernel[...]))
         gain, shift = self.gain_q_value[...], self.gain_q[...]
         value = ((accumulated.astype(np.int64) * gain) >> shift) + self.bias[...]
-        return write(tally, np.maximum(value, 0) if relu else value)
+        return tallied_write(tally, np.maximum(value, 0) if relu else value)
 
     def tensors(self):
         """the five tensors of this layer in the order of the contract file"""
@@ -341,7 +249,7 @@ class QuantizedResidualPair(nnx.Module):
         tensor from here and never from the second layer alone."""
         first = self.first(x, True, tally)
         second = self.second(first, False, tally)
-        return first, write(tally, np.maximum(x + second, 0))
+        return first, tallied_write(tally, np.maximum(x + second, 0))
 
 
 class QuantizedCoconet(sheet.Trunk):
@@ -550,28 +458,6 @@ def plane_activations(classes, hidden, rows=sheet.ROWS):
 # the integer draw
 # ---------------------------------------------------------------------
 
-# the quantized exponential: exp2 of -j/256 in Q15 -- `Nn_quantized.Constants.exp2_table`,
-# the one table the samplers of every era read
-EXP2_TABLE = np.array(
-    [
-        int(round_half_up(float(1 << EXP2_OUT_Q) * 2.0 ** (-j / 256.0)))
-        for j in range(256)
-    ],
-    np.int64,
-)
-
-
-def exp2_of_magnitude(magnitude):
-    """`Nn_quantized.exp2_of_magnitude`: 2^-m in Q15 over a nonnegative Q12 magnitude.
-
-    The integer part shifts and the top eight bits of the fraction index the table; a
-    magnitude of 16 or more is 0. The shift is held under the width of the host word where
-    the answer is 0 anyway, because a shift past the width states nothing in either
-    language."""
-    whole = magnitude >> EXP2_IN_Q
-    entry = EXP2_TABLE[(magnitude >> (EXP2_IN_Q - 8)) & 255]
-    return np.where(whole >= 16, 0, entry >> np.minimum(whole, 62))
-
 
 def tempered_weights(twin, raw):
     """the Q15 weight of every class of one cell, over the batch.
@@ -585,29 +471,9 @@ def tempered_weights(twin, raw):
     return exp2_of_magnitude(-((shifted * twin.temper.q_value) >> twin.temper.q))
 
 
-def pick(weights, word):
-    """`Nn_quantized.draw`: the class a 24-bit uniform word lands, over the batch.
-
-    The total is the last running total and never a second sum of the same weights. THE PICK
-    ALWAYS LANDS: the peak weighs 2^15, thus the total is 2^15 or more, and the word falls
-    under 2^24, thus the threshold stands strictly under it. No fallback is written."""
-    running = np.cumsum(weights, axis=-1)
-    threshold = (np.asarray(word, np.int64) * running[..., -1]) >> prng.UNIFORM_BITS
-    return (running > threshold[..., None]).argmax(axis=-1)
-
-
 # ---------------------------------------------------------------------
 # the walk
 # ---------------------------------------------------------------------
-
-
-def engine_states(seeds):
-    """the generator of each walk: THE SEED AS IT STANDS, which is the board's SEED cell rule,
-    thus seed 0 is the walk that stands still as the circuit stands still on it.
-
-    `prng.states` folds instead, which is the float walk's rule: a seed inside 32 bits names
-    itself under both, and 0 is the one seed where the two walks are not one walk."""
-    return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
 class Draw(NamedTuple):
@@ -677,7 +543,7 @@ def gibbs(twin, states, given, *, walk, tally=None):
 
     It gives the sheets and the generator behind them, as `infer.gibbs` does, thus a
     caller can hold the two walks side by side. A walk of no passes is the opening."""
-    tally = counters() if tally is None else tally
+    tally = write_tally() if tally is None else tally
     classes = given
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         classes, states = taken.after, taken.states
@@ -712,7 +578,7 @@ def drift(coconet, states, given, *, walk, temperature=1.0):
     The quantization happens here, from the float model handed in, thus the pair under
     comparison cannot slip."""
     twin = QuantizedCoconet.of(coconet, temperature)
-    tally = counters()
+    tally = write_tally()
     cells = same_peak = same_draw = 0
     cosine = 0.0
     for taken in passes(twin, states, given, walk=walk, tally=tally):
