@@ -643,7 +643,7 @@ def test_a_sheet_walks_the_same_alone_or_in_a_batch():
 
 
 def test_the_tempered_pick_is_the_policy_pick():
-    """The rules of Policy.draw_class, held cell for cell: the peak always survives, a
+    """The rules of the tempered draw, held cell for cell: the peak always survives, a
     uniform of 0 lands on the first class that holds weight, and the top of the 24-bit
     grid lands on the LAST class that holds weight -- never past it."""
     raw = np.array([[0.0, -1.0, -10.0], [-10.0, 0.0, -1.0]])

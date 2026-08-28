@@ -767,6 +767,15 @@ not the other way around.
    the stream comparison, event for event. The ear elected the model
    already, thus what these steps owe is that they did not change it.
 
+   **SUPERSEDED 2026-08-29 by the all-era cut.** The OCaml float model and
+   the OCaml integer twin were both cut; the chain now runs above the seam
+   and has three links instead of four. `test_parity.py` holds the float
+   model to a pinned loss and the JAX quantizer to a pinned netlist md5,
+   `test_drift.py` holds the twin to the float model, and
+   `test_rtl_transformer.py` holds the circuit to the twin through
+   `gate_transformer.exe`. The numbers below stand as the reading of the
+   day they were measured.
+
    The walk comparison is not exact by construction — two float
    implementations differ in the last bits, and a draw parts from its
    twin when a uniform lands near a boundary of the cumulative sum. It

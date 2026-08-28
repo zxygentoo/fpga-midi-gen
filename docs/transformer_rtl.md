@@ -370,27 +370,42 @@ that measurement is owed when the circuit exists.
 
 ## The tests
 
-- `Quantized` against the float model: `Drift.walk` runs the float model
-  on the walk of the quantized engine and compares each draw of the
-  chain — the logits, and the pick on the same uniform. The integration
-  test pins the measured numbers of a fixed sweep of drawn weights, and a
-  QCheck property holds calibrated floors over drawn seed pairs; every
-  walk is longer than the window, thus the KV ring wraps. On a
-  checkpoint, the same walk is `check_transformer drift`.
-- **`Source` against `Quantized`: the gate of this document.** A short
-  walk must give the same frames, integer for integer, and the frames
-  then give the same events. The walk must cross the lead-in, because the
-  first drawn step is the one that reads a context of silence.
-- The units against exact oracles, each beside its own code: `Mac`
-  against a summed walk, `Divider` and `Isqrt` against the reference
+The all-era cut of 2026-08-29 moved the OCaml float model and the OCaml
+integer twin above the seam. The gates below are the same gates; where
+each RUNS is stated with it, and no gate has an oracle in the language it
+tests any more.
+
+- **The twin against the float model.** `test_drift.py` runs the float
+  model on the walk of the twin and compares each draw of the chain — the
+  logits, and the pick on the same uniform. It pins the measured numbers
+  of a fixed sweep of drawn weights and holds calibrated floors over drawn
+  seed pairs; every walk is longer than the window, thus the KV ring
+  wraps. The numbers were measured again when the sweep moved to JAX, and
+  the floors did not tighten.
+- **`Source` against the twin: the gate of this document.**
+  `test_rtl_transformer.py` states what the circuit must do and
+  `gate_transformer.exe walk` states what it did. A short walk must give
+  the same classes, and the walk must cross the lead-in, because the first
+  drawn step is the one that reads a context of silence. It runs at one
+  layer, at seed 0, at two layers and at four heads.
+- **The quantizer through the netlist.** `test_parity.py` quantizes the
+  golden checkpoint in JAX, elaborates this era's top through
+  `gate_transformer.exe verilog`, and holds the md5 of the Verilog against
+  its pin. One rounding or one exponent out of place moves a weight, and a
+  moved weight moves the netlist.
+- The units against exact oracles, each beside its own code in `lib/nn`:
+  `Mac` against a summed walk, `Divider` and `Isqrt` against the reference
   arithmetic, and `Exp2` against the table rule.
-- The schedule prints: the state table is data, and an expect test pins
-  it. The cycle bench pins the cost model against the measured circuit.
+- The machine against itself, beside the circuit: the state table is data
+  and an expect test pins it; the cycle bench pins the cost model against
+  the measured circuit; and the ring geometry prints the layer field the
+  packing rule gives it at one layer and at two.
 - The sequencer against `Core.Frame`: the eight cases of the decode, and
   the three properties over a stream of frames — no strike of a pitch
   that sounds, no release of a pitch that does not, and four notes at the
-  most.
-- The board: the amidi thru capture against the reference's events, as
+  most. `test/test_socket.ml` then holds the whole wire against the
+  frames the circuit answers.
+- The board: the amidi thru capture against the twin's events, as
   the pink era and era three both proved their streams.
 
 ## What it does not do

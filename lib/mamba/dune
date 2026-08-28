@@ -3,19 +3,7 @@
  ; The units and the shared rules come from mgen_nn, the common home of the sources
  ; since the unification round. Mgen_nn is not opened — its [Quantized] would shadow
  ; this library's own — thus everything is named through it.
- (libraries
-  base
-  core
-  stdio
-  hardcaml
-  hardcaml_waveterm
-  nx
-  nx.io
-  rune
-  kaun
-  mgen_core
-  mgen_nn
-  mgen_corpus)
+ (libraries base stdio hardcaml nx nx.io mgen_core mgen_nn mgen_corpus)
  (flags
   (:standard -open Mgen_core -open Mgen_corpus))
  (inline_tests

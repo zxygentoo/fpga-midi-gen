@@ -95,11 +95,10 @@ def main():
 # about one and a half classes standing at a draw, and it reads as dull and MORE silent --
 # silence 5.83 percent against 4.22, gaps 13.4 steps against 9.8, where the corpus gives
 # 4.19 and 9.9.
-# The OCaml side states these once, as Transformer.elected_temperature and
-# Transformer.elected_min_p; no constant crosses the language seam, thus they stand here
-# again and the two must move together.
-@click.option("--temperature", default=1.0)
-@click.option("--min-p", default=0.05)
+# `quantized.ELECTED_*` is the one home of these two numbers since the all-era cut took
+# the OCaml `Policy` away, thus the audition and the contract file temper alike.
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=quantized.ELECTED_MIN_P)
 @click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
 @click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
 @click.option("--device", default=midi.DEVICE)

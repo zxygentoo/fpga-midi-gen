@@ -56,9 +56,6 @@ module Params_data : sig
     ; w2 : 'a
     }
 
-  (** the tensors of one layer: six *)
-  val per_layer : int
-
   (** the flat order of the tensors — the order of the checkpoint, of the contract file
       and of the ROM; [of_list] reads the same order *)
   val to_list : 'a t -> 'a list
@@ -148,15 +145,22 @@ module For_test : sig
       step is read at this shape, and no gate elaborates it. *)
   val elected : shape
 
-  (** [drawn shape ~seed] is a model of drawn weights in [shape], quantized under the rule
-      of the era: the elaboration of a circuit takes one, thus a test reads no checkpoint
-      and no file that git ignores. The weights are not the weights the trainer draws from
-      the same number — only a trained checkpoint crosses that seam.
+  (** [drawn shape ~seed] is a model of drawn weights in [shape]: the elaboration of a
+      circuit takes one, thus a test reads no checkpoint and no file that git ignores. The
+      weights are not the weights the trainer draws from the same number — only a trained
+      checkpoint crosses that seam.
 
-      IT IS THE ONE PLACE THIS LIBRARY STILL QUANTIZES, and it does so through
-      [Mgen_nn.Quantized] and not through a quantizer of its own. The draw and the rule
-      are what every expect test of this library and of the socket simulation has
-      recorded, thus neither may move: a moved byte here would move every state table,
-      every cycle bench and every frame, and none of those movements would name its cause. *)
+      IT QUANTIZES NOTHING. A quantizer picks an exponent from a tensor's own peak, and
+      that is a rule of a CHECKPOINT: it lives above the seam with
+      [jax/transformer/quantized.py], which is the only thing that reads one. This draw
+      states ONE exponent for every tensor and rounds the normal at it, as era six's does,
+      thus the seat and phase tables share an exponent by construction and [check_shape]'s
+      rule about them costs nothing to keep. The temper and the min-p floor are stated the
+      same way, from [Mgen_nn.Quantized.Constants.temper_at_one] and the elected floor.
+
+      The draw and the rule are what every expect test of this library and of the socket
+      simulation has recorded, thus neither may move: a moved byte here would move every
+      state table, every cycle bench and every frame, and none of those movements would
+      name its cause. *)
   val drawn : shape -> seed:int -> t
 end

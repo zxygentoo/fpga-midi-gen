@@ -221,11 +221,11 @@ end
 (* The two programs of the source. It runs [forward] over the frame it is about to state,
    and then [chain] to draw the frame after it.
 
-   The chain runs from the soprano down and it stands FIRST in the step of the reference —
-   [Quantized.Engine.next_step] draws and then forwards. The circuit takes the two in the
-   other order for one reason: it answers [step] from a frame it drew already, thus the
-   forward of the stated frame and the chain of the next one both fall inside one step
-   period, and the wire never waits for the network.
+   The chain runs from the soprano down and it stands FIRST in the step of the twin —
+   [jax/transformer/quantized.py]'s [next_step] draws and then forwards. The circuit takes
+   the two in the other order for one reason: it answers [step] from a frame it drew
+   already, thus the forward of the stated frame and the chain of the next one both fall
+   inside one step period, and the wire never waits for the network.
 
    **[chain] is ONE seat and the machine runs it [Frame.voices] times**, counting the seat
    register down from the soprano. The four seats were inlined at first, which made the
@@ -1250,10 +1250,10 @@ let%expect_test "the program is data: the state table prints" =
     f0  (Embed(seats 0)(phase 3072)(e 10))
     f1  Rms_norm
     f2  (Matvec((src Y)(w((base(Fixed 3328))(e 10)))(outer_major false)(inner 16)(outer 16)(landing To_q)))
-    f3  (Matvec((src Y)(w((base(Fixed 3584))(e 11)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k true)(layer 0)))))
+    f3  (Matvec((src Y)(w((base(Fixed 3584))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k true)(layer 0)))))
     f4  (Matvec((src Y)(w((base(Fixed 3840))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(layer 0)))))
     f5  (Attend(layer 0))
-    f6  (Matvec((src Y)(w((base(Fixed 4096))(e 11)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
+    f6  (Matvec((src Y)(w((base(Fixed 4096))(e 10)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
     f7  Rms_norm
     f8  (Matvec((src Y)(w((base(Fixed 4352))(e 10)))(outer_major false)(inner 16)(outer 64)(landing To_hidden)))
     f9  (Matvec((src Hidden)(w((base(Fixed 5376))(e 10)))(outer_major false)(inner 64)(outer 16)(landing Add_to_h)))
@@ -1266,24 +1266,6 @@ let%expect_test "the program is data: the state table prints" =
     c6  (Accumulate(base(Seat_block 0))(e 10))
     baseline: 55 forward ops, 7 chain ops
     |}]
-;;
-
-(* the first step where the two walks part, if they part: a mismatch names the step to
-   read, and a walk of tens of steps hides that index inside two long lists *)
-let first_divergence circuit reference =
-  List.findi (List.zip_exn circuit reference) ~f:(fun (_ : int) (c, r) -> c <> r)
-  |> Option.map ~f:fst
-;;
-
-(* The frame comparison: the circuit against the reference, step for step, on drawn
-   weights. This is the gate that holds the circuit to [Quantized], and the walk crosses
-   the lead-in — the first drawn step is the one that reads a context of silence. *)
-(* THE ORACLE OF THIS BENCH IS STILL OCAML'S. [Quantized.Engine] draws the same walk from
-   the same drawn weights, thus the two models below are one model in two types; step 3
-   replaces the engine with the JAX twin through [bin/gate_transformer.exe], and this
-   bridge goes with it. *)
-let config_of ({ d; layers; heads; context; slope_span } : Model.For_test.shape) =
-  { Transformer.Config.d; layers; heads; context; slope_span }
 ;;
 
 module For_test = struct
@@ -1330,40 +1312,11 @@ module For_test = struct
   end
 end
 
-let frames_agree ~shape ~weights ~seed ~steps =
-  let model = Model.For_test.drawn shape ~seed:weights in
-  let engine = Quantized.Model.For_test.init (config_of shape) ~seed:weights in
-  let h = For_test.Bench.harness ~model ~seed () in
-  h.rewind ();
-  (* [List.init] applies its function in the reverse index order, thus it cannot collect
-     from a simulation; the fold steps in the true order *)
-  let circuit =
-    List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> h.play () :: acc))
-  in
-  let (_ : Quantized.Engine.t), reference =
-    List.fold_map
-      (List.range 0 steps)
-      ~init:(Quantized.Engine.init engine ~seed)
-      ~f:(fun engine (_ : int) ->
-        let engine, step = Quantized.Engine.next_step engine in
-        engine, step.Quantized.Engine.frame)
-  in
-  List.iteri circuit ~f:(fun index frame ->
-    if index < 2 || index >= Jsb.bar_steps - 1
-    then Stdio.printf "step %2d  %08x\n" index frame);
-  let divergence = first_divergence circuit reference in
-  Stdio.printf "%d steps, the frames agree: %b\n" steps (Option.is_none divergence);
-  Option.iter divergence ~f:(fun index ->
-    Stdio.printf "the first step that parts is %d\n" index;
-    Stdio.print_s ([%sexp_of: int list] circuit);
-    Stdio.print_s ([%sexp_of: int list] reference))
-;;
-
 (* The ring address of one shape, by the packing rule the note at [ring_row] states: the
-   layer stands above the slot and the dimension. The layer field is empty at one layer,
-   thus the gate below prints these widths — the shape of a gate decides which half of
-   [ring_row] the simulation ever elaborates, and that fact belongs in the gate. *)
+   layer stands above the slot and the dimension. The layer field is EMPTY at one layer,
+   thus the address a one-layer walk elaborates is not the address the board runs at six —
+   [jax/tests/test_rtl_transformer.py] walks the circuit at both, and this prints the two
+   packings beside each other so that the rule is readable and not only exercised. *)
 let ring_geometry (shape : Model.For_test.shape) =
   let rows = shape.layers * shape.context * shape.d in
   let dbits = Int.floor_log2 shape.d in
@@ -1379,87 +1332,14 @@ let ring_geometry (shape : Model.For_test.shape) =
     dbits
 ;;
 
-let%expect_test "the source agrees with the reference, frame for frame" =
-  let shape = Model.For_test.shape in
-  ring_geometry shape;
-  frames_agree ~shape ~weights:11 ~seed:42 ~steps:20;
+let%expect_test "the ring address carries a layer field only above one layer" =
+  ring_geometry Model.For_test.shape;
+  ring_geometry
+    { Model.For_test.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 };
   [%expect
     {|
     layers 1: 512 ring rows, ring_bits 9 = layer_bits 0 + slot_bits 4 + dbits 5
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b6cbcd00
-    step 18  b6cad0d0
-    step 19  a6d1adbd
-    20 steps, the frames agree: true
-    |}]
-;;
-
-(* The seed 0 on the circuit. It is the fixed point of xorshift32 and the panel can state
-   it — all the slide switches down is the rest position of the board — thus the walk
-   stands still: every threshold is 0 and each seat takes the first class that min-p left
-   standing. [Quantized] states that walk, and this holds the circuit to it, where a PRNG
-   that reset to another state or a threshold that rounded the other way would show.
-
-   The drawn weights of this model leave class 0 standing at every seat, thus the frame is
-   silence and the walk plays nothing after the lead-in. The board answers the same with
-   the trained model in flash, measured 2026-08-19: all the slide switches down is a
-   silent board. *)
-let%expect_test "the source agrees with the reference at the seed 0" =
-  frames_agree ~shape:Model.For_test.shape ~weights:11 ~seed:0 ~steps:20;
-  [%expect
-    {|
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  00000000
-    step 17  00000000
-    step 18  00000000
-    step 19  00000000
-    20 steps, the frames agree: true
-    |}]
-;;
-
-(* The same gate at two layers. It is not a wider shape for its own sake: at one layer the
-   layer field of the ring address is empty and the per-layer ROM bases all read the first
-   layer's, thus the [else] branch of [ring_row] and every address that carries a layer
-   are dead in a one-layer simulation and live only on the board, which runs six. This
-   gate elaborates them.
-
-   The shape is the shape of [test/test_quantized_drift.ml], thus the frame gate of the
-   circuit and the drift floors of the scheme stand on one model shape. The weights come
-   from another seed than the gate above, thus the two gates do not share a model. The
-   walk runs past the ring — sixteen slots — thus the second layer reads its own rows back
-   after the wrap and not only inside the lead-in.
-
-   The first drawn step reads the same frame as the gate above, and the two models are not
-   the same model: the walk seed is the same, thus the uniforms are the same, and weights
-   of scale 0.02 put the classes so near each other that a pick is almost the quantile of
-   its uniform alone. The steps after it part. Each gate compares a circuit against its
-   own reference in any case. *)
-let%expect_test "the source agrees with the reference at two layers" =
-  let shape =
-    { Model.For_test.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 }
-  in
-  ring_geometry shape;
-  frames_agree ~shape ~weights:23 ~seed:42 ~steps:24;
-  [%expect
-    {|
     layers 2: 512 ring rows, ring_bits 9 = layer_bits 1 + slot_bits 4 + dbits 4
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b5cbcd00
-    step 18  b6c9d0cf
-    step 19  a6d1adbc
-    step 20  c9a7b0ae
-    step 21  bfaeaab9
-    step 22  adc0cfa5
-    step 23  bac1b5b6
-    24 steps, the frames agree: true
     |}]
 ;;
 

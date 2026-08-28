@@ -11,10 +11,11 @@
    keeps it from having to.
 
    The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
-   states over the frames of [Quantized.Engine], byte for byte and in order, and a second
+   states over the frames the circuit answers, byte for byte and in order, and a second
    run from the same seed repeats the first. The two halves of the model path are proved
-   separately — [Source] gives the same frames as the engine, and this gives the same
-   messages as the frames — thus a failure here names the sequencer and not the network.
+   separately — [jax/tests/test_rtl_transformer.py] holds [Source] to the integer twin,
+   and this holds the messages to the frames — thus a failure here names the sequencer and
+   not the network.
 
    The seat holds the transmitter, thus the test reads the line and not a message wire: it
    decodes the waveform with the software receiver, at a baud divisor short enough that a

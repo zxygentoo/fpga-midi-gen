@@ -1633,9 +1633,10 @@ items, so the seams stay clean:
   local.
 - **The scheduling.** Draw the next sheet while this one plays; the lane
   count and N come from phase I's measurement.
-- **The gap and the fade**, as the software states them: `Player`'s
-  `velocity_at ~step` is the fade's one point of variation, and velocity
-  is a fact of the onset.
+- **The gap and the fade**, as the software states them: the `--gap` and
+  `--fade` of `jax/diffusion/infer.py` over `Midi.fading`'s rule, whose
+  share of the velocity at a step is the fade's one point of variation,
+  and velocity is a fact of the onset.
 - **The seed succession.** The rule that names the seed of sheet k is a
   contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.

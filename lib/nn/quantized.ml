@@ -15,7 +15,7 @@ module Constants = struct
 
   (* A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
      the value because the two are one fact — a multiply that takes the wrong shift is
-     silently wrong, and both the references and the circuits apply these scales. *)
+     silently wrong, and both the twins and the circuits apply these scales. *)
   type scale =
     { q_value : int
     ; q : int
@@ -30,6 +30,18 @@ module Constants = struct
     let q = 15 in
     { q_value = Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0) q); q }
   ;;
+
+  (* THE TEMPER AT TEMPERATURE 1: log2(e) at the temper's own Q, one below [log2e]'s.
+
+     The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
+     circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
+     would overflow that port under a temperature of about 0.36, and this Q holds down to
+     about 0.18. [jax/nn.py]'s [temper_of] states the rule for every temperature and
+     [jax/tests/test_quantized.py] pins this reading of it.
+
+     A model of a CONTRACT FILE reads its temper from the file. A DRAWN model has no
+     training run behind it, thus it states this one. *)
+  let temper_at_one = { q_value = 23637; q = log2e.q - 1 }
 
   (* the quantized exponential: exp2 of -j/256 in Q15 — one table serves the softmax and
      the sampler of era four and the decay of era five *)
@@ -70,7 +82,7 @@ module Constants = struct
   let sigmoid_bits = bits16 sigmoid_table
   let softplus_bits = bits16 softplus_table
 
-  (* The index rules, stated once for the references and the ROMs.
+  (* The index rules, stated once for the twins and the ROMs.
 
      [sigmoid_index] is the top eight bits of an int16 with the sign bit flipped, which is
      no arithmetic at all in a circuit. [softplus_index] is the magnitude shifted, and the
@@ -79,9 +91,9 @@ module Constants = struct
   let softplus_index v = Int.min 255 (Int.abs v asr 7)
 
   (* The two rules of the attention head. A raw score is a product of two Q[row_q] rows;
-     the shift brings it to Q[y_q] and applies the 1/sqrt(head_d) of the references in the
-     same move, thus the scale costs no multiply and [head_d] is a power of four. [row_q]
-     is the Q of the scored rows — both eras store their rings in Q12 and each names that
+     the shift brings it to Q[y_q] and applies the 1/sqrt(head_d) of the twins in the same
+     move, thus the scale costs no multiply and [head_d] is a power of four. [row_q] is
+     the Q of the scored rows — both eras store their rings in Q12 and each names that
      format itself.
 
      The ALiBi slope of head [head] is 2^-(this), thus the penalty of an age is a shift of
@@ -92,22 +104,6 @@ end
 
 module Tensor = struct
   type t = int array
-  type floats = float array
-
-  (* the index of the peak; the compare is strict, thus a tie keeps the first *)
-  let peak_index (values : floats) =
-    Array.foldi values ~init:0 ~f:(fun i best v ->
-      if Float.(v > values.(best)) then i else best)
-  ;;
-
-  let dot a b = Array.fold2_exn a b ~init:0.0 ~f:(fun acc x y -> Float.(acc + (x * y)))
-  let floats_of (q : t) = Array.map q ~f:Float.of_int
-  let same_peak (q : t) (f : floats) = peak_index (floats_of q) = peak_index f
-
-  let cosine (q : t) (f : floats) =
-    let q = floats_of q in
-    Float.(dot q f / sqrt (dot q q * dot f f))
-  ;;
 end
 
 (* ==================================================================== *)
@@ -122,18 +118,11 @@ end
 let int16_high = 32767
 let int16_low = -32768
 let clamp16 v = Int.clamp_exn v ~min:int16_low ~max:int16_high
-let clamps16 v = v > int16_high || v < int16_low
 
-(* the reductions of the engines: [sum n f] is the MAC — the sum of [f i] over
-   [0 .. n - 1] — and [max_over n f] is the peak scan *)
+(* the MAC as a reduction: the sum of [f i] over [0 .. n - 1] *)
 let sum n f =
   let rec go acc i = if i = n then acc else go (acc + f i) (i + 1) in
   go 0 0
-;;
-
-let max_over n f =
-  let rec go acc i = if i = n then acc else go (Int.max acc (f i)) (i + 1) in
-  go Int.min_value 0
 ;;
 
 (* floor of the square root; any correct algorithm gives the one answer the circuits must
@@ -210,28 +199,6 @@ type quantized =
   ; e : int
   }
 
-let max_abs (floats : Tensor.floats) =
-  Array.fold floats ~init:0.0 ~f:(fun acc v -> Float.max acc (Float.abs v))
-;;
-
-(* the largest exponent that keeps round(max|w| * 2^e) at 127 or less; 14 caps the
-   all-zero tensor *)
-let max_exponent v =
-  let fits e = Float.iround_nearest_exn (Float.ldexp v e) <= 127 in
-  (* [fits] falls monotonically in [e], thus the first [e] that fits is the largest *)
-  let rec largest e = if fits e then e else largest (e - 1) in
-  if Float.(v <= 0.0) then 14 else largest 14
-;;
-
-(* [e] overrides the exponent of the tensor's own peak — tensors whose rows add share one *)
-let quantize ?e (floats : Tensor.floats) =
-  let e = Option.value e ~default:(max_exponent (max_abs floats)) in
-  let clamp ft =
-    Int.clamp_exn (Float.iround_nearest_exn (Float.ldexp ft e)) ~min:(-127) ~max:127
-  in
-  { q = Array.map floats ~f:clamp; e }
-;;
-
 let rom_bits tensors =
   Array.concat_map (Array.of_list tensors) ~f:(fun { q; e = (_ : int) } ->
     Array.map q ~f:(fun v -> Hardcaml.Bits.of_unsigned_int ~width:8 (v land 255)))
@@ -241,21 +208,6 @@ let rom_bits tensors =
    banks are the others *)
 let bases_of sizes =
   Array.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base)
-;;
-
-(* The policy in the integer forms of the machines; the rules of the float sampler. The
-   temper is log2(e) / T, and its Q is one below the Q of [Constants.log2e]. The extra bit
-   is headroom for the temperature: the circuits multiply by this constant on an 18-bit
-   signed port, thus the Q of [log2e] would overflow that port under a temperature of
-   about 0.36, and this Q holds down to about 0.18. *)
-let policy ~temperature ~min_p =
-  Policy.check_policy ~temperature ~min_p;
-  let q = Constants.log2e.q - 1 in
-  ( { Constants.q_value =
-        Float.iround_nearest_exn (Float.ldexp (1.0 /. Float.log 2.0 /. temperature) q)
-    ; q
-    }
-  , Float.iround_nearest_exn (min_p *. 32768.0) )
 ;;
 
 (* ==================================================================== *)
@@ -295,34 +247,6 @@ let draw ~weights prng =
 (* These rules decide every byte the boards hold. The frame gates of the eras read them
    only through walks of tens of thousands of cycles, thus a break there says "the frames
    disagree" and says nothing about which rule broke. *)
-let%expect_test "the exponent of a tensor, and the clamp of the byte" =
-  (* the largest e that keeps the peak at 127 or less. 14 caps the all-zero tensor, where
-     every exponent fits, and 127.5 is the rounding boundary: it rounds to 128 and the
-     exponent has to step down. *)
-  List.iter [ 0.0; 0.02; 0.08; 127.0; 127.49; 127.5; 1e9 ] ~f:(fun v ->
-    Stdio.printf "%-6g -> %d\n" v (max_exponent v));
-  (* The byte is two's complement and the negative end is not used: the clamp is -127 and
-     not -128, thus the image is symmetric and a negated weight is a negated byte. A tie
-     rounds up and never away from zero, thus -5.5 is -5. *)
-  let { q; e } = quantize ~e:0 [| 200.0; -200.0; 5.4; -5.5; 0.0 |] in
-  Stdio.printf "at e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
-  (* with no exponent given, the tensor's own peak states it *)
-  let { q; e } = quantize [| 0.02; -0.01; 0.0 |] in
-  Stdio.printf "at its own e %d: %s\n" e (Sexp.to_string ([%sexp_of: int array] q));
-  [%expect
-    {|
-    0      -> 14
-    0.02   -> 12
-    0.08   -> 10
-    127    -> 0
-    127.49 -> 0
-    127.5  -> -1
-    1e+09  -> -23
-    at e 0: (127 -127 5 -5 0)
-    at its own e 12: (82 -41 0)
-    |}]
-;;
-
 let%expect_test "the clamp saturates at both rails, at a narrow width and at a wide one" =
   (* THE 48-BIT CASE IS THE ONE THIS FORM EXISTS FOR. Era six's epilogue clamps a gain
      product 48 bits wide; a clamp that resized to 32 before the compare would wrap 2^47
@@ -429,7 +353,7 @@ let%expect_test "the sigmoid table: the ends, the middle and the symmetry" =
 ;;
 
 let%expect_test "the softplus is the ramp and its correction" =
-  (* against the float function the references state: relu(v) + ln(1+exp(-|v|)) *)
+  (* against the float function it stands for: relu(v) + ln(1+exp(-|v|)) *)
   let wider (worst, at) v =
     let float_v = Float.of_int v /. 4096.0 in
     let want =

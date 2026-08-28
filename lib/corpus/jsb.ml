@@ -20,8 +20,8 @@ type stream =
 let bar_steps = 16
 
 (* the bars of the memory window: the rows of the frame table of the model. It pairs with
-   [Transformer.progress_buckets] the way [bar_steps] pairs with the bar-phase table, and
-   the two counts must agree. *)
+   the progress buckets of each era's frame table the way [bar_steps] pairs with the
+   bar-phase table, and the two counts must agree. *)
 let frame_bars = 16
 
 (* the period of the rolling coordinate: the phase is the low four bits and the frame is

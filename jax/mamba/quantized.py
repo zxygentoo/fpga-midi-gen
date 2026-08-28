@@ -128,7 +128,8 @@ DECAY_HIGH = (1 << 24) - 1
 DT_BIAS_BOUND = 32767
 D_SKIP_BOUND = 131071
 
-# the policy the ear elected, `Mgen_nn.Policy`: the draw the bitstream commits to
+# the policy the ear elected on 2026-08-18: the draw the bitstream commits to. Since
+# the all-era cut took the OCaml `Policy` away, these two are the only home of it.
 ELECTED_TEMPERATURE = 1.0
 ELECTED_MIN_P = 0.05
 # The depth of the ring at INFERENCE, which is a choice of the player and not a fact of

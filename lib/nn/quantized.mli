@@ -1,15 +1,17 @@
-(** The integer rules both eras share: the fixed-point formats, the tables, the scalar
-    rules of the engines, the quantization of a checkpoint and the integer draw.
+(** The integer rules the eras share: the fixed-point formats, the tables, the scalar
+    rules of the arithmetic, the ROM image of a model and the integer draw.
 
-    Each era's [Quantized] module is the integer twin of its float model and the reference
-    its circuit must equal operation for operation. What stands HERE is the part of that
-    arithmetic that is one thing across the eras: a rule written here is read by two
-    references and two circuits, thus a change of it changes all four at one time — which
-    is the point. The era modules keep what is theirs alone: the parameter structures, the
-    state formats of the recurrence, and the engines themselves. *)
+    THE INTEGER TWINS LIVE ABOVE THE SEAM, in [jax/nn.py] and each era's
+    [jax/<era>/quantized.py], and they are what the circuits must equal operation for
+    operation. NOTHING HERE QUANTIZES: what stands here is the half of that arithmetic the
+    CIRCUITS read — the formats, the tables and the scalar oracles that [Rtl] and each
+    era's [Source] elaborate and that the unit gates hold their circuits against, the ROM
+    image of a model that is already int8, and the integer draw. A rule written here is
+    read by three circuits, thus a change of it changes all three at one time, and
+    [jax/nn.py] states the same rule for the twins with a gate on each shared table. *)
 
 (** The shared fixed-point formats, the tables and the constants that cross between the
-    references and the circuits. A Q number holds [value * 2^-q]. *)
+    twins and the circuits. A Q number holds [value * 2^-q]. *)
 module Constants : sig
   (** the residual stream: Q16 in int32 *)
   val h_q : int
@@ -25,7 +27,7 @@ module Constants : sig
 
   (** A fixed-point multiplier: the value stands for [q_value * 2^-q]. The Q travels with
       the value because the two are one fact — a multiply that takes the wrong shift is
-      silently wrong, and both the references and the circuits apply these scales. *)
+      silently wrong, and both the twins and the circuits apply these scales. *)
   type scale =
     { q_value : int
     ; q : int
@@ -37,6 +39,17 @@ module Constants : sig
 
   (** log2(e): the exp2 form of an exponential *)
   val log2e : scale
+
+  (** the temper at temperature 1: log2(e) at the temper's own Q, one below [log2e]'s.
+
+      The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
+      circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
+      would overflow that port under a temperature of about 0.36, and this Q holds down to
+      about 0.18. [jax/nn.py]'s [temper_of] states the rule for every temperature.
+
+      A model of a CONTRACT FILE reads its own temper from the file. A DRAWN model has no
+      training run behind it, thus it states this one. *)
+  val temper_at_one : scale
 
   (** exp2 of -j/256 in Q15: one table serves the softmax and the sampler of era four and
       the decay of era five *)
@@ -65,8 +78,8 @@ module Constants : sig
   val softplus_index : int -> int
 
   (** [score_shift ~row_q ~head_d] carries a score walk's sum from Q(2 [row_q]) to Q[y_q]
-      and applies the 1/sqrt([head_d]) of the references in the same shift, thus [head_d]
-      is a power of four. [row_q] is the Q of the scored rows; each era names its own ring
+      and applies the 1/sqrt([head_d]) of the twins in the same shift, thus [head_d] is a
+      power of four. [row_q] is the Q of the scored rows; each era names its own ring
       format and passes it here. *)
   val score_shift : row_q:int -> head_d:int -> int
 
@@ -75,18 +88,12 @@ module Constants : sig
   val slope_exponent : span:int -> heads:int -> head:int -> int
 end
 
-(** A vector of an integer model, and the two measures that compare one against the float
-    vector of the same place. *)
+(** A vector of a model as this side reads it: the integers a quantizer above the seam
+    already stated. The float form and every measure that compares the two — the
+    quantization itself, the top-1 agreement, the cosine of the drift reports — stand with
+    the twins, in [jax/nn.py] and [jax/<era>/quantized.py]. *)
 module Tensor : sig
   type t = int array
-  type floats = float array
-
-  (** [same_peak q f] is true when the two vectors elect the same index — the top-1
-      agreement of the drift reports. A tie keeps the first index on both sides. *)
-  val same_peak : t -> floats -> bool
-
-  (** [cosine q f] is the cosine between the two vectors. *)
-  val cosine : t -> floats -> float
 end
 
 (** the rails of int16: a value that passes them saturates and never wraps. The scalar
@@ -98,11 +105,9 @@ val int16_high : int
 
 val int16_low : int
 
-(** [clamp16 v] clamps to int16; [clamps16 v] is true where it would clamp — the detector
-    of the clamp counters. *)
+(** [clamp16 v] clamps to int16 and never wraps. The detector that COUNTS a clamp lives
+    above the seam with the twins that tally them. *)
 val clamp16 : int -> int
-
-val clamps16 : int -> bool
 
 (** The rules of this module as circuits, where a circuit needs the same rule.
 
@@ -123,11 +128,8 @@ module Rtl : sig
   val clamp16 : Hardcaml.Signal.t -> Hardcaml.Signal.t
 end
 
-(** the reductions of the engines: [sum n f] is the MAC — the sum of [f i] over
-    [0 .. n - 1] — and [max_over n f] is the peak scan *)
+(** the MAC as a reduction: the sum of [f i] over [0 .. n - 1] *)
 val sum : int -> (int -> int) -> int
-
-val max_over : int -> (int -> int) -> int
 
 (** floor of the square root: the one answer the [Isqrt] unit must also give *)
 val isqrt : int -> int
@@ -160,17 +162,6 @@ type quantized =
   ; e : int
   }
 
-(** [quantize ?e floats] is the int8 form under the rule of the eras: the largest exponent
-    that keeps the rounded peak at 127 or less, or [e] where tensors share one because
-    their rows add. *)
-val quantize : ?e:int -> Tensor.floats -> quantized
-
-(** [max_abs floats] and [max_exponent v]: the two steps of the exponent rule, exposed
-    because a caller that shares an exponent across tensors takes the max over both. *)
-val max_abs : Tensor.floats -> float
-
-val max_exponent : float -> int
-
 (** [rom_bits tensors] is the ROM image of a circuit: every tensor in the checkpoint
     order, one byte for each weight, two's complement. *)
 val rom_bits : quantized list -> Hardcaml.Bits.t array
@@ -180,15 +171,9 @@ val rom_bits : quantized list -> Hardcaml.Bits.t array
     of it and the elaborations' banks are the others, thus the rule stands in one place. *)
 val bases_of : int array -> int array
 
-(** [policy ~temperature ~min_p] is the sampling policy in the integer forms of the
-    machines: the temper — log2(e) / T, its Q one below [Constants.log2e]'s for headroom
-    on an 18-bit port — and the min-p share of the peak weight 2^15. It checks the bounds
-    through [Policy.check_policy]. *)
-val policy : temperature:float -> min_p:float -> Constants.scale * int
-
 (** [draw ~weights prng] is the integer pick of the engines: a 24-bit uniform from three
     bytes of the generator, a threshold of [u * total] over 2^24, and the class whose
     running total passes it. The threshold is below the total, thus the walk always lands
-    on a class that holds weight. It gives the uniform back as a float, thus a drift
-    report hands the very same number to [Policy.draw_class]. *)
+    on a class that holds weight. It gives the uniform back as a float, thus a caller can
+    hand the very same number to a float draw. *)
 val draw : weights:Tensor.t -> Prng.state -> Prng.state * float * int

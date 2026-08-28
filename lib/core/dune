@@ -1,10 +1,5 @@
 (library
  (name mgen_core)
- ; The last reader of both left the build with the model of the token: [Token] is the
- ; vocabulary of the sentence, which [Vocab] takes over for the frame, and
- ; [Sounding_state] held the legality mask, which no frame needs. They stay in the tree
- ; until the circuit of era four takes the seat of the one that still reads them.
- (modules :standard \ token sounding_state)
  (libraries base core core_unix stdio hardcaml hardcaml_waveterm)
  (inline_tests
   (flags

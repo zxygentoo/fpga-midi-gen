@@ -163,8 +163,6 @@ type layer =
   | Attention of attention
   | Feed_forward of feed_forward
 
-val kind_of_layer : layer -> Kind.t
-
 (** the whole model the bitstream carries *)
 type t =
   { d : int (** the width of the residual stream *)
@@ -276,17 +274,22 @@ module For_test : sig
       is read at this shape, and no gate elaborates it. *)
   val elected : shape
 
-  (** [drawn shape ~seed] is a model of drawn weights in [shape], quantized under the rule
-      of the era: the elaboration of a circuit takes one, thus a test reads no checkpoint
-      and no file that git ignores. The weights are not the weights the trainer draws from
-      the same number — only a trained checkpoint crosses that seam.
+  (** [drawn shape ~seed] is a model of drawn weights in [shape]: the elaboration of a
+      circuit takes one, thus a test reads no checkpoint and no file that git ignores. The
+      weights are not the weights the trainer draws from the same number — only a trained
+      checkpoint crosses that seam.
 
-      IT IS THE ONE PLACE THIS LIBRARY STILL QUANTIZES, and it does so through
-      [Mgen_nn.Quantized] and two rules of its own — the decay's scale and the Q12 port
-      clamp — which the quantizer above the seam states for every checkpoint and which the
-      netlist gate of the era holds it to. The draw is what every expect test of this
-      library has recorded, thus it may not move: a moved byte here would move every state
-      table, every cycle bench and every frame, and none of those movements would name its
-      cause. *)
+      IT QUANTIZES NOTHING. A quantizer picks an exponent from a tensor's own peak, and
+      that is a rule of a CHECKPOINT: it lives above the seam with
+      [jax/mamba/quantized.py], which is the only thing that reads one. This draw states
+      ONE exponent for every tensor and rounds the normal at it, as era six's does, and
+      the per-head numbers draw straight into the forms the circuit reads — the decay's
+      [a * log2(e)] in Q12, the step through its inverse softplus, the skip at one — with
+      no float32 round trip between, because a test model has no safetensors file to
+      survive. The temper and the min-p floor are stated the same way.
+
+      The draw is what every expect test of this library has recorded, thus it may not
+      move: a moved byte here would move every state table, every cycle bench and every
+      frame, and none of those movements would name its cause. *)
   val drawn : shape -> seed:int -> t
 end

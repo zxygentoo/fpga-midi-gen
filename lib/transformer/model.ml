@@ -203,11 +203,36 @@ module For_test = struct
      it: the cost model of a real step is read at this shape and at no other *)
   let elected = { d = 64; layers = 6; heads = 4; context = 256; slope_span = 4 }
 
-  (* THE DRAW IS THE DRAW OF THE ERA and it quantizes here, where every other model of the
-     era is quantized above the seam. It is a TEST model and not a checkpoint: the walk it
-     makes is the one every expect test of this library and of the socket simulation has
-     recorded, thus the draw may not move. The rule of the two tables is the quantizer's —
-     they share one exponent because their rows add. *)
+  (* THE DRAWN MODEL STATES ITS EXPONENT AND QUANTIZES NOTHING, as era six's does.
+
+     A quantizer picks an exponent from a tensor's own peak; that is a rule of a
+     CHECKPOINT, and it lives above the seam with the quantizer that reads one. A drawn
+     model has no checkpoint behind it and needs no such rule: one stated exponent covers
+     every tensor, and the seat and phase tables then share it, which is what
+     [check_shape] holds.
+
+     THE STATED 10 IS THE EXPONENT THE OLD RULE GAVE, and the clamp stays rare under it. A
+     normal at scale 0.02 has a byte spread of 0.02 * 2^10, which is 20.5, thus 127 stands
+     6.2 sigma out and a clamp is one draw in two thousand million. The peak of a real
+     tensor of these shapes is about four sigma — 76 for a square matrix, 86 for the seat
+     tables — thus every draw fits the byte with room, as it did when each tensor chose
+     its own exponent from its own peak. A stated exponent one step higher would saturate
+     an eighth of every tensor and give the walk another character for nothing this
+     library gates.
+
+     It is a TEST model: the walk it makes is what the cycle benches and the socket
+     simulation record, thus the seeds and the scale may not move. *)
+  let drawn_exponent = 10
+  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
+
+  let tensor values =
+    { q =
+        Array.map values ~f:(fun v ->
+          clamp_byte (Float.iround_nearest_exn (Float.ldexp v drawn_exponent)))
+    ; e = drawn_exponent
+    }
+  ;;
+
   let drawn { d; layers; heads; context; slope_span } ~seed =
     let (_ : Prng.state), tensors =
       Prng.run
@@ -218,35 +243,29 @@ module For_test = struct
     let { Params_data.seats; phase; layers = drawn_layers } =
       Params_data.of_list ~layers tensors
     in
-    let e =
-      Nn_quantized.max_exponent
-        (Float.max (Nn_quantized.max_abs seats) (Nn_quantized.max_abs phase))
-    in
-    let temper, min_weight =
-      Nn_quantized.policy
-        ~temperature:Mgen_nn.Policy.elected_temperature
-        ~min_p:Mgen_nn.Policy.elected_min_p
-    in
     { d
     ; heads
     ; context
     ; slope_span
-    ; temper
-    ; min_weight
+      (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the floor
+         is the elected min-p 0.05 as a share of the peak weight 2^15, which is
+         [jax/nn.py]'s [min_weight_of] and what [test_quantized.py] pins. The elected
+         numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
+         [ELECTED_MIN_P] of [jax/transformer/quantized.py]. *)
+    ; temper = Constants.temper_at_one
+    ; min_weight = 1638
     ; params =
-        { Params_data.seats = Nn_quantized.quantize ~e seats
-        ; phase = Nn_quantized.quantize ~e phase
+        { Params_data.seats = tensor seats
+        ; phase = tensor phase
         ; layers =
-            Array.map
-              drawn_layers
-              ~f:(fun (l : Nn_quantized.Tensor.floats Params_data.layer) ->
-                { Params_data.wq = Nn_quantized.quantize l.wq
-                ; wk = Nn_quantized.quantize l.wk
-                ; wv = Nn_quantized.quantize l.wv
-                ; wo = Nn_quantized.quantize l.wo
-                ; w1 = Nn_quantized.quantize l.w1
-                ; w2 = Nn_quantized.quantize l.w2
-                })
+            Array.map drawn_layers ~f:(fun l ->
+              { Params_data.wq = tensor l.wq
+              ; wk = tensor l.wk
+              ; wv = tensor l.wv
+              ; wo = tensor l.wo
+              ; w1 = tensor l.w1
+              ; w2 = tensor l.w2
+              })
         }
     }
   ;;

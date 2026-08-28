@@ -107,8 +107,9 @@ def seat_loss(nll):
 # ==================================================================== #
 
 # The shape of the canonical reading, as `check_transformer loss` printed it on
-# 2026-08-28. The file states the width and the layer count; the heads, the context and
-# the slope span are the draw of the era, thus G0 must carry them after the tool dies.
+# 2026-08-28, the day before the all-era cut deleted that tool. The file states the width
+# and the layer count; the heads, the context and the slope span are the draw of the era,
+# thus G0 carries them here and nothing else states them any more.
 TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
 
 # The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
@@ -176,10 +177,11 @@ MAMBA_CHECKPOINT = (
     ROOT / "_train" / "mamba" / "d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
 )
 
-# The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28. Only
-# two numbers stand here: every width, the plan and the span come out of the file, and the
-# context is a choice of the REFEREE -- a window of the recurrence opens on a zero state
-# and the model has no context length at all.
+# The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28, the
+# day before the all-era cut deleted that tool. Only two numbers stand here: every width,
+# the plan and the span come out of the file, and the context is a choice of the REFEREE --
+# a window of the recurrence opens on a zero state and the model has no context length at
+# all.
 MAMBA_SHAPE = {"windows": 75, "context": 256}
 
 # The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the

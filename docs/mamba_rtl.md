@@ -23,7 +23,7 @@ The modules of the era:
 | `Mamba` (`lib/mamba/mamba.ml`) | the float reference: the plan, the block, the head, the loss, the sampler |
 | `Mamba.Quantized` (`lib/mamba/quantized.ml`) | the quantization of the checkpoint, and the integer twin: the recurrence, the chain and the sampler |
 | `Mamba.Source` (`lib/mamba/source.ml`) | the same integers as a circuit: the schedule, the datapath and the socket machine |
-| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — the shared integer rules, the sampling policy and the checkpoint seam |
+| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/nn.py` |
 
 **The units live in `lib/nn`, and the unification round put them there.**
 The prototype imported era four's units as they stood and copied the two
@@ -401,10 +401,10 @@ and the shared RAM in one cycle.
 of this document is the one that says why: the state must not coarsen
 because a state error carries forward, and a RING error dies with its
 window. Era four shipped six such rings. The block RAM is there to widen
-this one, and `test/test_mamba_drift.ml` records what widening it would
-buy — on a trained checkpoint the whole model reads 92.7 percent top-1
-against the float twin at a cosine of 0.984, which is BETTER than the
-trunk alone read at 88.7 and 0.982.
+this one, and the drift sweep of `jax/tests/test_drift.py` records what
+widening it would buy — on a trained checkpoint the whole model reads
+92.7 percent top-1 against the float twin at a cosine of 0.984, which is
+BETTER than the trunk alone read at 88.7 and 0.982.
 
 **The three addresses that carry a region take two different rules**, and
 the reason is which fields are powers of two:
@@ -519,35 +519,42 @@ different design. Read a slack difference of this size as noise.
 The gates of era four, inherited with the lessons of its test review
 already applied. **A gate of equivalence must pass; a number of quality
 is recorded and gates nothing** — the prototype accepts the music it
-gets, and only a broken link stops the chain:
+gets, and only a broken link stops the chain.
+
+The all-era cut of 2026-08-29 moved the OCaml float model and the OCaml
+integer twin above the seam. The gates below are the same gates; where
+each RUNS is stated with it, and no gate has an oracle in the language it
+tests any more:
 
 - **The units.** `Sigmoid` and `Softplus` against the reference tables,
   **exhaustively** — 256 entries under the input rules is a few thousand
   readings, the `Exp2` precedent. Waveform tests where the two-cycle
   hold is the contract. Every unit keeps its own gates beside it, in
   `mgen_nn` since the unification round.
-- **The twin against the float model.** `Drift.walk`, teacher-forced on
-  the twin's own walk, with the fixed sweep and the QCheck floors — and
-  **long walks**: the state carries error forward, thus a walk of a few
-  windows' length proves less than it proved in era four. The report
+- **The twin against the float model.** `test_drift.py`, teacher-forced
+  on the twin's own walk, with the fixed sweep and the property floors —
+  and **long walks**: the state carries error forward, thus a walk of a
+  few windows' length proves less than it proved in era four. The report
   adds the clamped-`dt` share. The floors calibrate on this model's own
   first measured minima, as era four's calibrated on theirs: measure,
   set the floors far under the minima, and pin both in the test. A low
   measured level is a finding of the era, not a failure of the gate.
-- **The circuit against the twin.** `frames_agree`, from the first
-  version: at one block **and at two blocks with two heads** — the region
-  field of the state address, of the tap address and of the ring address
-  is EMPTY at one of a kind, thus a gate that ran one of each would
-  elaborate none of them and the board runs six blocks. The era-four
-  review found that gap late. At seed 0, and across the lead-in.
+- **The circuit against the twin.** `test_rtl_mamba.py` states what the
+  circuit must do and `gate_mamba.exe walk` states what it did: at one
+  block **and at two blocks with two heads** — the region field of the
+  state address, of the tap address and of the ring address is EMPTY at
+  one of a kind, thus a gate that ran one of each would elaborate none of
+  them and the board runs six blocks. The era-four review found that gap
+  late. At seed 0, and across the lead-in.
 - **The circuit against the twin, WRITE FOR WRITE.** The frame gate above
   is blunt at the shape a test can afford, and this era learned how blunt:
   weights of scale 0.02 put the classes so near each other that a pick is
   almost the quantile of its uniform alone, thus a datapath can be wrong
   by tens of percent and still draw the same frames for a dozen steps.
-  `streams_agree` walks the circuit's h RAM instead — the embed and each
-  layer's join write the whole stream, in that order — and holds every
-  element of it against the reference's own per-layer streams.
+  `gate_mamba.exe stream` walks the circuit's h RAM instead — the embed
+  and each layer's join write the whole stream, in that order — and
+  `test_rtl_mamba.py` holds every element of it against the twin's own
+  per-layer streams.
 
   **Four faults were found through it and none of them moved a frame at
   first**: a weight addressed by a concatenation whose stride was not the
@@ -568,13 +575,17 @@ gets, and only a broken link stops the chain:
 - **The schedule prints; the cycle bench pins the cost model.** The
   schedule test also prints the cycles of a drawn step at the ELECTED
   shape, which no simulation can afford, thus the cost in this document
-  and the cost model cannot part.
-- **The identical-walk gate** between `jax/mamba/infer.py` and
-  `lib/mamba/mamba.ml`, from one seed through the shared xorshift32, as
-  era four proved its samplers.
+  and the cost model cannot part. The memory geometry prints beside them:
+  the three memories that carry a layer field, at the four plans the RTL
+  gates walk.
+- **The quantizer through the netlist.** `test_parity.py` quantizes the
+  elected checkpoint in JAX, elaborates this era's top through
+  `gate_mamba.exe verilog`, and holds the md5 of the Verilog against its
+  pin. The per-head `decay` reads the libm's exponential, thus one ulp
+  there would move a ROM byte and this gate is what would say so.
 - The sequencer and the decode have their gates already; nothing on
   that side moves.
-- **The board.** The amidi thru capture against the reference's events,
+- **The board.** The amidi thru capture against the twin's events,
   as every era has proved its stream — **the one gate that waits for a
   person and the hardware**; everything above it runs without either.
 

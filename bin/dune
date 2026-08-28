@@ -13,13 +13,6 @@
  (libraries core core_unix core_unix.command_unix mgen_core mgen_pink))
 
 (executable
- (name play_transformer)
- (modules play_transformer)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_transformer))
-
-(executable
  (name corpus_tool)
  (modules corpus_tool)
  (preprocess
@@ -32,32 +25,6 @@
   nx.io
   mgen_core
   mgen_corpus))
-
-(executable
- (name check_transformer)
- (modules check_transformer)
- (preprocess
-  (pps ppx_let))
- (libraries
-  core
-  core_unix
-  core_unix.command_unix
-  mgen_corpus
-  mgen_transformer))
-
-(executable
- (name play_mamba)
- (modules play_mamba)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_mamba))
-
-(executable
- (name check_mamba)
- (modules check_mamba)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_corpus mgen_mamba))
 
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is

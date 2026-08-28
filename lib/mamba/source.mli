@@ -41,7 +41,7 @@
       bench pins the model to the circuit. The trunk's cost is a constant of the shape — a
       recurrence holds a state of one size for ever — and the head's grows with the fill
       of its ring until that ring is full, thus a step is constant after the first
-      [Mamba.elected_ring] of them.
+      [Model.ring] of them.
     - There is one reset, and it is [rewind]: it loads the PRNG and returns the walk to
       its origin. It runs no pass, thus [idle] never falls for it. No memory is cleared
       and none needs to be: at step 0 the state reads as zero through one mux, a tap reads

@@ -17,8 +17,8 @@ packing are the corpus library's rule and they stay on the OCaml side; the drive
 the frame it answered through `Vocab.classes_of_frame`, thus this side holds no format of
 its own. `lib/corpus/vocab.ml` gates that decode against its own inverse.
 
-The shapes are the ones the expect tests of `source.ml` ran, because each was put there by
-a fault: one layer, where the ring's layer field is EMPTY and an address that strides by it
+The shapes are the ones the frame benches of `source.ml` ran until the all-era cut moved
+the gate here, and each was put there by a fault: one layer, where the ring's layer field is EMPTY and an address that strides by it
 would still pass; seed 0, the fixed point of the generator, where every uniform is 0 and
 each seat takes the first class the min-p floor left standing; and two layers, where the
 layer field appears and a ring that ignored it would read another layer's keys.
@@ -80,6 +80,11 @@ def contract(tmp_path, **shape):
     [
         # the shape a test can afford, at a live seed and at the standing one
         (42, 1, 2, 8),
+        # seed 0 is the fixed point of xorshift32 and the panel can state it -- all the
+        # slide switches down is the rest position of the board. The drawn weights leave
+        # class 0 standing at every seat, thus the walk plays nothing after the lead-in,
+        # and the BOARD answers the same with the trained model in flash (measured
+        # 2026-08-19): all the switches down is a silent board.
         (0, 1, 2, 8),
         # two layers: the ring's layer field appears, and a ring that ignored it would
         # read another layer's keys

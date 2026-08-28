@@ -518,17 +518,41 @@ module For_test = struct
     }
   ;;
 
-  (* [a * log2(e)] as the constant the Decay op carries: the run time multiplies [dt] by
-     it and the exp2 unit reads the product. The quantizer above the seam states the same
-     rule, and the netlist gate of the era is what holds the two together — one ulp of
-     [exp] moves a [q_value] by one, which moves a ROM byte. *)
-  let decay_scale ~a =
-    { Constants.q_value =
-        Int.clamp_exn
-          (Float.iround_nearest_exn (Float.ldexp (a /. Float.log 2.0) Constants.decay_q))
-          ~min:0
-          ~max:((1 lsl 24) - 1)
-    ; q = Constants.decay_q
+  (* THE DRAWN MODEL STATES ITS EXPONENT AND QUANTIZES NOTHING, as era six's does.
+
+     A quantizer picks an exponent from a tensor's own peak; that is a rule of a
+     CHECKPOINT, and it lives above the seam with the quantizer that reads one. A drawn
+     model has no checkpoint behind it and needs no such rule: one stated exponent covers
+     every tensor, and the seat and phase tables then share it, which is what
+     [check_shape] holds.
+
+     THE STATED 10 IS THE EXPONENT THE OLD RULE GAVE, and the clamp stays rare under it. A
+     normal at scale 0.02 has a byte spread of 0.02 * 2^10, which is 20.5, thus 127 stands
+     6.2 sigma out and a clamp is one draw in two thousand million. The peak of a real
+     tensor of these shapes is about four sigma — 76 for a square matrix, 86 for the seat
+     tables — thus every draw fits the byte with room, as it did when each tensor chose
+     its own exponent from its own peak. A stated exponent one step higher would saturate
+     an eighth of every tensor and give the walk another character for nothing this
+     library gates.
+
+     The per-head numbers draw STRAIGHT INTO THE FORMS the circuit reads, and no float32
+     round trip stands between: a test model is not a checkpoint, thus nothing here has to
+     survive a safetensors file. The decay rate is uniform in [1, 16] and lands as
+     [a * log2(e)] in Q12, which is the constant the Decay op carries; the step is uniform
+     in [0.001, 0.1] through its inverse softplus, as [jax/mamba/train.py] draws it; and
+     the skip opens at one, which is 4096 in Q12. A drift report over weights that put
+     every decay near one would measure a model this era does not train.
+
+     It is a TEST model: the walk it makes is what the cycle benches record, thus the
+     seeds, the scale and these rules may not move. *)
+  let drawn_exponent = 10
+  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
+
+  let tensor values =
+    { q =
+        Array.map values ~f:(fun v ->
+          clamp_byte (Float.iround_nearest_exn (Float.ldexp v drawn_exponent)))
+    ; e = drawn_exponent
     }
   ;;
 
@@ -539,73 +563,58 @@ module For_test = struct
       Int.clamp_exn (Float.iround_nearest_exn (Float.ldexp v 12)) ~min:(-bound) ~max:bound)
   ;;
 
-  (* THE DRAW IS THE DRAW OF THE ERA and it quantizes here, where every other model of the
-     era is quantized above the seam. It is a TEST model and not a checkpoint: the walk it
-     makes is the one every expect test of this library and of the socket simulation has
-     recorded, thus neither the draw nor the rule may move.
-
-     It follows the SHAPE of jax/mamba/train.py and not its values: the matrices are
-     normal at scale 0.02, the decay rate is uniform in [1, 16], the step is uniform in
-     [0.001, 0.1] through its inverse softplus, and the skip opens at one. A drift report
-     over weights that put every decay near one would measure a model this era does not
-     train. The float32 round trip is part of the draw, because the tensors of a
-     checkpoint are float32. *)
   let drawn (s : shape) ~seed =
     let open Prng in
     let d = s.d in
     let projection = (2 * s.d_in) + (2 * s.state) + s.heads in
     let channels = s.d_in + (2 * s.state) in
-    let float32 values =
-      Nx.to_array (Nx.create Nx.float32 [| Array.length values |] values)
-    in
-    let normal shape =
-      let+ draws = normals ~count:(Array.fold shape ~init:1 ~f:( * )) ~scale:0.02 in
-      Nx.to_array (Nx.create Nx.float32 shape draws)
-    in
+    let normal ~count = normals ~count ~scale:0.02 in
     let uniforms ~count = all (List.init count ~f:(fun (_ : int) -> uniform)) in
     let block =
-      let* w_in = normal [| d; projection |] in
-      let* conv = normal [| channels; s.taps |] in
-      (* the inverse softplus of a step in [0.001, 0.1]: softplus of it is that step *)
+      let* w_in = normal ~count:(d * projection) in
+      let* conv = normal ~count:(channels * s.taps) in
       let* steps = uniforms ~count:s.heads in
       let* rates = uniforms ~count:s.heads in
-      let+ w_out = normal [| s.d_in; d |] in
-      let a_log =
-        float32 (Array.of_list_map rates ~f:(fun u -> Float.log (1.0 +. (u *. 15.0))))
-      in
-      let dt_bias =
-        float32
-          (Array.of_list_map steps ~f:(fun u ->
-             Float.log (Float.exp (0.001 +. (u *. 0.099)) -. 1.0)))
-      in
-      let d_skip = float32 (Array.create ~len:s.heads 1.0) in
+      let+ w_out = normal ~count:(s.d_in * d) in
       Block
-        { w_in = Nn_quantized.quantize (transpose ~rows:d ~cols:projection w_in)
-        ; conv = Nn_quantized.quantize conv
-        ; w_out = Nn_quantized.quantize w_out
-        ; decay = Array.map a_log ~f:(fun a_log -> decay_scale ~a:(Float.exp a_log))
-        ; dt_bias = fixed_q12 ~bound:32767 dt_bias
-        ; d_skip = fixed_q12 ~bound:131071 d_skip
+        { w_in = tensor (transpose ~rows:d ~cols:projection w_in)
+        ; conv = tensor conv
+        ; w_out = tensor w_out
+        ; decay =
+            Array.of_list_map rates ~f:(fun u ->
+              { Constants.q_value =
+                  Int.clamp_exn
+                    (Float.iround_nearest_exn
+                       (Float.ldexp
+                          ((1.0 +. (u *. 15.0)) /. Float.log 2.0)
+                          Constants.decay_q))
+                    ~min:0
+                    ~max:((1 lsl 24) - 1)
+              ; q = Constants.decay_q
+              })
+            (* the inverse softplus of a step in [0.001, 0.1]: softplus of it is that step *)
+        ; dt_bias =
+            fixed_q12
+              ~bound:32767
+              (Array.of_list_map steps ~f:(fun u ->
+                 Float.log (Float.exp (0.001 +. (u *. 0.099)) -. 1.0)))
+            (* the skip opens at one *)
+        ; d_skip = Array.create ~len:s.heads (1 lsl 12)
         }
     in
     (* the four matrices of the head and the two of the feed-forward take the same normal
        as every other matrix: era four drew them so, and one rule covers the whole model *)
     let attention =
-      let* wq = normal [| 2 * d; d |] in
-      let* wk = normal [| 2 * d; d |] in
-      let* wv = normal [| d; d |] in
-      let+ wo = normal [| d; d |] in
-      Attention
-        { wq = Nn_quantized.quantize wq
-        ; wk = Nn_quantized.quantize wk
-        ; wv = Nn_quantized.quantize wv
-        ; wo = Nn_quantized.quantize wo
-        }
+      let* wq = normal ~count:(2 * d * d) in
+      let* wk = normal ~count:(2 * d * d) in
+      let* wv = normal ~count:(d * d) in
+      let+ wo = normal ~count:(d * d) in
+      Attention { wq = tensor wq; wk = tensor wk; wv = tensor wv; wo = tensor wo }
     in
     let feed_forward =
-      let* w1 = normal [| d; 4 * d |] in
-      let+ w2 = normal [| 4 * d; d |] in
-      Feed_forward { w1 = Nn_quantized.quantize w1; w2 = Nn_quantized.quantize w2 }
+      let* w1 = normal ~count:(d * 4 * d) in
+      let+ w2 = normal ~count:(4 * d * d) in
+      Feed_forward { w1 = tensor w1; w2 = tensor w2 }
     in
     let layer = function
       | Kind.Block -> block
@@ -613,18 +622,9 @@ module For_test = struct
       | Feed_forward -> feed_forward
     in
     let draw =
-      let* seats = normal [| Frame.voices; Vocab.classes; d |] in
-      let* phase = normal [| Jsb.bar_steps; d |] in
+      let* seats = normal ~count:(Frame.voices * Vocab.classes * d) in
+      let* phase = normal ~count:(Jsb.bar_steps * d) in
       let+ layers = all (List.map (Array.to_list s.plan) ~f:layer) in
-      let e =
-        Nn_quantized.max_exponent
-          (Float.max (Nn_quantized.max_abs seats) (Nn_quantized.max_abs phase))
-      in
-      let temper, min_weight =
-        Nn_quantized.policy
-          ~temperature:Mgen_nn.Policy.elected_temperature
-          ~min_p:Mgen_nn.Policy.elected_min_p
-      in
       { d
       ; d_in = s.d_in
       ; heads = s.heads
@@ -633,11 +633,17 @@ module For_test = struct
       ; plan = s.plan
       ; span = s.span
       ; ring = s.ring
-      ; seats = Nn_quantized.quantize ~e seats
-      ; phase = Nn_quantized.quantize ~e phase
-      ; layers = Array.of_list layers
-      ; temper
-      ; min_weight
+      ; seats = tensor seats
+      ; phase = tensor phase
+      ; layers =
+          Array.of_list layers
+          (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the
+             floor is the elected min-p 0.05 as a share of the peak weight 2^15, which is
+             [jax/nn.py]'s [min_weight_of] and what [test_quantized.py] pins. The elected
+             numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
+             [ELECTED_MIN_P] of [jax/mamba/quantized.py]. *)
+      ; temper = Constants.temper_at_one
+      ; min_weight = 1638
       }
     in
     snd (Prng.run draw (Prng.create_folded ~seed))

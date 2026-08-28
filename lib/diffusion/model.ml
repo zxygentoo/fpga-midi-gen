@@ -343,9 +343,7 @@ module For_test = struct
       Prng.run (Prng.all (List.map channels ~f:layer)) (Prng.create_folded ~seed)
     in
     let model =
-      { layers = Array.of_list built
-      ; temper = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0)
-      }
+      { layers = Array.of_list built; temper = Nn_quantized.Constants.temper_at_one }
     in
     check_shape model;
     model
@@ -363,7 +361,11 @@ let%expect_test "the drawn model holds its shape" =
   (* L 4 by H 6: the smallest shape with the era's structure — the stem, one residual pair
      and the head *)
   let model = For_test.drawn ~layers:4 ~width:6 ~seed:11 in
-  printf "check_shape: %s\n" (Mgen_nn.Checkpoint.refusal (fun () -> check_shape model));
+  printf
+    "check_shape: %s\n"
+    (match check_shape model with
+     | () -> "no raise"
+     | exception Invalid_argument message -> message);
   let sizes =
     List.map (For_test.rom_tensors model) ~f:(fun { q; e = (_ : int) } -> Array.length q)
   in
@@ -382,7 +384,11 @@ let%expect_test "the drawn model holds its shape" =
 let%expect_test "a broken model refuses loudly" =
   let model = For_test.drawn ~layers:4 ~width:6 ~seed:11 in
   let refuse broken =
-    printf "%s\n" (Mgen_nn.Checkpoint.refusal (fun () -> check_shape broken))
+    printf
+      "%s\n"
+      (match check_shape broken with
+       | () -> "no raise"
+       | exception Invalid_argument message -> message)
   in
   refuse { model with layers = Array.sub model.layers ~pos:0 ~len:3 };
   [%expect {| 3 layers hold no whole residual pairs |}];

@@ -291,7 +291,7 @@ let%expect_test "the draw states the class the twin states" =
     in
     printf "%d classes, %s, %d cells: %d disagree\n" classes name cells disagree
   in
-  let one = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0) in
+  let one = Nn_quantized.Constants.temper_at_one in
   (* a temper whose shift does not divide its value: the reading that negates before the
      scale parts from the twin by one unit here and nowhere else *)
   let ragged = { Nn_quantized.Constants.q_value = 23637; q = 13 } in
@@ -315,7 +315,7 @@ let%expect_test "the pick lands by the last class, and costs the cycles it state
       let classes = 48
     end)
   in
-  let temper = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0) in
+  let temper = Nn_quantized.Constants.temper_at_one in
   (* the peak at class 0 and every other class far under it: the hardest case for the
      totals to cover *)
   let steep = Array.init 48 ~f:(fun at -> if at = 0 then 3000 else -3000) in

@@ -66,7 +66,8 @@ SLOPE_SPAN = "slope_span"
 # the tensors the file carries beside its numbered weights
 BESIDE_THE_WEIGHTS = (EXPONENTS, TEMPER, MIN_WEIGHT, HEADS, CONTEXT, SLOPE_SPAN)
 
-# the policy the ear elected, `Mgen_nn.Policy`: the draw the bitstream commits to
+# the policy the ear elected on 2026-08-18: the draw the bitstream commits to. Since
+# the all-era cut took the OCaml `Policy` away, these two are the only home of it.
 ELECTED_TEMPERATURE = 1.0
 ELECTED_MIN_P = 0.05
 

@@ -485,7 +485,8 @@ def logits(coconet, classes, hidden):
 
 
 def tempered_pick(raw, temperature, uniform):
-    """The draw of one cell over the batch: `Mgen_nn.Policy.draw_class`, row for row.
+    """The draw of one cell over the batch: the tempered weights, the min-p floor and the
+    pick, row for row.
     [raw] is [sheets, ROWS] float64.
 
     The era draws with no min-p floor, thus the temper is the peak alone. `nn.pick_share`'s own

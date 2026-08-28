@@ -299,11 +299,11 @@ end
 (* The two programs of the source. It runs [forward] over the frame it is about to state,
    and then [chain] to draw the frame after it.
 
-   The chain runs from the soprano down and it stands FIRST in the step of the reference —
-   [Quantized.Engine.next_step] draws and then forwards. The circuit takes the two in the
-   other order for one reason: it answers [step] from a frame it drew already, thus the
-   forward of the stated frame and the chain of the next one both fall inside one step
-   period, and the wire never waits for the network.
+   The chain runs from the soprano down and it stands FIRST in the step of the twin —
+   [jax/mamba/quantized.py]'s [next_step] draws and then forwards. The circuit takes the
+   two in the other order for one reason: it answers [step] from a frame it drew already,
+   thus the forward of the stated frame and the chain of the next one both fall inside one
+   step period, and the wire never waits for the network.
 
    **[chain] is ONE seat and the machine runs it [Frame.voices] times**, counting the seat
    register down from the soprano. Era four measured what inlining the four seats costs —
@@ -728,7 +728,7 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
          ~wdata:tap_wdata.value
          ~raddr:tap_raddr.value)
   in
-  (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
+  (* The read of a ring restores the eight zero low bits that the twin's [coarse_to_ring]
      dropped at the write, thus the format stays Q12 at a granularity of 2^-4.
 
      The ring WRITE stands one register behind its landing, and it is era four's travel
@@ -1775,7 +1775,7 @@ let%expect_test "the program is data: the state table prints" =
     f1  (Rms_norm(over Embedding))
     f2  (Rms_norm(over Stream))
     f3  (Matvec((src Y)(w((base(Fixed 3328))(e 10)))(outer_major true)(inner 16)(outer 82)(landing To_v)))
-    f4  (Conv(block 0)(w((base(Fixed 4640))(e 11))))
+    f4  (Conv(block 0)(w((base(Fixed 4640))(e 10))))
     f5  (Silu_over(from 32)(count 48))
     f6  (Decay(block 0))
     f7  (State_update(block 0))
@@ -1783,13 +1783,13 @@ let%expect_test "the program is data: the state table prints" =
     f9  (Silu_over(from 0)(count 32))
     f10 Gate
     f11 (Rms_norm(over Gated))
-    f12 (Matvec((src Y)(w((base(Fixed 4832))(e 11)))(outer_major false)(inner 32)(outer 16)(landing Add_to_h)))
+    f12 (Matvec((src Y)(w((base(Fixed 4832))(e 10)))(outer_major false)(inner 32)(outer 16)(landing Add_to_h)))
     f13 (Rms_norm(over Stream))
-    f14 (Matvec((src Joined)(w((base(Fixed 5344))(e 11)))(outer_major false)(inner 32)(outer 16)(landing To_q)))
+    f14 (Matvec((src Joined)(w((base(Fixed 5344))(e 10)))(outer_major false)(inner 32)(outer 16)(landing To_q)))
     f15 (Matvec((src Joined)(w((base(Fixed 5856))(e 10)))(outer_major false)(inner 32)(outer 16)(landing(To_ring(k true)(ring 0)))))
-    f16 (Matvec((src Y)(w((base(Fixed 6368))(e 11)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(ring 0)))))
+    f16 (Matvec((src Y)(w((base(Fixed 6368))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(ring 0)))))
     f17 (Attend(ring 0))
-    f18 (Matvec((src Y)(w((base(Fixed 6624))(e 11)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
+    f18 (Matvec((src Y)(w((base(Fixed 6624))(e 10)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
     f19 (Rms_norm(over Stream))
     f20 (Matvec((src Y)(w((base(Fixed 6880))(e 10)))(outer_major false)(inner 16)(outer 64)(landing To_hidden)))
     f21 (Matvec((src Hidden)(w((base(Fixed 7904))(e 10)))(outer_major false)(inner 64)(outer 16)(landing Add_to_h)))
@@ -1802,40 +1802,6 @@ let%expect_test "the program is data: the state table prints" =
     c6  (Accumulate(base(Seat_block 0))(e 10))
     MMMMMMZF: 77 forward ops, 7 chain ops, 403074 cycles a drawn step
     |}]
-;;
-
-(* the first step where the two walks part, if they part: a mismatch names the step to
-   read, and a walk of tens of steps hides that index inside two long lists *)
-let first_divergence circuit reference =
-  List.findi (List.zip_exn circuit reference) ~f:(fun (_ : int) (c, r) -> c <> r)
-  |> Option.map ~f:fst
-;;
-
-(* The frame comparison: the circuit against the reference, step for step, on drawn
-   weights. This is the gate that holds the circuit to [Quantized], and the walk crosses
-   the lead-in — the first drawn step is the one that reads a state the lead-in filled. *)
-(* THE ORACLE OF THESE BENCHES IS STILL OCAML'S. [Quantized.Engine] draws the same walk
-   from the same drawn weights, thus the two models each bench builds are one model in two
-   types; step three of the all-era cut replaces the engine with the JAX twin through
-   [bin/gate_mamba.exe], and this bridge goes with it. *)
-let config_of ({ d; d_in; heads; state; taps; plan; span; ring } : Model.For_test.shape) =
-  { Mamba.Config.d
-  ; d_in
-  ; heads
-  ; state
-  ; taps
-  ; plan =
-      Array.map plan ~f:(function
-        | Model.Kind.Block -> Mamba.Kind.Block
-        | Attention -> Attention
-        | Feed_forward -> Feed_forward)
-  ; span
-  ; ring
-  }
-;;
-
-let engine_of shape ~weights =
-  Quantized.Model.For_test.init (config_of shape) ~seed:weights
 ;;
 
 module For_test = struct
@@ -1905,36 +1871,6 @@ module For_test = struct
   end
 end
 
-let frames_agree ~shape ~weights ~seed ~steps =
-  let model = Model.For_test.drawn shape ~seed:weights in
-  let engine_model = engine_of shape ~weights in
-  let h = For_test.Bench.harness ~model ~seed () in
-  h.rewind ();
-  (* [List.init] applies its function in the reverse index order, thus it cannot collect
-     from a simulation; the fold steps in the true order *)
-  let circuit =
-    List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> h.play () :: acc))
-  in
-  let (_ : Quantized.Engine.t), reference =
-    List.fold_map
-      (List.range 0 steps)
-      ~init:(Quantized.Engine.init engine_model ~seed)
-      ~f:(fun engine (_ : int) ->
-        let engine, step = Quantized.Engine.next_step engine in
-        engine, step.Quantized.Engine.frame)
-  in
-  List.iteri circuit ~f:(fun index frame ->
-    if index < 2 || index >= Jsb.bar_steps - 1
-    then Stdio.printf "step %2d  %08x\n" index frame);
-  let divergence = first_divergence circuit reference in
-  Stdio.printf "%d steps, the frames agree: %b\n" steps (Option.is_none divergence);
-  Option.iter divergence ~f:(fun index ->
-    Stdio.printf "the first step that parts is %d\n" index;
-    Stdio.print_s ([%sexp_of: int list] circuit);
-    Stdio.print_s ([%sexp_of: int list] reference))
-;;
-
 (* The three memories that carry a layer field, and the two rules they take.
 
    The state address and the ring address PACK: [d_in], [state], [d] and the ring depth
@@ -1943,9 +1879,11 @@ let frames_agree ~shape ~weights ~seed ~steps =
    concatenated layer field would stride by the rounded-up power and the top block would
    run off the end of the memory.
 
-   The region field is EMPTY at one block and at one head, thus the plan of a gate decides
-   which half of each rule the simulation ever elaborates — which is why the gates below
-   run at two blocks and at two heads as well. *)
+   The region field is EMPTY at one block and at one head, thus the plan of a walk decides
+   which half of each rule the simulation ever elaborates. That is why
+   [jax/tests/test_rtl_mamba.py] walks the circuit at four plans and not at one, and why
+   this prints the four packings beside each other: the rule is then readable and not only
+   exercised. *)
 let memory_geometry (model : Model.t) =
   let { Model.d; d_in; state; ring; _ } = model in
   let channels = Model.channels model in
@@ -1978,173 +1916,36 @@ let memory_geometry (model : Model.t) =
     (Int.floor_log2 d)
 ;;
 
-(* THE RESIDUAL STREAM, WRITE FOR WRITE, and it is the sharp instrument of this era.
-
-   The frame gate below is blunt at the shape a test can afford: weights of scale 0.02 put
-   the classes so near each other that a pick is almost the quantile of its uniform alone,
-   thus a datapath can be wrong by tens of percent and still draw the same frames for a
-   dozen steps. This walks the circuit's h RAM instead — the embed and each layer's join
-   write the whole stream, in that order — and holds every element of it against
-   [Quantized.Engine.For_test.layer_streams].
-
-   Four faults were found through it and none of them moved a frame at first: a weight
-   addressed by a concatenation whose stride was not the tensor's width, a convolution
-   channel block read at the gate's offset, an operand selected on the address side of a
-   two-cycle read, and a tap ring whose layer stride ran the top layer off the end of its
-   memory. A gate that only compares frames would have shipped all four. *)
-let streams_agree ~shape ~weights ~seed ~steps =
-  let model = Model.For_test.drawn shape ~seed:weights in
-  let engine_model = engine_of shape ~weights in
-  let bench = For_test.Bench.harness ~model ~seed () in
-  bench.rewind ();
-  let engine = ref (Quantized.Engine.init engine_model ~seed) in
-  let checked = ref 0 in
-  let parted = ref 0 in
-  for step = 0 to steps - 1 do
-    let frame = bench.play () in
-    let taken = bench.streams () in
-    let want =
-      Quantized.Engine.For_test.layer_streams !engine ~frame ~phase:(step % Jsb.bar_steps)
-    in
-    List.iteri want ~f:(fun index reference ->
-      Int.incr checked;
-      match List.nth taken index with
-      | None -> Stdio.printf "step %d wrote no stream at %d\n" step index
-      | Some got ->
-        if not (Array.equal Int.equal reference got)
-        then (
-          Int.incr parted;
-          Stdio.printf
-            "step %d, stream write %d: %d of %d elements part\n"
-            step
-            index
-            (Array.counti reference ~f:(fun i v -> v <> got.(i)))
-            model.Model.d));
-    let next, (_ : Quantized.Engine.step) = Quantized.Engine.next_step !engine in
-    engine := next
-  done;
-  Stdio.printf "%d stream writes over %d steps, %d part\n" !checked steps !parted
-;;
-
-let%expect_test "the source agrees with the reference, frame for frame" =
-  let shape = Model.For_test.shape in
-  memory_geometry (Model.For_test.drawn shape ~seed:11);
-  frames_agree ~shape ~weights:11 ~seed:42 ~steps:20;
-  [%expect
-    {|
-    1 blocks, 1 rings: state 256 rows, 8 bits = block 0 + lane 5 + n 3 (packed); taps 192 rows, 48 channels in 6 bits, block stride 192 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b5cbcd00
-    step 18  b6cad0cf
-    step 19  a7d1adbd
-    20 steps, the frames agree: true
-    |}]
-;;
-
-let%expect_test "the source agrees with the reference, stream write for stream write" =
-  streams_agree ~shape:Model.For_test.shape ~weights:11 ~seed:42 ~steps:22;
-  [%expect {| 88 stream writes over 22 steps, 0 part |}]
-;;
-
-(* The seed 0 on the circuit. It is the fixed point of xorshift32 and the panel can state
-   it — all the slide switches down is the rest position of the board — thus the walk
-   stands still: every threshold is 0 and each seat takes the first class that min-p left
-   standing. [Quantized] states that walk, and this holds the circuit to it, where a PRNG
-   that reset to another state or a threshold that rounded the other way would show. *)
-let%expect_test "the source agrees with the reference at the seed 0" =
-  frames_agree ~shape:Model.For_test.shape ~weights:11 ~seed:0 ~steps:20;
-  [%expect
-    {|
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  00000000
-    step 17  00000000
-    step 18  00000000
-    step 19  00000000
-    20 steps, the frames agree: true
-    |}]
-;;
-
-(* The same gate at TWO LAYERS, and it is not a wider shape for its own sake. At one layer
-   the layer field of the state address and of the tap address is empty and the per-layer
-   ROM bases all read the first layer's, thus the [else] branch of [state_row] and of
-   [tap_row] and every address that carries a layer are dead in a one-layer simulation and
-   live only on the board, which runs six. Era four's test review found exactly that gap
-   late. This gate elaborates them.
-
-   The walk also runs past the tap ring — four slots — many times over, thus the ring
-   wraps and the age rule is exercised where it is a wrap and not only where it is the
-   origin. *)
-let%expect_test "the source agrees with the reference at two layers" =
-  let shape =
-    { Model.For_test.shape with plan = [| Block; Block; Attention; Attention |] }
-  in
-  memory_geometry (Model.For_test.drawn shape ~seed:23);
-  frames_agree ~shape ~weights:23 ~seed:42 ~steps:24;
-  [%expect
-    {|
-    2 blocks, 2 rings: state 512 rows, 9 bits = block 1 + lane 5 + n 3 (packed); taps 384 rows, 48 channels in 6 bits, block stride 192 (added); ring 256 rows, 8 bits = head 1 + slot 3 + dim 4 (packed)
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b5cbcd00
-    step 18  b6c9d0cf
-    step 19  a6d1adbc
-    step 20  c9a7b0ae
-    step 21  bfaeaab9
-    step 22  adc0cfa5
-    step 23  bac1b5b6
-    24 steps, the frames agree: true
-    |}]
-;;
-
-(* The stream gate at THREE layers, which is where the tap ring's layer stride showed: at
-   one layer the field is absent, at two the top layer's region still fits the memory by
-   accident of rounding, and at three it runs off the end. A shape that only ever ran two
-   would have passed a circuit the board could not run at six. *)
-let%expect_test "the source agrees with the reference at three layers" =
-  let shape =
+(* The four shapes the pytest gates run, and each is here for a field the smaller ones
+   leave empty: the elected plan at one of each kind; two blocks with two heads, where the
+   block field of the state address and the head field of the ring address both appear;
+   three blocks the plan interleaves, where a tap stride written for a packed address runs
+   the top block off the end of its memory; and a wide state with a wide kernel, the two
+   fields the quality round moved. *)
+let%expect_test "the three memories and the two rules their layer fields take" =
+  let shape ~seed s = memory_geometry (Model.For_test.drawn s ~seed) in
+  shape ~seed:11 Model.For_test.shape;
+  shape
+    ~seed:23
+    { Model.For_test.shape with plan = [| Block; Block; Attention; Attention |] };
+  shape
+    ~seed:37
     { Model.For_test.shape with
       d = 32
     ; d_in = 64
     ; heads = 4
     ; state = 16
     ; plan = [| Block; Block; Attention; Block; Attention; Feed_forward |]
-    }
-  in
-  memory_geometry (Model.For_test.drawn shape ~seed:37);
-  streams_agree ~shape ~weights:37 ~seed:7 ~steps:20;
+    };
+  shape
+    ~seed:53
+    { Model.For_test.shape with state = 32; taps = 16; plan = [| Block; Block; Block |] };
   [%expect
     {|
+    1 blocks, 1 rings: state 256 rows, 8 bits = block 0 + lane 5 + n 3 (packed); taps 192 rows, 48 channels in 6 bits, block stride 192 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
+    2 blocks, 2 rings: state 512 rows, 9 bits = block 1 + lane 5 + n 3 (packed); taps 384 rows, 48 channels in 6 bits, block stride 192 (added); ring 256 rows, 8 bits = head 1 + slot 3 + dim 4 (packed)
     3 blocks, 2 rings: state 3072 rows, 12 bits = block 2 + lane 6 + n 4 (packed); taps 1152 rows, 96 channels in 7 bits, block stride 384 (added); ring 512 rows, 9 bits = head 1 + slot 3 + dim 5 (packed)
-    140 stream writes over 20 steps, 0 part
-    |}]
-;;
-
-(* The same stream gate at a WIDE STATE AND A WIDE KERNEL, and it is the net under the two
-   fields the sweep of the quality round moves. K was a constant of this library until
-   that round, thus every width it sizes — the tap ring, the age mux over it and the layer
-   stride of the ring — was proven at four alone; N was a field, but no gate ran it above
-   16 and the state address never had to carry a wider n. Here K is 16 and N is 32, over
-   three layers so that the layer field of both addresses is live, and everything else is
-   as small as the gates above.
-
-   A stride written for one K and an address field written for one N both land here. *)
-let%expect_test "the source agrees with the reference at a wide state and kernel" =
-  let shape =
-    { Model.For_test.shape with state = 32; taps = 16; plan = [| Block; Block; Block |] }
-  in
-  memory_geometry (Model.For_test.drawn shape ~seed:53);
-  streams_agree ~shape ~weights:53 ~seed:9 ~steps:20;
-  [%expect
-    {|
     3 blocks, 0 rings: state 3072 rows, 12 bits = block 2 + lane 5 + n 5 (packed); taps 4608 rows, 96 channels in 7 bits, block stride 1536 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
-    80 stream writes over 20 steps, 0 part
     |}]
 ;;
 
@@ -2164,7 +1965,7 @@ let bench ~steps () =
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  (* the ages the ring holds at step [index], which is what [Quantized.Engine] walks *)
+  (* the ages the ring holds at step [index], which is what a walk of the twin holds *)
   let fill index = Int.min (index + 1) model.Model.ring in
   let sum_ops ~n ops =
     List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles model ~n op)

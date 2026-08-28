@@ -82,11 +82,11 @@ def main():
 @click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 # The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
-# it does the two eras are auditioned on one policy. The OCaml side states these once, as
-# Mamba.elected_temperature and Mamba.elected_min_p; no constant crosses the language
-# seam, thus they stand here again and the two must move together.
-@click.option("--temperature", default=1.0)
-@click.option("--min-p", default=0.05)
+# it does the two eras are auditioned on one policy. `quantized.ELECTED_*` is the one home
+# of these two numbers since the all-era cut took the OCaml `Policy` away, thus the
+# audition and the contract file temper alike.
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=quantized.ELECTED_MIN_P)
 @click.option(
     "--ring",
     default=model.ATTN_CONTEXT,

@@ -17,8 +17,8 @@ two-cycle read, and a ring run off its end -- and NONE OF THEM MOVED A FRAME. Th
 gate compares the residual stream after the embed and after every layer, thus a
 disagreement names the layer it began in.
 
-The shapes are the ones the expect tests of `source.ml` ran, and each was put there by a
-fault: the whole plan at one of each kind, where the region field of every memory is EMPTY
+The shapes are the ones the frame and stream benches of `source.ml` ran until the all-era
+cut moved the gates here, and each was put there by a fault: the whole plan at one of each kind, where the region field of every memory is EMPTY
 and an address that strided by it would still pass; two blocks and two attention layers,
 where both fields appear; three blocks under a plan that interleaves them, where the tap
 ring's layer stride runs the top block off the end of its memory if the stride is wrong;

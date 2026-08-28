@@ -7,8 +7,8 @@
     [nn] is Q12. Bits 11 to 4 read the table, bits 15 to 12 shift the entry, and bits 21
     to 16 force 0: a magnitude of 16 or above gives 0, because an entry shifted that far
     is 0. The table therefore steps at 2^-8 of the power, and the low four fraction bits
-    fall away. This truncation is a rule of the circuit, and the reference
-    [Quantized.Engine.exp2_q] holds the same one.
+    fall away. This truncation is a rule of the circuit, and [Quantized.exp2_q] — with the
+    twins that read it through [jax/nn.py] — holds the same one.
 
     The unit has no start and no busy: it is a table and a shift. The table read stands in
     a register, thus [nn] must hold for two cycles and [e] is whole on the second. That
