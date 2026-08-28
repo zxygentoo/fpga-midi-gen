@@ -37,9 +37,8 @@ module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
-module Diffusion = Mgen_diffusion.Diffusion
+module Model = Mgen_diffusion.Model
 module Elaboration = Mgen_diffusion.Elaboration
-module Quantized = Mgen_diffusion.Quantized
 module Source = Mgen_diffusion.Source
 
 (* The model of the test: drawn weights in the era's test shape, thus the test reads no
@@ -51,10 +50,7 @@ let walk = 2
 (* One channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
    the fused floor asks 61, thus the shape the twin tests with is one this elaboration
    refuses. Nothing here reads the width. *)
-let model =
-  Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 8 } ~seed:11
-;;
-
+let model = Model.For_test.drawn ~layers:4 ~width:8 ~seed:11
 let e = Elaboration.create model ~steps ~lanes:2 ~walk
 let clocks_per_ms = 4
 let step_ms = 400

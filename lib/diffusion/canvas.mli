@@ -19,8 +19,8 @@
       The [Frame.voices] class planes carry the activation one at the row the cell holds
       and zero elsewhere, and they carry nothing at all where the cell is hidden; the
       [Frame.voices] mask planes carry the activation one at EVERY row where the cell is
-      hidden, and zero where it stands. The one is [Quantized.activation_q]'s, thus the
-      format has one home.
+      hidden, and zero where it stands. The one is [Model.activation_q]'s, thus the format
+      has one home.
     - **A frame is [Vocab.Rtl]'s.** Each seat's class becomes its voice code and the four
       pack with seat 0 in the low byte, which is [Frame]'s rule and the sequencer's.
 
@@ -115,7 +115,7 @@ module For_test : sig
 
   (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
       of one step and one plane, row 0 first. The index rule itself is
-      [Diffusion.tensor_column]'s — every tensor of the era reads as
-      [steps; rows; channels] — thus what this states is the plane count alone. *)
+      [Model.tensor_column]'s — every tensor of the era reads as [steps; rows; channels] —
+      thus what this states is the plane count alone. *)
   val plane_column : int array -> step:int -> plane:int -> int array
 end

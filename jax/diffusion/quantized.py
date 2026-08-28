@@ -38,7 +38,7 @@ What the quantization costs is a measurement and not a promise: `drift` states i
 walk the board really takes.
 
 THE CONTRACT FILE is what crosses the seam to the elaboration. `save` writes it and
-`Quantized.Model.of_int8_checkpoint` reads it; `load` reads it back and a round trip is
+`Model.of_int8_checkpoint` reads it; `load` reads it back and a round trip is
 exact. It carries the quantized model and nothing else -- no population statistics and no
 float scales, because the fold happens here, one time, and the file carries the result.
 

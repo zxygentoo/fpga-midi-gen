@@ -54,7 +54,7 @@ type t =
   ; ring_banks : bank array
   ; norm_rom : Bits.t array
   ; alpha_rom : Bits.t array
-  ; openings : Diffusion.opening array
+  ; openings : Model.opening array
   ; temper : Nn_quantized.Constants.scale
   }
 
@@ -493,15 +493,15 @@ let bases_of sizes =
        base + size, base))
 ;;
 
-let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~walk =
-  Quantized.Model.check_shape model;
+let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
+  Model.check_shape model;
   if steps < 1 then invalid_argf "a canvas of %d steps" steps ();
   if rows < 1 then invalid_argf "a column of %d rows" rows ();
   if lanes < 1 then invalid_argf "a group of %d lanes" lanes ();
   if walk < 1 then invalid_argf "a walk of %d passes" walk ();
   let twin = model.layers in
   let count = Array.length twin in
-  let groups_of (l : Quantized.Model.layer) = (l.outputs + lanes - 1) / lanes in
+  let groups_of (l : Model.layer) = (l.outputs + lanes - 1) / lanes in
   (* THE DWELL MUST COVER THE DRAIN, THE BAND LOADS BEHIND IT, AND THE NEXT BLOCK'S FETCH
      AHEAD OF IT. The chain is [rows] stages and must empty before the next dwell captures
      the array. Behind it, the residual columns and the norm words of the group are
@@ -523,7 +523,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
      count and never a bound. H 6 at G 4 dwells 54 against a floor of 54 under the old
      rule and 63 under this one: it is the shape the fused engine would read wrong. *)
   let dwell_floor = rows + lanes + 2 + taps in
-  Array.iteri twin ~f:(fun at (l : Quantized.Model.layer) ->
+  Array.iteri twin ~f:(fun at (l : Model.layer) ->
     if taps * l.inputs < dwell_floor
     then
       invalid_argf
@@ -544,7 +544,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
       bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
     let norm_bases = bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
-    Array.mapi twin ~f:(fun at (l : Quantized.Model.layer) ->
+    Array.mapi twin ~f:(fun at (l : Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs
       ; outputs = l.outputs
@@ -560,9 +560,9 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
      and channels back to back, and the groups stand in order, thus one column's dwell
      walks a layer's whole range straight through and the address reloads once for each
      column. Any other order makes the address a stride and not a count. *)
-  let image = Quantized.Model.rom_bits model in
-  let image_bases = Quantized.Model.rom_bases model in
-  let layer_words at (l : Quantized.Model.layer) =
+  let image = Model.rom_bits model in
+  let image_bases = Model.rom_bases model in
+  let layer_words at (l : Model.layer) =
     let base = image_bases.(at) in
     let byte ~cin ~tap ~group lane =
       let channel = channel_of_lanes ~lanes ~group ~lane in
@@ -592,7 +592,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
      channels in a group of five really reaches. With it the address is
      [norm_base + group * lanes + lane] at every layer and every group. *)
   let norm_rom =
-    Array.concat_map twin ~f:(fun (l : Quantized.Model.layer) ->
+    Array.concat_map twin ~f:(fun (l : Model.layer) ->
       Array.init
         (groups_of l * lanes)
         ~f:(fun channel ->
@@ -602,7 +602,7 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   in
   let alpha_rom =
     Array.init walk ~f:(fun pass ->
-      Bits.of_unsigned_int ~width:alpha_bits (Diffusion.anneal_threshold ~step:pass ~walk))
+      Bits.of_unsigned_int ~width:alpha_bits (Model.anneal_threshold ~step:pass ~walk))
   in
   (* The channels X and Y each hold: the widest layer that writes a store. The head writes
      no store, thus its [voices] channels size nothing. *)
@@ -626,8 +626,8 @@ let create ?(rows = Diffusion.rows) (model : Quantized.Model.t) ~steps ~lanes ~w
   ; norm_rom
   ; alpha_rom
     (* the walk's opening, carried and never restated: the circuit reads one value for
-       everything it holds, and [Diffusion] stays the authority on what a seat may sing *)
-  ; openings = Diffusion.seat_openings
+       everything it holds, and [Model] stays the authority on what a seat may sing *)
+  ; openings = Model.seat_openings
   ; temper = model.temper
   }
 ;;
@@ -694,7 +694,7 @@ let to_string t =
         "the seats open inside the classes %s"
         (String.concat
            ~sep:", "
-           (List.map (Array.to_list t.openings) ~f:(fun { Diffusion.low; width } ->
+           (List.map (Array.to_list t.openings) ~f:(fun { Model.low; width } ->
               sprintf "%d to %d" low (low + width - 1))))
     ; sprintf
         "a store is %d columns of %d bits %s, t-major: step * %d + channel"
@@ -726,19 +726,17 @@ let to_string t =
   |> String.concat ~sep:"\n"
 ;;
 
-(* THE TINY SHAPE THE GATES BELOW ELABORATE, and it is NOT the twin's own
-   [Quantized.Model.For_test.config]. At H 6 a layer dwells 54 cycles and the fused floor
-   asks 63: the model the twin tests with is a model this elaboration refuses, and the
-   refusal gate at the foot of the file is where that shape belongs. One channel wider
-   walks every map the same way. *)
-let tiny_shape = { Diffusion.Config.layers = 4; width = 8 }
+(* THE TINY SHAPE THE GATES BELOW ELABORATE, and it is one channel wider than the
+   narrowest the era draws. At H 6 a layer dwells 54 cycles and the fused floor asks 63: H
+   6 is a shape this elaboration REFUSES, and the refusal gate at the foot of the file is
+   where it belongs. One channel wider walks every map the same way. *)
+let tiny_model = Model.For_test.drawn ~layers:4 ~width:8
 
 let%expect_test "the elaboration of rung 2" =
   (* THE SHAPE OF `l64-h16-100k`, ON DRAWN WEIGHTS. A cycle count reads the shape and
      never a value, thus a test states rung 2's geometry without a checkpoint file that
      git ignores. The rung's real weights arrive at [gen_verilog]. *)
-  let config = { Diffusion.Config.layers = 64; width = 16 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:64 ~width:16 ~seed:1 in
   print_endline (to_string (create model ~steps:128 ~lanes:4 ~walk:512));
   [%expect
     {|
@@ -828,9 +826,9 @@ let%expect_test "the ROM walks as one counter in the dwell order" =
      It also holds the two other properties: every weight stands at one address and no two
      share one, and a lane past the channels reads zero. H 6 at G 4 makes the ragged group
      the elected shapes never make, thus the padding is under test and not only described. *)
-  let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
+  let model = tiny_model ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
-  let kernels = Array.of_list (Quantized.Model.For_test.rom_tensors model) in
+  let kernels = Array.of_list (Model.For_test.rom_tensors model) in
   let seen = Array.map kernels ~f:(fun k -> Array.map k.q ~f:(fun _ -> 0)) in
   let lane_byte word lane =
     Bits.to_unsigned_int (Bits.select word ~high:((lane * 8) + 7) ~low:(lane * 8))
@@ -956,22 +954,14 @@ let%expect_test "the banks re-concatenate into the image, and the circuit finds 
          ~address_bits:(store_bits t)
          ~addresses:(store_depth t))
   in
-  let rung = { Diffusion.Config.layers = 64; width = 16 } in
-  case
-    ~name:"rung 2"
-    (create (Quantized.Model.For_test.drawn rung ~seed:1) ~steps:128 ~lanes:4 ~walk:512);
-  case
-    ~name:"a shape of one bank"
-    (create (Quantized.Model.For_test.drawn tiny_shape ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
+  let rung = Model.For_test.drawn ~layers:64 ~width:16 ~seed:1 in
+  case ~name:"rung 2" (create rung ~steps:128 ~lanes:4 ~walk:512);
+  case ~name:"a shape of one bank" (create (tiny_model ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   (* A STORE THAT REALLY BANKS, and rung 2's does not: 129 steps of 8 channels are 1032
      columns, thus the plan splits where the two rungs above hold one bank. *)
   case
     ~name:"a store of two banks"
-    (create
-       (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 8 } ~seed:3)
-       ~steps:129
-       ~lanes:2
-       ~walk:4);
+    (create (Model.For_test.drawn ~layers:4 ~width:8 ~seed:3) ~steps:129 ~lanes:2 ~walk:4);
   [%expect
     {|
     rung 2: 36144 words banked 32768 + 4096, 720 of pad
@@ -1088,17 +1078,11 @@ let%expect_test "the circuit walks the turn the block order states" =
   in
   case
     ~name:"a shape of two pairs"
-    (create
-       (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 6; width = 8 } ~seed:1)
-       ~steps:5
-       ~lanes:2
-       ~walk:4);
+    (create (Model.For_test.drawn ~layers:6 ~width:8 ~seed:1) ~steps:5 ~lanes:2 ~walk:4);
   case
     ~name:"rung 2"
     (create
-       (Quantized.Model.For_test.drawn
-          { Diffusion.Config.layers = 64; width = 16 }
-          ~seed:1)
+       (Model.For_test.drawn ~layers:64 ~width:16 ~seed:1)
        ~steps:128
        ~lanes:4
        ~walk:512);
@@ -1112,7 +1096,7 @@ let%expect_test "the circuit walks the turn the block order states" =
 ;;
 
 let%expect_test "a norm word carries the twin's gain, shift and bias" =
-  let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
+  let model = tiny_model ~seed:7 in
   let t = create model ~steps:8 ~lanes:4 ~walk:4 in
   (* THE TEST SLICES WITH THE CIRCUIT'S OWN UNPACKER and never with a third reading of the
      field order: [Rtl.Make (Bits)] is the very function the epilogue elaborates. *)
@@ -1164,7 +1148,7 @@ let%expect_test "the circuit states the maps the software states" =
      where the padding lives. *)
   let module Map = Rtl.Make (Bits) in
   let case ~steps ~lanes =
-    let model = Quantized.Model.For_test.drawn tiny_shape ~seed:7 in
+    let model = tiny_model ~seed:7 in
     let t = create model ~steps ~lanes ~walk:4 in
     let addresses = ref 0
     and channels = ref 0
@@ -1235,7 +1219,8 @@ let%expect_test "the circuit states the maps the software states" =
 ;;
 
 let%expect_test "the elaboration refuses what the machine cannot hold" =
-  let model = Quantized.Model.(For_test.drawn For_test.config ~seed:7) in
+  (* H 6, which this elaboration refuses at every G the fused floor admits *)
+  let model = Model.For_test.drawn ~layers:4 ~width:6 ~seed:7 in
   let refuse name f =
     match f () with
     | (_ : t) -> printf "%s: NOT REFUSED\n" name
@@ -1259,11 +1244,7 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
      One channel wider clears it: H 7 dwells 63 against 63. *)
   refuse "a fetch the load outruns" (fun () -> create model ~steps:8 ~lanes:4 ~walk:4);
   refuse "the channel that clears it" (fun () ->
-    create
-      (Quantized.Model.For_test.drawn { Diffusion.Config.layers = 4; width = 7 } ~seed:7)
-      ~steps:8
-      ~lanes:4
-      ~walk:4);
+    create (Model.For_test.drawn ~layers:4 ~width:7 ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
   refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
   refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);

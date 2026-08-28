@@ -31,11 +31,7 @@ let () =
      the era's 48 — the seat registers of the opening are the corpus's. *)
   (* one channel wider than the twin's own test shape: at H 6 a layer dwells 54 cycles and
      the fused floor asks 60, thus the twin's shape is one this elaboration refuses *)
-  let model =
-    Mgen_diffusion.Quantized.Model.For_test.drawn
-      { Mgen_diffusion.Diffusion.Config.layers = 4; width = 8 }
-      ~seed:11
-  in
+  let model = Mgen_diffusion.Model.For_test.drawn ~layers:4 ~width:8 ~seed:11 in
   let e = Mgen_diffusion.Elaboration.create model ~steps:4 ~lanes:1 ~walk:2 in
   let sim = Cyclesim.create (Mgen_nexys4.Top.create ~e ()) in
   let rxd = Cyclesim.in_port sim "RsRx" in

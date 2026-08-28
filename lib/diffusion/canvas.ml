@@ -18,26 +18,25 @@ module type Shape = sig
 end
 
 (* the activation format of the twin: what a plane column carries in each row *)
-let activation_bits = Quantized.activation_bits
+let activation_bits = Model.activation_bits
 
 (* ==================================================================== *)
 (* The stem's decode, in software *)
 (* ==================================================================== *)
 
-(* THE SOFTWARE HALF OF THIS UNIT, and the reason it stands here and not in [Quantized]:
-   the plane face of the circuit must equal this decode, thus the two are one unit's two
-   statements of one rule. [Quantized] is the int8 checkpoint as data and holds no
-   arithmetic of the walk any more; the integer twin is [jax/diffusion/quantized.py], and
-   what a gate below the seam needs of it is exactly this decode. *)
+(* THE SOFTWARE HALF OF THIS UNIT, and the reason it stands here: the plane face of the
+   circuit must equal this decode, thus the two are one unit's two statements of one rule.
+   The integer twin of the era is [jax/diffusion/quantized.py], and what a gate below the
+   seam needs of it is exactly this decode. *)
 
-let rows = Diffusion.rows
-let voices = Diffusion.voices
+let rows = Model.rows
+let voices = Model.voices
 
 (* the planes the stem reads: one class plane and one mask plane for each seat *)
 let planes = 2 * voices
 
 (* the one of the activation format, which a hot row of a plane carries *)
-let activation_one = 1 lsl Quantized.activation_q
+let activation_one = 1 lsl Model.activation_q
 
 (* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
 let plane_activations canvas hidden ~steps =
@@ -56,12 +55,17 @@ let plane_activations canvas hidden ~steps =
   x
 ;;
 
-(* One column of the stem's input tensor. The index rule itself is [Diffusion]'s — every
-   tensor of the era reads as [steps; rows; channels] — thus what this states is the PLANE
-   count and nothing else. *)
-let plane_column x ~step ~plane =
-  Diffusion.tensor_column x ~step ~channel:plane ~channels:planes
+(* ONE COLUMN OF ANY TENSOR OF THE ERA: the [rows] values that one step and one channel
+   hold, read out of the flat array of a [steps; rows; channels] tensor. Every tensor the
+   circuit writes has that one shape — the stem's planes, a layer's output, the head's
+   logits — thus the index rule stands here one time and no reader slices one by hand. *)
+let tensor_column x ~step ~channel ~channels =
+  Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
 ;;
+
+(* one column of the stem's input tensor: [tensor_column] at the PLANE count, which is the
+   only thing this decode adds to the index rule *)
+let plane_column x ~step ~plane = tensor_column x ~step ~channel:plane ~channels:planes
 
 module For_test = struct
   let plane_activations = plane_activations
@@ -163,12 +167,12 @@ module Make (Shape : Shape) = struct
          &: repeat ~:hides ~count:rows)
     in
     (* one row of the column, in the twin's activation format: a cell of the masked roll
-       is 0 or one, exact, thus a hot row is the one of [Quantized.activation_q] *)
+       is 0 or one, exact, thus a hot row is the one of [Model.activation_q] *)
     let activation_of_row row =
       concat_msb
-        [ zero (activation_bits - Quantized.activation_q - 1)
+        [ zero (activation_bits - Model.activation_q - 1)
         ; bit hot ~pos:row
-        ; zero Quantized.activation_q
+        ; zero Model.activation_q
         ]
     in
     (* THE SCORE'S FACE: the four classes of one step become four voice codes, seat 0 in
@@ -189,11 +193,11 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Diffusion.opening_canvas] and
-   [Diffusion.hidden_cells] state what the walk writes, [plane_activations] above states
-   what the stem must read, and [Diffusion.frames_of_canvas] states what the sequencer
-   must play — thus the gate compares the circuit against the functions themselves and
-   never against a second reading of them. *)
+(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Model.opening_canvas] and
+   [Model.hidden_cells] state what the walk writes, [plane_activations] above states what
+   the stem must read, and [Model.frames_of_canvas] states what the sequencer must play —
+   thus the gate compares the circuit against the functions themselves and never against a
+   second reading of them. *)
 module Bench (Shape : Shape) = struct
   module Canvas = Make (Shape)
   module Sim = Cyclesim.With_interface (Canvas.I) (Canvas.O)
@@ -227,8 +231,8 @@ module Bench (Shape : Shape) = struct
   (* [filled ~opening ~hidden ~redraw] is a simulation whose canvas holds ONE PASS: the
      opening's classes cell by cell, then the mask bits cell by cell, then the classes of
      the cells the mask hid — the three writes of a pass, in the order the walk takes them
-     and in [Diffusion.cell_order] inside each one. A bench that wrote the classes one
-     time would never see a class write land beside a mask bit that must not move. *)
+     and in [Model.cell_order] inside each one. A bench that wrote the classes one time
+     would never see a class write land beside a mask bit that must not move. *)
   let filled ?(trace = false) ~opening ~hidden ~redraw () =
     let sim =
       Sim.create
@@ -251,7 +255,7 @@ module Bench (Shape : Shape) = struct
       Harness.set inp.cell_hidden (if hidden.(step).(seat) then 1 else 0);
       Cyclesim.cycle sim
     in
-    let order = Diffusion.cell_order ~steps in
+    let order = Model.cell_order ~steps in
     let hides (step, seat) = hidden.(step).(seat) in
     inp.write_class := Bits.vdd;
     List.iter order ~f:(write_class opening);
@@ -296,8 +300,8 @@ module Bench (Shape : Shape) = struct
     let sim = snd (filled ~opening ~hidden ~redraw ()) in
     let canvas = redrawn ~opening ~hidden ~redraw in
     let stem = plane_activations canvas hidden ~steps in
-    let frames = Diffusion.frames_of_canvas canvas in
-    let cells = Array.of_list (Diffusion.cell_order ~steps) in
+    let frames = Model.frames_of_canvas canvas in
+    let cells = Array.of_list (Model.cell_order ~steps) in
     let disagrees agrees = if agrees then 0 else 1 in
     let take counts at =
       let ((step, seat) as cell) = cells.(at % Array.length cells) in
@@ -335,15 +339,15 @@ let%expect_test "the three faces answer the canvas one pass of the walk writes" 
     let module B =
       Bench (struct
         let steps = steps
-        let rows = Diffusion.rows
+        let rows = Model.rows
       end)
     in
-    let state, opening = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
-    let threshold = Diffusion.anneal_threshold ~step:pass ~walk in
-    let state, hidden = Diffusion.hidden_cells state ~steps ~threshold in
+    let state, opening = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+    let threshold = Model.anneal_threshold ~step:pass ~walk in
+    let state, hidden = Model.hidden_cells state ~steps ~threshold in
     (* the redraw is a second opening: a class inside the register of each seat, which is
        the range a draw of the model states as well *)
-    let (_ : Prng.state), redraw = Diffusion.opening_canvas state ~steps in
+    let (_ : Prng.state), redraw = Model.opening_canvas state ~steps in
     let hides = Array.sum (module Int) hidden ~f:(Array.count ~f:Fn.id) in
     let { B.masks; columns; frames } = B.check ~opening ~hidden ~redraw in
     printf

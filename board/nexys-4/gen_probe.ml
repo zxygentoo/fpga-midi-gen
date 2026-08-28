@@ -17,7 +17,7 @@
 
 open Core
 
-let rows = Mgen_diffusion.Diffusion.rows
+let rows = Mgen_diffusion.Model.rows
 
 let circuit unit lanes =
   match unit with
@@ -58,8 +58,7 @@ let circuit unit lanes =
        data, and the widths of this design follow the RULES and not a model's own peak —
        [Elaboration.shift_bits] states that argument — thus a drawn model elaborates the
        netlist a trained one does. *)
-    let config = { Mgen_diffusion.Diffusion.Config.layers = 16; width = 16 } in
-    let model = Mgen_diffusion.Quantized.Model.For_test.drawn config ~seed:1 in
+    let model = Mgen_diffusion.Model.For_test.drawn ~layers:16 ~width:16 ~seed:1 in
     let module Unit =
       Mgen_diffusion.Forward.Make (struct
         let e = Mgen_diffusion.Elaboration.create model ~steps:128 ~lanes ~walk:512

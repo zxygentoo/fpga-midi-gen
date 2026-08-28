@@ -30,8 +30,8 @@ end
 let latency = 5
 
 (* the activation format the twin states, and the accumulator the array hands over *)
-let activation_bits = Quantized.activation_bits
-let accumulator_bits = Quantized.accumulator_bits
+let activation_bits = Model.activation_bits
+let accumulator_bits = Model.accumulator_bits
 
 (* the whole gain product: an int32 sum by an int16 gain *)
 let product_bits = accumulator_bits + 16

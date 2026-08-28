@@ -46,7 +46,7 @@ let command =
      in
      fun () ->
        Core_unix.mkdir_p dir ~perm:0o755;
-       let model = Mgen_diffusion.Quantized.Model.of_int8_checkpoint int8 in
+       let model = Mgen_diffusion.Model.of_int8_checkpoint int8 in
        let e = Mgen_diffusion.Elaboration.create model ~steps ~lanes ~walk in
        print_endline (Mgen_diffusion.Elaboration.to_string e);
        let rtl =

@@ -29,10 +29,9 @@
 
 open Core
 module Prng = Mgen_core.Prng
-module Diffusion = Mgen_diffusion.Diffusion
+module Model = Mgen_diffusion.Model
 module Elaboration = Mgen_diffusion.Elaboration
 module Forward = Mgen_diffusion.Forward
-module Quantized = Mgen_diffusion.Quantized
 module Source = Mgen_diffusion.Source
 
 (* THE GEOMETRY IS THE ONLY THING THE FLAGS CARRY. The shape of the model — L, H and every
@@ -50,8 +49,7 @@ let elaboration_param =
       (optional int)
       ~doc:"P the pitch rows of a column (default: the classes of the vocabulary)"
   in
-  fun () ->
-    Elaboration.create ?rows (Quantized.Model.of_int8_checkpoint path) ~steps ~lanes ~walk
+  fun () -> Elaboration.create ?rows (Model.of_int8_checkpoint path) ~steps ~lanes ~walk
 ;;
 
 let seed_param =
@@ -67,7 +65,7 @@ let row values = String.concat ~sep:" " (List.map (Array.to_list values) ~f:Int.
 (* ==================================================================== *)
 
 (* THE CANVAS THE CIRCUIT DREW, READ OUT OF ITS OWN CLASS WRITES: the last class a cell
-   took is the class it holds. The frames are then [Diffusion.frames_of_canvas] of that
+   took is the class it holds. The frames are then [Model.frames_of_canvas] of that
    canvas, and the two comparisons of the Python side compose — the writes ARE the twin's,
    thus the canvas is the twin's, thus a frame face that agrees with this canvas agrees
    with the twin. The driver never reads a model to state a frame. *)
@@ -90,7 +88,7 @@ let run_walk e ~seed =
   let writes = h.writes () in
   List.iter writes ~f:(fun { Source.For_test.Bench.mask; step; seat; value } ->
     printf "write %s %d %d %d\n" (if mask then "MASK" else "CLASS") step seat value);
-  let frames = Diffusion.frames_of_canvas (canvas_of_writes writes ~steps) in
+  let frames = Model.frames_of_canvas (canvas_of_writes writes ~steps) in
   List.iter
     (List.range 0 (steps + silent_steps))
     ~f:(fun step ->
@@ -120,9 +118,9 @@ let walk_command =
    from the same two facts and never redraws them. *)
 let stem_input e ~seed =
   let steps = e.Elaboration.steps in
-  let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
-  let threshold = Diffusion.anneal_threshold ~step:0 ~walk:e.walk in
-  let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
+  let state, canvas = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+  let threshold = Model.anneal_threshold ~step:0 ~walk:e.walk in
+  let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
   canvas, hidden
 ;;
 
@@ -131,7 +129,7 @@ let run_stream e ~seed =
   let rows = e.rows in
   (* the stem's decode states the classes of the vocabulary and no other P, thus a
      narrower column would read a plane the twin never wrote *)
-  if rows <> Diffusion.rows
+  if rows <> Model.rows
   then
     failwithf "the stem's decode states %d rows, thus this gate takes no other P" rows ();
   let canvas, hidden = stem_input e ~seed in

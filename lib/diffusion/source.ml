@@ -22,7 +22,7 @@ module I = Source_intf.I
 module O = Source_intf.O
 
 (* the activation format of the twin: what a logit column carries in each row *)
-let activation_bits = Quantized.activation_bits
+let activation_bits = Model.activation_bits
 
 (* one uniform is three bytes of the generator, high byte first *)
 let uniform_bits = Prng.uniform_bits
@@ -101,7 +101,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (Array.length e.openings)
       voices
       ();
-  Array.iteri e.openings ~f:(fun seat { Diffusion.low; width } ->
+  Array.iteri e.openings ~f:(fun seat { Model.low; width } ->
     if low + width > rows
     then
       invalid_argf
@@ -271,8 +271,8 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       (List.map (Array.to_list e.openings) ~f:(fun o -> of_unsigned_int ~width (f o)))
   in
   let opened_class =
-    let low = of_seat ~width:class_bits (fun o -> o.Diffusion.low) in
-    let register = of_seat ~width:width_bits (fun o -> o.Diffusion.width) in
+    let low = of_seat ~width:class_bits (fun o -> o.Model.low) in
+    let register = of_seat ~width:width_bits (fun o -> o.Model.width) in
     (* the array owns the DSPs, thus this product is pinned like every other one outside
        it *)
     let product = Column_array.no_dsp (u_open *: register) in
@@ -598,8 +598,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
      class it drew into the cell the port names, in the very cycle [draw_busy] falls; the
      walk strobes [step_taken]; and the level falls on the edge behind that strobe, thus
      the engine opens the next step. *)
-  let config = { Diffusion.Config.layers = 4; width = 8 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:4 ~width:8 ~seed:1 in
   let e = Elaboration.create model ~steps:3 ~lanes:2 ~walk:1 in
   let h = Bench.harness ~trace:true ~e ~seed:5 () in
   h.rewind ();
@@ -742,8 +741,7 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
        the design chapter, measured. It is what Phase II's overlap would buy back beside
        the head's wait; Phase I spends it. *)
   let cells_of steps = steps * Frame.voices in
-  let config = { Diffusion.Config.layers = 6; width = 8 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:6 ~width:8 ~seed:1 in
   let steps = 6 in
   let walk = 3 in
   let seed = 1 in
@@ -803,9 +801,7 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
   (* THE CLAIM, AT THE RUNG THE COST MODEL STATES. *)
   let rung =
     Elaboration.create
-      (Quantized.Model.For_test.drawn
-         { Diffusion.Config.layers = 16; width = 16 }
-         ~seed:1)
+      (Model.For_test.drawn ~layers:16 ~width:16 ~seed:1)
       ~steps:128
       ~lanes:4
       ~walk:512
@@ -870,8 +866,7 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
      about nine cells in ten where the mean pass redraws four in ten: the engine and the
      cell walks are the same in both, and the service is the whole of the difference. The
      playback window holds against the mean and not against this one. *)
-  let config = { Diffusion.Config.layers = 16; width = 16 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:16 ~width:16 ~seed:1 in
   let e = Elaboration.create model ~steps:128 ~lanes:4 ~walk:1 in
   let cells = e.steps * Frame.voices in
   let h = Bench.harness ~e ~seed:42 () in

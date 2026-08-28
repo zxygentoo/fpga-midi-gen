@@ -327,7 +327,7 @@ def quantize(ckpt, out, temperature):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     It is the only thing that crosses the seam for a build -- the elaboration reads it
-    through Quantized.Model.of_int8_checkpoint and the bitstream carries the result. The
+    through Model.of_int8_checkpoint and the bitstream carries the result. The
     population statistics and the float scales do not travel: the fold happens here, one
     time. The temperature bakes into the temper, as the bitstream carries it."""
     params, stats = model.load_params(ckpt)

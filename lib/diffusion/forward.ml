@@ -18,7 +18,7 @@ open Hardcaml
 open Signal
 
 (* the activation format of the twin: what a column carries in each row *)
-let activation_bits = Quantized.activation_bits
+let activation_bits = Model.activation_bits
 
 module State = struct
   type t =
@@ -1069,9 +1069,9 @@ end
    canvas and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
    columns lives. *)
 let stem_input ~steps ~walk ~seed =
-  let state, canvas = Diffusion.opening_canvas (Prng.create_folded ~seed) ~steps in
-  let threshold = Diffusion.anneal_threshold ~step:0 ~walk in
-  let (_ : Prng.state), hidden = Diffusion.hidden_cells state ~steps ~threshold in
+  let state, canvas = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+  let threshold = Model.anneal_threshold ~step:0 ~walk in
+  let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
   let stem = Canvas.For_test.plane_activations canvas hidden ~steps in
   fun ~step ~plane -> Canvas.For_test.plane_column stem ~step ~plane
 ;;
@@ -1094,8 +1094,7 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
      writes go out one a cycle when the band stands whole. THE NEXT DWELL IS ALREADY
      RUNNING UNDER ALL OF IT — [term] never falls — which is what "the dwells stand back
      to back" means and what the exact cycle counts lean on. *)
-  let config = { Diffusion.Config.layers = 4; width = 3 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:4 ~width:3 ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:3 ~lanes:2 ~walk:4 in
   let module B =
     Bench (struct
@@ -1206,8 +1205,7 @@ let%expect_test "the pair interleaves, and the picture is the schedule" =
      ring and a B block writes X, and they alternate from the third block on. The flush
      trails the dwell by a drain and an epilogue, thus a write stands under the block
      AFTER the one that made it — which is the whole reason the lag is two and not one. *)
-  let config = { Diffusion.Config.layers = 4; width = 3 } in
-  let model = Quantized.Model.For_test.drawn config ~seed:1 in
+  let model = Model.For_test.drawn ~layers:4 ~width:3 ~seed:1 in
   let elaboration = Elaboration.create ~rows:6 model ~steps:4 ~lanes:2 ~walk:4 in
   let module B =
     Bench (struct
@@ -1280,8 +1278,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
      IF THE ROTATION EVER FAILS TO HIDE A FETCH the preamble line grows with the dwells
      and not with the layers, and then the design moves and not this bench. *)
   let case ~name ~width ~lanes ~pairs ~steps ~seed =
-    let config = { Diffusion.Config.layers = 2 + (2 * pairs); width } in
-    let model = Quantized.Model.For_test.drawn config ~seed in
+    let model = Model.For_test.drawn ~layers:(2 + (2 * pairs)) ~width ~seed in
     let walk = 8 in
     let elaboration = Elaboration.create model ~steps ~lanes ~walk in
     let module B =

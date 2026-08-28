@@ -17,10 +17,10 @@
     the next [rewind] opens the next piece.
 
     **THE CONSUMPTION ORDER IS THE CONTRACT.** One generator serves the opening, every
-    mask and every draw of a walk, in the order [Diffusion] states: one uniform for each
-    cell of the opening, then for each pass one uniform for each cell (the masks) and one
-    for each HIDDEN cell (the redraws), the cells in [Diffusion.cell_order] everywhere. A
-    walk that draws for a standing cell, or assembles a uniform low byte first, states a
+    mask and every draw of a walk, in the order [Model] states: one uniform for each cell
+    of the opening, then for each pass one uniform for each cell (the masks) and one for
+    each HIDDEN cell (the redraws), the cells in [Model.cell_order] everywhere. A walk
+    that draws for a standing cell, or assembles a uniform low byte first, states a
     different piece and NO GATE BELOW THIS ONE SAYS SO. The canvas agreement in this
     module therefore compares PER PHASE and not only the finished canvas.
 

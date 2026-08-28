@@ -12,8 +12,8 @@ it operation for operation: the same seed gives the same canvas, bit for
 bit. This is Gate B, and it runs under `uv run pytest` — Python states what
 the machine must do and `bin/gate_diffusion.exe` states what it did. The
 circuit takes its ROM image and bases from the CONTRACT FILE the twin
-writes (`rom_bits`, `rom_bases` over
-`Quantized.Model.of_int8_checkpoint`) — the twin is the authority on every
+writes (`rom_bits`, `rom_bases` over `Model.of_int8_checkpoint`) — the twin
+is the authority on every
 value, and the dwell-order packing is the elaboration's permutation of it,
 as "The weight ROM" states. The float model is not the specification of the
 circuit; the drift report already measured what the quantization costs.
@@ -56,7 +56,7 @@ What the machine round stands on:
   measurement and gates nothing.
 - **The contract file**, the only thing that crosses the seam for a build:
   `infer.py quantize --ckpt C --out C.int8` states the int8 image and the
-  folded norm, and `Quantized.Model.of_int8_checkpoint` reads it into the
+  folded norm, and `Model.of_int8_checkpoint` reads it into the
   elaboration. Its own gate is the NETLIST — the Verilog of `gen_verilog`
   must stay md5-identical to the one the flash carries.
 - **The gates of the circuit**, in `jax/tests/test_rtl.py`: Python states
@@ -64,13 +64,13 @@ What the machine round stands on:
   did. The walk gate holds every write of the cell port, phase for phase;
   the stream gate holds every column the stores take. Neither side can
   pass by agreeing with itself.
-- **What stays in OCaml below the seam** is what the CIRCUIT reads: the
-  facts of the walk (`lib/diffusion/diffusion.ml` — the cell order, the
-  registers of the seats, the opening, the masks, the anneal, the frames),
-  the int8 checkpoint as data (`quantized.ml`), the stem's decode
-  (`canvas.ml`) and the draw (`draw.ml`). Each of those is a rule the RTL
-  must equal rather than restate, and each stands beside the unit that
-  must equal it.
+- **What stays in OCaml below the seam** is what the CIRCUIT reads, and it
+  is ONE MODULE: `lib/diffusion/model.ml` — the roll, the formats, the
+  contract file as data, the walk (the cell order, the registers of the
+  seats, the opening, the masks, the anneal) and the frames. The two
+  software halves that a unit must equal stand beside that unit instead:
+  the stem's decode in `canvas.ml`, the draw in `draw.ml`. Each of those is
+  a rule the RTL must equal rather than restate.
 
 The drift lines of the climb, measured 2026-08-26 at seed 42, T 128,
 32 passes:
@@ -90,7 +90,7 @@ module at every rung.
 
 Every uniform of a walk comes from `Prng`, the xorshift32 of the circuit,
 and THE CONSUMPTION ORDER IS THE CONTRACT — the full statement is in
-`lib/diffusion/diffusion.mli` and `jax/diffusion/quantized.py`, and the
+`lib/diffusion/model.mli` and `jax/diffusion/quantized.py`, and the
 machine obeys it as written:
 
 1. One canvas is one seed. The board takes the SEED cell as it stands
@@ -374,7 +374,7 @@ Five layers, and the middle one is where the retired program stood:
 - **L0, the shared units**: `Prng.Rtl`, `Exp2`, the pick rules of
   `Mgen_nn.Quantized`, and `Vocab.Rtl` for the score port. Era four and era
   five built them and this era changes none of them.
-- **L1, the elaboration**: a value, computed from `Quantized.Model.t`. It
+- **L1, the elaboration**: a value, computed from `Model.t`. It
   gives the layer table, the weight ROM image, the constant ROMs, the alpha
   ROM, the address maps and the cycle cost. It states no signal, thus an
   expect test prints it and the cost model cannot rot.
@@ -1543,14 +1543,14 @@ Each rung of the climb is this loop with new constants. Two rules keep it
 honest:
 
 - **Trained checkpoints elect music; drawn weights measure builds only.**
-  `Quantized.Model.For_test.drawn` elaborates a shape that has no
+  `Model.For_test.drawn` elaborates a shape that has no
   checkpoint, for a timing or utilization reading — never for a drift
   number (the drift of drawn weights reads the format floor, a known trap)
   and never for a
   rung.
 - **Every elaboration parameter has a test shape.** P — the 48 pitch rows
   — is a parameter of the CIRCUIT like the rest, pinned to 48 by the board.
-  The twin holds P at `Diffusion.rows`, thus Gate B compares at P 48 and the
+  The twin holds P at `Model.rows`, thus Gate B compares at P 48 and the
   tiny shapes come from T, L, H, G and N. **Parameterizing the twin is
   DEFERRED and not refused**: it moves a frozen reference, and nothing moves
   the reference before a circuit works. When one works, the twin takes P as

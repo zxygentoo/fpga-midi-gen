@@ -38,8 +38,8 @@ let first_row_latency = accumulate_latency + 2
 
 (* the activation format of the stream and the accumulator behind it, read from the twin
    that states them; the weight byte is the quantizer's own rail *)
-let activation_bits = Quantized.activation_bits
-let accumulator_bits = Quantized.accumulator_bits
+let activation_bits = Model.activation_bits
+let accumulator_bits = Model.accumulator_bits
 let weight_bits = 8
 
 (* THE ARRAY OWNS THE DSPS AND EVERY OTHER UNIT PINS ITS PRODUCTS AWAY FROM THEM. The
@@ -519,18 +519,18 @@ let%expect_test "the array agrees over a sweep of shapes" =
 
 let%expect_test "the accumulator holds the twin's widest layer at its rails" =
   (* THE INT32 ACCUMULATOR IS THE TIGHTEST NUMBER IN THIS UNIT, and a drawn value never
-     reaches it. The twin is exact below [Quantized.Model.widest_inputs] channels and the
-     array accumulates in 32 bits on that promise; here the promise runs to its edge —
-     every activation at the int16 rail, every weight at the quantizer's rail of 127, and
-     every sign the same, at the widest layer the twin allows. The printed peak is the
-     margin, and it is small: a sum one channel wider would pass the ceiling. *)
+     reaches it. The twin is exact below [Model.widest_inputs] channels and the array
+     accumulates in 32 bits on that promise; here the promise runs to its edge — every
+     activation at the int16 rail, every weight at the quantizer's rail of 127, and every
+     sign the same, at the widest layer the twin allows. The printed peak is the margin,
+     and it is small: a sum one channel wider would pass the ceiling. *)
   let module B =
     Bench (struct
-      let rows = Diffusion.rows
+      let rows = Model.rows
       let lanes = 4
     end)
   in
-  let inputs = Quantized.Model.widest_inputs in
+  let inputs = Model.widest_inputs in
   let rail activation weight =
     { B.columns =
         Array.init inputs ~f:(fun (_ : int) ->

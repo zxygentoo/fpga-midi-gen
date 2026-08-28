@@ -16,7 +16,7 @@ end
 
 (* the Q the exp2 unit reads, and the format the twin's logits carry *)
 let exp2_q = 12
-let activation_bits = Quantized.activation_bits
+let activation_bits = Model.activation_bits
 
 (* the magnitude port of [Exp2]: a wider value saturates into it, and the saturation is
    exact because the unit already gives zero at a magnitude of 16 and above *)
@@ -134,7 +134,7 @@ module Make (Shape : Shape) = struct
         -: sresize peak.value ~width:(activation_bits + 1)
       in
       let shifted =
-        let rise = exp2_q - Quantized.activation_q in
+        let rise = exp2_q - Model.activation_q in
         sll (sresize difference ~width:(activation_bits + 1 + rise)) ~by:rise
       in
       (* THE TEMPER REGISTER — the second cut: the subtract and the temper in one cycle,
@@ -256,7 +256,7 @@ let draw_cell ~(temper : Nn_quantized.Constants.scale) raw prng =
       Nn_quantized.exp2_q
         (Nn_quantized.Constants.apply
            temper
-           ((logit - peak) lsl (exp2_q - Quantized.activation_q))))
+           ((logit - peak) lsl (exp2_q - Model.activation_q))))
   in
   Nn_quantized.draw ~weights prng
 ;;

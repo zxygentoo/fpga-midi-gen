@@ -1,20 +1,20 @@
 (** The elaboration of era six: one model at one geometry, as a value.
 
-    L1 of the diffusion source. The circuit reads its shape out of the checkpoint the way
-    [Diffusion.Config.of_checkpoint] does — no flag states a dimension — thus THIS MODULE
-    IS THE ONLY PLACE THAT READS THE MODEL. The layer table, the weight image, the
-    per-channel norms, the anneal table and the cycle cost all come out of [create], and
-    every width, every depth and every base of the circuit is a field of the result. A new
-    checkpoint moves nothing else.
+    L1 of the diffusion source. The circuit reads its shape out of the contract file's own
+    tensor shapes — no flag states a dimension — thus THIS MODULE IS THE ONLY PLACE THAT
+    READS THE MODEL. The layer table, the weight image, the per-channel norms, the anneal
+    table and the cycle cost all come out of [create], and every width, every depth and
+    every base of the circuit is a field of the result. A new checkpoint moves nothing
+    else.
 
     The design is [docs/diffusion_rtl.md], "The circuit". What a caller must know:
 
     - **The weight image is packed in the DWELL order and not the checkpoint order.** The
-      twin ([Quantized.Model.rom_bits]) stays the authority on every value; the
-      permutation belongs here, and it buys the circuit a ROM address that only counts. A
-      group that runs past a layer's channels pads with zero bytes — those lanes multiply
-      by zero and the drain does not read them — thus each [(tap, input channel)] row of
-      the image is a whole number of words.
+      twin ([Model.rom_bits]) stays the authority on every value; the permutation belongs
+      here, and it buys the circuit a ROM address that only counts. A group that runs past
+      a layer's channels pads with zero bytes — those lanes multiply by zero and the drain
+      does not read them — thus each [(tap, input channel)] row of the image is a whole
+      number of words.
     - **THE MEMORIES ARE BANKED, AND A BANK IS A POWER OF TWO.** Vivado pads an inferred
       memory to its full address space and says nothing: rung 2's image asked 64 tiles
       against 49 free and the mapper demoted every ROM of the design to fabric, and a
@@ -117,13 +117,12 @@ type t =
       in the top [gain_bits]. The three stand at one address because the epilogue wants
       the three at one time, thus no two of them can fall out of step. *)
   ; alpha_rom : Hardcaml.Bits.t array
-  (** the anneal thresholds of [Diffusion.anneal_threshold], one for each pass, on the
-      24-bit grid of the generator *)
-  ; openings : Diffusion.opening array
-  (** the register of each seat as classes, [Diffusion.seat_openings] carried: the walk's
-      OPEN multiplies its uniform by [width] and adds [low]. It rides here so that the
-      circuit reads ONE value for everything it holds, as it reads its widths and its
-      bases here. *)
+  (** the anneal thresholds of [Model.anneal_threshold], one for each pass, on the 24-bit
+      grid of the generator *)
+  ; openings : Model.opening array
+  (** the register of each seat as classes, [Model.seat_openings] carried: the walk's OPEN
+      multiplies its uniform by [width] and adds [low]. It rides here so that the circuit
+      reads ONE value for everything it holds, as it reads its widths and its bases here. *)
   ; temper : Mgen_nn.Quantized.Constants.scale
   (** the sampling temper of the model, [log2e / T]: the draw multiplies by it *)
   }
@@ -215,14 +214,14 @@ val channel_bits : t -> int
 (** [create ?rows model ~steps ~lanes ~walk] elaborates [model] at the geometry those
     numbers state.
 
-    [rows] is [Diffusion.rows] by default: the board pins P there and Gate B compares
-    there, because the twin holds P at that number. The circuit takes it as a parameter so
-    that the twin can follow later — the deferral of [docs/diffusion_rtl.md], "The
-    iteration strategy".
+    [rows] is [Model.rows] by default: the board pins P there and Gate B compares there,
+    because the twin holds P at that number. The circuit takes it as a parameter so that
+    the twin can follow later — the deferral of [docs/diffusion_rtl.md], "The iteration
+    strategy".
 
     It raises [Invalid_argument], and the message names what it refused:
 
-    - whatever [Quantized.Model.check_shape] refuses;
+    - whatever [Model.check_shape] refuses;
     - a layer whose dwell [9 * inputs] is shorter than [rows + lanes + 2], thus the
       [rows]-stage drain chain always empties before the next capture AND the residual
       columns and norm words of the next group always land before the drain that reads
@@ -231,7 +230,7 @@ val channel_bits : t -> int
     - a gain shift that does not fit [shift_bits];
     - a canvas of no steps, a column of no rows, a group of no lanes, or a walk of no
       passes. *)
-val create : ?rows:int -> Quantized.Model.t -> steps:int -> lanes:int -> walk:int -> t
+val create : ?rows:int -> Model.t -> steps:int -> lanes:int -> walk:int -> t
 
 (** [forward_cycles t] is one forward pass, EXACTLY: for each layer the dwells of every
     column and group — one cycle for each (tap, input channel) pair — and one drain tail
