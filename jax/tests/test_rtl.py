@@ -75,8 +75,7 @@ def drive(subcommand, path, *, steps, lanes, walk, seed):
 
 def contract_file(tmp_path, *, weight_seed, layers, width):
     """the contract file of one drawn model, and the twin that wrote it"""
-    params, stats = model.drawn_params(weight_seed, layers, width)
-    twin = quantized.of_params(params, stats)
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(weight_seed, layers, width))
     path = tmp_path / f"l{layers}-h{width}-s{weight_seed}.int8"
     quantized.save(path, twin)
     return path, twin
@@ -223,13 +222,7 @@ def test_the_store_writes_are_the_twins(
     # the walk of the driver's own stream gate: it names the first mask's threshold alone
     lines = drive("stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed)
     classes, hidden = stem_input(lines, steps)
-    want = quantized.layer_writes(
-        twin,
-        quantized.device_kernels(twin),
-        classes,
-        hidden,
-        quantized.counters(),
-    )
+    want = twin.layer_writes(classes, hidden, quantized.counters())
     checked = 0
     for word in lines:
         if word[0] == "write":
@@ -253,7 +246,7 @@ def test_the_store_writes_are_the_twins(
         )
     # every layer's whole tensor and every offered step, thus a driver that printed nothing
     # cannot pass
-    columns = sum(steps * layer.outputs for layer in twin.layers[:-1])
+    columns = sum(steps * layer.outputs for layer in twin.every_layer()[:-1])
     assert checked == columns + (steps * VOICES), (
         f"{name}: {checked} columns checked, and the shape holds "
         f"{columns + steps * VOICES}"

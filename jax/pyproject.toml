@@ -3,7 +3,16 @@ name = "mgen-jax"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    "jax[cuda12]>=0.11.0",
+    # THE THREE JAX PACKAGES MOVE TOGETHER OR NOT AT ALL. jax, jaxlib and the CUDA
+    # plugin must state one version: a plugin one release behind the runtime is
+    # refused ("not compatible ... will not be used") and the trainer falls back to
+    # the CPU SILENTLY, ten times slower and saying nothing. flax 0.12.9 wants jax
+    # 0.11.1 or later, thus all three moved from 0.11.0 on 2026-08-28.
+    "jax[cuda12]==0.11.1",
+    "jaxlib==0.11.1",
+    "jax-cuda12-plugin==0.11.1",
+    "flax>=0.12.9",
+    "optax>=0.2.8",
     "safetensors>=0.8.0",
     "click>=8.1",
     "mido>=1.3",

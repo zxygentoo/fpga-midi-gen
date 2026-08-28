@@ -16,6 +16,7 @@ play -- it would play the wrong piece, or read a number that means nothing:
 import itertools
 import math
 import re
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -23,10 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from click.testing import CliRunner
+from flax import nnx
+from safetensors.numpy import load_file, save_file
 
 import data
 import measure
-import nn
 import prng
 from diffusion import infer, model, quantized, train
 from diffusion import measure as sheet
@@ -39,7 +41,7 @@ needs_corpus = pytest.mark.skipif(not PIECES.exists(), reason="needs corpus_tool
 def tiny(seed=0, layers=6, width=8):
     """a model small enough for a test; the layer count still holds the paper's shape --
     a stem, two residual pairs and a head"""
-    return train.draw_params(jax.random.PRNGKey(seed), layers, width)
+    return model.Coconet(layers, width, rngs=nnx.Rngs(seed))
 
 
 # ---------------------------------------------------------------------
@@ -131,12 +133,12 @@ def test_the_anneal_falls_from_the_top_and_settles_on_the_floor():
 def test_the_net_states_a_distribution_for_every_cell():
     """the softmax runs over the pitch rows, thus every voice of every step carries one --
     the masked cells and the context alike"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
     hidden = model.orderless_masks(jax.random.PRNGKey(2), 2, 16)
-    said, seen = model.logits(params, stats, model.planes(classes, hidden))
+    said, seen = coconet(model.planes(classes, hidden))
     assert said.shape == (2, 16, model.ROWS, model.VOICES)
-    assert len(seen) == len(params["layers"])
+    assert len(seen) == len(coconet.every_layer())
     total = jnp.sum(jax.nn.softmax(said, axis=-2), axis=-2)
     assert np.allclose(np.asarray(total), 1.0, atol=1e-5)
 
@@ -144,36 +146,53 @@ def test_the_net_states_a_distribution_for_every_cell():
 def test_rematerialisation_changes_nothing_but_the_memory():
     """the pair is the unit of remat, thus the trunk keeps 31 tensors instead of hundreds;
     what it computes must not move"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
     sheet = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(3), 2, 16))
-    plain, _ = model.logits(params, stats, sheet, training=True)
-    kept, _ = model.logits(params, stats, sheet, training=True, remat=True)
+    plain, _ = coconet(sheet, training=True)
+    kept, _ = coconet(sheet, training=True, remat=True)
     assert np.allclose(np.asarray(plain), np.asarray(kept), atol=1e-5)
 
 
 def test_the_paper_size_holds_nine_million_parameters():
     """the shape of the round, counted and not assumed: 64 layers of 3 by 3 at 128
     channels, a stem of 2I planes and a head of I"""
-    params, _ = tiny(layers=model.LAYERS, width=model.WIDTH)
-    assert len(params["layers"]) == model.LAYERS
-    assert 9.0e6 < model.parameter_count(params) < 9.3e6
+    coconet = tiny(layers=model.LAYERS, width=model.WIDTH)
+    assert len(coconet.every_layer()) == model.LAYERS
+    assert len(coconet.pairs) == (model.LAYERS - 2) // 2
+    assert 9.0e6 < coconet.parameter_count() < 9.3e6
+
+
+def flat_tensors(coconet):
+    """the whole model as one list, in the order [Coconet.save] writes it"""
+    return [np.asarray(t) for layer in coconet.every_layer() for t in layer.tensors()]
 
 
 def test_the_checkpoint_states_the_weights_and_the_statistics(tmp_path):
     """The reader takes the layer count from the tensor count and the width from the
     shapes. The population statistics travel inside the file, because a model cannot state
     a probability without them."""
-    params, stats = tiny(seed=3)
-    stats = [{key: value + 0.5 for key, value in stat.items()} for stat in stats]
+    coconet = tiny(seed=3)
+    # a population that is not the opening, thus a reader that dropped it would be caught
+    for layer in coconet.every_layer():
+        layer.norm.mean[...] = layer.norm.mean[...] + 0.5
+        layer.norm.variance[...] = layer.norm.variance[...] + 0.5
     path = str(tmp_path / "sheet.ckpt")
-    nn.save_checkpoint(path, model.flat_tensors(params, stats))
-    read_params, read_stats = model.load_params(path)
-    pairs = zip(
-        model.flat_tensors(params, stats), model.flat_tensors(read_params, read_stats)
-    )
-    assert all(np.array_equal(np.asarray(a), np.asarray(b)) for a, b in pairs)
-    assert len(model.flat_tensors(read_params, read_stats)) == 6 * model.LAYER_TENSORS
+    coconet.save(path)
+    read = model.Coconet.load(path)
+    pairs = zip(flat_tensors(coconet), flat_tensors(read))
+    assert all(np.array_equal(a, b) for a, b in pairs)
+    assert len(flat_tensors(read)) == 6 * model.LAYER_TENSORS
+
+
+def test_the_tree_holds_no_half_pair():
+    """THE LAYER COUNT IS EVEN AND AT LEAST FOUR, and the tree is what says so. The
+    functional form this module replaced stated the trunk by stride, and an odd count read
+    its last layer BOTH as the close of a pair and as the head -- silently, and only in
+    the arithmetic."""
+    for layers in (3, 5, 7):
+        with pytest.raises(ValueError, match="no sheet model"):
+            model.Coconet(layers, 8, rngs=nnx.Rngs(0))
 
 
 def test_the_population_warms_before_it_settles():
@@ -190,16 +209,17 @@ def test_the_population_statistics_decide_the_answer():
     """A pass that is not training must read the statistics it was handed and no others.
     If it read the batch's own, one sheet of a Gibbs walk would depend on what else stood
     beside it in the batch, and a referee could not reproduce a number."""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((2, 16, model.VOICES), dtype=np.int32)
     sheet = model.planes(classes, model.orderless_masks(jax.random.PRNGKey(4), 2, 16))
-    said, _ = model.logits(params, stats, sheet)
-    moved = [{"mean": s["mean"] + 1.0, "variance": s["variance"]} for s in stats]
-    other, _ = model.logits(params, moved, sheet)
-    assert not np.allclose(np.asarray(said), np.asarray(other))
-    # and one sheet alone must give what it gave inside the pair
-    alone, _ = model.logits(params, stats, sheet[:1])
+    said, _ = coconet(sheet)
+    # one sheet alone must give what it gave inside the pair
+    alone, _ = coconet(sheet[:1])
     assert np.allclose(np.asarray(alone), np.asarray(said[:1]), atol=1e-5)
+    for layer in coconet.every_layer():
+        layer.norm.mean[...] = layer.norm.mean[...] + 1.0
+    other, _ = coconet(sheet)
+    assert not np.allclose(np.asarray(said), np.asarray(other))
 
 
 # ---------------------------------------------------------------------
@@ -210,11 +230,11 @@ def test_the_population_statistics_decide_the_answer():
 def test_the_loss_reads_the_masked_cells_and_no_others():
     """the paper's equation 9 sums over the complement of the context; a loss that read the
     context too would be the code release's default and not the paper's"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((1, 8, model.VOICES), dtype=np.int32)
     hidden = np.zeros((1, 8, model.VOICES), dtype=bool)
     hidden[0, 0, 0] = True
-    said, _ = model.logits(params, stats, model.planes(classes, hidden))
+    said, _ = coconet(model.planes(classes, hidden))
     logp = jax.nn.log_softmax(said, axis=-2)
     one = -float(logp[0, 0, classes[0, 0, 0], 0])
     assert float(train.masked_nll(said, jnp.asarray(classes), jnp.asarray(hidden))) == (
@@ -247,10 +267,10 @@ def test_the_loss_divides_by_the_count_of_each_sheet():
 def test_an_untrained_model_reads_the_uniform_prior():
     """a model that has learned nothing must state log(ROWS) nats for each masked cell, and
     a loss that reads far from it at step zero has a scale fault"""
-    params, stats = tiny(layers=8, width=16)
+    coconet = tiny(layers=8, width=16)
     classes = np.zeros((4, 16, model.VOICES), dtype=np.int32)
     hidden = model.orderless_masks(jax.random.PRNGKey(5), 4, 16)
-    said, _ = model.logits(params, stats, model.planes(classes, hidden), training=True)
+    said, _ = coconet(model.planes(classes, hidden), training=True)
     value = float(train.masked_nll(said, jnp.asarray(classes), hidden))
     assert abs(value - np.log(model.ROWS)) < 0.3
 
@@ -545,13 +565,9 @@ def test_algorithm_one_reads_the_true_frames_before_it_and_nothing_after():
 
 def test_algorithm_one_scores_every_frame_one_time():
     """the return is nats for each frame, thus every frame must be reached and none twice"""
-    params, stats = tiny()
+    coconet = tiny()
     classes = np.zeros((16, model.VOICES), dtype=np.int32)
-    forward = jax.jit(
-        lambda c, h: jax.nn.log_softmax(
-            model.logits(params, stats, model.planes(c, h))[0], axis=-2
-        )
-    )
+    forward = partial(sheet.log_probabilities, coconet)
     rng = np.random.default_rng(0)
     lls = sheet.framewise_lls(forward, classes, sheet.frame_ordering(rng, 16), 8)
     assert lls.shape == (16,)
@@ -602,9 +618,9 @@ def test_the_walk_rewrites_the_sheet():
     """a walk of a few passes must change the opening it was handed -- a sampler that
     left every cell standing never fired -- and it must state a sheet of the same
     shape, every cell a class of the vocabulary"""
-    params, stats = tiny()
+    coconet = tiny()
     states, given = infer.opening_sheet(prng.states([1, 2]), 8)
-    drawn, _ = infer.gibbs(params, stats, given, states, walk=4, temperature=1.0)
+    drawn, _ = infer.gibbs(coconet, given, states, walk=4, temperature=1.0)
     assert drawn.shape == given.shape
     assert (drawn != given).any()
     assert drawn.min() >= 0 and drawn.max() < model.ROWS
@@ -614,11 +630,11 @@ def test_a_sheet_walks_the_same_alone_or_in_a_batch():
     """One seed names one SHEET, whatever stands beside it: each walk holds its own
     generator, thus a batch is independent pieces and a sweep's seed crosses to a solo
     audition unchanged. The old sampler could not say this -- its seed named the batch."""
-    params, stats = tiny()
+    coconet = tiny()
 
     def walk(seeds):
         states, given = infer.opening_sheet(prng.states(seeds), 8)
-        drawn, _ = infer.gibbs(params, stats, given, states, walk=3, temperature=1.0)
+        drawn, _ = infer.gibbs(coconet, given, states, walk=3, temperature=1.0)
         return drawn
 
     alone = walk([7])
@@ -793,33 +809,83 @@ def test_the_temper_is_log2e_over_the_temperature():
         quantized.temper_of(0.0)
 
 
+def test_the_twin_carries_the_float_models_skeleton():
+    """THE TWO TREES ARE ONE TREE, and that is what makes the twin auditable: a reader
+    puts `coconet.pairs[k].first` beside `twin.pairs[k].first` and reads one layer against
+    its own quantization, with nothing to align by hand."""
+    coconet = model.Coconet.drawn(5, 6, 8)
+    twin = quantized.QuantizedCoconet.of(coconet)
+    assert len(twin.pairs) == len(coconet.pairs)
+    for here, there in zip(twin.every_layer(), coconet.every_layer()):
+        assert here.kernel.shape == there.conv.kernel.shape
+        assert here.outputs == len(there.norm.scale[...])
+    # the stem reads the planes, the head states the voices, and each pair is two layers
+    assert twin.stem.inputs == 2 * model.VOICES
+    assert twin.head.outputs == model.VOICES
+    assert twin.pairs[0].first.outputs == twin.pairs[0].second.inputs
+
+
 def test_the_contract_file_round_trips_exactly(tmp_path):
     """`save` then `load` is the identity: the seam carries the whole model and nothing of
     it is re-derived on either side of the file."""
-    params, stats = model.drawn_params(5, 6, 8)
-    twin = quantized.of_params(params, stats, 0.9)
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8), 0.9)
     path = tmp_path / "round-trip.int8"
     quantized.save(path, twin)
     read = quantized.load(path)
-    assert (read.temper_q_value, read.temper_q) == (twin.temper_q_value, twin.temper_q)
-    assert read.temperature == twin.temperature
-    assert len(read.layers) == len(twin.layers)
-    for here, there in zip(read.layers, twin.layers):
+    assert read.temper == twin.temper
+    assert len(read.pairs) == len(twin.pairs)
+    for here, there in zip(read.every_layer(), twin.every_layer()):
         assert here.e == there.e
-        assert np.array_equal(here.kernel, there.kernel)
-        assert np.array_equal(here.gain_q_value, there.gain_q_value)
-        assert np.array_equal(here.gain_q, there.gain_q)
-        assert np.array_equal(here.bias, there.bias)
+        assert np.array_equal(np.asarray(here.kernel[...]), np.asarray(there.kernel[...]))
+        assert np.array_equal(here.gain_q_value[...], there.gain_q_value[...])
+        assert np.array_equal(here.gain_q[...], there.gain_q[...])
+        assert np.array_equal(here.bias[...], there.bias[...])
+
+
+def rebuilt(twin, **parts):
+    """the same twin with some of its parts replaced -- the tree's `_replace`"""
+    held = {
+        "stem": twin.stem,
+        "pairs": list(twin.pairs),
+        "head": twin.head,
+        "temper": twin.temper,
+    }
+    return quantized.QuantizedCoconet(**{**held, **parts})
 
 
 def test_a_broken_model_refuses_loudly():
     """`check_shape` states the rules its consumers assume, and the elaboration calls it
-    where a bad shape must fail loudly."""
-    params, stats = model.drawn_params(5, 6, 8)
-    twin = quantized.of_params(params, stats)
-    with pytest.raises(ValueError, match="no whole residual pairs"):
-        quantized.check_shape(twin._replace(layers=twin.layers[:3]))
-    head = twin.layers[-1]
-    chopped = head._replace(bias=head.bias[:2])
+    where a bad shape must fail loudly.
+
+    THE SHORT AND THE ODD TRUNK ARE NOT AMONG THEM ANY MORE: a [QuantizedCoconet] is a
+    stem, whole pairs and a head by construction, thus neither can be built. What a file
+    of the wrong tensor count meets is `load`, and the test below holds that."""
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    head = twin.head
+    chopped = quantized.QuantizedNormedConv(
+        kernel=head.kernel[...],
+        e=head.e,
+        gain_q_value=head.gain_q_value[...],
+        gain_q=head.gain_q[...],
+        bias=head.bias[...][:2],
+    )
     with pytest.raises(ValueError, match="do not cover its channels"):
-        quantized.check_shape(twin._replace(layers=twin.layers[:-1] + (chopped,)))
+        quantized.check_shape(rebuilt(twin, head=chopped))
+    # a head that reads a width the pair before it did not write
+    narrow = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 4))
+    with pytest.raises(ValueError, match="the layer before it"):
+        quantized.check_shape(rebuilt(twin, head=narrow.head))
+
+
+def test_a_contract_file_of_the_wrong_shape_refuses_loudly(tmp_path):
+    """The file is a FLAT list and the tree is not, thus the count is checked where the
+    two meet: a file that holds no whole residual pairs is no model of this era."""
+    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    path = tmp_path / "short.int8"
+    quantized.save(path, twin)
+    tensors = load_file(str(path))
+    for name in (str(quantized.LAYER_TENSORS * 5 + on) for on in range(5)):
+        del tensors[name]
+    save_file(tensors, str(path))
+    with pytest.raises(ValueError, match="no quantized sheet model"):
+        quantized.load(path)

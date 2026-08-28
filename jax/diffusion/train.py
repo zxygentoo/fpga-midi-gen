@@ -22,14 +22,22 @@ valid loss -- 228 pieces against nine million parameters memorize, and the valid
 the only guard the round has.
 
 THE OPTIMIZER IS PLAIN ADAM, and it is plain Adam by arithmetic and not by a second code
-path: --wd is 0 by default, and [nn.adamw] with a weight decay of zero IS Adam. That is the
+path: --wd is 0 by default, and AdamW with a weight decay of zero IS Adam. That is the
 paper's -- it is ISMIR 2017, where AdamW is arXiv 1711.05101 of November 2017 and ICLR 2019,
 and the code release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no
 L2 anywhere. Batch norm and the best-by-valid checkpoint are the whole of its regularisation.
 
+IT IS OPTAX'S ADAMW AND NOT THE HAND-ROLLED `nn.adamw`, and the two are the same rule:
+`scale_by_adam` bias-corrected with eps after the square root, then the decoupled decay,
+then the rate, behind a global-norm clip. `test_train.py` holds the two equal leaf for leaf
+at t 1 and t 1000 -- with and without the clip engaged, at a constant rate and under the
+schedule -- and holds the two curves equal at every step of the run. A rule that is proven
+equal owes no retrain. The frozen eras keep `nn.adamw` and `nn.schedule`; this trainer
+calls neither.
+
 THE RATE MOVES WITH THE RUNG. The release carries no flag for it: `lib_hparams` holds
 2**-4 marked "for sigmoids", with 2**-6 commented out above it, and halves on a plateau of
-five epochs. Measured 2026-08-24 under the warmup and cosine decay of nn.schedule, the
+five epochs. Measured 2026-08-24 under the warmup and cosine decay of [learning_rates], the
 board rung wants that commented 2**-6 = 1.6e-2 and the ceiling wants 3e-3. The default is
 the ceiling's rate, because every other default states the paper's shape; a rung passes
 its own, as docs/diffusion.md records them.
@@ -41,6 +49,8 @@ import click
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
+from flax import nnx
 
 import data
 import nn
@@ -51,48 +61,9 @@ JAX_ROOT = nn.JAX_ROOT
 # The batch norm of the code release: `popmean -= 0.01 * (popmean - batchmean)`, thus the
 # population keeps 0.99 of itself at every step.
 POP_DECAY = 0.99
-# its gamma initializer. A norm that opens at a tenth keeps the residual branch small, and
-# a trunk of 64 layers then trains from a draw.
-NORM_SCALE = 0.1
 # The probes are the same rows for every run, thus two seeds and two shapes compare. It is
 # not the training seed and it never moves.
 PROBE_SEED = 0
-
-
-def draw_params(key, layers, width):
-    """The parameter tree and the population statistics at step zero, in the order the
-    network runs.
-
-    A convolution takes the He normal draw of the code release -- standard deviation
-    sqrt(2 / fan_in) over the reach and the input channels -- and carries no bias, because
-    the norm behind it carries the shift.
-
-    The statistics open at mean 0 and variance 1. Nothing reads them until the trainer has
-    filled them: a training pass reads the batch's own."""
-    channels = (
-        [(2 * model.VOICES, width)]
-        + [(width, width)] * (layers - 2)
-        + [(width, model.VOICES)]
-    )
-    keys = jax.random.split(key, len(channels))
-
-    def layer(key, inputs, outputs):
-        shape = (model.KERNEL, model.KERNEL, inputs, outputs)
-        deviation = np.sqrt(2.0 / (model.KERNEL * model.KERNEL * inputs))
-        return {
-            "kernel": jax.random.normal(key, shape, dtype=jnp.float32) * deviation,
-            "scale": jnp.full(outputs, NORM_SCALE, jnp.float32),
-            "shift": jnp.zeros(outputs, jnp.float32),
-        }
-
-    def opening(outputs):
-        return {
-            "mean": jnp.zeros(outputs, jnp.float32),
-            "variance": jnp.ones(outputs, jnp.float32),
-        }
-
-    params = [layer(key, *shape) for key, shape in zip(keys, channels)]
-    return {"layers": params}, [opening(outputs) for _, outputs in channels]
 
 
 def population_decay(t):
@@ -106,14 +77,56 @@ def population_decay(t):
     the early population the running mean of every batch so far, and it settles onto the
     release's rate at step 890.
 
+    IT IS WHY THE NORM IS NOT `nnx.BatchNorm`, whose population is an exponential moving
+    average at a fixed momentum from the first call.
+
     Training never reads it. A training pass normalises by the batch's own statistics, thus
     this moves the evaluation and the checkpoint and never the gradient."""
     return jnp.minimum(POP_DECAY, (1.0 + t) / (10.0 + t))
 
 
-def save_checkpoint(path, params, stats):
-    """the flat list of model.py, which nn.save_checkpoint names "0" upward"""
-    nn.save_checkpoint(path, model.flat_tensors(params, stats))
+def learning_rates(peak, warmup, total):
+    """The rate at every step of the run: linear from 0 to [peak] over [warmup] steps, then
+    cosine from [peak] to 0 over the rest. A warmup of zero is a constant.
+
+    THE SCHEDULE IS READ ONE STEP LATE OR NOT AT ALL. The loop's step is 1 at the first
+    update and optax hands a schedule its own update count, which is 0 there; a curve read
+    at the raw count applies a rate of 0 to the first update and every later rate one step
+    behind. The `+ 1` is that correction, and `test_train.py` holds it two ways: the curve
+    against `nn.schedule` at every step, and -- because a curve gate cannot see whether the
+    OPTIMIZER reads it -- one update rule against the other under a moving rate, where
+    dropping the `+ 1` parts the two parameter trees at the first step by 3.2e-3 against a
+    float32 noise of 7.5e-8.
+
+    THE TWO ENDS ARE `nn.schedule`'S OWN RULES AND NOT OPTAX'S. A warmup of zero is a
+    constant peak, where `warmup_cosine_decay_schedule` would be a bare cosine decay; and a
+    run SHORTER THAN ITS OWN WARMUP -- which every short probe of this trainer is -- never
+    leaves the ramp, where optax refuses to build a cosine of a negative length at all."""
+    if warmup == 0:
+        curve = optax.constant_schedule(peak)
+    elif total <= warmup:
+        curve = optax.linear_schedule(0.0, peak, warmup)
+    else:
+        curve = optax.warmup_cosine_decay_schedule(0.0, peak, warmup, total, 0.0)
+    return lambda count: curve(count + 1)
+
+
+def update_rule(*, peak, warmup, total, clip, weight_decay):
+    """The update of one step: the global-norm clip, then Adam with a decoupled weight
+    decay under the schedule.
+
+    A clip of zero or less is NO CLIP, as `nn.adamw`'s guard states it. It is not a clip at
+    zero, which would zero every gradient of the run."""
+    adam = optax.adamw(
+        learning_rate=learning_rates(peak, warmup, total),
+        b1=0.9,
+        b2=0.999,
+        eps=1e-8,
+        weight_decay=weight_decay,
+    )
+    if clip <= 0.0:
+        return adam
+    return optax.chain(optax.clip_by_global_norm(clip), adam)
 
 
 def masked_nll(said, classes, hidden):
@@ -131,42 +144,47 @@ def masked_nll(said, classes, hidden):
     return jnp.mean(jnp.sum(nll * masked, axis=(1, 2)) / jnp.sum(masked, axis=(1, 2)))
 
 
-def make_step(clip, weight_decay, remat):
+def fold_population(coconet, seen, decay):
+    """The batch statistics of a training pass, folded into the populations of the norms
+    that read them, in the layer order.
+
+    IT STANDS OUTSIDE THE GRADIENT. A training pass normalises by the batch's own
+    statistics and reads no population at all, thus nothing downstream of the loss touches
+    one; the populations are `nnx.BatchStat` and no gradient reaches them in any case."""
+    for layer, statistics in zip(coconet.every_layer(), seen):
+        layer.norm.fold(statistics, decay)
+
+
+def make_step(remat):
     """The jitted training step: the mask draw, the loss, one AdamW update, and the fold of
     the batch statistics into the population.
 
     The mask is drawn inside the step. It is fresh at every step, it reads no corpus, and
     the device already holds the key."""
 
-    def loss(params, stats, classes, key):
-        hidden = model.orderless_masks(key, *classes.shape[:2])
-        sheet = model.planes(classes, hidden)
-        said, seen = model.logits(params, stats, sheet, training=True, remat=remat)
-        return masked_nll(said, classes, hidden), seen
+    @nnx.jit
+    def step_fn(coconet, optimizer, t, classes, key):
+        def loss(coconet):
+            hidden = model.orderless_masks(key, *classes.shape[:2])
+            sheet = model.planes(classes, hidden)
+            said, seen = coconet(sheet, training=True, remat=remat)
+            return masked_nll(said, classes, hidden), seen
 
-    def step_fn(params, stats, state, t, classes, lr, key):
-        gradient = jax.value_and_grad(loss, has_aux=True)
-        (value, seen), grads = gradient(params, stats, classes, key)
-        params, state = nn.adamw(
-            state, params, grads, t, lr, clip=clip, weight_decay=weight_decay
-        )
-        decay = population_decay(t)
-        stats = jax.tree.map(
-            lambda held, drawn: decay * held + (1.0 - decay) * drawn, stats, seen
-        )
-        return value, params, stats, state
+        (value, seen), grads = nnx.value_and_grad(loss, has_aux=True)(coconet)
+        optimizer.update(coconet, grads)
+        fold_population(coconet, seen, population_decay(t))
+        return value
 
-    return jax.jit(step_fn)
+    return step_fn
 
 
-@jax.jit
-def eval_fn(params, stats, classes, hidden):
+@nnx.jit
+def eval_fn(coconet, classes, hidden):
     """The same loss on a fixed probe, under the POPULATION statistics.
 
     The probe reads the model the sampler and the referees will read, and not the model
     that a batch of sixteen crops happens to normalize."""
-    sheet = model.planes(classes, hidden)
-    said, _ = model.logits(params, stats, sheet)
+    said, _ = coconet(model.planes(classes, hidden))
     return masked_nll(said, classes, hidden)
 
 
@@ -191,7 +209,7 @@ def probe_batches(crops, batch):
     ]
 
 
-def eval_loss(eval_fn, params, stats, batches):
+def eval_loss(coconet, batches):
     """the mean over the probe sheets; the last batch is short, thus the mean is a sum
     over a count and never a mean of means
 
@@ -200,7 +218,7 @@ def eval_loss(eval_fn, params, stats, batches):
     total = 0.0
     sheets = 0
     for classes, hidden in batches:
-        total = total + eval_fn(params, stats, classes, hidden) * len(classes)
+        total = total + eval_fn(coconet, classes, hidden) * len(classes)
         sheets += len(classes)
     return float(total) / max(sheets, 1)
 
@@ -223,17 +241,25 @@ def train(
     eval_every,
     ckpt,
 ):
-    """The loop of the round: the crop draw, the schedule, the step, the fixed valid probes
-    and the best-by-valid checkpoint."""
+    """The loop of the round: the crop draw, the step, the fixed valid probes and the
+    best-by-valid checkpoint.
+
+    THE SCHEDULE IS INSIDE THE OPTIMIZER and not in this loop, thus no line here can write
+    its own peak and decay the rate geometrically to zero."""
     pieces = data.load_pieces(corpus_path)
     crops = data.Crops(pieces["train"], crop)
     probe = probe_batches(data.Crops(pieces["valid"], crop), batch)
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
-    key, draw_key = jax.random.split(key)
-    params, stats = draw_params(draw_key, layers, width)
-    state = nn.optimizer_init(params)
-    step_fn = make_step(clip, weight_decay, remat)
+    coconet = model.Coconet(layers, width, rngs=nnx.Rngs(seed))
+    optimizer = nnx.Optimizer(
+        coconet,
+        update_rule(
+            peak=lr, warmup=warmup, total=steps, clip=clip, weight_decay=weight_decay
+        ),
+        wrt=nnx.Param,
+    )
+    step_fn = make_step(remat)
     click.echo(
         f"corpus: {len(crops.rows)} train pieces of {len(pieces['train'].lengths)} hold a "
         f"crop of {crop}; probes {sum(len(c) for c, _ in probe)} valid sheets"
@@ -241,7 +267,7 @@ def train(
     click.echo(
         f"shape: {layers} layers, {width} channels, kernel {model.KERNEL}, "
         f"{model.ROWS} rows, D {model.cells(crop)}; parameters "
-        f"{model.parameter_count(params)}; batch {batch}, seed {seed}, "
+        f"{coconet.parameter_count()}; batch {batch}, seed {seed}, "
         f"remat {'on' if remat else 'off'}"
     )
 
@@ -249,31 +275,22 @@ def train(
     losses = []
     started = time.perf_counter()
 
-    def evaluate(step, params, stats):
+    def evaluate(step):
         nonlocal best
-        valid = eval_loss(eval_fn, params, stats, probe)
+        valid = eval_loss(coconet, probe)
         mark = ""
         if valid < best:
             best = valid
             mark = "  *"
             if ckpt:
-                save_checkpoint(ckpt, params, stats)
+                coconet.save(ckpt)
         click.echo(f"step {step:5d}  eval  valid {valid:.4f}{mark}")
 
     for step in range(1, steps + 1):
         classes = crops.batch(rng, batch)
-        # a name of its own: [lr] is the peak the schedule reads, and a loop that writes
-        # its own peak decays the rate geometrically to zero and trains nothing
-        rate = nn.schedule(step, lr, warmup, steps)
         key, step_key = jax.random.split(key)
-        value, params, stats, state = step_fn(
-            params,
-            stats,
-            state,
-            jnp.float32(step),
-            jnp.asarray(classes),
-            jnp.float32(rate),
-            step_key,
+        value = step_fn(
+            coconet, optimizer, jnp.float32(step), jnp.asarray(classes), step_key
         )
         # the device array and NOT float(value): a read blocks until the step finishes, and
         # the loop then cannot overlap the next crop draw with the compute of this one
@@ -282,7 +299,7 @@ def train(
             click.echo(f"step {step:5d}  loss {float(jnp.mean(jnp.stack(losses))):.4f}")
             losses = []
         if step % eval_every == 0 or step == steps:
-            evaluate(step, params, stats)
+            evaluate(step)
 
     seconds = time.perf_counter() - started
     click.echo(

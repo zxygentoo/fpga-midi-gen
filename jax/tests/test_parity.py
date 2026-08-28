@@ -33,6 +33,7 @@ import subprocess
 from pathlib import Path
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import data
@@ -225,13 +226,80 @@ def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
 # Era six: the quantizer, held through the netlist                     #
 # ==================================================================== #
 
-# THE QUANTIZER'S OWN GATE, and the last thing era six holds against OCaml. The two
-# temporary gates that welded the two integer twins -- the walk and the drift report -- went
-# with the OCaml twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is
-# what stays. This one holds the QUANTIZATION, through the netlist the flash carries.
+# TWO GATES STAND HERE AND NEITHER OF THEM IS OCAML'S ANY MORE. The two temporary gates
+# that welded the two integer twins -- the walk and the drift report -- went with the OCaml
+# twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is what stays.
+#
+# G0 holds the FLOAT MODEL to a number measured before the Flax round rewrote it, and G1
+# holds the QUANTIZATION through the netlist the flash carries. Between them a change to
+# either model has nowhere to hide: G0 reads every kernel and every fold of the norm, and
+# G1 reads every rounding and every exponent, all the way to the bytes of the Verilog.
 
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
+PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
 GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.exe"
+
+# The masked loss of the golden checkpoint over the sheets below, MEASURED 2026-08-28
+# against the functional model that `diffusion/model.py` carried before the Flax round.
+# It is a pinned number and not a threshold: a diff here says the float model moved.
+GOLDEN_LOSS = 0.193459
+DIFFUSION_CROP = 128
+
+
+def diffusion_gate_masks(sheets, crop):
+    """The Bernoulli-half masks of G0: sheet i on the generator at seed i + 1, one uniform
+    for each cell in the cell order, hidden exactly when u * 2^24 < 2^23.
+
+    They come from the shared generator and not from either framework's own draw, thus the
+    mask is a fact of this repository and no change of a key rule can move it."""
+    import prng
+    from diffusion import model as sheet_model
+
+    states = prng.states(np.arange(1, sheets + 1))
+    hidden = np.zeros((sheets, crop, sheet_model.VOICES), dtype=bool)
+    everyone = np.ones(sheets, dtype=bool)
+    for step in range(crop):
+        for voice in range(sheet_model.VOICES):
+            states, u = prng.uniform(states, everyone)
+            hidden[:, step, voice] = u * 2.0**24 < float(1 << 23)
+    return hidden
+
+
+def test_g0_the_float_model_reads_its_measured_loss():
+    """THE FLOAT MODEL DOES NOT MOVE. The sheets are deterministic -- the first 128 steps of
+    every valid piece that holds them, in corpus order -- and the masks come from the shared
+    generator, thus no draw of either framework enters and the number reads the FORWARD
+    alone: every kernel, every fold of the norm, every plane, and the reader that loaded
+    them.
+
+    It was measured on the functional model this era's `model.py` used to be, and it is
+    what said that the Flax module tree moved no number. The tolerance is Gate A's: a mean
+    of 76 sheets through 48 layers of float32, where two readings reduce in different
+    orders. A disagreement that matters moves the fourth decimal at least."""
+    need(DIFFUSION_CHECKPOINT, PIECES)
+    from diffusion import model as sheet_model
+
+    pieces = data.load_pieces(str(PIECES))["valid"]
+    keep = [
+        at for at in range(len(pieces.lengths)) if pieces.lengths[at] >= DIFFUSION_CROP
+    ]
+    classes = np.stack([pieces.classes[at][:DIFFUSION_CROP] for at in keep])
+    hidden = diffusion_gate_masks(len(keep), DIFFUSION_CROP)
+
+    coconet = sheet_model.Coconet.load(DIFFUSION_CHECKPOINT)
+    values = []
+    for at in range(0, len(keep), 16):
+        rows = slice(at, at + 16)
+        said, _ = coconet(
+            sheet_model.planes(jnp.asarray(classes[rows]), jnp.asarray(hidden[rows]))
+        )
+        nll = np.asarray(sheet_model.nll_of_logits(said, jnp.asarray(classes[rows])))
+        values += [float(row[mask].mean()) for row, mask in zip(nll, hidden[rows])]
+    here = float(np.mean(values))
+    assert here == pytest.approx(GOLDEN_LOSS, abs=TOLERANCE), (
+        f"the model reads {here:.6f} and the golden checkpoint measured {GOLDEN_LOSS:.6f}"
+    )
+
 
 # the netlist the flash holds: the golden candidate at T 128, G 5, N 512
 GOLDEN_NETLIST_MD5 = "4e367cef6e38b2ae1f06ab3cf42a9c42"

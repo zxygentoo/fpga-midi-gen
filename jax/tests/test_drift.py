@@ -1,6 +1,6 @@
 """What the quantization costs: the integer twin against the float model it quantizes.
 
-`drawn_params` and the quantization inside `quantized.drift` read the same draw, thus the
+`Coconet.drawn` and the quantization inside `quantized.drift` read the same draw, thus the
 comparison isolates the fixed-point scheme and the sweep reads no file that git ignores.
 The randomness is pseudo-randomness with the seed an input, per the project rule, thus
 both parts are deterministic.
@@ -12,7 +12,7 @@ error compounds through the music rather than through a register. The fixed swee
 runs the walk out to 128 passes beside the short ones, which is a quarter of the board's
 full budget at a quarter of its sheet.
 
-THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `drawn_params`'s own default and
+THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `Coconet.drawn`'s own default and
 its docstring's argument: at the trainer's opening tenth an untrained trunk decays tenfold
 at every layer, and by the third the report reads the resolution floor of the format and
 not the arithmetic.
@@ -40,9 +40,9 @@ WALK_SEEDS = (42, 43, 44, 45)
 
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
-    params, stats = model.drawn_params(weight_seed, LAYERS, WIDTH)
+    coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
     states, given = infer.opening_sheet(quantized.engine_states([walk_seed]), STEPS)
-    return quantized.drift(params, stats, states, given, walk=passes)
+    return quantized.drift(coconet, states, given, walk=passes)
 
 
 # for each weight seed, summed over the four walks: the top-1 count, the same-draw count,

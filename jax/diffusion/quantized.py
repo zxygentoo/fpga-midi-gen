@@ -7,14 +7,20 @@ and the draw in integers -- and the circuit must equal it operation for operatio
 approximately. Nothing here approximates on purpose: every shift, every floor and every
 table is a rule the RTL reads from this module rather than restates.
 
+IT CARRIES THE FLOAT MODEL'S SKELETON. [QuantizedCoconet] is a `model.Trunk`, as
+`model.Coconet` is: a stem, the residual pairs, a head, under the same attribute names at
+every level. A reader can put `coconet.pairs[7].first` beside `twin.pairs[7].first` and
+audit one layer against its twin; nothing has to be aligned by hand from two lists.
+
 THE ORDER OF OPERATIONS IS THE CONTRACT. Every function below mirrors one function of the
 OCaml twin this module replaced, and each names it. A rewrite that is algebraically equal
 and differently ordered is a different machine: the gates of `tests/test_rtl.py` hold the
 circuit to these integers write for write.
 
 A CITATION NAMES WHAT A READER CAN FIND. `Model.*` and `Nn_quantized.*` are live OCaml and
-still stand; `Quantized.*` names the twin AS IT WAS, and the cut deleted it -- those are
-history, and `docs/diffusion_ocaml_cut.md` is where it went.
+still stand; `Quantized.*` names the twin AS IT WAS, and the cut of 2026-08-28 (commit
+5ed90f8) deleted it -- those names are history, and `git show 5ed90f8^:lib/diffusion/
+quantized.ml` is where a reader finds them.
 
 The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
 
@@ -69,6 +75,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import nnx
 from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
@@ -162,41 +169,6 @@ def gain_scale(value, weight_exponent):
     return int(round_half_up(np.ldexp(value, e))), e + weight_exponent
 
 
-class Layer(NamedTuple):
-    """One layer as the machine holds it -- `Model.layer`.
-
-    The five float tensors become three facts: the kernel, and the two per-channel constant
-    rows the norm folded into. The gains are scales whose shift retires the weight
-    exponent, thus the accumulator reaches the activation format in one multiply; the
-    biases are int16 in that same format."""
-
-    kernel: np.ndarray  # int32 holding int8, [3, 3, inputs, outputs]
-    e: int  # the exponent that reads the kernel
-    gain_q_value: np.ndarray  # int32 [outputs]
-    gain_q: np.ndarray  # int32 [outputs]: the gain's own exponent plus the kernel's
-    bias: np.ndarray  # int32 [outputs], Q[ACTIVATION_Q] held in int16
-
-    @property
-    def inputs(self):
-        return self.kernel.shape[2]
-
-    @property
-    def outputs(self):
-        return self.kernel.shape[3]
-
-
-class Model(NamedTuple):
-    """The weights in the form the bitstream carries, and the policy folded with them.
-
-    The temper is part of the model because the bitstream carries it: one quantization
-    serves every seed of a batch, as one bitstream serves every seed of the board."""
-
-    layers: tuple
-    temper_q_value: int
-    temper_q: int
-    temperature: float
-
-
 def temper_of(temperature):
     """`Nn_quantized.policy`: the sampling temper, log2(e) / T, as (q_value, q)."""
     if temperature <= 0.0:
@@ -206,212 +178,26 @@ def temper_of(temperature):
     )
 
 
-def fold_layer(kernel, scale, shift, mean, variance):
-    """`Quantized.Model.fold_layer`: the kernel under the exponent rule, the norm folded.
+class Temper(NamedTuple):
+    """The sampling temper as the bitstream carries it: log2(e) / T at [q].
 
-    At inference batch normalization is the affine `a * gain + bias` with
-    `gain = scale * rsqrt(variance + eps)` and `bias = shift - mean * gain`. The fold is the
-    same affine -- its rounding is part of what `drift` measures -- and it runs in float64
-    over the float32 tensors of the checkpoint, in the order written here. A bias outside
-    the activation format clamps; a trained norm that puts one there is a format fault the
-    drift report would shout about."""
-    q, e = quantize(kernel)
-    scale = np.asarray(scale, np.float64)
-    shift = np.asarray(shift, np.float64)
-    mean = np.asarray(mean, np.float64)
-    variance = np.asarray(variance, np.float64)
-    gain = scale / np.sqrt(variance + sheet.NORM_EPSILON)
-    scales = [gain_scale(float(value), e) for value in gain]
-    bias = np.clip(
-        round_half_up((shift - mean * gain) * ACTIVATION_ONE), INT16_LOW, INT16_HIGH
-    )
-    return Layer(
-        kernel=q,
-        e=e,
-        gain_q_value=np.array([q_value for q_value, _ in scales], np.int32),
-        gain_q=np.array([shift_of for _, shift_of in scales], np.int32),
-        bias=bias.astype(np.int32),
-    )
+    The temperature is PROVENANCE and not arithmetic -- the temper is already folded -- thus
+    it travels in the metadata of the contract file alone, and a file written by an older
+    tool can read back with no temperature at all."""
 
+    q_value: int
+    q: int
+    temperature: float
 
-def of_params(params, stats, temperature=1.0):
-    """`Quantized.Model.of_params`: the float model in the arithmetic the board holds.
-
-    This is the one quantization of the era -- the drift walk, the audition and the
-    elaboration all take their model here, thus the pair under comparison cannot slip."""
-    layers = tuple(
-        fold_layer(
-            weights["kernel"],
-            weights["scale"],
-            weights["shift"],
-            statistics["mean"],
-            statistics["variance"],
-        )
-        for weights, statistics in zip(params["layers"], stats)
-    )
-    q_value, q = temper_of(temperature)
-    return Model(layers, q_value, q, temperature)
-
-
-def check_shape(twin):
-    """`Model.check_shape`: it raises when the model breaks a rule its consumers
-    assume -- the layers chain input to output, no layer reads more channels than the int32
-    accumulator is exact for, the stem reads the planes and the head states the voices, and
-    every constant row holds one entry for each output channel."""
-    count = len(twin.layers)
-    if count < 3:
-        raise ValueError(f"{count} layers is no sheet model")
-    if count % 2:
-        raise ValueError(f"{count} layers hold no whole residual pairs")
-    if twin.layers[0].inputs != PLANES:
-        raise ValueError(f"the stem reads {twin.layers[0].inputs} planes, not {PLANES}")
-    if twin.layers[-1].outputs != sheet.VOICES:
-        raise ValueError(
-            f"the head states {twin.layers[-1].outputs} channels, "
-            f"not the {sheet.VOICES} voices"
-        )
-    for at, layer in enumerate(twin.layers):
-        if at and layer.inputs != twin.layers[at - 1].outputs:
-            raise ValueError(
-                f"layer {at} reads {layer.inputs} channels and the layer before it "
-                f"wrote {twin.layers[at - 1].outputs}"
-            )
-        if layer.kernel.shape[:2] != (sheet.KERNEL, sheet.KERNEL):
-            raise ValueError(f"the kernel of layer {at} is not {sheet.KERNEL} by 3")
-        if layer.inputs > WIDEST_INPUTS:
-            raise ValueError(
-                f"layer {at} reads {layer.inputs} channels and the int32 accumulator "
-                f"holds {WIDEST_INPUTS}"
-            )
-        rows = (layer.gain_q_value, layer.gain_q, layer.bias)
-        if any(len(row) != layer.outputs for row in rows):
-            raise ValueError(f"the constants of layer {at} do not cover its channels")
+    @classmethod
+    def of(cls, temperature):
+        q_value, q = temper_of(temperature)
+        return cls(q_value, q, temperature)
 
 
 # ---------------------------------------------------------------------
-# the contract file
+# the counted activation write
 # ---------------------------------------------------------------------
-
-# the tensors one layer holds, in the order of the file
-LAYER_TENSORS = 5
-TEMPER = "temper"
-ACTIVATION = "activation_q"
-# the tensors the file carries beside its numbered layers
-BESIDE_THE_LAYERS = (TEMPER, ACTIVATION)
-
-
-def save(path, twin):
-    """the contract file of `twin`: the module docstring holds the layout and the reasons"""
-    check_shape(twin)
-    tensors = {}
-    for at, layer in enumerate(twin.layers):
-        base = LAYER_TENSORS * at
-        tensors[str(base + 0)] = layer.kernel.astype(np.int32)
-        tensors[str(base + 1)] = np.array(layer.e, np.int32)
-        tensors[str(base + 2)] = layer.gain_q_value.astype(np.int32)
-        tensors[str(base + 3)] = layer.gain_q.astype(np.int32)
-        tensors[str(base + 4)] = layer.bias.astype(np.int32)
-    tensors[TEMPER] = np.array([twin.temper_q_value, twin.temper_q], np.int32)
-    tensors[ACTIVATION] = np.array(ACTIVATION_Q, np.int32)
-    save_file(
-        tensors,
-        str(path),
-        metadata={
-            "temper_q_value": str(twin.temper_q_value),
-            "temper_q": str(twin.temper_q),
-            "activation_q": str(ACTIVATION_Q),
-            "temperature": repr(twin.temperature),
-        },
-    )
-
-
-def load(path):
-    """the model of one contract file; a round trip through `save` is exact.
-
-    The temperature is provenance and not arithmetic -- the temper is already folded -- thus
-    it travels in the metadata alone and only a reader with a Python tool sees it."""
-    tensors = load_file(str(path))
-    with safe_open(str(path), framework="numpy") as opened:
-        metadata = opened.metadata() or {}
-    count, spare = divmod(len(tensors) - len(BESIDE_THE_LAYERS), LAYER_TENSORS)
-    if spare:
-        raise ValueError(f"{path}: {len(tensors)} tensors is no quantized sheet model")
-    stated = int(tensors[ACTIVATION])
-    if stated != ACTIVATION_Q:
-        raise ValueError(
-            f"{path} is quantized at Q{stated} and this twin reads Q{ACTIVATION_Q}"
-        )
-
-    def layer_at(at):
-        base = LAYER_TENSORS * at
-        return Layer(
-            kernel=tensors[str(base + 0)],
-            e=int(tensors[str(base + 1)]),
-            gain_q_value=tensors[str(base + 2)],
-            gain_q=tensors[str(base + 3)],
-            bias=tensors[str(base + 4)],
-        )
-
-    q_value, q = (int(value) for value in tensors[TEMPER])
-    twin = Model(
-        tuple(layer_at(at) for at in range(count)),
-        q_value,
-        q,
-        float(metadata.get("temperature", math.nan)),
-    )
-    check_shape(twin)
-    return twin
-
-
-# ---------------------------------------------------------------------
-# the forward pass
-# ---------------------------------------------------------------------
-
-
-def plane_activations(classes, hidden):
-    """`Quantized.plane_activations`: the stem's input tensor, `[sheets, steps, ROWS,
-    2 * VOICES]` in the activation format.
-
-    A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its
-    class row of plane `voice`, and a hidden cell writes it in EVERY row of plane
-    `VOICES + voice`. It is `model.planes` in integers, plane for plane."""
-    rows = np.arange(sheet.ROWS)[None, None, :, None]
-    roll = rows == classes[:, :, None, :]
-    masked = hidden[:, :, None, :]
-    planes = np.concatenate(
-        [np.where(masked, False, roll), np.broadcast_to(masked, roll.shape)], axis=-1
-    )
-    return ACTIVATION_ONE * planes.astype(np.int32)
-
-
-@jax.jit
-def _accumulate(x, kernel):
-    """The nine taps of one 3 by 3 convolution over (step, row), zero at both edges, summed
-    into the accumulator -- the inner loops of `layer_forward`.
-
-    THE ACCUMULATOR IS INT32 AND IT WRAPS. The twin's claim is that no sum reaches 2^31
-    below `WIDEST_INPUTS` input channels, and `check_shape` refuses a wider layer, thus a
-    wrap here is the finding it would be on the board and not an artefact of the host.
-
-    The tap (dy, dx) reads the source at (step + dy - 1, row + dx - 1), and the kernel reads
-    as [dy, dx, input, output]; the accumulator is exact below the bound, thus the tap order
-    cannot matter and the circuit may take its own."""
-    _, steps, rows, _ = x.shape
-    padded = jnp.pad(x, ((0, 0), (1, 1), (1, 1), (0, 0)))
-
-    def tap(dy, dx):
-        window = padded[:, dy : dy + steps, dx : dx + rows, :]
-        return jnp.matmul(window, kernel[dy, dx])
-
-    return sum(tap(dy, dx) for dy in range(3) for dx in range(3))
-
-
-def device_kernels(twin):
-    """the kernels as the accumulator reads them: int32, on the device.
-
-    One conversion for a whole walk and not one for each of its passes; the conv is a jit
-    over int32 arrays, and an int8 kernel would be converted at every call."""
-    return [jnp.asarray(layer.kernel, jnp.int32) for layer in twin.layers]
 
 
 def counters():
@@ -442,42 +228,140 @@ def write(tally, value):
     return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
 
 
-def layer_forward(layer, kernel, x, relu, tally):
-    """`Quantized.layer_forward`: the convolution into the int32 accumulator, the folded
-    norm, the optional ReLU, and the counted clamp of every write.
+@jax.jit
+def accumulate(x, kernel):
+    """The nine taps of one 3 by 3 convolution over (step, row), zero at both edges, summed
+    into the accumulator -- the inner loops of `Quantized.layer_forward`.
 
-    The gain multiply rides int64 -- an int32 accumulator by an int16 gain wants 47 bits,
-    and the RTL sizes its own product. The shift is arithmetic, toward minus infinity, as
-    the circuits' is."""
-    accumulated = np.asarray(_accumulate(jnp.asarray(x), kernel)).astype(np.int64)
-    value = ((accumulated * layer.gain_q_value) >> layer.gain_q) + layer.bias
-    return write(tally, np.maximum(value, 0) if relu else value)
+    THE ACCUMULATOR IS INT32 AND IT WRAPS. The twin's claim is that no sum reaches 2^31
+    below `WIDEST_INPUTS` input channels, and `check_shape` refuses a wider layer, thus a
+    wrap here is the finding it would be on the board and not an artefact of the host.
+
+    The tap (dy, dx) reads the source at (step + dy - 1, row + dx - 1), and the kernel reads
+    as [dy, dx, input, output]; the accumulator is exact below the bound, thus the tap order
+    cannot matter and the circuit may take its own."""
+    _, steps, rows, _ = x.shape
+    padded = jnp.pad(x, ((0, 0), (1, 1), (1, 1), (0, 0)))
+
+    def tap(dy, dx):
+        window = padded[:, dy : dy + steps, dx : dx + rows, :]
+        return jnp.matmul(window, kernel[dy, dx])
+
+    return sum(tap(dy, dx) for dy in range(3) for dx in range(3))
 
 
-def _fold_layer_writes(twin, kernels, classes, hidden, tally, taken, keep):
-    """`Quantized.fold_layer_writes`: the trunk -- the stem, the residual pairs, the head --
-    with `keep` folded over the destination tensor of EVERY layer as written, in the layer
-    order.
+# ---------------------------------------------------------------------
+# the module tree: model.Trunk in integers
+# ---------------------------------------------------------------------
 
-    THE PAIR-CLOSING WRITE IS THE JOINED TENSOR AND NOT THE CONVOLUTION'S: the residual add
-    rides the same counted clamp, thus a reader of the write stream takes it from this fold
-    and never from `layer_forward` alone. The circuit's stream gate is that reader.
 
-    THE COLLECTOR IS WHAT PARTS `forward` FROM `layer_writes`, AND THE TRUNK IS NOT WALKED
-    TWICE: a forward that read the last of a list would hold every layer's destination
-    tensor alive to give one back -- 48 of them at the elected shape."""
-    layers = twin.layers
-    last = len(layers) - 1
-    stem = layer_forward(
-        layers[0], kernels[0], plane_activations(classes, hidden), True, tally
-    )
-    taken, x = keep(taken, stem), stem
-    for at in range(1, last, 2):
-        first = layer_forward(layers[at], kernels[at], x, True, tally)
-        second = layer_forward(layers[at + 1], kernels[at + 1], first, False, tally)
-        joined = write(tally, np.maximum(x + second, 0))
-        taken, x = keep(keep(taken, first), joined), joined
-    return keep(taken, layer_forward(layers[last], kernels[last], x, False, tally))
+class QuantizedNormedConv(nnx.Module):
+    """One layer as the machine holds it -- the twin of `model.NormedConv`.
+
+    The five float tensors of that layer become three facts: the kernel, and the two
+    per-channel constant rows the norm folded into. The gains are scales whose shift
+    retires the weight exponent, thus the accumulator reaches the activation format in one
+    multiply; the biases are int16 in that same format."""
+
+    def __init__(self, *, kernel, e, gain_q_value, gain_q, bias):
+        # THE KERNEL LIVES ON THE DEVICE and the rest of the layer on the host. A walk runs
+        # [accumulate] hundreds of times over one model, thus a host kernel would cross to
+        # the device at every call; the gains, the bias and the clamp are numpy int64
+        # arithmetic and belong beside the tally.
+        self.kernel = nnx.Variable(jnp.asarray(kernel, jnp.int32))
+        self.e = int(e)
+        self.gain_q_value = nnx.Variable(np.asarray(gain_q_value, np.int32))
+        self.gain_q = nnx.Variable(np.asarray(gain_q, np.int32))
+        self.bias = nnx.Variable(np.asarray(bias, np.int32))
+
+    @property
+    def inputs(self):
+        return self.kernel.shape[2]
+
+    @property
+    def outputs(self):
+        return self.kernel.shape[3]
+
+    @classmethod
+    def of(cls, layer):
+        """`Quantized.Model.fold_layer`: one float [model.NormedConv] under the exponent
+        rule, its norm folded.
+
+        At inference batch normalization is the affine `a * gain + bias` with
+        `gain = scale * rsqrt(variance + eps)` and `bias = shift - mean * gain`. The fold is
+        the same affine -- its rounding is part of what `drift` measures -- and it runs in
+        float64 over the float32 tensors of the checkpoint, in the order written here. A
+        bias outside the activation format clamps; a trained norm that puts one there is a
+        format fault the drift report would shout about."""
+        q, e = quantize(layer.conv.kernel[...])
+        scale = np.asarray(layer.norm.scale[...], np.float64)
+        shift = np.asarray(layer.norm.shift[...], np.float64)
+        mean = np.asarray(layer.norm.mean[...], np.float64)
+        variance = np.asarray(layer.norm.variance[...], np.float64)
+        gain = scale / np.sqrt(variance + sheet.NORM_EPSILON)
+        scales = [gain_scale(float(value), e) for value in gain]
+        bias = np.clip(
+            round_half_up((shift - mean * gain) * ACTIVATION_ONE), INT16_LOW, INT16_HIGH
+        )
+        return cls(
+            kernel=q,
+            e=e,
+            gain_q_value=np.array([q_value for q_value, _ in scales], np.int32),
+            gain_q=np.array([shift_of for _, shift_of in scales], np.int32),
+            bias=bias.astype(np.int32),
+        )
+
+    def __call__(self, x, relu, tally):
+        """`Quantized.layer_forward`: the convolution into the int32 accumulator, the folded
+        norm, the optional ReLU, and the counted clamp of every write.
+
+        The gain multiply rides int64 -- an int32 accumulator by an int16 gain wants 47 bits,
+        and the RTL sizes its own product. The shift is arithmetic, toward minus infinity, as
+        the circuits' is."""
+        accumulated = np.asarray(accumulate(jnp.asarray(x), self.kernel[...]))
+        gain, shift = self.gain_q_value[...], self.gain_q[...]
+        value = ((accumulated.astype(np.int64) * gain) >> shift) + self.bias[...]
+        return write(tally, np.maximum(value, 0) if relu else value)
+
+    def tensors(self):
+        """the five tensors of this layer in the order of the contract file"""
+        return [
+            np.asarray(self.kernel[...], np.int32),
+            np.array(self.e, np.int32),
+            self.gain_q_value[...],
+            self.gain_q[...],
+            self.bias[...],
+        ]
+
+
+class QuantizedResidualPair(nnx.Module):
+    """Two layers and the skip past both -- the twin of `model.ResidualPair`.
+
+    THE RELU STANDS IN A DIFFERENT PLACE HERE, and that is the contract and not a slip. The
+    float pair activates the first layer's output before the second convolution reads it;
+    the twin folds that ReLU into the first layer's own counted write, because the machine
+    writes what it will read back. The arithmetic is the same and the WRITE STREAM is not,
+    and the write stream is what `tests/test_rtl.py` holds the circuit to."""
+
+    def __init__(self, first, second):
+        self.first = first
+        self.second = second
+
+    @classmethod
+    def of(cls, pair):
+        return cls(
+            QuantizedNormedConv.of(pair.first), QuantizedNormedConv.of(pair.second)
+        )
+
+    def __call__(self, x, tally):
+        """the tensor the opening wrote and the JOINED tensor the close wrote.
+
+        THE PAIR-CLOSING WRITE IS THE JOINED TENSOR AND NOT THE CONVOLUTION'S: the residual
+        add rides the same counted clamp, thus a reader of the write stream takes it from
+        here and never from the second layer alone."""
+        first = self.first(x, True, tally)
+        second = self.second(first, False, tally)
+        return first, write(tally, np.maximum(x + second, 0))
 
 
 def _collect(held, written):
@@ -489,21 +373,202 @@ def _hold_the_last(held, written):
     return written
 
 
-def layer_writes(twin, kernels, classes, hidden, tally):
-    """`Quantized.layer_writes`: the destination tensor of every layer AS WRITTEN, in the
-    layer order -- the stem's, then for each pair the tensor its opening wrote and the
-    JOINED tensor its close wrote, and the head's logits last. Each one reads as
-    `[sheets, steps, ROWS, that layer's output channels]`.
+class QuantizedCoconet(sheet.Trunk):
+    """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for layer.
 
-    IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `forward` is the last of this
-    list, thus the list is the arithmetic itself and never a second reading of it."""
-    return _fold_layer_writes(twin, kernels, classes, hidden, tally, [], _collect)
+    The temper stands beside the layers because the bitstream carries it: one quantization
+    serves every seed of a batch, as one bitstream serves every seed of the board."""
+
+    def __init__(self, *, stem, pairs, head, temper):
+        self.stem = stem
+        self.pairs = nnx.List(list(pairs))
+        self.head = head
+        self.temper = temper
+
+    @classmethod
+    def of(cls, coconet, temperature=1.0):
+        """`Quantized.Model.of_params`: the float model in the arithmetic the board holds.
+
+        This is the one quantization of the era -- the drift walk, the audition and the
+        elaboration all take their model here, thus the pair under comparison cannot slip."""
+        return cls(
+            stem=QuantizedNormedConv.of(coconet.stem),
+            pairs=[QuantizedResidualPair.of(pair) for pair in coconet.pairs],
+            head=QuantizedNormedConv.of(coconet.head),
+            temper=Temper.of(temperature),
+        )
+
+    def _fold_writes(self, classes, hidden, tally, taken, keep):
+        """`Quantized.fold_layer_writes`: the trunk -- the stem, the residual pairs, the head
+        -- with `keep` folded over the destination tensor of EVERY layer as written, in the
+        layer order.
+
+        THE COLLECTOR IS WHAT PARTS `__call__` FROM `layer_writes`, AND THE TRUNK IS NOT
+        WALKED TWICE: a forward that read the last of a list would hold every layer's
+        destination tensor alive to give one back -- 48 of them at the elected shape."""
+        x = self.stem(plane_activations(classes, hidden), True, tally)
+        taken = keep(taken, x)
+        for pair in self.pairs:
+            first, x = pair(x, tally)
+            taken = keep(keep(taken, first), x)
+        return keep(taken, self.head(x, False, tally))
+
+    def __call__(self, classes, hidden, tally):
+        """the logits of one pass over the batch: `[sheets, steps, ROWS, VOICES]` in the
+        activation format, because the head takes no ReLU and keeps it"""
+        return self._fold_writes(classes, hidden, tally, None, _hold_the_last)
+
+    def layer_writes(self, classes, hidden, tally):
+        """`Quantized.layer_writes`: the destination tensor of every layer AS WRITTEN, in the
+        layer order -- the stem's, then for each pair the tensor its opening wrote and the
+        JOINED tensor its close wrote, and the head's logits last. Each one reads as
+        `[sheets, steps, ROWS, that layer's output channels]`.
+
+        IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `__call__` is the last of
+        this list, thus the list is the arithmetic itself and never a second reading of it."""
+        return self._fold_writes(classes, hidden, tally, [], _collect)
 
 
-def forward(twin, kernels, classes, hidden, tally):
-    """the logits of one pass over the batch: `[sheets, steps, ROWS, VOICES]` in the
-    activation format, because the head takes no ReLU and keeps it"""
-    return _fold_layer_writes(twin, kernels, classes, hidden, tally, None, _hold_the_last)
+def paired(layers):
+    """The trunk's layers two at a time, as [QuantizedResidualPair]s.
+
+    The contract file is a FLAT list and the module is a tree; this and
+    `model.Trunk.every_layer` are the two directions of that one seam, and nothing else
+    knows both forms."""
+    return [
+        QuantizedResidualPair(first, second)
+        for first, second in zip(layers[::2], layers[1::2])
+    ]
+
+
+def check_shape(twin):
+    """`Model.check_shape`: it raises when the model breaks a rule its consumers
+    assume -- the layers chain input to output, no layer reads more channels than the int32
+    accumulator is exact for, the stem reads the planes and the head states the voices, and
+    every constant row holds one entry for each output channel.
+
+    A LAYER COUNT THAT IS ODD OR TOO SHORT IS NOT CHECKED HERE, because the tree cannot hold
+    one: a [QuantizedCoconet] is a stem, whole pairs and a head by construction. `load` is
+    where a FILE of the wrong tensor count is refused."""
+    layers = twin.every_layer()
+    if layers[0].inputs != PLANES:
+        raise ValueError(f"the stem reads {layers[0].inputs} planes, not {PLANES}")
+    if layers[-1].outputs != sheet.VOICES:
+        raise ValueError(
+            f"the head states {layers[-1].outputs} channels, "
+            f"not the {sheet.VOICES} voices"
+        )
+    for at, layer in enumerate(layers):
+        if at and layer.inputs != layers[at - 1].outputs:
+            raise ValueError(
+                f"layer {at} reads {layer.inputs} channels and the layer before it "
+                f"wrote {layers[at - 1].outputs}"
+            )
+        if layer.kernel.shape[:2] != (sheet.KERNEL, sheet.KERNEL):
+            raise ValueError(f"the kernel of layer {at} is not {sheet.KERNEL} by 3")
+        if layer.inputs > WIDEST_INPUTS:
+            raise ValueError(
+                f"layer {at} reads {layer.inputs} channels and the int32 accumulator "
+                f"holds {WIDEST_INPUTS}"
+            )
+        rows = (layer.gain_q_value[...], layer.gain_q[...], layer.bias[...])
+        if any(len(row) != layer.outputs for row in rows):
+            raise ValueError(f"the constants of layer {at} do not cover its channels")
+
+
+# ---------------------------------------------------------------------
+# the contract file
+# ---------------------------------------------------------------------
+
+# the tensors one layer holds, in the order of the file
+LAYER_TENSORS = 5
+TEMPER = "temper"
+ACTIVATION = "activation_q"
+# the tensors the file carries beside its numbered layers
+BESIDE_THE_LAYERS = (TEMPER, ACTIVATION)
+
+
+def save(path, twin):
+    """the contract file of `twin`: the module docstring holds the layout and the reasons"""
+    check_shape(twin)
+    tensors = {}
+    for at, layer in enumerate(twin.every_layer()):
+        base = LAYER_TENSORS * at
+        for on, tensor in enumerate(layer.tensors()):
+            tensors[str(base + on)] = tensor
+    tensors[TEMPER] = np.array([twin.temper.q_value, twin.temper.q], np.int32)
+    tensors[ACTIVATION] = np.array(ACTIVATION_Q, np.int32)
+    save_file(
+        tensors,
+        str(path),
+        metadata={
+            "temper_q_value": str(twin.temper.q_value),
+            "temper_q": str(twin.temper.q),
+            "activation_q": str(ACTIVATION_Q),
+            "temperature": repr(twin.temper.temperature),
+        },
+    )
+
+
+def load(path):
+    """the model of one contract file; a round trip through `save` is exact.
+
+    The temperature is provenance and not arithmetic -- the temper is already folded -- thus
+    it travels in the metadata alone and only a reader with a Python tool sees it."""
+    tensors = load_file(str(path))
+    with safe_open(str(path), framework="numpy") as opened:
+        metadata = opened.metadata() or {}
+    count, spare = divmod(len(tensors) - len(BESIDE_THE_LAYERS), LAYER_TENSORS)
+    if spare or count < 4 or count % 2:
+        raise ValueError(f"{path}: {len(tensors)} tensors is no quantized sheet model")
+    stated = int(tensors[ACTIVATION])
+    if stated != ACTIVATION_Q:
+        raise ValueError(
+            f"{path} is quantized at Q{stated} and this twin reads Q{ACTIVATION_Q}"
+        )
+
+    def layer_at(at):
+        base = LAYER_TENSORS * at
+        return QuantizedNormedConv(
+            kernel=tensors[str(base + 0)],
+            e=int(tensors[str(base + 1)]),
+            gain_q_value=tensors[str(base + 2)],
+            gain_q=tensors[str(base + 3)],
+            bias=tensors[str(base + 4)],
+        )
+
+    q_value, q = (int(value) for value in tensors[TEMPER])
+    stem, *trunk = [layer_at(at) for at in range(count)]
+    head = trunk.pop()
+    twin = QuantizedCoconet(
+        stem=stem,
+        pairs=paired(trunk),
+        head=head,
+        temper=Temper(q_value, q, float(metadata.get("temperature", math.nan))),
+    )
+    check_shape(twin)
+    return twin
+
+
+# ---------------------------------------------------------------------
+# the forward pass
+# ---------------------------------------------------------------------
+
+
+def plane_activations(classes, hidden):
+    """`Quantized.plane_activations`: the stem's input tensor, `[sheets, steps, ROWS,
+    2 * VOICES]` in the activation format.
+
+    A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its
+    class row of plane `voice`, and a hidden cell writes it in EVERY row of plane
+    `VOICES + voice`. It is `model.planes` in integers, plane for plane."""
+    rows = np.arange(sheet.ROWS)[None, None, :, None]
+    roll = rows == classes[:, :, None, :]
+    masked = hidden[:, :, None, :]
+    planes = np.concatenate(
+        [np.where(masked, False, roll), np.broadcast_to(masked, roll.shape)], axis=-1
+    )
+    return ACTIVATION_ONE * planes.astype(np.int32)
 
 
 # ---------------------------------------------------------------------
@@ -543,7 +608,7 @@ def tempered_weights(twin, raw):
     raw = np.asarray(raw, np.int64)
     peak = raw.max(axis=-1, keepdims=True)
     shifted = (raw - peak) << (EXP2_IN_Q - ACTIVATION_Q)
-    return exp2_of_magnitude(-((shifted * twin.temper_q_value) >> twin.temper_q))
+    return exp2_of_magnitude(-((shifted * twin.temper.q_value) >> twin.temper.q))
 
 
 def pick(weights, word):
@@ -638,13 +703,12 @@ def passes(twin, states, given, *, walk, tally):
     standing cell states a different piece and no gate below says so. Over a batch that rule
     is `prng.uniform_word`'s `active`: a sheet whose cell stands keeps the state it came in
     with, and a sheet whose cell hides advances."""
-    kernels = device_kernels(twin)
     sheets, steps, voices = given.shape
     everyone = np.ones(sheets, dtype=bool)
     classes = given
     for at in range(walk):
         states, hidden = hidden_cells(states, steps, anneal_threshold(at, walk), everyone)
-        said = forward(twin, kernels, classes, hidden, tally)
+        said = twin(classes, hidden, tally)
         before, classes, draws = classes, classes.copy(), []
         for step in range(steps):
             for voice in range(voices):
@@ -688,15 +752,15 @@ class Drift(NamedTuple):
     activation_peak: float  # the hottest write in real units; the format holds 512.0
 
 
-@jax.jit
-def _float_logits(params, stats, classes, hidden):
+@nnx.jit
+def _float_logits(coconet, classes, hidden):
     """the float model's logits over the batch. It is `infer.forward`'s pass, called here
     from the model's own home so that the twin never imports the audition."""
-    said, _ = sheet.logits(params, stats, sheet.planes(classes, hidden))
+    said, _ = coconet(sheet.planes(classes, hidden))
     return said
 
 
-def drift(params, stats, states, given, *, walk, temperature=1.0):
+def drift(coconet, states, given, *, walk, temperature=1.0):
     """`Quantized.Drift.walk`: the quantized walk, scored against the float model cell for
     cell.
 
@@ -706,17 +770,15 @@ def drift(params, stats, states, given, *, walk, temperature=1.0):
     ENGINE TOOK -- `infer.tempered_pick`'s two calls, from `nn`'s own home -- thus a
     difference there is the arithmetic and never the generator.
 
-    The quantization happens here, from the float parameters handed in, thus the pair under
+    The quantization happens here, from the float model handed in, thus the pair under
     comparison cannot slip."""
-    twin = of_params(params, stats, temperature)
+    twin = QuantizedCoconet.of(coconet, temperature)
     tally = counters()
     cells = same_peak = same_draw = 0
     cosine = 0.0
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         said = np.asarray(
-            _float_logits(
-                params, stats, jnp.asarray(taken.before), jnp.asarray(taken.hidden)
-            ),
+            _float_logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
             dtype=np.float64,
         )
         for drawn in taken.draws:

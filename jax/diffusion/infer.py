@@ -32,9 +32,9 @@ import time
 from pathlib import Path
 
 import click
-import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import nnx
 
 import data
 import measure
@@ -76,12 +76,12 @@ def opening_sheet(states, steps):
     return states, classes
 
 
-@jax.jit
-def forward(params, stats, classes, hidden):
-    """The logits of one pass over the batch. It takes the weights as ARGUMENTS and stands
+@nnx.jit
+def forward(coconet, classes, hidden):
+    """The logits of one pass over the batch. It takes the model as an ARGUMENT and stands
     at the module level, thus its compiled form is keyed on the shapes and every walk of a
     run reuses the first compile."""
-    said, _ = model.logits(params, stats, model.planes(classes, hidden))
+    said, _ = coconet(model.planes(classes, hidden))
     return said
 
 
@@ -96,7 +96,7 @@ def tempered_pick(raw, temperature, uniform):
     return nn.pick(nn.temper(raw, temperature, 0.0), uniform)
 
 
-def gibbs(params, stats, given, states, *, walk, temperature):
+def gibbs(coconet, given, states, *, walk, temperature):
     """Independent blocked Gibbs with the annealed schedule of Yao et al., on the shared
     generator.
 
@@ -126,7 +126,7 @@ def gibbs(params, stats, given, states, *, walk, temperature):
                 states, u = prng.uniform(states, everyone)
                 hidden[:, at, voice] = u * 2.0**24 < threshold
         said = np.asarray(
-            forward(params, stats, jnp.asarray(classes), jnp.asarray(hidden)),
+            forward(coconet, jnp.asarray(classes), jnp.asarray(hidden)),
             dtype=np.float64,
         )
         for at in range(steps):
@@ -151,7 +151,7 @@ def audition_path(path, at, count):
     return str(name.with_name(f"{name.stem}-{at}{name.suffix}"))
 
 
-def draw(params, stats, *, crop, seeds, walk, temperature, twin):
+def draw(coconet, *, crop, seeds, walk, temperature, twin):
     """one batch of sheets, and the seconds the walk cost.
 
     [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
@@ -161,18 +161,16 @@ def draw(params, stats, *, crop, seeds, walk, temperature, twin):
     hears the quantization and nothing else; seed 0 is the exception the fold states, and
     there the twin stands still while the float walk runs from the top state."""
     if twin:
-        model_of_seat = quantized.of_params(params, stats, temperature)
+        engine = quantized.QuantizedCoconet.of(coconet, temperature)
         states, given = opening_sheet(quantized.engine_states(seeds), crop)
 
         def walked():
-            return quantized.gibbs(model_of_seat, states, given, walk=walk)[0]
+            return quantized.gibbs(engine, states, given, walk=walk)[0]
     else:
         states, given = opening_sheet(prng.states(seeds), crop)
 
         def walked():
-            return gibbs(
-                params, stats, given, states, walk=walk, temperature=temperature
-            )[0]
+            return gibbs(coconet, given, states, walk=walk, temperature=temperature)[0]
 
     started = time.perf_counter()
     return walked(), time.perf_counter() - started
@@ -241,9 +239,9 @@ def sample(
     corpus_seed,
     **flags,
 ):
-    params, stats = model.load_params(ckpt)
+    coconet = model.Coconet.load(ckpt)
     corpus = sheet.corpus_sheets(corpus_path, split, flags["crop"], corpus_seed)
-    classes, seconds = draw(params, stats, walk=walk, **flags)
+    classes, seconds = draw(coconet, walk=walk, **flags)
     sheet.echo_structure("the corpus", corpus)
     sheet.echo_structure(f"N {walk}, {len(classes)} sheets", classes)
     click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} sheets")
@@ -297,11 +295,9 @@ def drift(ckpt, crop, seed, walk, temperature):
     and the ENGINE'S mask, thus the two read one context and what stands between them is the
     arithmetic alone. The same-draw share reads the float draw on the very uniform the
     engine took, thus a difference there is the arithmetic and never the generator."""
-    params, stats = model.load_params(ckpt)
+    coconet = model.Coconet.load(ckpt)
     states, given = opening_sheet(quantized.engine_states([seed]), crop)
-    said = quantized.drift(
-        params, stats, states, given, walk=walk, temperature=temperature
-    )
+    said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 
     def share(count):
@@ -330,14 +326,15 @@ def quantize(ckpt, out, temperature):
     through Model.of_int8_checkpoint and the bitstream carries the result. The
     population statistics and the float scales do not travel: the fold happens here, one
     time. The temperature bakes into the temper, as the bitstream carries it."""
-    params, stats = model.load_params(ckpt)
-    twin = quantized.of_params(params, stats, temperature)
+    coconet = model.Coconet.load(ckpt)
+    twin = quantized.QuantizedCoconet.of(coconet, temperature)
     quantized.save(out, twin)
-    widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in twin.layers)
-    click.echo(f"wrote {out}: {len(twin.layers)} layers, {widths}")
+    layers = twin.every_layer()
+    widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in layers)
+    click.echo(f"wrote {out}: {len(layers)} layers, {widths}")
     click.echo(
-        f"temper {twin.temper_q_value} at Q{twin.temper_q}, "
-        f"temperature {twin.temperature}"
+        f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
+        f"temperature {twin.temper.temperature}"
     )
 
 

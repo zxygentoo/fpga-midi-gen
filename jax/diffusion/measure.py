@@ -6,7 +6,7 @@ Algorithm 1, and the tail of it.
 
 The structure battery is NOT here. It is arithmetic over a stack of class indices and it
 knows nothing of a sheet or a mask, thus it stands in the common home, jax/measure.py,
-where every era reads it. What stands here needs [model.logits] and the mask planes.
+where every era reads it. What stands here needs the model itself and the mask planes.
 
 THE LIKELIHOOD is the paper's Algorithm 1, and it is the one number of this round that
 compares outside the repository: Table 1 of arXiv 1903.07227 reads **0.57 +- 0.01** nats
@@ -24,11 +24,13 @@ Nothing here draws a sheet: diffusion/infer.py draws and calls in here.
 """
 
 import time
+from functools import partial
 
 import click
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import nnx
 
 import data
 import measure
@@ -154,19 +156,23 @@ def piece_nll(forward, classes, rng, orderings, chunk):
     return -(np.logaddexp.reduce(lls, axis=0) - np.log(len(lls)))
 
 
-def framewise_nll(params, stats, sheets, *, orderings, chunk, seed, report=None):
+@nnx.jit
+def log_probabilities(coconet, classes, hidden):
+    """the log probability of every pitch row of every cell, over a stack of sheets.
+
+    The log softmax runs on the device beside the trunk: the referee then indexes a
+    probability and never normalises one, and the argmax of the two is the same cell."""
+    said, _ = coconet(model.planes(classes, hidden))
+    return jax.nn.log_softmax(said, axis=-2)
+
+
+def framewise_nll(coconet, sheets, *, orderings, chunk, seed, report=None):
     """The referee over a set of sheets: Algorithm 1's mean nats for each frame, its
     standard error, and the frames themselves.
 
     The standard error is over the PIECES, which is what the paper's Table 1 reports beside
     its means. The frames are kept for [tail_line]."""
-    # the log softmax runs on the device beside the trunk: the referee then indexes a
-    # probability and never normalises one, and the argmax of the two is the same cell
-    forward = jax.jit(
-        lambda classes, hidden: jax.nn.log_softmax(
-            model.logits(params, stats, model.planes(classes, hidden))[0], axis=-2
-        )
-    )
+    forward = partial(log_probabilities, coconet)
     rng = np.random.default_rng(seed)
     frames = []
     for at, sheet in enumerate(sheets):
@@ -276,7 +282,7 @@ def nll(ckpt, corpus_path, split, crop, orderings, pieces, chunk, seed):
     sheets = corpus_sheets(corpus_path, split, crop, seed)
     if pieces:
         sheets = sheets[:pieces]
-    params, stats = model.load_params(ckpt)
+    coconet = model.Coconet.load(ckpt)
     started = time.perf_counter()
 
     def report(at, value):
@@ -287,8 +293,7 @@ def nll(ckpt, corpus_path, split, crop, orderings, pieces, chunk, seed):
         )
 
     read = framewise_nll(
-        params,
-        stats,
+        coconet,
         sheets,
         orderings=orderings,
         chunk=chunk,
