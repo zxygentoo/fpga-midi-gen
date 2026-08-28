@@ -3,11 +3,11 @@
     The control port serves the wire protocol on the host UART and [Control_regs] holds
     the cells; the structure is the one of [docs/host_control_rtl.md]. The MIDI path is
     the model seat and nothing else: [Socket] takes any source of [Source_intf] and gives
-    the line, and it holds the masked canvas of [docs/diffusion_rtl.md] — a run start
-    draws one canvas whole, a step reads one of its frames, and the sequencer decodes the
-    frame into the messages of the wire. The model arrives as [e] at elaboration — the
-    bitstream carries the weights, thus [create] takes the elaboration of one checkpoint
-    at one geometry and [gen_verilog] names both.
+    the line, and it holds the masked sheet of [docs/diffusion_rtl.md] — a run start draws
+    one sheet whole, a step reads one of its frames, and the sequencer decodes the frame
+    into the messages of the wire. The model arrives as [e] at elaboration — the bitstream
+    carries the weights, thus [create] takes the elaboration of one checkpoint at one
+    geometry and [gen_verilog] names both.
 
     NOTHING HERE NAMES AN ERA. [Source] and [Elaboration] are whatever the library this
     module opens provides, thus the seat moves with one line of the dune file and the
@@ -15,7 +15,7 @@
 
     The board shows two things: the run state on [led 0] and MIDI activity on [led 1]. The
     two are not the same lamp, because the model states nothing until it has something to
-    state — era six draws the whole canvas at the push, about 5.6 s at the elected rung —
+    state — era six draws the whole sheet at the push, about 5.6 s at the elected rung —
     thus [led 0] answers "did the push take" while [led 1] is still dark. The MIDI line
     idles at 1, the no-current level of the current loop; the other JD pins stay at 1.
 

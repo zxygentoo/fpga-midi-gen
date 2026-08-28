@@ -21,12 +21,12 @@
    the wire — the socket, the sequencer, the note tracking and the UART.
 
    ERA SIX IS THE EASY TENANT OF THIS SOCKET. The source answers [step] in one cycle from
-   a canvas that already stands, thus the step period constrains nothing; what it does
+   a sheet that already stands, thus the step period constrains nothing; what it does
    instead is hold [idle] low for a whole walk at the rewind, which is exactly the wait
    that [WaitRewind] exists for.
 
    **THE GATE DOES NOT DEPEND ON THE LENGTH OF THAT WALK.** The run below carries the
-   whole canvas and some steps past it, and PAST STEP T - 1 EVERY FRAME IS SILENT: the
+   whole sheet and some steps past it, and PAST STEP T - 1 EVERY FRAME IS SILENT: the
    first of them releases what the last cell held and every one after it states no event
    at all. The stop's own silent frame is the same frame again. Thus the message stream
    saturates, the draw budget only has to be an over-estimate, and no number of this test
@@ -42,7 +42,7 @@ module Elaboration = Mgen_diffusion.Elaboration
 module Source = Mgen_diffusion.Source
 
 (* The model of the test: drawn weights in the era's test shape, thus the test reads no
-   checkpoint that git ignores. The canvas is short and the walk is two passes; P stays at
+   checkpoint that git ignores. The sheet is short and the walk is two passes; P stays at
    the era's 48, because the seat registers of the opening are the corpus's. *)
 let steps = 8
 let walk = 2
@@ -68,8 +68,8 @@ let draw_budget =
 ;;
 
 (* The harness drives the parameter views directly and samples the line in each cycle.
-   [play] runs one whole run: run to 1, the draw, the canvas and some silence past it,
-   then run to 0 and the drain; it gives the messages that the line carried. *)
+   [play] runs one whole run: run to 1, the draw, the sheet and some silence past it, then
+   run to 0 and the drain; it gives the messages that the line carried. *)
 let harness () =
   let open Hardcaml in
   let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
@@ -113,7 +113,7 @@ let harness () =
   inp, set, play
 ;;
 
-(* the messages of the reference: the frames the source answers over the whole canvas, the
+(* the messages of the reference: the frames the source answers over the whole sheet, the
    silent frame of the stop behind them, and [Frame.events_of_frames] over the run.
 
    THE FRAMES PAST T - 1 ARE NOT IN THE LIST AND DO NOT HAVE TO BE. The first of them

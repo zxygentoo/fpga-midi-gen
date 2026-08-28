@@ -4,9 +4,9 @@
    packing, the rotation and the shifts all come from the committed OCaml, and the JAX
    side only reads arrays.
 
-   The pieces subcommand writes the other corpus, the one the canvas of docs/diffusion.md
+   The pieces subcommand writes the other corpus, the one the sheet of docs/diffusion.md
    reads: whole pieces on the grid the caller names, one row for each, with the true
-   length and the legal shift range beside the cells. A stream has no pieces and a canvas
+   length and the legal shift range beside the cells. A stream has no pieces and a sheet
    holds nothing else, thus these are two files and not two views of one.
 
    There are no masks. No frame is illegal, thus nothing guards a draw and nothing needs a
@@ -51,7 +51,7 @@ let tensors_of_split streams =
   ]
 ;;
 
-(* The canvas of docs/diffusion.md: whole pieces on one grid, one row for each.
+(* The sheet of docs/diffusion.md: whole pieces on one grid, one row for each.
 
    The cells stay as the corpus states them — the pitch that a voice sings, or -1 for a
    rest — because the class map of a model is the JAX side's own, as it is for the frames.
@@ -168,9 +168,9 @@ let export_command =
 (* The pieces of one grid, and the width of the row that holds them.
 
    With no -steps the corpus states the width: the longest piece of the whole export, thus
-   no piece is dropped and every split reads one canvas shape. A caller that wants a
-   narrower canvas states it, and the export says how many pieces it then dropped. The
-   crop of the trainer is the JAX side's own — a canvas of 640 steps holds a crop of 128
+   no piece is dropped and every split reads one sheet shape. A caller that wants a
+   narrower sheet states it, and the export says how many pieces it then dropped. The crop
+   of the trainer is the JAX side's own — a sheet of 640 steps holds a crop of 128
    wherever the draw puts it. *)
 let export_pieces ~corpus ~out ~grid ~steps =
   let data = Jsb.load ~path:corpus in
@@ -212,7 +212,7 @@ let export_pieces ~corpus ~out ~grid ~steps =
 
 let pieces_command =
   Command.basic
-    ~summary:"write the whole pieces for the canvas trainer: one grid, one row each"
+    ~summary:"write the whole pieces for the sheet trainer: one grid, one row each"
     (let%map_open.Command corpus =
        flag
          "-corpus"
@@ -229,8 +229,8 @@ let pieces_command =
          (optional_with_default 1 int)
          ~doc:
            "N the sixteenth steps of one exported step. 1 is the sixteenth grid of the \
-            corpus and 2 is the eighth grid, which halves the canvas and loses the \
-            onsets that stand on an odd sixteenth."
+            corpus and 2 is the eighth grid, which halves the sheet and loses the onsets \
+            that stand on an odd sixteenth."
      and steps =
        flag
          "-steps"

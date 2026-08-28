@@ -1,4 +1,4 @@
-(** The column engine: one forward pass over the canvas as it stands.
+(** The column engine: one forward pass over the sheet as it stands.
 
     L4's engine, and the unit that runs the FORWARD state of the walk. It owns the two
     activation stores, the three bands that cache them — the column window, the residual
@@ -28,7 +28,7 @@
     preamble at each layer is the only cost that stays.
 
     **THE ZERO COLUMN AND THE STEM ENTER AT THE SLOT LOAD.** Beyond the ends of the roll a
-    slot loads zero; on the stem it loads the canvas's plane column. One mux, one place,
+    slot loads zero; on the stem it loads the sheet's plane column. One mux, one place,
     and the array never knows that the stem reads no store.
 
     **THE MEMORY ADDRESSES REGISTER BEFORE THE MEMORY AND THE DATA REGISTERS AFTER IT** —
@@ -52,7 +52,7 @@
 
     - **[start] while [busy] is ignored, structurally.** The machine reads it in its idle
       state alone, the rule [Draw] states.
-    - **The canvas answers [plane_step] and [plane] combinationally**, as [Canvas] states,
+    - **The sheet answers [plane_step] and [plane] combinationally**, as [Sheet] states,
       and this unit drives them so that the answer stands in the cycle the window slot
       loads it. The caller owns the edge: this unit never names a step outside the roll —
       a tap beyond an end takes the zero column and no address is driven for it.
@@ -69,7 +69,7 @@
     - **The pass includes the head's waits**, thus [busy] is the whole of it and the walk
       holds one wire.
     - **A pass leaves the stores as it found them, except X**, which the head reads and
-      nothing after the stem writes from the canvas. The walk needs no clear: every column
+      nothing after the stem writes from the sheet. The walk needs no clear: every column
       a layer reads was written by the layer before it, in the same pass.
     - **THE STORE WRITE SIGNALS CARRY PINNED NAMES**: [x_write], [y_write], [x_data],
       [y_data] and the one [flush_address] both destinations share, beside [state] for the
@@ -102,10 +102,10 @@ module Make (M : sig
       { clock : 'a
       ; clear : 'a
       ; start : 'a
-      (** a strobe: run one forward pass over the canvas as it stands. Read in the idle
+      (** a strobe: run one forward pass over the sheet as it stands. Read in the idle
           state alone. *)
       ; plane_column : 'a
-      (** the canvas's answer to [plane_step] and [plane], combinational from its
+      (** the sheet's answer to [plane_step] and [plane], combinational from its
           registers: [rows] activations of 16 bits, row 0 in the low bits *)
       ; logit_seat : 'a
       (** which seat's column [logits] states: a mux over the standing file, thus the draw
@@ -120,7 +120,7 @@ module Make (M : sig
   module O : sig
     type 'a t =
       { busy : 'a (** 1 from [start] until the last step's acknowledgement *)
-      ; plane_step : 'a (** the canvas face, wired through: the step... *)
+      ; plane_step : 'a (** the sheet face, wired through: the step... *)
       ; plane : 'a (** ...and the plane the stem is loading *)
       ; step_ready : 'a
       (** a LEVEL: the logit file holds the whole of the offered step. It rises the cycle
@@ -168,7 +168,7 @@ module For_test : sig
           one column inside it for each seat *)
       }
 
-    (** [run ~planes ()] is one forward pass. [planes] is the canvas as the stem's fetch
+    (** [run ~planes ()] is one forward pass. [planes] is the sheet as the stem's fetch
         reads it: the [rows] activations of one step and one plane. *)
     val run : planes:(step:int -> plane:int -> int array) -> unit -> pass
   end

@@ -1,8 +1,8 @@
-"""The instruments, over a stack of canvases of class indices.
+"""The instruments, over a stack of sheets of class indices.
 
 This is the COMMON HOME of the measurement, as jax/nn.py is of the network. Everything
-here is arithmetic over a [canvases, steps, SEATS] array of class indices and nothing here
-knows which era drew it -- a Gibbs canvas, a walk of the packed stream and a corpus crop
+here is arithmetic over a [sheets, steps, SEATS] array of class indices and nothing here
+knows which era drew it -- a Gibbs sheet, a walk of the packed stream and a corpus crop
 all read the same way, and a single walk is a stack of one. What an era measures with its
 OWN model lives beside that model: jax/diffusion/measure.py holds the paper's Algorithm 1,
 and jax/mamba/measure.py holds the forced pass and the walk of era five.
@@ -12,7 +12,7 @@ until the corpus row beside it says 64, and three faults of the parallel instrum
 found by reading it against the corpus and never against another model.
 
 NOTHING HERE RANKS A MODEL. Ten times in this project a metric has ranked a model against
-the ear, and the canvas era added more: the instrument the ear elected reads null on the
+the ear, and the sheet era added more: the instrument the ear elected reads null on the
 mean, and the draw whose numbers matched the corpus is the one the ear rejected. Read
 these beside the corpus row to catch a pathology, and let the ear elect.
 
@@ -84,7 +84,7 @@ FITS_A_TRIAD = triad_table()
 
 
 def pitch_class_words(classes):
-    """[canvases, steps, VOICES] -> [canvases, steps] the sounding pitch classes of each
+    """[sheets, steps, VOICES] -> [sheets, steps] the sounding pitch classes of each
     step as one 12-bit word; a rest sets no bit and a unison sets one bit twice"""
     pitches = data.pitches_of_classes(classes) % 12
     bits = np.where(classes != data.SILENCE, 1 << pitches, 0)
@@ -236,16 +236,16 @@ def tessitura(pitches, sounding):
 
 
 def structure(classes):
-    """The battery over a set of canvases: [canvases, steps, VOICES] of class indices.
+    """The battery over a set of sheets: [sheets, steps, VOICES] of class indices.
 
     HOLD is the share of voice slots that repeat the step before. It reads both failures a
-    canvas can have in one number: far above the corpus is a drone, far below is jitter.
+    sheet can have in one number: far above the corpus is a drone, far below is jitter.
 
     ONSETS is the note-ons for each step under the decode of data.py, thus an onset means
     here what it means on the wire.
 
     VOICES is the share of steps carrying 0, 1, 2, 3 and 4 sounding voices. The corpus
-    sings all four at 99.8 percent of its steps, thus this row alone catches the thin canvas
+    sings all four at 99.8 percent of its steps, thus this row alone catches the thin sheet
     that was the open defect of the proto round.
 
     TRIADS is the share of steps that fit inside a major or minor triad, over the steps that
@@ -266,7 +266,7 @@ def structure(classes):
     intervals = spans % 12
     ordered = np.stack([pitches[..., a] <= pitches[..., b] for a, b in PAIRS], -1)
     clashes = (np.isin(intervals, DISSONANT) & pairs_sound).sum(axis=-1)
-    music = [data.decode(canvas) for canvas in classes]
+    music = [data.decode(sheet) for sheet in classes]
     ons = sum(1 for piece in music for step in piece for kind, _ in step if kind == "on")
     return {
         "hold": 100.0 * float(np.mean(classes[:, 1:] == classes[:, :-1])),

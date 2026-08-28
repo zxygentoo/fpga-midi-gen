@@ -1,4 +1,4 @@
-"""The audition of the masked canvas: independent blocked Gibbs, eight measures at a time.
+"""The audition of the masked sheet: independent blocked Gibbs, eight measures at a time.
 
     uv run python -m diffusion.infer sample --ckpt C --seeds 1-8 --play
     uv run python -m diffusion.infer sample --ckpt C --seeds 7 --walk 32
@@ -11,7 +11,7 @@ each. Neither makes a crop ARRIVE.
 
 EVERY DRAW OF THE WALK COMES FROM THE SHARED GENERATOR, jax/prng.py, the batched twin of
 the circuit's xorshift32, under the consumption order of docs/diffusion_rtl.md: one seed
-names one CANVAS, its opening, its masks and its redraws, alone or in any batch. That is
+names one SHEET, its opening, its masks and its redraws, alone or in any batch. That is
 what gives the era the seed handoff -- a sweep here nominates a seed, and the OCaml
 reference and the board play the same piece -- and what Gate C of test_parity.py holds:
 this walk and lib/diffusion's print the same step lines. --seeds names the walks, as it
@@ -19,8 +19,8 @@ names them in every era. Quality against N is the same seeds at two --walk value
 openings agree by construction, thus no sweep command exists.
 
 CPU is the default platform here, and deliberately: a walk is a few hundred forward passes
-of one small canvas and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override
-it -- at N 512 and sixteen canvases the card is worth having.
+of one small sheet and the GPU belongs to the trainer. Pass JAX_PLATFORMS=cuda to override
+it -- at N 512 and sixteen sheets the card is worth having.
 """
 
 import os
@@ -41,12 +41,12 @@ import measure
 import midi
 import nn
 import prng
-from diffusion import measure as canvas
+from diffusion import measure as sheet
 from diffusion import model, quantized
 
 
-def opening_canvas(states, steps):
-    """A canvas of random notes for each walk of the batch, each voice inside the register
+def opening_sheet(states, steps):
+    """A sheet of random notes for each walk of the batch, each voice inside the register
     of its own seat: one uniform for each cell in the cell order -- step-major, seat-minor
     -- and the class [low + floor(u * width)] over [measure.RANGES].
 
@@ -54,17 +54,17 @@ def opening_canvas(states, steps):
     starts on "an empty (zero everywhere) piano roll" and its roll has no silence row, thus
     an empty cell there states nothing. THIS roll holds silence as a class, so an empty cell
     states a REST with the authority of context, and the corpus rests in 0.35 percent of its
-    cells; a canvas of notes needs no special first step, and four voices sounding is 99.8
-    percent of the corpus. Measured 2026-08-25 over 256 canvases, the two openings are the
+    cells; a sheet of notes needs no special first step, and four voices sounding is 99.8
+    percent of the corpus. Measured 2026-08-25 over 256 sheets, the two openings are the
     same instrument, and the silent one was removed.
 
     The draw is over the registers and not the whole roll, because a bass at 81 and a
     soprano at 36 are further from this corpus than a rest is. The product [u * width] is
     exact on the 24-bit grid, thus the OCaml reference states the same class from the same
-    seed -- the rule and the consumption are [Diffusion.opening_canvas]'s."""
-    canvases = len(states)
-    classes = np.zeros((canvases, steps, model.VOICES), np.int32)
-    everyone = np.ones(canvases, bool)
+    seed -- the rule and the consumption are [Model.opening_sheet]'s."""
+    sheets = len(states)
+    classes = np.zeros((sheets, steps, model.VOICES), np.int32)
+    everyone = np.ones(sheets, bool)
     lows = np.array([low - data.PITCH_LOW + 1 for low, _ in measure.RANGES])
     widths = np.array([high - low + 1 for low, high in measure.RANGES])
     for step in range(steps):
@@ -87,7 +87,7 @@ def forward(params, stats, classes, hidden):
 
 def tempered_pick(raw, temperature, uniform):
     """The draw of one cell over the batch: Policy.draw_class of the OCaml reference, row
-    for row. [raw] is [canvases, ROWS] float64.
+    for row. [raw] is [sheets, ROWS] float64.
 
     The era draws with no min-p floor, thus the temper is the peak alone. One `pick`
     answers for all three eras, and its docstring holds the argument that no fallback is
@@ -108,16 +108,16 @@ def gibbs(params, stats, given, states, *, walk, temperature):
     schedule anneals: a high masking probability mixes fast and resamples badly, and as it
     falls the block shrinks toward the one-variable-at-a-time chain it approximates.
 
-    EVERY CELL OF THE CANVAS IS FREE. Nothing is given to a walk of this era, thus the
+    EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era, thus the
     walk carries no mask over the mask and the machine of the next round carries none
     either; conditioning returns with the whole-piece round.
 
-    [states] holds one generator for each canvas, thus every canvas of a batch is one
+    [states] holds one generator for each sheet, thus every sheet of a batch is one
     reproducible piece: the walk of seed 7 is the walk of seed 7 in any company, here, in
     the OCaml reference and on the board."""
-    canvases, steps, _ = given.shape
+    sheets, steps, _ = given.shape
     classes = given.copy()
-    everyone = np.ones(canvases, dtype=bool)
+    everyone = np.ones(sheets, dtype=bool)
     for step in range(walk):
         threshold = math.floor(model.anneal(step, walk) * 2**24)
         hidden = np.zeros(given.shape, dtype=bool)
@@ -140,7 +140,7 @@ def gibbs(params, stats, given, states, *, walk, temperature):
 
 
 def audition_path(path, at, count):
-    """The file one canvas writes: the name the caller gave when there is one canvas, and
+    """The file one sheet writes: the name the caller gave when there is one sheet, and
     that name numbered when there are several.
 
     A batch is a set of whole pieces and not one piece in parts, thus each one takes a file
@@ -152,7 +152,7 @@ def audition_path(path, at, count):
 
 
 def draw(params, stats, *, crop, seeds, walk, temperature, twin):
-    """one batch of canvases, and the seconds the walk cost.
+    """one batch of sheets, and the seconds the walk cost.
 
     [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
     -- and the temperature bakes into it, as the bitstream carries it. The two walks open
@@ -162,12 +162,12 @@ def draw(params, stats, *, crop, seeds, walk, temperature, twin):
     there the twin stands still while the float walk runs from the top state."""
     if twin:
         model_of_seat = quantized.of_params(params, stats, temperature)
-        states, given = opening_canvas(quantized.engine_states(seeds), crop)
+        states, given = opening_sheet(quantized.engine_states(seeds), crop)
 
         def walked():
             return quantized.gibbs(model_of_seat, states, given, walk=walk)[0]
     else:
-        states, given = opening_canvas(prng.states(seeds), crop)
+        states, given = opening_sheet(prng.states(seeds), crop)
 
         def walked():
             return gibbs(
@@ -185,14 +185,14 @@ def main():
 
 @main.command(help=gibbs.__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--corpus", "corpus_path", default=canvas.CORPUS)
+@click.option("--corpus", "corpus_path", default=sheet.CORPUS)
 @click.option("--split", default="valid", type=click.Choice(data.SPLITS))
 @click.option("--crop", default=model.CROP, help="T; the training crop")
 @click.option(
     "--seeds",
     default="1",
     callback=midi.parse_seeds,
-    help="a list, or LOW-HIGH; each seed is one canvas, one whole piece",
+    help="a list, or LOW-HIGH; each seed is one sheet, one whole piece",
 )
 # the code release's sampler defaults to 0.99, which is not a measurable difference from
 # 1.0; the flag is here because the ear may want one
@@ -216,12 +216,12 @@ def main():
 @click.option(
     "--gap",
     default=32,
-    help="steps of silence between two canvases; 32 is two bars, 0 is none",
+    help="steps of silence between two sheets; 32 is two bars, 0 is none",
 )
 @click.option(
     "--fade",
     default=16,
-    help="steps of diminuendo at the end of a canvas; 16 is one bar, 0 is none",
+    help="steps of diminuendo at the end of a sheet; 16 is one bar, 0 is none",
 )
 @click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
 @click.option("--velocity", default=100)
@@ -242,18 +242,18 @@ def sample(
     **flags,
 ):
     params, stats = model.load_params(ckpt)
-    corpus = canvas.corpus_canvases(corpus_path, split, flags["crop"], corpus_seed)
+    corpus = sheet.corpus_sheets(corpus_path, split, flags["crop"], corpus_seed)
     classes, seconds = draw(params, stats, walk=walk, **flags)
-    canvas.echo_structure("the corpus", corpus)
-    canvas.echo_structure(f"N {walk}, {len(classes)} canvases", classes)
-    click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} canvases")
+    sheet.echo_structure("the corpus", corpus)
+    sheet.echo_structure(f"N {walk}, {len(classes)} sheets", classes)
+    click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} sheets")
 
-    # a canvas is a whole piece, thus several of them are several pieces: the synth hears
+    # a sheet is a whole piece, thus several of them are several pieces: the synth hears
     # them in turn and the disk takes one file for each
     music = [data.decode(drawn) for drawn in classes]
     for at, piece in enumerate(music):
         if len(music) > 1:
-            click.echo(f"# canvas {at}")
+            click.echo(f"# sheet {at}")
         if to_file:
             path = audition_path(to_file, at, len(music))
             midi.save(
@@ -286,19 +286,19 @@ def sample(
 
 @main.command()
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--crop", default=model.CROP, help="T; the steps of the canvas")
+@click.option("--crop", default=model.CROP, help="T; the steps of the sheet")
 @click.option("--seed", default=42, help="N, the seed of the walk")
 @click.option("--walk", default=32, help="N, the Gibbs passes to compare")
 @click.option("--temperature", default=1.0)
 def drift(ckpt, crop, seed, walk, temperature):
     """What the quantization costs, measured on the walk the board takes.
 
-    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S canvas
+    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S sheet
     and the ENGINE'S mask, thus the two read one context and what stands between them is the
     arithmetic alone. The same-draw share reads the float draw on the very uniform the
     engine took, thus a difference there is the arithmetic and never the generator."""
     params, stats = model.load_params(ckpt)
-    states, given = opening_canvas(quantized.engine_states([seed]), crop)
+    states, given = opening_sheet(quantized.engine_states([seed]), crop)
     said = quantized.drift(
         params, stats, states, given, walk=walk, temperature=temperature
     )

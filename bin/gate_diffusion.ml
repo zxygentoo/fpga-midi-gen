@@ -9,7 +9,7 @@
    The model is a CONTRACT FILE and never a draw of this side:
    [jax/diffusion/quantized.py] draws the tiny model, quantizes it and writes the file,
    and both sides then read one model. The geometry cannot travel in a file — the steps of
-   a canvas, the lanes of a group and the passes of a walk are the elaboration's — thus it
+   a sheet, the lanes of a group and the passes of a walk are the elaboration's — thus it
    travels in the flags, and the Python side states the same numbers it passed.
 
    Two gates, two subcommands:
@@ -17,9 +17,9 @@
    - [walk] is INSTRUMENT 2: the walk beside the engine, PHASE FOR PHASE. It prints every
      write of the cell port in the order the walk made them — the opening's classes, each
      pass's mask bits, each pass's redraws — and then the frames the score face answers,
-     beside the frames the canvas it drew states. The finished canvas alone would pass a
+     beside the frames the sheet it drew states. The finished sheet alone would pass a
      walk whose masks are one pass out of phase, or one that spends a uniform on a
-     standing cell: both draw a canvas, and both draw the WRONG one with no local symptom.
+     standing cell: both draw a sheet, and both draw the WRONG one with no local symptom.
 
    - [stream] is INSTRUMENT 3: every column the engine writes, against the twin's own
      [layer_writes]. Era five's four faults — a weight address whose stride was not the
@@ -40,7 +40,7 @@ module Source = Mgen_diffusion.Source
 let elaboration_param =
   let%map_open.Command path =
     flag "-int8" (required string) ~doc:"PATH the contract file of the model"
-  and steps = flag "-steps" (required int) ~doc:"T the steps of one canvas"
+  and steps = flag "-steps" (required int) ~doc:"T the steps of one sheet"
   and lanes = flag "-lanes" (required int) ~doc:"G the output channels of one group"
   and walk = flag "-walk" (required int) ~doc:"N the passes of the walk"
   and rows =
@@ -64,21 +64,20 @@ let row values = String.concat ~sep:" " (List.map (Array.to_list values) ~f:Int.
 (* The walk *)
 (* ==================================================================== *)
 
-(* THE CANVAS THE CIRCUIT DREW, READ OUT OF ITS OWN CLASS WRITES: the last class a cell
-   took is the class it holds. The frames are then [Model.frames_of_canvas] of that
-   canvas, and the two comparisons of the Python side compose — the writes ARE the twin's,
-   thus the canvas is the twin's, thus a frame face that agrees with this canvas agrees
-   with the twin. The driver never reads a model to state a frame. *)
-let canvas_of_writes (writes : Source.For_test.Bench.write list) ~steps =
-  let canvas = Array.make_matrix ~dimx:steps ~dimy:Mgen_core.Frame.voices 0 in
+(* THE SHEET THE CIRCUIT DREW, READ OUT OF ITS OWN CLASS WRITES: the last class a cell
+   took is the class it holds. The frames are then [Model.frames_of_sheet] of that sheet,
+   and the two comparisons of the Python side compose — the writes ARE the twin's, thus
+   the sheet is the twin's, thus a frame face that agrees with this sheet agrees with the
+   twin. The driver never reads a model to state a frame. *)
+let sheet_of_writes (writes : Source.For_test.Bench.write list) ~steps =
+  let sheet = Array.make_matrix ~dimx:steps ~dimy:Mgen_core.Frame.voices 0 in
   List.iter writes ~f:(fun { Source.For_test.Bench.mask; step; seat; value } ->
-    if not mask then canvas.(step).(seat) <- value);
-  canvas
+    if not mask then sheet.(step).(seat) <- value);
+  sheet
 ;;
 
-(* the steps the score face is played past the end of the canvas: past step T - 1 the
-   first frame releases what the last cell held and every one after it states no event at
-   all *)
+(* the steps the score face is played past the end of the sheet: past step T - 1 the first
+   frame releases what the last cell held and every one after it states no event at all *)
 let silent_steps = 2
 
 let run_walk e ~seed =
@@ -88,7 +87,7 @@ let run_walk e ~seed =
   let writes = h.writes () in
   List.iter writes ~f:(fun { Source.For_test.Bench.mask; step; seat; value } ->
     printf "write %s %d %d %d\n" (if mask then "MASK" else "CLASS") step seat value);
-  let frames = Model.frames_of_canvas (canvas_of_writes writes ~steps) in
+  let frames = Model.frames_of_sheet (sheet_of_writes writes ~steps) in
   List.iter
     (List.range 0 (steps + silent_steps))
     ~f:(fun step ->
@@ -114,14 +113,14 @@ let walk_command =
 
 (* THE STEM'S INPUT AT ONE SEED, as the stream gate has always built it: the opening the
    walk draws, the first mask of a walk of [walk] passes, and the twin's own decode of the
-   two. The canvas and the mask are printed, thus the Python side builds the same input
+   two. The sheet and the mask are printed, thus the Python side builds the same input
    from the same two facts and never redraws them. *)
 let stem_input e ~seed =
   let steps = e.Elaboration.steps in
-  let state, canvas = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+  let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
   let threshold = Model.anneal_threshold ~step:0 ~walk:e.walk in
   let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
-  canvas, hidden
+  sheet, hidden
 ;;
 
 let run_stream e ~seed =
@@ -132,12 +131,12 @@ let run_stream e ~seed =
   if rows <> Model.rows
   then
     failwithf "the stem's decode states %d rows, thus this gate takes no other P" rows ();
-  let canvas, hidden = stem_input e ~seed in
-  Array.iteri canvas ~f:(fun step seats ->
+  let sheet, hidden = stem_input e ~seed in
+  Array.iteri sheet ~f:(fun step seats ->
     Array.iteri seats ~f:(fun seat cell ->
-      printf "canvas %d %d %d\n" step seat cell;
+      printf "sheet %d %d %d\n" step seat cell;
       printf "hidden %d %d %d\n" step seat (Bool.to_int hidden.(step).(seat))));
-  let stem = Mgen_diffusion.Canvas.For_test.plane_activations canvas hidden ~steps in
+  let stem = Mgen_diffusion.Sheet.For_test.plane_activations sheet hidden ~steps in
   let module Bench =
     Forward.For_test.Bench (struct
       let e = e
@@ -146,7 +145,7 @@ let run_stream e ~seed =
   let pass =
     Bench.run
       ~planes:(fun ~step ~plane ->
-        Mgen_diffusion.Canvas.For_test.plane_column stem ~step ~plane)
+        Mgen_diffusion.Sheet.For_test.plane_column stem ~step ~plane)
       ()
   in
   (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.

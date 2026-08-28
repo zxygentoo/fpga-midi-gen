@@ -59,7 +59,7 @@ struct
   let turn_count = Array.length e.turns
   let turn_bits = address_bits_for turn_count
 
-  (* THE PAIR'S STEP COUNTER RUNS PAST THE CANVAS. B trails A by two, thus [s] walks 0 to
+  (* THE PAIR'S STEP COUNTER RUNS PAST THE SHEET. B trails A by two, thus [s] walks 0 to
      T + 1 and its width is not the column's. The semantic column is [s] in phase A and
      [s - 2] in phase B, and that one is [step_bits] wide as it always was. *)
   let turn_step_bits = address_bits_for (steps + 2)
@@ -292,7 +292,7 @@ struct
        the ring's geometry *)
     let tap_ring_address = ring_address ~step:tap_step ~channel:fetch_cin in
     (* the fetch travels to the NOW frame beside its data: the zero flag says the slot
-       takes zero, and the step and the plane are what the canvas answers *)
+       takes zero, and the step and the plane are what the sheet answers *)
     (* THE SOURCE OF A FETCHED COLUMN TRAVELS WITH THE FETCH. Which memory a column comes
        from is a fact of the FETCH's layer and not of the slot's: the columns that land
        under B's last input channel are A's and come from X, and a slot that read the
@@ -926,16 +926,16 @@ end
    probe does. Era five's four datapath faults all lived in exactly this layer and none of
    them moved a frame; that is why the instrument exists.
 
-   The canvas is MODELLED and not instantiated: [Canvas] carries its own gate, thus the
+   The sheet is MODELLED and not instantiated: [Sheet] carries its own gate, thus the
    bench answers the stem's plane column with the twin's own decode and keeps this gate
    about the engine.
 
-   THE MODEL IS ONE CYCLE LATE AND THAT IS SOUND HERE, NOT A SEAM. [Canvas] answers
+   THE MODEL IS ONE CYCLE LATE AND THAT IS SOUND HERE, NOT A SEAM. [Sheet] answers
    combinationally in the cycle its address stands; this bench reads the address after a
    cycle and answers in the next one. The two agree because the landed address is
    BLOCK-STABLE: it holds through the load cycle and the cycle before it, thus a column
    read one cycle early is the same column. What the shortcut does not exercise is the
-   combinational path itself, and that waits for the canvas agreement of S4. *)
+   combinational path itself, and that waits for the sheet agreement of S4. *)
 module Bench (M : sig
     val e : Elaboration.t
   end) =
@@ -969,7 +969,7 @@ struct
   (* one column as the twin holds it: [rows] signed activations, row 0 first *)
   let column_of bits = Harness.unpack bits ~width:activation_bits
 
-  (* [run ~planes] is one forward pass, and [planes] is the canvas: the [rows] activations
+  (* [run ~planes] is one forward pass, and [planes] is the sheet: the [rows] activations
      of one step and one plane. The stream gate hands the twin's own decode over; a
      picture at a shape the twin does not hold hands over one of its own. *)
   let run ?(trace = false) ?(read_logits = true) ~planes () =
@@ -1011,7 +1011,7 @@ struct
       take ~to_y:false x;
       take ~to_y:true y;
       Harness.Tally.count spent ~encoded:(Cyclesim.Node.to_int state) ~cycle:!cycles;
-      (* the canvas answers the port of the next cycle, combinational from its registers *)
+      (* the sheet answers the port of the next cycle, combinational from its registers *)
       inp.plane_column
       := Harness.pack
            (planes
@@ -1064,16 +1064,16 @@ struct
 end
 
 (* THE STEM'S INPUT AT ONE SEED: the opening the walk draws, the first mask of a walk of
-   [walk] passes, and the decode of the two — what the canvas answers the stem's fetch
+   [walk] passes, and the decode of the two — what the sheet answers the stem's fetch
    with. The cycle bench below reads it, and the STREAM gate that once read it beside the
-   canvas and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
+   sheet and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
    columns lives. *)
 let stem_input ~steps ~walk ~seed =
-  let state, canvas = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+  let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
   let threshold = Model.anneal_threshold ~step:0 ~walk in
   let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
-  let stem = Canvas.For_test.plane_activations canvas hidden ~steps in
-  fun ~step ~plane -> Canvas.For_test.plane_column stem ~step ~plane
+  let stem = Sheet.For_test.plane_activations sheet hidden ~steps in
+  fun ~step ~plane -> Sheet.For_test.plane_column stem ~step ~plane
 ;;
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
@@ -1197,7 +1197,7 @@ let%expect_test "the schedule of one column: the preamble, the nine terms, the d
 let%expect_test "the pair interleaves, and the picture is the schedule" =
   (* THE SCHEDULE'S OWN PICTURE. One pair at a shape a window can hold: P 6, G 2, T 4 and
      a trunk of three channels. What the waves state is the ORDER — [lead_phase] falls for
-     A and rises for B, and [lead_column] is the canvas column each block works on — thus
+     A and rises for B, and [lead_column] is the sheet column each block works on — thus
      A0, A1, A2 B0, A3 B1, B2, B3 stands in one place, with the lag of two visible as the
      distance between a rise of [lead_phase] and the column it names.
 

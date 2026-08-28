@@ -1,12 +1,12 @@
 (** The model as the circuit reads it: the roll, the formats, the contract file, the walk
     and the frames.
 
-    Era six draws one canvas of T steps of four voices over the 48-class vocabulary of
-    [Vocab], beside a mask over its cells. The model reads the canvas with the masked
-    cells hidden and states a distribution over the classes of every cell at once; the
-    Gibbs walk hides and restores cells in turn until a piece stands. Nothing is causal
-    and nothing is written left to right. The design of the model is [docs/diffusion.md],
-    and the design of this layer and its gates is [docs/diffusion_rtl.md].
+    Era six draws one sheet of T steps of four voices over the 48-class vocabulary of
+    [Vocab], beside a mask over its cells. The model reads the sheet with the masked cells
+    hidden and states a distribution over the classes of every cell at once; the Gibbs
+    walk hides and restores cells in turn until a piece stands. Nothing is causal and
+    nothing is written left to right. The design of the model is [docs/diffusion.md], and
+    the design of this layer and its gates is [docs/diffusion_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/diffusion/model.py] and the
     integer twin is [jax/diffusion/quantized.py]; the order that cut them out of OCaml is
@@ -19,7 +19,7 @@
     - **The model as data**: the record the contract file carries, and its reader.
     - **The walk**: the registers of the seats, the cell order, the opening, the masks and
       the anneal rule.
-    - **The frames**: what a canvas states to the sequencer.
+    - **The frames**: what a sheet states to the sequencer.
 
     Two things that look like they belong in the contract file do not, and stay here:
 
@@ -37,9 +37,9 @@
     **THE CONSUMPTION ORDER IS THE CONTRACT** of [docs/diffusion_rtl.md]: the opening
     draws one uniform for each cell, each pass draws one for each cell (the masks) and
     then one for each hidden cell (the classes), and the cells walk in [cell_order]
-    everywhere. Every cell of a canvas is free — nothing is given to a walk of this era.
-    One seed names one canvas — in JAX, here and on the board — and the same seed gives
-    the same piece. *)
+    everywhere. Every cell of a sheet is free — nothing is given to a walk of this era.
+    One seed names one sheet — in JAX, here and on the board — and the same seed gives the
+    same piece. *)
 
 (** {1 The roll} *)
 
@@ -134,7 +134,7 @@ val rom_bases : t -> int array
 
 (** {1 The walk} *)
 
-(** The register of each seat as classes: what [opening_canvas] draws inside, stated one
+(** The register of each seat as classes: what [opening_sheet] draws inside, stated one
     time. The circuit reads these through its elaboration, thus the opening of the walk
     and the opening of the board are one rule and never a second reading of it. *)
 type opening =
@@ -153,7 +153,7 @@ val seat_openings : opening array
     against the same number, and it is the entry the circuit's table holds. *)
 val anneal_threshold : step:int -> walk:int -> int
 
-(** [cell_order ~steps] is the order the walk visits the cells of a canvas in: a step at a
+(** [cell_order ~steps] is the order the walk visits the cells of a sheet in: a step at a
     time, and the seats of a step inside it, as [step, voice] pairs.
 
     Every uniform of the walk is drawn in this order — the opening, each mask, and the
@@ -162,15 +162,15 @@ val anneal_threshold : step:int -> walk:int -> int
     restate it. *)
 val cell_order : steps:int -> (int * int) list
 
-(** [opening_canvas state ~steps] is the seeded opening of the walk: one uniform for each
+(** [opening_sheet state ~steps] is the seeded opening of the walk: one uniform for each
     cell in the cell order, the class [low + floor (u * width)] inside the register of the
-    cell's own seat. The twin's engine opens on the same rule in [infer.opening_canvas],
+    cell's own seat. The twin's engine opens on the same rule in [infer.opening_sheet],
     thus the two openings are one rule and one consumption. *)
-val opening_canvas : Prng.state -> steps:int -> Prng.state * int array array
+val opening_sheet : Prng.state -> steps:int -> Prng.state * int array array
 
 (** [hidden_cells state ~steps ~threshold] is the mask of one pass: one uniform for each
     cell in the cell order, hidden exactly when [u * 2^24] falls under [threshold]. The
-    same sharing argument as [opening_canvas]. *)
+    same sharing argument as [opening_sheet]. *)
 val hidden_cells
   :  Prng.state
   -> steps:int
@@ -179,12 +179,12 @@ val hidden_cells
 
 (** {1 The frames} *)
 
-(** [frames_of_canvas canvas] is the frame of each step: the classes of a step become the
+(** [frames_of_sheet sheet] is the frame of each step: the classes of a step become the
     voice codes of one word, seat 0 in the low byte. [Frame.events_of_frames] then states
     the events of the wire, and the step lines of the JAX audition print them — the decode
     is the rule of the frame, and it is the same rule [jax/data.py] states, thus a walk
     here and a walk there compare as text. *)
-val frames_of_canvas : int array array -> int array
+val frames_of_sheet : int array array -> int array
 
 (** {1 The drawn model} *)
 

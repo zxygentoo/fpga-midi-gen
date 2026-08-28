@@ -79,7 +79,7 @@ type turn =
 (** One model at one geometry: the four numbers of the geometry, the table, and the tables
     the bitstream carries. *)
 type t =
-  { steps : int (** T: the steps of one canvas *)
+  { steps : int (** T: the steps of one sheet *)
   ; rows : int (** P: the pitch rows of a column, and the classes of one cell *)
   ; lanes : int (** G: the output channels of one group, thus [rows * lanes] lanes *)
   ; walk : int (** N: the passes of the walk, and the depth of [alpha_rom] *)
@@ -109,7 +109,7 @@ type t =
   ; ring_banks : bank array
   (** how the Y ring is banked: [ring_depth] columns, one bank of 512 at every elected
       rung. Y never exists as a tensor — the fused pair keeps four columns of it live —
-      thus the ring costs the WIDTH of a column and not the length of the canvas: eleven
+      thus the ring costs the WIDTH of a column and not the length of the sheet: eleven
       tiles at any T. *)
   ; norm_rom : Hardcaml.Bits.t array
   (** one word for each output channel of the model, in the layer order: the bias in the
@@ -228,7 +228,7 @@ val channel_bits : t -> int
       them — the engine holds one band for every group and loads it in the window the
       drain before it just freed;
     - a gain shift that does not fit [shift_bits];
-    - a canvas of no steps, a column of no rows, a group of no lanes, or a walk of no
+    - a sheet of no steps, a column of no rows, a group of no lanes, or a walk of no
       passes. *)
 val create : ?rows:int -> Model.t -> steps:int -> lanes:int -> walk:int -> t
 

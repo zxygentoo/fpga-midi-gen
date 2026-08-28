@@ -138,7 +138,7 @@ let layer_of_phase turn phase =
 
 let is_pair turn = Option.is_some turn.second
 
-(* ONE BLOCK OF A TURN: the layer it runs, the column of the canvas it works on, and the
+(* ONE BLOCK OF A TURN: the layer it runs, the column of the sheet it works on, and the
    group of output channels. A block dwells [dwell layer] cycles. *)
 type block =
   { layer : int
@@ -212,10 +212,10 @@ let turn_cycles t turn =
 ;;
 
 let forward_cycles t = Array.sum (module Int) t.turns ~f:(turn_cycles t)
-let canvas_cells t = t.steps * Frame.voices
+let sheet_cells t = t.steps * Frame.voices
 
 (* one uniform for each cell in the cell order: the opening, and the mask of each pass *)
-let cell_walk_cycles t = canvas_cells t * uniform_cycles
+let cell_walk_cycles t = sheet_cells t * uniform_cycles
 
 (* One pass, LESS THE DRAW: the mask and the forward. The draw's cycles are L4's and the
    bench's — the design estimates about 2 [rows] for each hidden cell — and a number this
@@ -448,7 +448,7 @@ module Rtl = struct
        The order is [blocks_of_turn]'s and the gate beside it holds the two together over
        every block of every shape. A block closes when the last channel of its last group
        retires. Then the phase turns to B where B is live at this step; otherwise the step
-       advances, and the phase opens at A while A is still inside the canvas. A turn ends
+       advances, and the phase opens at A while A is still inside the sheet. A turn ends
        on the close of its last step's last phase. *)
     let next_block t ~is_pair ~cin_count ~group_count { cin; group; step; phase } =
       let at n = of_unsigned_int ~width:(width step) n in
@@ -457,7 +457,7 @@ module Rtl = struct
       let closes = last_cin &: last_group in
       let in_a = ~:phase in
       (* B is live once the step has reached column two; A is live while the step is still
-         inside the canvas *)
+         inside the sheet *)
       let b_live = is_pair &: (step >=: at 2) in
       (* A TURN OF ONE PHASE NEVER LEAVES A. Only a pair runs past its last column, and
          only there does the step open at B. *)
@@ -495,7 +495,7 @@ let bases_of sizes =
 
 let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
   Model.check_shape model;
-  if steps < 1 then invalid_argf "a canvas of %d steps" steps ();
+  if steps < 1 then invalid_argf "a sheet of %d steps" steps ();
   if rows < 1 then invalid_argf "a column of %d rows" rows ();
   if lanes < 1 then invalid_argf "a group of %d lanes" lanes ();
   if walk < 1 then invalid_argf "a walk of %d passes" walk ();
@@ -536,9 +536,9 @@ let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
   (* A PAIR NEEDS TWO COLUMNS. B trails A by two, thus the pair's step counter walks 0 to
      T + 1; at T 1 the step 1 holds no block at all — A is past its last column and B has
      not reached its first — and a nest that advances one step for each block would stall
-     there. Two columns is not a canvas either, but it is a shape the nest can walk. *)
+     there. Two columns is not a sheet either, but it is a shape the nest can walk. *)
   if steps < 2 && count > 2
-  then invalid_argf "a canvas of %d steps cannot carry a fused pair" steps ();
+  then invalid_argf "a sheet of %d steps cannot carry a fused pair" steps ();
   let layers =
     let weight_bases =
       bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
@@ -1246,7 +1246,7 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
   refuse "the channel that clears it" (fun () ->
     create (Model.For_test.drawn ~layers:4 ~width:7 ~seed:7) ~steps:8 ~lanes:4 ~walk:4);
   refuse "a walk of no passes" (fun () -> create model ~steps:8 ~lanes:4 ~walk:0);
-  refuse "a canvas of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
+  refuse "a sheet of no steps" (fun () -> create model ~steps:0 ~lanes:4 ~walk:4);
   refuse "a group of no lanes" (fun () -> create model ~steps:8 ~lanes:0 ~walk:4);
   [%expect
     {|
@@ -1255,7 +1255,7 @@ let%expect_test "the elaboration refuses what the machine cannot hold" =
     a fetch the load outruns: layer 1 dwells 54 cycles; its drain, band loads and the next block's fetch need 63: the dwell is short
     the channel that clears it: NOT REFUSED
     a walk of no passes: a walk of 0 passes
-    a canvas of no steps: a canvas of 0 steps
+    a sheet of no steps: a sheet of 0 steps
     a group of no lanes: a group of 0 lanes
     |}]
 ;;

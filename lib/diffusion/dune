@@ -1,6 +1,6 @@
 (library
  (name mgen_diffusion)
- ; Era six below the JAX seam: the circuit of the masked canvas, and the model as the
+ ; Era six below the JAX seam: the circuit of the masked sheet, and the model as the
  ; circuit reads it. The units and the shared rules come from mgen_nn, as the unification
  ; round put them. Mgen_nn is NOT opened, and no module of this library shadows one of its
  ; any more: opening it would put [Quantized] in scope unqualified beside the

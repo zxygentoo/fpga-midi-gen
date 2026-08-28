@@ -119,7 +119,7 @@ def of_walk(classes):
     where the sparse instruments could not.
 
     THE ARITHMETIC IS THE COMMON BATTERY'S and not a second copy of it. A walk is a stack
-    of one canvas, thus [measure.structure] reads the same cells and returns the same two
+    of one sheet, thus [measure.structure] reads the same cells and returns the same two
     numbers; it computes ten more and this era reports none of them, because what was
     dropped above was dropped from the REPORT and not from the arithmetic."""
     row = measure.structure(np.asarray(classes)[None])

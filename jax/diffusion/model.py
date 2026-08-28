@@ -1,14 +1,14 @@
-"""The masked canvas of docs/diffusion.md: the roll, the mask, and the paper's net.
+"""The masked sheet of docs/diffusion.md: the roll, the mask, and the paper's net.
 
 This is Coconet (Huang et al., arXiv 1903.07227) at the paper's size, on this corpus. One
-canvas is a crop of 128 sixteenth steps -- eight measures, the excerpt length the paper's
+sheet is a crop of 128 sixteenth steps -- eight measures, the excerpt length the paper's
 raters heard -- as a PIANO ROLL of `data.CLASSES` rows by four voice channels. The model
 is handed the roll with some cells hidden and states a categorical distribution over the
 pitch rows for every cell, hidden or not. Nothing here is causal and nothing here draws:
-the whole canvas is one input, and a piece is written knowing its own ending.
+the whole sheet is one input, and a piece is written knowing its own ending.
 
 Three things stand here, because the trainer, the sampler and the two referees all read
-them: the canvas and its mask planes, the net with its checkpoint, and the two mask
+them: the sheet and its mask planes, the net with its checkpoint, and the two mask
 distributions -- the orderless-NADE draw of the training loss and the annealed Bernoulli
 of the Gibbs walk.
 
@@ -52,7 +52,7 @@ from safetensors.numpy import load_file
 import data
 
 # ---------------------------------------------------------------------
-# the canvas: the classes of a crop as the paper's input planes
+# the sheet: the classes of a crop as the paper's input planes
 # ---------------------------------------------------------------------
 
 # The roll holds one row for each class of the vocabulary of this repository: row 0 is
@@ -74,7 +74,7 @@ NORM_EPSILON = 1e-7
 
 
 def cells(steps):
-    """D, the variables of one canvas: one voice at one step.
+    """D, the variables of one sheet: one voice at one step.
 
     It is not the cells of the roll. A cell is a single categorical over the pitch rows,
     thus it is masked whole or not at all, and every count of the round -- the mask draw,
@@ -104,7 +104,7 @@ def planes(classes, hidden):
 
 def orderless_masks(key, batch, steps):
     """The training mask of orderless NADE: a uniform masked count, then a uniform subset
-    of that size, one draw for each canvas of the batch.
+    of that size, one draw for each sheet of the batch.
 
     This is the code release's `OrderlessMaskoutMethod`: `k = choice(D) + 1` cells masked,
     `choice(D, size=k, replace=False)` which ones. The rank of a uniform draw states the
@@ -197,11 +197,11 @@ def residual_pair(x, params, stats, training):
     return jax.nn.relu(x + second), [seen_first, seen_second]
 
 
-def logits(params, stats, canvas, training=False, remat=False):
-    """The logits of every cell of the canvas: [batch, steps, ROWS, VOICES], and the
+def logits(params, stats, sheet, training=False, remat=False):
+    """The logits of every cell of the sheet: [batch, steps, ROWS, VOICES], and the
     batch-norm statistics the pass read.
 
-    [canvas] is the input planes and the softmax runs over the ROWS axis, thus the model
+    [sheet] is the input planes and the softmax runs over the ROWS axis, thus the model
     states a pitch for every voice of every step -- the masked cells and the context alike.
     The loss reads only the masked ones and the Gibbs walk resamples only the masked ones.
 
@@ -217,7 +217,7 @@ def logits(params, stats, canvas, training=False, remat=False):
     pair = partial(residual_pair, training=training)
     if remat:
         pair = jax.checkpoint(pair)
-    h, stem = normed_conv(canvas, layers[0], stats[0], training)
+    h, stem = normed_conv(sheet, layers[0], stats[0], training)
     h = jax.nn.relu(h)
     seen = [stem]
     for at in range(1, len(layers) - 1, 2):
@@ -271,7 +271,7 @@ def load_params(path):
     tensors = load_file(path)
     layers, spare = divmod(len(tensors), LAYER_TENSORS)
     if spare or layers < 3:
-        raise ValueError(f"{path}: {len(tensors)} tensors is no canvas model")
+        raise ValueError(f"{path}: {len(tensors)} tensors is no sheet model")
     params, stats = [], []
     for layer in range(layers):
         held = {

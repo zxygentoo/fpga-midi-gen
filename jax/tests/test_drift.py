@@ -6,11 +6,11 @@ The randomness is pseudo-randomness with the seed an input, per the project rule
 both parts are deterministic.
 
 THE FEEDBACK AXIS OF THIS ERA IS THE WALK, and it is what parts this gate from era five's.
-That model held a state that carried an error forward in time; this one holds a canvas --
+That model held a state that carried an error forward in time; this one holds a sheet --
 every cell a pass redraws stands in the context of every later pass, thus an arithmetic
 error compounds through the music rather than through a register. The fixed sweep therefore
 runs the walk out to 128 passes beside the short ones, which is a quarter of the board's
-full budget at a quarter of its canvas.
+full budget at a quarter of its sheet.
 
 THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `drawn_params`'s own default and
 its docstring's argument: at the trainer's opening tenth an untrained trunk decays tenfold
@@ -29,7 +29,7 @@ import pytest
 from diffusion import infer, model, quantized
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
-# the head, over a quarter of the board's canvas -- two measures
+# the head, over a quarter of the board's sheet -- two measures
 LAYERS = 6
 WIDTH = 8
 STEPS = 32
@@ -41,7 +41,7 @@ WALK_SEEDS = (42, 43, 44, 45)
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     params, stats = model.drawn_params(weight_seed, LAYERS, WIDTH)
-    states, given = infer.opening_canvas(quantized.engine_states([walk_seed]), STEPS)
+    states, given = infer.opening_sheet(quantized.engine_states([walk_seed]), STEPS)
     return quantized.drift(params, stats, states, given, walk=passes)
 
 

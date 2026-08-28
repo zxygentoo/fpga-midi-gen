@@ -15,7 +15,7 @@
 
    THE SHAPE OF THE MODEL COMES FROM THE FILE and the GEOMETRY comes from this one call. A
    contract file states L and H in its own tensor shapes. The three numbers below are the
-   ones no file can hold — the steps of a canvas, the lanes of a group, and the passes of
+   ones no file can hold — the steps of a sheet, the lanes of a group, and the passes of
    the walk. Every width, depth and base of the circuit follows from the elaboration they
    make. *)
 
@@ -25,8 +25,8 @@ open Core
    2026-08-25 and on the board through the fused pair and the timing cuts 2026-08-28. *)
 let contract = "_train/diffusion/coconet/l48-h20-100k.int8"
 
-(* T 128 steps of a canvas, G 5 lanes in a group — all 240 of the device's DSPs — and N
-   512 passes of the walk. At STEP_MS 200 the canvas plays for 25.6 s, and the cost model
+(* T 128 steps of a sheet, G 5 lanes in a group — all 240 of the device's DSPs — and N 512
+   passes of the walk. At STEP_MS 200 the sheet plays for 25.6 s, and the cost model
    states the pass inside that window: 4.30 M cycles, 22.0 s of draw. G 4 would need 215
    ms a step and miss the window. *)
 let steps = 128

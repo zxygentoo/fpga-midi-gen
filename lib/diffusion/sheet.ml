@@ -1,11 +1,11 @@
-(* The canvas — see canvas.mli for the contract, and docs/diffusion_rtl.md, "The memories
+(* The sheet — see sheet.mli for the contract, and docs/diffusion_rtl.md, "The memories
    and their ports" and "The seam to the sequencer", for its place. What stands here is
    the WHY of each rule.
 
    One register for each cell's class, one for its mask bit, and three readers over them.
    THE DECODE STANDS AFTER THE MUX AND NEVER BEFORE IT: a face names one step, thus it
    costs one [steps]-way mux of the packed cells and then one decode of the cell it found.
-   A canvas held as decoded planes would be [steps] decodes and a mux of the whole plane
+   A sheet held as decoded planes would be [steps] decodes and a mux of the whole plane
    width, for the same answer. *)
 
 open Core
@@ -39,7 +39,7 @@ let planes = 2 * voices
 let activation_one = 1 lsl Model.activation_q
 
 (* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
-let plane_activations canvas hidden ~steps =
+let plane_activations sheet hidden ~steps =
   let x = Array.create ~len:(steps * rows * planes) 0 in
   for step = 0 to steps - 1 do
     for voice = 0 to voices - 1 do
@@ -48,8 +48,7 @@ let plane_activations canvas hidden ~steps =
         for row = 0 to rows - 1 do
           x.((((step * rows) + row) * planes) + voices + voice) <- activation_one
         done
-      else
-        x.((((step * rows) + canvas.(step).(voice)) * planes) + voice) <- activation_one
+      else x.((((step * rows) + sheet.(step).(voice)) * planes) + voice) <- activation_one
     done
   done;
   x
@@ -123,12 +122,11 @@ module Make (Shape : Shape) = struct
   let create (i : _ I.t) : _ O.t =
     (* THE MEMORIES TAKE NO CLEAR, thus the whole unit takes none. The opening writes
        every class and a mask draw writes every bit before anything reads either, and the
-       reset of the board runs an opening — a cleared canvas is a canvas no walk ever
-       sees. *)
+       reset of the board runs an opening — a cleared sheet is a sheet no walk ever sees. *)
     let spec = Reg_spec.create ~clock:i.clock () in
-    (* ONE DECODE FOR THE WHOLE CANVAS. The walk names one cell, thus the two onehots
-       stand once and a cell's write enable is one AND of two bits — and not a comparator
-       at each of the [steps] by [voices] registers. *)
+    (* ONE DECODE FOR THE WHOLE SHEET. The walk names one cell, thus the two onehots stand
+       once and a cell's write enable is one AND of two bits — and not a comparator at
+       each of the [steps] by [voices] registers. *)
     let step_named = binary_to_onehot i.cell_step in
     let seat_named = binary_to_onehot i.cell_seat in
     let cell ~step ~seat =
@@ -136,12 +134,12 @@ module Make (Shape : Shape) = struct
       reg spec ~enable:(i.write_mask &: named) i.cell_hidden
       @: reg spec ~enable:(i.write_class &: named) i.cell_class
     in
-    let canvas =
+    let sheet =
       List.init steps ~f:(fun step ->
         concat_lsb (List.init voices ~f:(fun seat -> cell ~step ~seat)))
     in
     let cell_at ~step_address ~seat_address =
-      let word = mux step_address canvas in
+      let word = mux step_address sheet in
       mux seat_address (List.init voices ~f:(seat_of_step word))
     in
     (* THE WALK'S FACE: the mask bit of the cell the walk names. The classes leave by the
@@ -178,7 +176,7 @@ module Make (Shape : Shape) = struct
     (* THE SCORE'S FACE: the four classes of one step become four voice codes, seat 0 in
        the low byte. The map is [Vocab]'s and the packing is [Frame]'s; this unit restates
        neither. *)
-    let scored = mux i.score_step canvas in
+    let scored = mux i.score_step sheet in
     let code_of_seat seat =
       Vocab.Rtl.code_of_class (class_of_cell (seat_of_step scored seat))
     in
@@ -193,17 +191,17 @@ end
 (* The bench *)
 (* ==================================================================== *)
 
-(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Model.opening_canvas] and
+(* THE REFERENCE IS THE ERA'S OWN RULES, CALLED. [Model.opening_sheet] and
    [Model.hidden_cells] state what the walk writes, [plane_activations] above states what
-   the stem must read, and [Model.frames_of_canvas] states what the sequencer must play —
+   the stem must read, and [Model.frames_of_sheet] states what the sequencer must play —
    thus the gate compares the circuit against the functions themselves and never against a
    second reading of them. *)
 module Bench (Shape : Shape) = struct
-  module Canvas = Make (Shape)
-  module Sim = Cyclesim.With_interface (Canvas.I) (Canvas.O)
+  module Sheet = Make (Shape)
+  module Sim = Cyclesim.With_interface (Sheet.I) (Sheet.O)
 
   let steps = Shape.steps
-  let planes = Canvas.planes
+  let planes = Sheet.planes
 
   (* What one read cycle names: one cell for the walk, one column for the stem and one
      step for the score. ONE CYCLE ANSWERS ALL THREE, thus the bench always asks all three
@@ -220,7 +218,7 @@ module Bench (Shape : Shape) = struct
     ; frame : int
     }
 
-  (* The canvas the three writes of a pass leave: a redraw lands on the cells the mask hid
+  (* The sheet the three writes of a pass leave: a redraw lands on the cells the mask hid
      and nowhere else, which is the walk's own rule. *)
   let redrawn ~opening ~hidden ~redraw =
     Array.mapi opening ~f:(fun step seats ->
@@ -228,7 +226,7 @@ module Bench (Shape : Shape) = struct
         if hidden.(step).(seat) then redraw.(step).(seat) else held))
   ;;
 
-  (* [filled ~opening ~hidden ~redraw] is a simulation whose canvas holds ONE PASS: the
+  (* [filled ~opening ~hidden ~redraw] is a simulation whose sheet holds ONE PASS: the
      opening's classes cell by cell, then the mask bits cell by cell, then the classes of
      the cells the mask hid — the three writes of a pass, in the order the walk takes them
      and in [Model.cell_order] inside each one. A bench that wrote the classes one time
@@ -237,7 +235,7 @@ module Bench (Shape : Shape) = struct
     let sim =
       Sim.create
         ~config:(if trace then Cyclesim.Config.trace_all else Cyclesim.Config.default)
-        Canvas.create
+        Sheet.create
     in
     let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
@@ -270,7 +268,7 @@ module Bench (Shape : Shape) = struct
   ;;
 
   (* [ask sim read] is the three faces at the three addresses, in one cycle. The strobes
-     stand low, thus the canvas does not move under a read. *)
+     stand low, thus the sheet does not move under a read. *)
   let ask (sim : Sim.t) { cell = step, seat; column = plane_step, plane; score } =
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
@@ -298,9 +296,9 @@ module Bench (Shape : Shape) = struct
      address of every face. *)
   let check ~opening ~hidden ~redraw =
     let sim = snd (filled ~opening ~hidden ~redraw ()) in
-    let canvas = redrawn ~opening ~hidden ~redraw in
-    let stem = plane_activations canvas hidden ~steps in
-    let frames = Model.frames_of_canvas canvas in
+    let sheet = redrawn ~opening ~hidden ~redraw in
+    let stem = plane_activations sheet hidden ~steps in
+    let frames = Model.frames_of_sheet sheet in
     let cells = Array.of_list (Model.cell_order ~steps) in
     let disagrees agrees = if agrees then 0 else 1 in
     let take counts at =
@@ -327,9 +325,9 @@ module Bench (Shape : Shape) = struct
   ;;
 end
 
-let%expect_test "the three faces answer the canvas one pass of the walk writes" =
+let%expect_test "the three faces answer the sheet one pass of the walk writes" =
   (* ONE PASS OF THE WALK, WRITTEN AND THEN READ BACK THROUGH ALL THREE FACES. Every write
-     is the walk's own — [opening_canvas] inside the register of each seat, [hidden_cells]
+     is the walk's own — [opening_sheet] inside the register of each seat, [hidden_cells]
      under the annealed threshold, and a second opening standing for the redraws of the
      hidden cells — thus the memory holds what the machine will put in it and not a drawn
      pattern. The passes stand at the ends of the schedule: pass 0 hides nearly every cell
@@ -342,12 +340,12 @@ let%expect_test "the three faces answer the canvas one pass of the walk writes" 
         let rows = Model.rows
       end)
     in
-    let state, opening = Model.opening_canvas (Prng.create_folded ~seed) ~steps in
+    let state, opening = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
     let threshold = Model.anneal_threshold ~step:pass ~walk in
     let state, hidden = Model.hidden_cells state ~steps ~threshold in
     (* the redraw is a second opening: a class inside the register of each seat, which is
        the range a draw of the model states as well *)
-    let (_ : Prng.state), redraw = Model.opening_canvas state ~steps in
+    let (_ : Prng.state), redraw = Model.opening_sheet state ~steps in
     let hides = Array.sum (module Int) hidden ~f:(Array.count ~f:Fn.id) in
     let { B.masks; columns; frames } = B.check ~opening ~hidden ~redraw in
     printf

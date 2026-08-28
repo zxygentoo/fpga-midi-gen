@@ -19,7 +19,7 @@ let voices = Frame.voices
 
 (* THE ACTIVATION FORMAT IS Q6 IN INT16, AND IT IS MEASURED. The trunk is a residual stack
    with no norm on the stream, thus a trained model's activations GROW with depth: the
-   golden candidate peaks at 184 on half-masked corpus canvases and at 313 on the seeded
+   golden candidate peaks at 184 on half-masked corpus sheets and at 313 on the seeded
    openings the walk really visits — measured 2026-08-25, and the reason the opening
    design of the counters exists. Q6 holds 512 with a 1.6 margin over that peak; what its
    1/64 resolution costs is the drift report's to say, and a per-layer exponent (which the
@@ -71,7 +71,7 @@ let layer_tensors = 5
 
 let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
   let count = Array.length layers in
-  if count < 3 then invalid_argf "%d layers is no canvas model" count ();
+  if count < 3 then invalid_argf "%d layers is no sheet model" count ();
   if count % 2 <> 0 then invalid_argf "%d layers hold no whole residual pairs" count ();
   if layers.(0).inputs <> 2 * voices
   then invalid_argf "the stem reads %d planes, not %d" layers.(0).inputs (2 * voices) ();
@@ -139,7 +139,7 @@ let of_int8_checkpoint path =
   let count = Stdlib.Hashtbl.length archive in
   let layers, spare = (count - 2) / layer_tensors, (count - 2) % layer_tensors in
   if spare <> 0 || layers < 1
-  then invalid_argf "%s: %d tensors is no quantized canvas model" path count ();
+  then invalid_argf "%s: %d tensors is no quantized sheet model" path count ();
   let stated = only activation_tensor in
   if stated <> activation_q
   then
@@ -210,7 +210,7 @@ let grid = Float.of_int (1 lsl Prng.uniform_bits)
    corpus, seat 0 the bass — [Jsb.voice_ranges] turned around, thus the corpus library's
    own test pins it. The corpus table gives the soprano first, as the file does.
 
-   [opening_canvas] draws inside these, thus a cell the first Bernoulli leaves standing
+   [opening_sheet] draws inside these, thus a cell the first Bernoulli leaves standing
    states a note a chorale could hold. They are the RANGES of [jax/measure.py], stated as
    pitches. *)
 let seat_ranges = Array.of_list (List.rev (Array.to_list Jsb.voice_ranges))
@@ -222,7 +222,7 @@ type opening =
 
 (* The register of each seat as classes: [seat_ranges] read through the class map of the
    roll, which is one expression — the row of a pitch is its distance above
-   [Vocab.pitch_low], and row 0 is silence. [opening_canvas] draws inside these and the
+   [Vocab.pitch_low], and row 0 is silence. [opening_sheet] draws inside these and the
    elaboration of the circuit carries them, thus the opening of the walk and the opening
    of the board are one rule and never a second reading of it. *)
 let seat_openings =
@@ -259,17 +259,17 @@ let over_cells state ~steps ~f =
     next)
 ;;
 
-let opening_canvas state ~steps =
-  let canvas = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
+let opening_sheet state ~steps =
+  let sheet = Array.make_matrix ~dimx:steps ~dimy:voices 0 in
   (* the product [u * width] is exact on the grid, thus the twin and the circuit state the
      same class from the same uniform *)
   let state =
     over_cells state ~steps ~f:(fun ~step ~voice u ->
       let { low; width } = seat_openings.(voice) in
-      canvas.(step).(voice)
+      sheet.(step).(voice)
       <- low + Int.of_float (Float.round_down (u *. Float.of_int width)))
   in
-  state, canvas
+  state, sheet
 ;;
 
 let hidden_cells state ~steps ~threshold =
@@ -285,8 +285,8 @@ let hidden_cells state ~steps ~threshold =
 (* The frames *)
 (* ==================================================================== *)
 
-let frames_of_canvas canvas =
-  Array.map canvas ~f:(fun step -> Vocab.frame_of_classes (Array.to_list step))
+let frames_of_sheet sheet =
+  Array.map sheet ~f:(fun step -> Vocab.frame_of_classes (Array.to_list step))
 ;;
 
 (* ==================================================================== *)
@@ -423,9 +423,9 @@ let%expect_test "a broken model refuses loudly" =
 let%expect_test "the opening puts every voice inside the register of its seat" =
   (* the draw is over the seat's range and never the whole roll, thus a cell the first
      masks leave standing states a note a chorale could hold *)
-  let (_ : Prng.state), canvas = opening_canvas (Prng.create_folded ~seed:9) ~steps:64 in
+  let (_ : Prng.state), sheet = opening_sheet (Prng.create_folded ~seed:9) ~steps:64 in
   let inside =
-    Array.for_all canvas ~f:(fun step ->
+    Array.for_all sheet ~f:(fun step ->
       Array.for_alli step ~f:(fun voice index ->
         let low, high = seat_ranges.(voice) in
         let pitch = index + Vocab.pitch_low - 1 in
@@ -458,15 +458,15 @@ let%expect_test "the anneal thresholds: the paper's schedule on the 24-bit grid"
     |}]
 ;;
 
-let%expect_test "a canvas becomes the frames of the wire" =
+let%expect_test "a sheet becomes the frames of the wire" =
   (* pitch 60 at the bass and pitch 81 at the soprano: the bass lands in the low byte, the
      two silent seats carry no pitch, and the events follow the rule of the frame. The
      class map is the roll's own, stated as [seat_openings] states it. *)
   let class_of_pitch pitch = pitch - Vocab.pitch_low + 1 in
-  let canvas =
+  let sheet =
     [| [| class_of_pitch 60; Vocab.silence; Vocab.silence; class_of_pitch 81 |] |]
   in
-  let frames = frames_of_canvas canvas in
+  let frames = frames_of_sheet sheet in
   printf "%08x\n" frames.(0);
   [%expect {| d10000bc |}]
 ;;

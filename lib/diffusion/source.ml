@@ -6,7 +6,7 @@
    for each uniform, one cycle for each standing cell, and one draw for each hidden one.
    Nothing here is near the critical path. What is near the whole piece is the CONSUMPTION
    ORDER — one generator, one order, and a walk that takes one uniform out of place draws
-   another canvas with no local symptom.
+   another sheet with no local symptom.
 
    TWO FRAMES, TWO CYCLES APART, AS THE ENGINE HAS. The LEAD frame of a cell walk steps
    the generator; the NOW frame — the lead through two registers — is where the cell is
@@ -77,7 +77,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     end)
   in
   let module Cells =
-    Canvas.Make (struct
+    Sheet.Make (struct
       let steps = e.steps
       let rows = e.rows
     end)
@@ -90,7 +90,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let steps = e.steps in
   let rows = e.rows in
   let voices = Frame.voices in
-  (* THE CANVAS MUST HOLD WHAT THE OPENING DRAWS. A probe geometry may narrow P — the
+  (* THE SHEET MUST HOLD WHAT THE OPENING DRAWS. A probe geometry may narrow P — the
      elaboration takes [rows] so that the twin can follow later — and the registers of the
      seats are the corpus's, thus a narrow P states a class no cell can hold. It is a
      refusal and not a clamp: a clamped opening is another walk. *)
@@ -105,7 +105,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     if low + width > rows
     then
       invalid_argf
-        "seat %d opens inside the classes %d to %d and a canvas of %d rows cannot hold it"
+        "seat %d opens inside the classes %d to %d and a sheet of %d rows cannot hold it"
         seat
         low
         (low + width - 1)
@@ -148,7 +148,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let seat = Variable.reg spec ~width:seat_bits in
   let tick = Variable.reg spec ~width:tick_bits in
   let play_step = Variable.reg spec ~width:step_bits in
-  (* the canvas is played one time: past the last step the frame is four zero bytes *)
+  (* the sheet is played one time: past the last step the frame is four zero bytes *)
   let spent = Variable.reg spec ~width:1 in
   let held = Variable.reg spec ~width:frame_bits in
   let valid = Variable.reg spec ~width:1 in
@@ -181,7 +181,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      compare and the draw's threshold at a fanout near sixty, and two placements in a row
      could not carry the cone: the first met setup only by phys_opt adjusting CLOCK SKEW
      inside the shift register (Physopt 32-703), and the board answered with a DIFFERENT
-     canvas at a fixed seed on every run — hold met by a picosecond at the fast corner is
+     sheet at a fixed seed on every run — hold met by a picosecond at the fast corner is
      not met. A replica loads the same next value on the same edge, thus it IS [u] cycle
      for cycle and no gate can tell them apart; what it buys is a register the placer can
      put beside each consumer's own arithmetic. *)
@@ -291,7 +291,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let cell_class = mux2 (sm.is Open) opened_class drawer.drawn -- "cell_class" in
   let write_mask = (sm.is Mask &: now_writes) -- "write_mask" in
   let cell_hidden = (u_mask <: alpha) -- "cell_hidden" in
-  let canvas =
+  let sheet =
     Cells.create
       { Cells.I.clock = i.clock
       ; cell_step
@@ -305,8 +305,8 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       ; score_step = play_step.value
       }
   in
-  Signal.assign plane_column canvas.plane_column;
-  let _ = canvas.hidden -- "hidden" in
+  Signal.assign plane_column sheet.plane_column;
+  let _ = sheet.hidden -- "hidden" in
   (* ---------------------------------------------------------------- *)
   (* the machine *)
   (* ---------------------------------------------------------------- *)
@@ -318,7 +318,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      added at the seam *)
   let service_done =
     srv.is Seat
-    &: ~:(canvas.hidden)
+    &: ~:(sheet.hidden)
     |: (srv.is Redraw &: ~:(drawer.busy))
     &: (seat.value ==:. voices - 1)
   in
@@ -366,7 +366,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
                      register holds the answer and the walk keeps no copy. *)
                   when_
                     i.step
-                    [ held <-- mux2 spent.value (zero frame_bits) canvas.frame
+                    [ held <-- mux2 spent.value (zero frame_bits) sheet.frame
                     ; valid <-- vdd
                     ; if_
                         (play_step.value ==:. steps - 1)
@@ -404,7 +404,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
           , [ when_ (sm.is Serve &: forward.step_ready) [ seat <--. 0; srv.set_next Seat ]
             ] )
           (* a standing cell costs this one cycle and nothing more *)
-        ; Seat, [ if_ canvas.hidden [ tick <--. 0; srv.set_next Uniform ] next_seat ]
+        ; Seat, [ if_ sheet.hidden [ tick <--. 0; srv.set_next Uniform ] next_seat ]
         ; ( Uniform
           , [ tick <-- tick.value +:. 1
             ; when_ (tick.value <:. cell_ticks) [ prng_step <-- vdd ]
@@ -427,7 +427,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
    [cell_step], [cell_seat], [write_class], [cell_class], [write_mask], [cell_hidden] —
    thus a rename cannot silently blind it. It is the ONE port all three phases share, and
    a walk whose masks stand one pass out of phase, or whose draws take a uniform out of
-   order, writes the wrong thing THERE and nowhere else: the finished canvas alone would
+   order, writes the wrong thing THERE and nowhere else: the finished sheet alone would
    pass such a walk, which is era five's lesson for the third time. *)
 module Bench = struct
   module Sim = Cyclesim.With_interface (I) (O)
@@ -583,7 +583,7 @@ module Bench = struct
 end
 
 let%expect_test "the service of one step: the level, a standing seat, a hidden one" =
-  (* THE SERVICE AS A PICTURE, at the era's own P and a canvas of three steps. The seat
+  (* THE SERVICE AS A PICTURE, at the era's own P and a sheet of three steps. The seat
      registers are the corpus's, thus this unit refuses a narrower P and the picture
      cannot shrink the draw the way the engine's picture shrinks the dwell: what a window
      holds is the ORDER of the service, and the draw's 155 cycles stand between the two.

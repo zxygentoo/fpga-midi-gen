@@ -13,9 +13,9 @@ the flags this module passes.
 
 Two gates, and each one exists because a whole class of fault does not move a frame:
 
-- THE WALK, PHASE FOR PHASE. The finished canvas alone would pass a walk whose masks are
+- THE WALK, PHASE FOR PHASE. The finished sheet alone would pass a walk whose masks are
   one pass out of phase, or one that spends a uniform on a standing cell: both draw a
-  canvas, and both draw the WRONG one with no local symptom. The comparison is therefore
+  sheet, and both draw the WRONG one with no local symptom. The comparison is therefore
   per phase -- the opening, then each pass's mask in the cell order and each pass's draws
   in the cell order -- and the frames close it through the sequencer's own face.
 - THE STREAM, COLUMN FOR COLUMN. Era five's four faults were all faults of the composition
@@ -83,7 +83,7 @@ def contract_file(tmp_path, *, weight_seed, layers, width):
 
 
 def cell_order(steps):
-    """Diffusion.cell_order: a step at a time, and the seats of a step inside it. Every
+    """Model.cell_order: a step at a time, and the seats of a step inside it. Every
     uniform of the walk is drawn in this order and every write follows it."""
     return [(step, voice) for step in range(steps) for voice in range(VOICES)]
 
@@ -98,7 +98,7 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = infer.opening_canvas(quantized.engine_states([seed]), steps)
+    states, given = infer.opening_sheet(quantized.engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in cell_order(steps)
@@ -163,14 +163,14 @@ def test_the_walk_is_the_twins_walk(
             f"{tuple(wanted)}"
         )
     # THE FRAMES CLOSE THE WALK THROUGH THE SEQUENCER'S OWN FACE. The driver states the
-    # frames of the canvas it drew, thus this side holds the format to nothing of its own:
-    # the writes above prove the canvas is the twin's, and this proves the score face
-    # states that canvas -- through the Vocab decode, the seat packing, and the silence
+    # frames of the sheet it drew, thus this side holds the format to nothing of its own:
+    # the writes above prove the sheet is the twin's, and this proves the score face
+    # states that sheet -- through the Vocab decode, the seat packing, and the silence
     # past T - 1.
     played = [(word[1], word[2]) for word in lines if word[0] == "frame"]
     stated = [(word[1], word[2]) for word in lines if word[0] == "want_frame"]
     assert played and played == stated, (
-        f"the score face answered {played} and its canvas states {stated}"
+        f"the score face answered {played} and its sheet states {stated}"
     )
 
 
@@ -180,12 +180,12 @@ def test_the_walk_is_the_twins_walk(
 
 
 def stem_input(lines, steps):
-    """the canvas and the mask the driver drew, read back out of its report: the two facts
+    """the sheet and the mask the driver drew, read back out of its report: the two facts
     the stem's decode reads, thus this side builds the same input and redraws nothing"""
     classes = np.zeros((1, steps, VOICES), np.int32)
     hidden = np.zeros((1, steps, VOICES), bool)
     for word in lines:
-        if word[0] == "canvas":
+        if word[0] == "sheet":
             classes[0, int(word[1]), int(word[2])] = int(word[3])
         elif word[0] == "hidden":
             hidden[0, int(word[1]), int(word[2])] = bool(int(word[3]))

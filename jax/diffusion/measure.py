@@ -1,11 +1,11 @@
-"""What the masked canvas of docs/diffusion.md measures with its OWN model: the paper's
+"""What the masked sheet of docs/diffusion.md measures with its OWN model: the paper's
 Algorithm 1, and the tail of it.
 
     uv run python -m diffusion.measure nll     --ckpt ../_train/diffusion/NAME.ckpt
     uv run python -m diffusion.measure corpus
 
 The structure battery is NOT here. It is arithmetic over a stack of class indices and it
-knows nothing of a canvas or a mask, thus it stands in the common home, jax/measure.py,
+knows nothing of a sheet or a mask, thus it stands in the common home, jax/measure.py,
 where every era reads it. What stands here needs [model.logits] and the mask planes.
 
 THE LIKELIHOOD is the paper's Algorithm 1, and it is the one number of this round that
@@ -20,7 +20,7 @@ space and not in log space.
 THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER and NOTHING HERE RANKS A MODEL, which are
 the standing rules of jax/measure.py and are earned ten times over in this project.
 
-Nothing here draws a canvas: diffusion/infer.py draws and calls in here.
+Nothing here draws a sheet: diffusion/infer.py draws and calls in here.
 """
 
 import time
@@ -39,19 +39,19 @@ JAX_ROOT = nn.JAX_ROOT
 CORPUS = str(JAX_ROOT / "_data" / "pieces.safetensors")
 
 
-def corpus_canvases(corpus_path, split, crop, seed):
+def corpus_sheets(corpus_path, split, crop, seed):
     """one crop of every piece of a split that holds one, at a fixed seed: the rows the
     corpus row and the likelihood referee both read"""
     return data.Crops(data.load_pieces(corpus_path)[split], crop).every_piece(seed)
 
 
-def echo_structure(label, canvases):
+def echo_structure(label, sheets):
     """one row of the battery of jax/measure.py, printed under [label]
 
     Every command of this round prints rows, and each of them prints the corpus row
     first. The reading is measure.py's and the printing is one line, thus it stands here
     once instead of at each command."""
-    for line in measure.structure_lines(label, measure.structure(canvases)):
+    for line in measure.structure_lines(label, measure.structure(sheets)):
         click.echo(line)
 
 
@@ -80,7 +80,7 @@ def frame_ordering(rng, steps):
 
 
 def forward_in_chunks(forward, classes, hidden, chunk):
-    """the log probabilities of a stack of canvases, [chunk] at a time: one canvas of the
+    """the log probabilities of a stack of sheets, [chunk] at a time: one sheet of the
     stack is one frame of the piece, thus the stack is as tall as the crop and a 12 GB card
     wants it cut
 
@@ -95,7 +95,7 @@ def forward_in_chunks(forward, classes, hidden, chunk):
 
 
 def framewise_lls(forward, classes, ordering, chunk):
-    """The log-likelihood of every frame of one canvas under one ordering: Algorithm 1.
+    """The log-likelihood of every frame of one sheet under one ordering: Algorithm 1.
 
     THE FRAMES ARE INDEPENDENT GIVEN THE ORDERING, and that is the whole reason this referee
     is affordable. Algorithm 1 restores the ground truth of a frame the moment it finishes
@@ -114,7 +114,7 @@ def framewise_lls(forward, classes, ordering, chunk):
     produced 0.57."""
     frames, voices = ordering
     steps = len(classes)
-    # canvas l of the stack reveals the frames that stand before position l in the ordering
+    # sheet l of the stack reveals the frames that stand before position l in the ordering
     states = np.tile(classes, (steps, 1, 1))
     hidden = np.zeros((steps, steps, model.VOICES), dtype=bool)
     for at in range(steps):
@@ -123,8 +123,8 @@ def framewise_lls(forward, classes, ordering, chunk):
     lls = np.zeros(steps, dtype=np.float64)
     for turn in range(model.VOICES):
         said = forward_in_chunks(forward, states, hidden, chunk)
-        # the frame each canvas of the stack is writing, and the voice of it whose turn
-        # this is: one cell for each canvas of the stack, thus one distribution over the
+        # the frame each sheet of the stack is writing, and the voice of it whose turn
+        # this is: one cell for each sheet of the stack, thus one distribution over the
         # pitch rows for each
         voice = voices[frames, turn]
         logp = said[row, frames, :, voice]
@@ -135,7 +135,7 @@ def framewise_lls(forward, classes, ordering, chunk):
 
 
 def piece_nll(forward, classes, rng, orderings, chunk):
-    """Algorithm 1 for one canvas, frame by frame: the nats of every frame of it.
+    """Algorithm 1 for one sheet, frame by frame: the nats of every frame of it.
 
     The caller means these, which is Algorithm 1's return, AND keeps them. A mean cannot
     see a rare bad moment and the ear can, thus the frames are the tail and the tail is a
@@ -154,8 +154,8 @@ def piece_nll(forward, classes, rng, orderings, chunk):
     return -(np.logaddexp.reduce(lls, axis=0) - np.log(len(lls)))
 
 
-def framewise_nll(params, stats, canvases, *, orderings, chunk, seed, report=None):
-    """The referee over a set of canvases: Algorithm 1's mean nats for each frame, its
+def framewise_nll(params, stats, sheets, *, orderings, chunk, seed, report=None):
+    """The referee over a set of sheets: Algorithm 1's mean nats for each frame, its
     standard error, and the frames themselves.
 
     The standard error is over the PIECES, which is what the paper's Table 1 reports beside
@@ -169,8 +169,8 @@ def framewise_nll(params, stats, canvases, *, orderings, chunk, seed, report=Non
     )
     rng = np.random.default_rng(seed)
     frames = []
-    for at, canvas in enumerate(canvases):
-        frames.append(piece_nll(forward, canvas, rng, orderings, chunk))
+    for at, sheet in enumerate(sheets):
+        frames.append(piece_nll(forward, sheet, rng, orderings, chunk))
         if report is not None:
             report(at, float(frames[-1].mean()))
     pieces = np.asarray([piece.mean() for piece in frames])
@@ -225,7 +225,7 @@ def tail_line(frames, seed=0):
     A model with a shorter tail at the same mean is a model that is wrong less often and
     not less badly, which is the trade the ear elects.
 
-    READ IT AGAINST WHAT IT MEASURES. These are corpus canvases, thus a frame of high nats
+    READ IT AGAINST WHAT IT MEASURES. These are corpus sheets, thus a frame of high nats
     is a frame where BACH surprised the model, and not one where the model wrote something
     strange. The two are not the same question, and the second one is [structure]'s clash,
     which reads the model's own draws."""
@@ -258,9 +258,7 @@ def main():
 @click.option("--crop", default=model.CROP)
 @click.option("--seed", default=0, help="the crop draw; fixed, thus the row is fixed")
 def corpus(corpus_path, split, crop, seed):
-    echo_structure(
-        f"the corpus, {split}", corpus_canvases(corpus_path, split, crop, seed)
-    )
+    echo_structure(f"the corpus, {split}", corpus_sheets(corpus_path, split, crop, seed))
 
 
 @main.command(help=framewise_nll.__doc__)
@@ -272,33 +270,33 @@ def corpus(corpus_path, split, crop, seed):
 @click.option(
     "--pieces", default=0, help="how many pieces of the split; 0 is all of them"
 )
-@click.option("--chunk", default=16, help="canvases of one forward pass")
+@click.option("--chunk", default=16, help="sheets of one forward pass")
 @click.option("--seed", default=0)
 def nll(ckpt, corpus_path, split, crop, orderings, pieces, chunk, seed):
-    canvases = corpus_canvases(corpus_path, split, crop, seed)
+    sheets = corpus_sheets(corpus_path, split, crop, seed)
     if pieces:
-        canvases = canvases[:pieces]
+        sheets = sheets[:pieces]
     params, stats = model.load_params(ckpt)
     started = time.perf_counter()
 
     def report(at, value):
         done = time.perf_counter() - started
         click.echo(
-            f"piece {at + 1:3d} of {len(canvases)}  {value:6.4f}  "
+            f"piece {at + 1:3d} of {len(sheets)}  {value:6.4f}  "
             f"{done / (at + 1):5.1f} s each"
         )
 
     read = framewise_nll(
         params,
         stats,
-        canvases,
+        sheets,
         orderings=orderings,
         chunk=chunk,
         seed=seed,
         report=report,
     )
     click.echo(
-        f"framewise NLL on {split}, {len(canvases)} pieces, {orderings} orderings: "
+        f"framewise NLL on {split}, {len(sheets)} pieces, {orderings} orderings: "
         f"{read['mean']:.4f} +- {read['error']:.4f} nats for each frame"
     )
     click.echo(tail_line(read["frames"]))

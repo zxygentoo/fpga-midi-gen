@@ -118,8 +118,8 @@ let transpose ~by { cells; legal_shifts } =
    nothing else. A grid of 1 is the identity — it keeps every step and recomputes the same
    shifts — thus the sixteenth grid of the corpus needs no special case anywhere.
 
-   The grid decides what a canvas holds. The sixteenth grid is the corpus as it stands and
-   the grid of docs/diffusion.md; the eighth grid halves the canvas, at the price of the
+   The grid decides what a sheet holds. The sixteenth grid is the corpus as it stands and
+   the grid of docs/diffusion.md; the eighth grid halves the sheet, at the price of the
    onset that stands on an odd sixteenth — 1.4 percent of the onsets of this corpus, the
    ornamental passing tones — which the even step before it swallows.
 

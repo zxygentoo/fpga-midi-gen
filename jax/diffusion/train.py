@@ -1,4 +1,4 @@
-"""The trainer of the masked canvas of docs/diffusion.md.
+"""The trainer of the masked sheet of docs/diffusion.md.
 
 Run it from the jax directory as a module:
 
@@ -118,10 +118,10 @@ def save_checkpoint(path, params, stats):
 
 def masked_nll(said, classes, hidden):
     """The orderless NADE loss of one batch: the negative log-likelihood of the masked
-    cells, over the masked count, meaned over the canvases.
+    cells, over the masked count, meaned over the sheets.
 
-    The divisor is the paper's one over |not-C| and it is per canvas, not per batch: every
-    canvas of the batch drew its own mask size, and a canvas with three cells hidden must
+    The divisor is the paper's one over |not-C| and it is per sheet, not per batch: every
+    sheet of the batch drew its own mask size, and a sheet with three cells hidden must
     not weigh a hundredth of one with three hundred.
 
     The count is never zero -- the draw masks at least one cell -- thus nothing guards the
@@ -140,8 +140,8 @@ def make_step(clip, weight_decay, remat):
 
     def loss(params, stats, classes, key):
         hidden = model.orderless_masks(key, *classes.shape[:2])
-        canvas = model.planes(classes, hidden)
-        said, seen = model.logits(params, stats, canvas, training=True, remat=remat)
+        sheet = model.planes(classes, hidden)
+        said, seen = model.logits(params, stats, sheet, training=True, remat=remat)
         return masked_nll(said, classes, hidden), seen
 
     def step_fn(params, stats, state, t, classes, lr, key):
@@ -165,8 +165,8 @@ def eval_fn(params, stats, classes, hidden):
 
     The probe reads the model the sampler and the referees will read, and not the model
     that a batch of sixteen crops happens to normalize."""
-    canvas = model.planes(classes, hidden)
-    said, _ = model.logits(params, stats, canvas)
+    sheet = model.planes(classes, hidden)
+    said, _ = model.logits(params, stats, sheet)
     return masked_nll(said, classes, hidden)
 
 
@@ -174,8 +174,8 @@ def probe_batches(crops, batch):
     """The fixed rows of the valid curve: one crop of every valid piece and one orderless
     mask for each, drawn one time and never drawn again.
 
-    A training batch draws a fresh mask at every step, and the loss of a canvas depends
-    heavily on how much of it is hidden -- a canvas with one cell masked is nearly free and
+    A training batch draws a fresh mask at every step, and the loss of a sheet depends
+    heavily on how much of it is hidden -- a sheet with one cell masked is nearly free and
     one with all of them is nearly the prior. Two steps of the training number hardly
     compare. The probes hold the mask still, and what moves in the number is the model.
 
@@ -192,17 +192,17 @@ def probe_batches(crops, batch):
 
 
 def eval_loss(eval_fn, params, stats, batches):
-    """the mean over the probe canvases; the last batch is short, thus the mean is a sum
+    """the mean over the probe sheets; the last batch is short, thus the mean is a sum
     over a count and never a mean of means
 
     The sums stay on the device until the loop ends, for the reason the training loop
     keeps its losses there: a read at every batch blocks the dispatch of the next one."""
     total = 0.0
-    canvases = 0
+    sheets = 0
     for classes, hidden in batches:
         total = total + eval_fn(params, stats, classes, hidden) * len(classes)
-        canvases += len(classes)
-    return float(total) / max(canvases, 1)
+        sheets += len(classes)
+    return float(total) / max(sheets, 1)
 
 
 def train(
@@ -236,7 +236,7 @@ def train(
     step_fn = make_step(clip, weight_decay, remat)
     click.echo(
         f"corpus: {len(crops.rows)} train pieces of {len(pieces['train'].lengths)} hold a "
-        f"crop of {crop}; probes {sum(len(c) for c, _ in probe)} valid canvases"
+        f"crop of {crop}; probes {sum(len(c) for c, _ in probe)} valid sheets"
     )
     click.echo(
         f"shape: {layers} layers, {width} channels, kernel {model.KERNEL}, "
@@ -298,7 +298,7 @@ def train(
 @click.option(
     "--corpus", "corpus_path", default=str(JAX_ROOT / "_data" / "pieces.safetensors")
 )
-@click.option("--crop", default=model.CROP, help="T, the steps of one canvas")
+@click.option("--crop", default=model.CROP, help="T, the steps of one sheet")
 @click.option("--layers", default=model.LAYERS, help="L, the paper's 64")
 @click.option("--width", default=model.WIDTH, help="H, the paper's 128 channels")
 @click.option("--batch", default=8)

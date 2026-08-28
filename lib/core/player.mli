@@ -7,11 +7,11 @@
     THE STEP LINE IS A GATE CONTRACT. [step_line] prints the characters that
     [jax/midi.py]'s [step_line] prints, thus a walk of a player and a walk of its JAX twin
     compare with [diff]. That comparison is Gate C of [jax/tests/test_parity.py] for the
-    canvas era, and the walk gate of the two eras before it. One character of drift breaks
+    sheet era, and the walk gate of the two eras before it. One character of drift breaks
     three gates, thus this format is not a formatting choice of a player.
 
     THE LOOP HAS ONE POINT OF VARIATION: the velocity of an onset. That is where the fade
-    of the canvas era lives, and it is the only difference the three players had. Velocity
+    of the sheet era lives, and it is the only difference the three players had. Velocity
     is a fact of the onset — the synthesizer makes a control change audible only on the
     next note — thus a gesture on velocity reaches the notes that BEGIN in its window, and
     [Midi.fading] holds that rule and the measurement behind it.
@@ -26,7 +26,7 @@
     frame, and leaves by sending one silent frame. It prints nothing, thus it shares no
     step line; it holds no music, thus it shares no loop. What it carries that reads like
     a copy of [ranged] and [sleep_ms] IS a copy, and it stays one. The three players that
-    draw a piece first — the transformer, the state space and the canvas — are the callers
+    draw a piece first — the transformer, the state space and the sheet — are the callers
     this module has, and the ones it is for. *)
 
 (** The rawmidi device of the synthesizer, as the host names it. The JAX audition takes
