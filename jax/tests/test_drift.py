@@ -35,7 +35,7 @@ import nn
 from diffusion import model, quantized
 from mamba import quantized as mamba_twin
 from tests.test_mamba import plan_of
-from tests.test_transformer import drawn_params as transformer_params
+from tests.test_transformer import drawn as transformer_model
 from transformer import quantized as transformer_twin
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
@@ -174,8 +174,7 @@ TRANSFORMER_STEPS = 40
 def transformer_drift(weight_seed, walk_seed):
     """the drift of one drawn model on one walk"""
     return transformer_twin.drift(
-        transformer_params(weight_seed, **TRANSFORMER_SHAPE),
-        heads=TRANSFORMER_HEADS,
+        transformer_model(weight_seed, heads=TRANSFORMER_HEADS, **TRANSFORMER_SHAPE),
         context=TRANSFORMER_CONTEXT,
         steps=TRANSFORMER_STEPS,
         seed=walk_seed,

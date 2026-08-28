@@ -26,13 +26,12 @@ default, and AdamW with a weight decay of zero IS Adam. That is the paper's — 
 release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no L2 anywhere,
 thus batch norm and the best-by-valid checkpoint are the whole of its regularisation.
 
-IT IS OPTAX'S ADAMW AND NOT THE HAND-ROLLED `nn.adamw`, and `test_train.py` holds the two
-equal leaf for leaf. The frozen eras keep `nn.adamw` and `nn.schedule`; this trainer calls
-neither.
+THE UPDATE RULE AND THE RATE CURVE ARE `nn.update_rule` AND `nn.learning_rates`, which
+every era reads; `test_train.py` holds the curve against its closed form.
 
 THE RATE MOVES WITH THE RUNG, and the release carries no flag for it. Measured 2026-08-24
-under the warmup and cosine decay of [learning_rates], the board rung wants 1.6e-2 and the
-ceiling 3e-3. The default is the ceiling's, because every other default states the paper's
+under the warmup and cosine decay of `nn.learning_rates`, the board rung wants 1.6e-2 and
+the ceiling 3e-3. The default is the ceiling's, because every other default states the paper's
 shape; a rung passes its own, as docs/diffusion.md records them.
 """
 
@@ -42,7 +41,6 @@ import click
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from flax import nnx
 
 import data
@@ -72,46 +70,6 @@ def population_decay(t):
     Training never reads it: a training pass normalises by the batch's own statistics, thus
     this moves the evaluation and the checkpoint and never the gradient."""
     return jnp.minimum(POP_DECAY, (1.0 + t) / (10.0 + t))
-
-
-def learning_rates(peak, warmup, total):
-    """The rate at every step of the run: linear from 0 to [peak] over [warmup] steps, then
-    cosine from [peak] to 0 over the rest. A warmup of zero is a constant.
-
-    THE SCHEDULE IS READ ONE STEP LATE OR NOT AT ALL. Optax hands a schedule its own update
-    count, which is 0 at the first update where the loop's step is 1, thus a curve read at
-    the raw count applies a rate of 0 to the first update and every later rate one step
-    behind. The `+ 1` is that correction and `test_train.py` holds it two ways.
-
-    THE TWO ENDS ARE `nn.schedule`'S OWN RULES AND NOT OPTAX'S. A warmup of zero is a
-    constant peak, where `warmup_cosine_decay_schedule` would be a bare cosine decay; and a
-    run SHORTER THAN ITS OWN WARMUP — which every short probe is — never leaves the ramp,
-    where optax refuses to build a cosine of a negative length at all."""
-    if warmup == 0:
-        curve = optax.constant_schedule(peak)
-    elif total <= warmup:
-        curve = optax.linear_schedule(0.0, peak, warmup)
-    else:
-        curve = optax.warmup_cosine_decay_schedule(0.0, peak, warmup, total, 0.0)
-    return lambda count: curve(count + 1)
-
-
-def update_rule(*, peak, warmup, total, clip, weight_decay):
-    """The update of one step: the global-norm clip, then Adam with a decoupled weight
-    decay under the schedule.
-
-    A clip of zero or less is NO CLIP, as `nn.adamw`'s guard states it. It is not a clip at
-    zero, which would zero every gradient of the run."""
-    adam = optax.adamw(
-        learning_rate=learning_rates(peak, warmup, total),
-        b1=0.9,
-        b2=0.999,
-        eps=1e-8,
-        weight_decay=weight_decay,
-    )
-    if clip <= 0.0:
-        return adam
-    return optax.chain(optax.clip_by_global_norm(clip), adam)
 
 
 def masked_nll(said, classes, hidden):
@@ -224,7 +182,7 @@ def train(
     coconet = model.Coconet(layers, width, rngs=nnx.Rngs(seed))
     optimizer = nnx.Optimizer(
         coconet,
-        update_rule(
+        nn.update_rule(
             peak=lr, warmup=warmup, total=steps, clip=clip, weight_decay=weight_decay
         ),
         wrt=nnx.Param,

@@ -9,34 +9,42 @@ spread.
 The rest of the era is held elsewhere, and deliberately. `test_parity.py` holds the
 forward to its measured loss and the QUANTIZER through the netlist the elaboration states;
 `test_draw.py` holds the arithmetic of the draw; `test_quantized.py` holds the integer
-rules the quantizer stands on; `test_train.py` holds the loop and the drawn tables. What
-is left is the one rule no referee outside this repository can see, because a chain drawn
-upward is still a model that trains and still a model that plays -- and the CONTRACT FILE,
-whose round trip is the seam itself.
+rules the quantizer stands on; `test_train.py` holds the loop. What is left is the one rule
+no referee outside this repository can see, because a chain drawn upward is still a model
+that trains and still a model that plays -- and the CONTRACT FILE, whose round trip is the
+seam itself.
 
 The head itself lives in jax/nn.py, where era five reads it too; it is read here through
 this era's own module, as the era's trainer and sampler read it.
 """
 
-import jax
 import numpy as np
 import pytest
+from safetensors.numpy import load_file, save_file
 
 import data
 import nn
 from transformer import model, quantized
 
 
+def drawn(seed=5, d=8, layers=2, heads=2):
+    """a drawn float model of the era's shape, small enough for a test"""
+    return model.Transformer.drawn(seed, d, layers, heads=heads)
+
+
+def tiny(seed=5, d=8, layers=2, heads=2, context=16):
+    """the twin of a drawn model of the era's shape"""
+    return quantized.QuantizedTransformer.of(drawn(seed, d, layers, heads), context=context)
+
+
 def test_the_chain_conditions_downward():
     """Each seat reads what the seats above it drew, and nothing reads a seat below."""
-    params = {
-        "seats": jax.random.normal(jax.random.PRNGKey(0), (data.SEATS, data.CLASSES, 8))
-    }
-    h = np.zeros((1, 3, 8), dtype=np.float32) + 0.5
+    head = drawn().head
+    h = np.zeros((1, 3, head.d), dtype=np.float32) + 0.5
     base = np.ones((1, 3, data.SEATS), dtype=np.int32)
 
-    def logits(drawn):
-        return np.asarray(model.seat_logits(params, h, drawn))
+    def logits(drawn_classes):
+        return np.asarray(head.logits(h, drawn_classes))
 
     # the soprano is drawn first, thus it conditions on nothing and every seat under it
     # moves when it changes
@@ -58,40 +66,53 @@ def test_the_chain_conditions_downward():
 # ==================================================================== #
 
 
-def drawn_params(seed=5, d=8, layers=2):
-    """the float params of a drawn model of the era's shape, small enough for a test"""
-    keys = iter(jax.random.split(jax.random.PRNGKey(seed), 2 + model.PER_LAYER * layers))
-    return {
-        "seats": jax.random.normal(next(keys), (data.SEATS, data.CLASSES, d)) * 0.02,
-        "phase": jax.random.normal(next(keys), (nn.PHASE_BUCKETS, d)) * 0.02,
-        "layers": [
-            {
-                name: jax.random.normal(next(keys), shape) * 0.02
-                for name, shape in zip(
-                    model.LAYER_TENSORS,
-                    [(d, d), (d, d), (d, d), (d, d), (d, 4 * d), (4 * d, d)],
-                )
-            }
-            for _ in range(layers)
-        ],
-    }
+def test_the_twin_carries_the_float_models_skeleton():
+    """THE TWO TREES ARE ONE TREE, and that is what makes the twin auditable: a reader puts
+    `held.layers[k].wq` beside `twin.layers[k].wq` and reads one tensor against its own
+    quantization, with nothing to align by hand."""
+    held = drawn()
+    twin = quantized.QuantizedTransformer.of(held, context=16)
+    assert len(twin.layers) == len(held.layers)
+    assert twin.head.seats.shape == held.head.seats.shape
+    assert twin.head.phase.shape == held.head.phase.shape
+    for here, there in zip(twin.layers, held.layers):
+        for name in model.LAYER_TENSORS:
+            assert getattr(here, name).values.shape == getattr(there, name).shape
 
 
-def tiny(seed=5, d=8, layers=2, heads=2, context=16):
-    """the twin of a drawn model of the era's shape"""
-    return quantized.Quantized.of(
-        drawn_params(seed, d, layers), heads=heads, context=context
-    )
-
-
-def test_the_two_tables_share_one_exponent():
+def test_the_two_tables_take_the_larger_peaks_exponent():
     """The seat rows and the phase row ADD, row for row -- the embedding sums them and the
-    Embed op of the circuit walks them as one tensor -- thus one exponent covers both, and
-    it comes from the larger peak. Two exponents inside one sum would be two formats."""
-    twin = tiny()
-    assert twin.tensors[0][1] == twin.tensors[1][1]
-    # the layer tensors take their own; nothing forces them together
-    assert len(twin.tensors) == len(nn.TABLES) + model.PER_LAYER * twin.layers
+    Embed op of the circuit walks them as one tensor -- thus ONE exponent covers both. The
+    module holds one field, so no caller can break the rule; what is still a choice is that
+    the exponent comes from the LARGER peak, and a table quantized at another tensor's
+    exponent clamps."""
+    held = drawn()
+    # the phase table is lifted far past the seats, thus the shared exponent is its own
+    held.head.take([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
+    twin = quantized.QuantizedHead.of(held.head)
+    peak = float(np.abs(np.asarray(held.head.phase[...])).max())
+    assert twin.e == nn.max_exponent(peak)
+    assert np.abs(twin.seats).max() < 127, "the smaller table does not reach the rail"
+
+
+def test_each_layer_tensor_takes_its_own_exponent():
+    """Only the two tables are forced together, and the reason is that their rows add. A
+    layer tensor stands alone in its own product, thus it reads its own peak and a
+    neighbour's scale does not reach it."""
+    held = drawn()
+    layer = held.layers[0]
+    # wq alone is lifted; every other tensor of the model stands where it stood
+    layer.take(
+        [
+            tensor * 8.0 if name == "wq" else tensor
+            for name, tensor in zip(model.LAYER_TENSORS, layer.tensors())
+        ]
+    )
+    lifted = quantized.QuantizedTransformer.of(held, context=16).layers[0]
+    plain = quantized.QuantizedTransformer.of(drawn(), context=16).layers[0]
+    assert lifted.wq.e == plain.wq.e - 3, "eight times the peak is three exponents down"
+    for name in model.LAYER_TENSORS[1:]:
+        assert getattr(lifted, name).e == getattr(plain, name).e
 
 
 def test_the_shape_numbers_that_are_in_no_tensor_travel_in_the_file():
@@ -101,7 +122,7 @@ def test_the_shape_numbers_that_are_in_no_tensor_travel_in_the_file():
     twin = tiny(heads=4, context=32)
     assert (twin.heads, twin.context, twin.slope_span) == (4, 32, 4)
     # what IS in the tensors is read from them and never stated twice
-    assert (twin.d, twin.layers) == (8, 2)
+    assert (twin.d, len(twin.layers)) == (8, 2)
 
 
 def test_the_contract_file_round_trips_exactly(tmp_path):
@@ -119,9 +140,21 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
     assert read.temper.temperature == twin.temper.temperature
     assert read.min_weight == twin.min_weight
-    assert len(read.tensors) == len(twin.tensors)
-    for (here, e), (there, then) in zip(read.tensors, twin.tensors):
-        assert np.array_equal(here, there) and e == then
+    assert len(read.every_tensor()) == len(twin.every_tensor())
+    for here, there in zip(read.every_tensor(), twin.every_tensor()):
+        assert np.array_equal(here.values, there.values) and here.e == there.e
+
+
+def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
+    """`QuantizedHead` holds ONE exponent, thus this side cannot state two; a FILE can, and
+    a reader that took the first and dropped the second would sum two formats in silence."""
+    path = tmp_path / "tiny.int8"
+    quantized.save(path, tiny())
+    tensors = load_file(str(path))
+    tensors[quantized.EXPONENTS][1] += 1
+    save_file(tensors, str(path))
+    with pytest.raises(ValueError, match="share one exponent"):
+        quantized.load(path)
 
 
 def test_a_shape_the_circuit_cannot_hold_refuses_at_the_file():

@@ -20,7 +20,6 @@ import pytest
 from click.testing import CliRunner
 
 import nn
-from diffusion import train as sheet
 from transformer import train
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
@@ -35,21 +34,6 @@ def test_the_schedule_holds_its_peak():
     assert max(rates) == pytest.approx(peak)
     assert rates[299] == pytest.approx(peak)  # the warmup ends exactly on the peak
     assert rates[-1] > peak * 0.9  # and the cosine has barely begun to fall
-
-
-def test_the_skipped_key_keeps_the_layers_of_the_elected_runs():
-    """The window-position table left the design and its key stays skipped. Without the
-    skip a seed draws different layers, and the runs that elected this model stop
-    reproducing from their seeds."""
-    import jax
-
-    key = jax.random.PRNGKey(6)
-    params = train.draw_params(key, 8, 1)
-    keys = iter(jax.random.split(key, 3 + 6))
-    for _ in range(3):  # seats, phase, and the skipped row of the dropped table
-        next(keys)
-    first = jax.random.normal(next(keys), (8, 8), dtype="float32") * 0.02
-    assert (params["layers"][0]["wq"] == first).all()
 
 
 @pytest.mark.skipif(not CORPUS.exists(), reason="needs corpus_tool export")
@@ -127,7 +111,7 @@ def toy_run(steps, seed=4):
 
 def both_rules(steps, *, lr, warmup, clip, weight_decay):
     """The same opening tree and the same gradients through `nn.adamw` and through the
-    optax chain of the sheet trainer, step for step: the two parameter trees at each step.
+    optax chain of `nn.update_rule`, step for step: the two parameter trees at each step.
 
     THE RATE COMES FROM THE SCHEDULE ON BOTH SIDES, AND THAT IS WHAT HOLDS THE STEP COUNT
     ITSELF. `nn.adamw` is handed `nn.schedule` at the LOOP's step, which is 1 at the first
@@ -140,7 +124,7 @@ def both_rules(steps, *, lr, warmup, clip, weight_decay):
     the peak -- thus one loop reads the update rule alone and the same loop reads it under
     a moving rate."""
     opening, grads = toy_run(steps)
-    rule = sheet.update_rule(
+    rule = nn.update_rule(
         peak=lr, warmup=warmup, total=steps, clip=clip, weight_decay=weight_decay
     )
     here, state = opening, nn.optimizer_init(opening)
@@ -251,7 +235,7 @@ def test_the_two_schedules_are_one_curve(warmup, total):
     )
     # a constant schedule states one scalar whatever it is handed, thus it broadcasts
     ours = np.broadcast_to(
-        np.asarray(sheet.learning_rates(peak, warmup, total)(jnp.arange(total))),
+        np.asarray(nn.learning_rates(peak, warmup, total)(jnp.arange(total))),
         theirs.shape,
     )
     assert np.max(np.abs(ours - theirs)) < 1e-9

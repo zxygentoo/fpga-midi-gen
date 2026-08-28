@@ -8,6 +8,10 @@ circuit of era four must equal it operation for operation, not approximately.
 THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal and
 differently ordered is a different machine.
 
+IT CARRIES THE FLOAT MODEL'S SKELETON, `model.Trunk`, under the same attribute names at
+every level: `twin.layers[k].wq` is the quantization of `float.layers[k].wq` and nothing
+has to be aligned by hand.
+
 The rules that are not this era's come from `nn.py`: the exponent rule, the rounding, the
 int16 rails, the temper, the min-p floor, the shared exp2 table and the integer pick stand
 there, where every twin reads them.
@@ -49,12 +53,14 @@ import math
 from typing import NamedTuple
 
 import numpy as np
+from flax import nnx
 from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
 import data
 import nn
 import prng
+from nn import TABLES
 from transformer import model as step
 
 EXPONENTS = "exponents"
@@ -72,83 +78,154 @@ ELECTED_TEMPERATURE = 1.0
 ELECTED_MIN_P = 0.05
 
 
-class Quantized(NamedTuple):
-    """The model as the bitstream carries it.
+class Weight(NamedTuple):
+    """One tensor of the image: the int8 values in the shape the float tensor had, and the
+    exponent that reads them.
 
-    `tensors` holds every weight tensor in the ONE order -- the two tables, then six for
-    each layer -- because that order is the checkpoint's, the file's and the ROM's at
-    once. The shape numbers stand beside it: the heads, the context and the span are not
-    in any tensor, and the elaboration reads a file and no flag."""
+    The values are int64 so that a product of two of them cannot wrap, and the file writes
+    them back as int32."""
 
-    tensors: list  # (q, e) in the construction order
-    heads: int
-    context: int
-    slope_span: int
-    temper: nn.Temper
-    min_weight: int
+    values: np.ndarray
+    e: int
+
+    @classmethod
+    def of(cls, tensor, e=None):
+        """one float tensor under the exponent rule; [e] overrides the tensor's own peak"""
+        q, e = nn.quantize(np.asarray(tensor, np.float64), e=e)
+        return cls(np.asarray(q, np.int64), e)
+
+
+class QuantizedHead(nnx.Module):
+    """The two tables of `nn.Head` as the machine holds them -- and ONE exponent over both.
+
+    THE SEAT AND PHASE TABLES SHARE IT and take it from the larger peak: their rows ADD --
+    the embedding sums them and the Embed op of the circuit walks them as one tensor --
+    thus a difference of exponents would be a difference of formats inside one sum. Here
+    that rule is the shape of the module and cannot be broken by a caller.
+
+    The four seat tables are ONE tensor, seat 0 first, and the circuit reaches a row of it
+    with a shift and an add from the base: row (seat * CLASSES + class)."""
+
+    def __init__(self, *, seats, phase, e):
+        # `nnx.data`: these are the machine's own arrays and never a pytree of device
+        # tensors -- the whole engine is host numpy in int64
+        self.seats = nnx.data(np.asarray(seats, np.int64))
+        self.phase = nnx.data(np.asarray(phase, np.int64))
+        self.e = int(e)
 
     @property
     def d(self):
-        """the width of the residual stream: the seat tensor sizes it"""
-        return self.tensors[0][0].size // (data.SEATS * data.CLASSES)
+        return self.seats.shape[-1]
+
+    @classmethod
+    def of(cls, head):
+        """the float `nn.Head` under the exponent rule, one exponent over both tables"""
+        seats, phase = (np.asarray(t, np.float64) for t in head.tensors())
+        shared = nn.max_exponent(
+            max(float(np.abs(t).max(initial=0.0)) for t in (seats, phase))
+        )
+        return cls(
+            seats=nn.quantize(seats, e=shared)[0],
+            phase=nn.quantize(phase, e=shared)[0],
+            e=shared,
+        )
+
+    def embed(self, classes, phase):
+        """the embedding: the four seat rows and the phase row add in the shared exponent,
+        then shift to Q16"""
+        value = np.broadcast_to(self.phase[phase], (len(classes), self.d)).copy()
+        for seat in range(data.SEATS):
+            value = value + self.seats[seat, classes[:, seat]]
+        return rescale(value, at=self.e, to=H_Q)
+
+    def logits(self, stream, seat):
+        """the tied head of one seat: rms_norm of the stream the chain has written so far,
+        then that seat's table read backward; Q12 logits over the classes"""
+        return (rms_norm(stream, self.d) @ self.seats[seat].T) >> self.e
+
+    def add_row(self, stream, seat, drawn):
+        """what the chain adds after a seat draws: the drawn row, in the stream's format"""
+        return stream + rescale(self.seats[seat, drawn], at=self.e, to=H_Q)
+
+    def tensors(self):
+        """the two tables, in the order of the checkpoint and of the ROM"""
+        return [Weight(self.seats, self.e), Weight(self.phase, self.e)]
+
+
+class QuantizedLayer(nnx.Module):
+    """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
+    tensor and under the same names. Each of the six takes its OWN exponent; nothing forces
+    them together."""
+
+    def __init__(self, weights):
+        for name, weight in zip(step.LAYER_TENSORS, weights):
+            setattr(self, name, nnx.data(weight))
+
+    @classmethod
+    def of(cls, layer):
+        """one float [model.Layer] under the exponent rule"""
+        return cls([Weight.of(tensor) for tensor in layer.tensors()])
+
+    def tensors(self):
+        return [getattr(self, name) for name in step.LAYER_TENSORS]
+
+
+class QuantizedTransformer(step.Trunk):
+    """The model as the bitstream carries it.
+
+    The draw stands beside the layers because the bitstream carries it: one quantization
+    serves every seed of a batch, as one bitstream serves every seed of the board. The
+    heads, the context and the span are in no tensor, and the elaboration reads a file and
+    no flag, thus they stand here too."""
+
+    def __init__(self, *, head, layers, heads, context, slope_span, temper, min_weight):
+        self.head = head
+        self.layers = nnx.List(list(layers))
+        self.heads = int(heads)
+        self.context = int(context)
+        self.slope_span = int(slope_span)
+        self.temper = temper
+        self.min_weight = int(min_weight)
 
     @property
-    def layers(self):
-        return (len(self.tensors) - len(nn.TABLES)) // step.PER_LAYER
+    def d(self):
+        return self.head.d
 
     @classmethod
     def of(
         cls,
-        params,
+        model,
         *,
-        heads,
         context,
-        slope_span=nn.SLOPE_SPAN,
         temperature=ELECTED_TEMPERATURE,
         min_p=ELECTED_MIN_P,
     ):
-        """the float params under the exponent rule of the eras.
+        """The float model in the arithmetic the board holds.
 
-        THE SEAT AND PHASE TABLES SHARE ONE EXPONENT and take it from the larger peak:
-        their rows ADD -- the embedding sums them and the Embed op of the circuit walks
-        them as one tensor -- thus a difference of exponents would be a difference of
-        formats inside one sum. Every layer tensor takes its own."""
-        flat = flat_tensors(params)
-        tables = [np.asarray(flat[at], np.float64) for at in range(len(nn.TABLES))]
-        shared = nn.max_exponent(max(float(np.abs(t).max(initial=0.0)) for t in tables))
-        quantized = [nn.quantize(t, e=shared) for t in tables]
-        quantized += [nn.quantize(t) for t in flat[len(nn.TABLES) :]]
+        This is the one quantization of the era -- the drift walk, the audition and the
+        elaboration all take their model here, thus the pair under comparison cannot slip.
+        The heads and the span come off the model, which is where a player set them."""
         return cls(
-            tensors=quantized,
-            heads=heads,
+            head=QuantizedHead.of(model.head),
+            layers=[QuantizedLayer.of(layer) for layer in model.layers],
+            heads=model.heads,
             context=context,
-            slope_span=slope_span,
+            slope_span=model.span,
             temper=nn.Temper.of(temperature),
             min_weight=nn.min_weight_of(min_p),
         )
-
-
-def flat_tensors(params):
-    """every tensor of the model in the construction order: the two tables, then the six
-    of each layer.
-
-    `Params_data.to_list` is the same order in OCaml, and the checkpoint names its tensors
-    by it, thus this is the one statement of the order on this side."""
-    flat = [np.asarray(params[name]) for name in nn.TABLES]
-    for layer in params["layers"]:
-        flat += [np.asarray(layer[name]) for name in step.LAYER_TENSORS]
-    return flat
 
 
 def check_shape(twin):
     """the rules the consumers assume, refused loudly here rather than inside a walk.
 
     The arithmetic of the circuit is shifts, thus the shape obeys the shift rules: d and
-    the context are powers of two, the head width is a power of four, the seat table holds
-    one row for each seat and class, and the two tables share one exponent."""
-    d, layers = twin.d, twin.layers
-    if len(twin.tensors) != len(nn.TABLES) + step.PER_LAYER * layers or layers < 1:
-        raise ValueError(f"{len(twin.tensors)} tensors is no step-frame model")
+    the context are powers of two, the head width is a power of four, and the seat table
+    holds one row for each seat and class. The two tables share one exponent by the shape
+    of `QuantizedHead`, and a FILE that disagrees is refused in `load`."""
+    d = twin.d
+    if not len(twin.layers):
+        raise ValueError("a model of no layers is no step-frame model")
     if d < 1 or d & (d - 1):
         raise ValueError(f"d is {d} and must be a power of two")
     if twin.context < 1 or twin.context & (twin.context - 1):
@@ -158,17 +235,18 @@ def check_shape(twin):
     head_d = d // twin.heads
     if head_d & (head_d - 1) or (head_d.bit_length() - 1) % 2:
         raise ValueError(f"the head width {head_d} must be a power of four")
-    if twin.tensors[0][0].size != data.SEATS * data.CLASSES * d:
+    if twin.head.seats.size != data.SEATS * data.CLASSES * d:
         raise ValueError("the seat table holds no row for each seat and class")
-    if twin.tensors[0][1] != twin.tensors[1][1]:
-        raise ValueError("the seat and phase tables must share one exponent")
 
 
 def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the reasons"""
     check_shape(twin)
-    tensors = {str(at): q for at, (q, _) in enumerate(twin.tensors)}
-    tensors[EXPONENTS] = np.array([e for _, e in twin.tensors], np.int32)
+    image = twin.every_tensor()
+    tensors = {
+        str(at): np.asarray(weight.values, np.int32) for at, weight in enumerate(image)
+    }
+    tensors[EXPONENTS] = np.array([weight.e for weight in image], np.int32)
     tensors[HEADS] = np.array(twin.heads, np.int32)
     tensors[CONTEXT] = np.array(twin.context, np.int32)
     tensors[SLOPE_SPAN] = np.array(twin.slope_span, np.int32)
@@ -195,12 +273,30 @@ def load(path):
     with safe_open(str(path), framework="numpy") as opened:
         metadata = opened.metadata() or {}
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
-    if count < len(nn.TABLES) + step.PER_LAYER or (count - len(nn.TABLES)) % step.PER_LAYER:
+    layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
+    if count < len(TABLES) + step.PER_LAYER or spare:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized step model")
     exponents = tensors[EXPONENTS]
+    if exponents[0] != exponents[1]:
+        raise ValueError("the seat and phase tables must share one exponent")
     q_value, q = (int(value) for value in tensors[TEMPER])
-    twin = Quantized(
-        tensors=[(tensors[str(at)], int(exponents[at])) for at in range(count)],
+
+    def weight_at(at):
+        return Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
+
+    twin = QuantizedTransformer(
+        head=QuantizedHead(
+            seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
+        ),
+        layers=[
+            QuantizedLayer(
+                [
+                    weight_at(len(TABLES) + step.PER_LAYER * at + on)
+                    for on in range(step.PER_LAYER)
+                ]
+            )
+            for at in range(layers)
+        ],
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
@@ -279,6 +375,15 @@ def exp2_q(value):
     return nn.exp2_of_magnitude(-np.asarray(value, np.int64))
 
 
+def rms_norm(h, d):
+    """rms_norm of the residual stream: the sum squares a Q12 copy -- one DSP-sized product
+    -- then one isqrt, and one truncating division for each element."""
+    copy = h >> 4
+    total = (copy * copy).sum(axis=-1, keepdims=True)
+    mean = (total >> (d.bit_length() - 1)) + EPS_Q
+    return clamp16(truncated(h * 256, isqrt(mean)))
+
+
 class Engine(NamedTuple):
     """One running inference over a batch of walks. Everything is frozen: a step gives the
     engine after it, as `Quantized.Engine` does.
@@ -287,7 +392,7 @@ class Engine(NamedTuple):
     layer, one slot for each step of the window, and a walk never reads an unwritten slot:
     `n` counts the filled slots and the wall is the walk itself."""
 
-    twin: Quantized
+    twin: QuantizedTransformer
     h: np.ndarray  # [walks, d], Q16 in int32
     kc: np.ndarray  # [walks, layers, slots, d], Q12 int16
     vc: np.ndarray
@@ -307,7 +412,7 @@ def engine(twin, seeds):
     counts steps counts the steps the float sampler counts."""
     check_shape(twin)
     walks, d = len(seeds), twin.d
-    rings = (walks, twin.layers, twin.context, d)
+    rings = (walks, len(twin.layers), twin.context, d)
     return Engine(
         twin=twin,
         h=np.zeros((walks, d), np.int64),
@@ -316,47 +421,6 @@ def engine(twin, seeds):
         position=0,
         states=nn.engine_states(seeds),
     )
-
-
-def tensor_at(twin, at):
-    """one image tensor as int64, flat in the row-major order the ROM holds"""
-    return np.asarray(twin.tensors[at][0], np.int64).reshape(-1)
-
-
-def layer_tensors(twin, layer):
-    """the six tensors of one layer, by name, as (flat values, exponent)"""
-    base = len(nn.TABLES) + step.PER_LAYER * layer
-    return {
-        name: (tensor_at(twin, base + at), twin.tensors[base + at][1])
-        for at, name in enumerate(step.LAYER_TENSORS)
-    }
-
-
-def rms_norm(h, d):
-    """rms_norm of the residual stream: the sum squares a Q12 copy -- one DSP-sized product
-    -- then one isqrt, and one truncating division for each element."""
-    copy = h >> 4
-    total = (copy * copy).sum(axis=-1, keepdims=True)
-    mean = (total >> (d.bit_length() - 1)) + EPS_Q
-    return clamp16(truncated(h * 256, isqrt(mean)))
-
-
-def seat_row(twin, seat, index):
-    """the row of one seat inside the seat tensor, which holds the four tables in one, seat
-    0 first: the circuit reaches it with a shift and an add from the base of the tensor"""
-    return ((seat * data.CLASSES) + index) * twin.d
-
-
-def embed(twin, classes, phase):
-    """the embedding: the four seat rows and the phase row add in the shared exponent, then
-    shift to Q16"""
-    d, e = twin.d, twin.tensors[0][1]
-    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
-    table = tensor_at(twin, 1).reshape(-1, d)
-    value = np.broadcast_to(table[phase], (len(classes), d)).copy()
-    for seat in range(data.SEATS):
-        value = value + seats[seat, classes[:, seat]]
-    return rescale(value, at=e, to=H_Q)
 
 
 def attend(twin, kc, vc, *, layer, cur, filled, query):
@@ -393,60 +457,39 @@ def forward(e, classes, phase):
     cur = e.position & (slots - 1)
     filled = min(e.position + 1, slots)
     kc, vc = e.kc.copy(), e.vc.copy()
-    h = embed(twin, classes, phase)
-    for layer in range(twin.layers):
-        w = layer_tensors(twin, layer)
+    h = twin.head.embed(classes, phase)
+    for at, layer in enumerate(twin.layers):
         y = rms_norm(h, d)
 
-        query, key, value = (projection(y, w[name], d) for name in ("wq", "wk", "wv"))
+        query, key, value = (
+            projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
+        )
         # THE RING KEEPS THE TOP BYTE of a Q12 row: the circuit stores eight bits and
         # restores eight zero low bits at the read, thus the granularity is 2^-4 and the
         # format stays Q12. The query does not pass here -- only the stored rows coarsen.
-        kc[:, layer, cur, :] = (key >> 8) << 8
-        vc[:, layer, cur, :] = (value >> 8) << 8
-        context = attend(
-            twin, kc, vc, layer=layer, cur=cur, filled=filled, query=query
-        )
-        h = join(h, w["wo"], values=context, at=KV_Q, d=d)
+        kc[:, at, cur, :] = (key >> 8) << 8
+        vc[:, at, cur, :] = (value >> 8) << 8
+        context = attend(twin, kc, vc, layer=at, cur=cur, filled=filled, query=query)
+        h = join(h, layer.wo, values=context, at=KV_Q)
         y = rms_norm(h, d)
-        values, exponent = w["w1"]
         hidden = clamp16(
-            np.maximum(
-                rescale(y @ values.reshape(d, 4 * d), at=Y_Q + exponent, to=HID_Q), 0
-            )
+            np.maximum(rescale(y @ layer.w1.values, at=Y_Q + layer.w1.e, to=HID_Q), 0)
         )
-        h = join(h, w["w2"], values=hidden, at=HID_Q, d=d)
+        h = join(h, layer.w2, values=hidden, at=HID_Q)
     return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
 
 
-def projection(y, weight, d):
+def projection(y, weight):
     """one of the three projections of a step: one matvec column, Q12 in int16. The circuit
     runs the three separately, on one MAC path."""
-    values, exponent = weight
-    return clamp16(rescale(y @ values.reshape(d, d), at=Y_Q + exponent, to=KV_Q))
+    return clamp16(rescale(y @ weight.values, at=Y_Q + weight.e, to=KV_Q))
 
 
-def join(h, weight, *, values, at, d):
+def join(h, weight, *, values, at):
     """a residual join: [values] times the weight lands on the stream; the exponent of the
     weight folds into the shift with [at], the format of [values]"""
-    matrix, exponent = weight
-    accumulated = values @ matrix.reshape(-1, d)
-    return h + rescale(accumulated, at=at + exponent, to=H_Q)
-
-
-def seat_logits(twin, stream, seat):
-    """the tied head of one seat: rms_norm of the stream the chain has written so far, then
-    that seat's table read backward; Q12 logits over the classes"""
-    d, e = twin.d, twin.tensors[0][1]
-    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
-    return (rms_norm(stream, d) @ seats[seat].T) >> e
-
-
-def add_row(twin, stream, seat, drawn):
-    """what the chain adds after a seat draws: the drawn row, in the format of the stream"""
-    d, e = twin.d, twin.tensors[0][1]
-    seats = tensor_at(twin, 0).reshape(data.SEATS, data.CLASSES, d)
-    return stream + rescale(seats[seat, drawn], at=e, to=H_Q)
+    accumulated = values @ weight.values
+    return h + rescale(accumulated, at=at + weight.e, to=H_Q)
 
 
 def tempered_weights(twin, logits):
@@ -475,11 +518,11 @@ def chain(e):
     stream, states, draws = e.h, e.states, []
     everyone = np.ones(len(stream), bool)
     for seat in reversed(range(data.SEATS)):
-        logits = seat_logits(twin, stream, seat)
+        logits = twin.head.logits(stream, seat)
         states, word = prng.uniform_word(states, everyone)
         drawn = nn.pick(tempered_weights(twin, logits), word)
         if seat:
-            stream = add_row(twin, stream, seat, drawn)
+            stream = twin.head.add_row(stream, seat, drawn)
         draws.append(Draw(seat, logits, word, drawn))
     return e._replace(states=states), draws
 
@@ -535,10 +578,10 @@ def cosine(here, there):
     return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
 
 
-def drift(params, *, heads, context, steps, seed, span=nn.SLOPE_SPAN):
+def drift(model, *, context, steps, seed):
     """The quantized walk, scored against the float model draw for draw.
 
-    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `params` itself, thus the pair
+    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
     cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
     quantized chain -- it reads the classes the engine drew and conditions each seat on the
     classes the engine chose -- thus what the report measures is the quantization and never
@@ -548,10 +591,7 @@ def drift(params, *, heads, context, steps, seed, span=nn.SLOPE_SPAN):
     difference there is the arithmetic and not the generator."""
     import jax.numpy as jnp
 
-    from transformer import model as float_model
-
-    twin = Quantized.of(params, heads=heads, context=context, slope_span=span)
-    e = engine(twin, [seed])
+    e = engine(QuantizedTransformer.of(model, context=context), [seed])
     history = []
     counted = same_peak = same_draw = 0
     total = 0.0
@@ -566,11 +606,9 @@ def drift(params, *, heads, context, steps, seed, span=nn.SLOPE_SPAN):
         low = max(0, at - context)
         rows = jnp.asarray(np.stack(window[low:])[None])
         phases = jnp.asarray((np.arange(low, at) % nn.PHASE_BUCKETS)[None])
-        h = np.asarray(
-            float_model.hidden(params, rows, phases, heads=heads, span=span)
-        )[:, -1:, :]
+        h = np.asarray(model.hidden(rows, phases))[:, -1:, :]
         floated = np.asarray(
-            nn.seat_logits(params, jnp.asarray(h), jnp.asarray(classes[None]))
+            model.head.logits(jnp.asarray(h), jnp.asarray(classes[None]))
         )[0, 0].astype(np.float64)
         for taken in chain_draws:
             row = floated[taken.seat]

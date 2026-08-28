@@ -132,16 +132,12 @@ def test_g0_the_transformer_reads_its_measured_loss():
     thus the number reads the forward alone."""
     need(CHECKPOINT, CORPUS)
     classes, phases = windows_of(data.load_corpus(CORPUS), TRANSFORMER_SHAPE)
-    params = model.load_params(str(CHECKPOINT))
-    here = seat_loss(
-        model.seat_nll(
-            params,
-            classes,
-            phases,
-            heads=TRANSFORMER_SHAPE["heads"],
-            span=TRANSFORMER_SHAPE["span"],
-        )
+    held = model.Transformer.load(
+        str(CHECKPOINT),
+        heads=TRANSFORMER_SHAPE["heads"],
+        span=TRANSFORMER_SHAPE["span"],
     )
+    here = seat_loss(held.seat_nll(classes, phases))
     assert here == pytest.approx(TRANSFORMER_LOSS, abs=TOLERANCE), (
         f"the model reads {here:.6f} and the elected checkpoint measured "
         f"{TRANSFORMER_LOSS:.6f}"
