@@ -21,6 +21,15 @@ after a measurement:
   gate: jax/tests/test_mamba.py holds them to each other, step for step, and a break there
   is a break of the model and not of a test.
 
+A THIRD FORM STOOD HERE AND IT IS GONE: the chunked semiseparable form of Mamba-2, which
+would replace the quadratic form's [T, T] weight with a scan over chunks. It was built and
+measured on 2026-08-21 -- 1.17 times at T 256 and 1.35 at T 512, under the 1.5 bar the
+round set -- and the cost was diagnosed as kernel launch overhead and not the traffic it
+removes. It was kept dormant because a change of summation order would have put every new
+run outside the seed spread of the thirty checkpoints; the era is frozen now, no retrain
+is planned, and what was left was an export alive only because a test read it. The
+build-log of that day holds the numbers.
+
 THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS. A layer of one of three kinds
 answers [step] and [window] under one signature, thus the trunk dispatches on nothing and
 `quantized.QuantizedMamba` carries the same tree in integers under the same attribute
@@ -95,12 +104,6 @@ ATTN_CONTEXT = 256
 # every reader takes it from the tensor. The expansion of two sets the inner width.
 CONV_TAPS = 4
 EXPAND = 2
-
-# The chunk of the semiseparable window form. It is a measurement and not a taste: the
-# traffic falls as T/chunk and the inter-chunk scan deepens as T/chunk, thus the two meet
-# somewhere and the harness finds where.
-CHUNK = 64
-
 
 class Shape(NamedTuple):
     """The widths a model states. Everything else derives from them, thus a player names
@@ -270,84 +273,6 @@ class Block(nnx.Module):
             + self.d_skip[...][None, None, :, None] * x
         )
         return read.reshape(batch, length, shape.d_in)
-
-    def selective_window_chunked(self, shape, x, b, c, dt, a, chunk=CHUNK):
-        """The same recurrence again, chunked -- the semiseparable form of Mamba-2.
-
-        [selective_window] is the definition this must equal, and it is the oracle in the
-        gate. What parts them is only WHERE the work is done. The quadratic form builds a
-        weight for every ordered pair of steps in the window: six [batch, T, T, heads]
-        arrays a layer, 96 MiB of traffic each way at T 256, for arithmetic a 3060 does in
-        under a millisecond. It is bandwidth and not multiplies that costs, and this form
-        removes the traffic algebraically rather than making the machine faster.
-
-        A window cut into chunks of [chunk] steps splits the sum over s <= t in two:
-
-        - INSIDE a chunk, the quadratic form again, but [chunk] wide instead of T. The
-          decay between two steps of one chunk is a difference of the cumulative sums taken
-          from the chunk's own head, thus nothing outside the chunk enters it.
-        - ACROSS chunks, one state. Everything before the chunk reaches step t only through
-          the state standing at the chunk's head, decayed by the cumulative sum up to t.
-          Each chunk gives its successor one [heads, head, state] summary, and a scan of
-          T/chunk steps carries them -- four steps at T 256, chunk 64.
-
-        THAT is why this is affordable where a scan of the step form was not: that scan was
-        256 deep in tiny kernels, and this one is four deep in whole chunks.
-
-        The state between chunks is exactly the state of [selective_state], thus the two
-        forms agree by construction and not by luck; the gate checks the arithmetic, not
-        the algebra. A window the chunk does not divide is padded at the TAIL with zero dt
-        and zero x, which contributes nothing to any sum and decays nothing, and the pad is
-        cut before the return."""
-        batch, length = dt.shape[0], dt.shape[1]
-        pad = -length % chunk
-        if pad:
-            dt = jnp.pad(dt, ((0, 0), (0, pad), (0, 0)))
-            x = jnp.pad(x, ((0, 0), (0, pad), (0, 0)))
-            b = jnp.pad(b, ((0, 0), (0, pad), (0, 0)))
-            c = jnp.pad(c, ((0, 0), (0, pad), (0, 0)))
-        chunks = (length + pad) // chunk
-        heads, head = shape.heads, shape.head
-
-        def by_chunk(t, *tail):
-            return t.reshape(batch, chunks, chunk, *tail)
-
-        x = by_chunk(x, heads, head)  # [batch, chunks, chunk, heads, head]
-        b, c = by_chunk(b, shape.state), by_chunk(c, shape.state)
-        dt = by_chunk(dt, heads)
-        # the cumulative decay from each chunk's own head, inclusive, and the whole of it
-        csum = jnp.cumsum(dt * a, axis=2)
-        total = csum[:, :, -1, :]
-
-        # inside a chunk: the quadratic form of [selective_window], [chunk] wide
-        gap = csum[:, :, None, :, :] - csum[:, :, :, None, :]  # [b, w, t, s, heads]
-        causal = ~jnp.triu(jnp.ones((chunk, chunk), bool), k=1)[None, None, :, :, None]
-        decay = jnp.where(causal, jnp.exp(jnp.where(causal, gap, 0.0)), 0.0)
-        weight = (
-            decay * dt[:, :, None, :, :] * jnp.einsum("zwsn,zwtn->zwts", b, c)[..., None]
-        )
-        inside = jnp.einsum("zwtsh,zwshp->zwthp", weight, x)
-
-        # what each chunk hands its successor: the state at the chunk's end
-        # the decay from step s to the chunk's END, thus csum MINUS the total and never
-        # the other way round: the exponent is 0 or less, as it is everywhere here
-        landed = jnp.exp(csum - total[:, :, None, :]) * dt  # [batch, chunks, chunk, heads]
-        given = jnp.einsum("zwsh,zwshp,zwsn->zwhpn", landed, x, b)
-
-        def carry_chunk(state, one):
-            return jnp.exp(-one[0])[:, :, None, None] * state + one[1], state
-
-        # the state STANDING AT each chunk's head, thus the scan gives the carry before the
-        # add
-        origin = jnp.zeros((batch, heads, head, shape.state), jnp.float32)
-        moved = (jnp.moveaxis(total, 1, 0), jnp.moveaxis(given, 1, 0))
-        (_, standing) = jax.lax.scan(carry_chunk, origin, moved)
-        standing = jnp.moveaxis(standing, 0, 1)  # [batch, chunks, heads, head, state]
-
-        # across chunks: that state, decayed to step t, read out through C
-        across = jnp.einsum("zwhpn,zwtn->zwthp", standing, c) * jnp.exp(-csum)[..., None]
-        read = inside + across + self.d_skip[...][None, None, None, :, None] * x
-        return read.reshape(batch, length + pad, shape.d_in)[:, :length]
 
     def step(self, shape, carry, y, e, span):
         """this layer's branch at one step: the thing h adds, and the carry after it"""

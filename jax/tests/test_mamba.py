@@ -199,38 +199,6 @@ def test_a_checkpoint_states_its_own_plan():
     assert read.plan == tuple(train.PLAN_LETTERS[c] for c in spelt.lower())
 
 
-@pytest.mark.parametrize("chunk", [8, 16, 32])
-@pytest.mark.parametrize("length", [64, 48, 33, 7])
-def test_the_chunked_window_is_the_quadratic_window(chunk, length):
-    """The chunked semiseparable form against the quadratic form it replaces.
-
-    [selective_window] is the oracle here and not a second opinion: it is already held to
-    the STEP form by the gate above, thus holding the chunked form to it puts all three on
-    one recurrence. What this catches is the seam -- a chunk carrying the state after its
-    own add instead of before it, a cumulative sum taken from the window's head rather than
-    the chunk's, a tail chunk the length does not fill.
-
-    The lengths run over a multiple of every chunk, a length shorter than one chunk, and
-    two that divide by none of them."""
-    held = drawn()
-    shape, layer = held.shape, held.layers[0]
-    rng = np.random.default_rng(5)
-
-    def rows(*tail):
-        return jnp.asarray(rng.standard_normal((2, length, *tail)), jnp.float32)
-
-    x = rows(shape.d_in)
-    b, c = rows(shape.state), rows(shape.state)
-    dt = jnp.abs(rows(shape.heads)) * 0.1
-    a = jnp.exp(layer.a_log[...])
-    quadratic = layer.selective_window(shape, x, b, c, dt, a)
-    chunked = layer.selective_window_chunked(shape, x, b, c, dt, a, chunk=chunk)
-    assert chunked.shape == quadratic.shape
-    gap = float(jnp.max(jnp.abs(chunked - quadratic)))
-    scale = float(jnp.max(jnp.abs(quadratic)))
-    assert gap / scale < TOLERANCE, f"the two windows part by {gap:.3e} on {scale:.3e}"
-
-
 @pytest.mark.parametrize("span", [4.0, 8.0])
 def test_the_span_rides_in_the_file_and_not_in_a_flag(span):
     """Era four carried the ALiBi span as a flag that had to match the training run, and a
