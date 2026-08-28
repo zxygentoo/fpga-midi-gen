@@ -89,7 +89,7 @@ def test_the_two_tables_take_the_larger_peaks_exponent():
     held = drawn()
     # the phase table is lifted far past the seats, thus the shared exponent is its own
     held.head.take([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
-    twin = quantized.QuantizedHead.of(held.head)
+    twin = nn.QuantizedHead.of(held.head)
     peak = float(np.abs(np.asarray(held.head.phase[...])).max())
     assert twin.e == nn.max_exponent(peak)
     assert np.abs(twin.seats).max() < 127, "the smaller table does not reach the rail"

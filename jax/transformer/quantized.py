@@ -49,7 +49,6 @@ for a reader that has a Python tool in hand: the temperature, the min-p and the
 checkpoint are PROVENANCE, because the temper and the floor are already folded.
 """
 
-import math
 from typing import NamedTuple
 
 import numpy as np
@@ -78,80 +77,6 @@ ELECTED_TEMPERATURE = 1.0
 ELECTED_MIN_P = 0.05
 
 
-class Weight(NamedTuple):
-    """One tensor of the image: the int8 values in the shape the float tensor had, and the
-    exponent that reads them.
-
-    The values are int64 so that a product of two of them cannot wrap, and the file writes
-    them back as int32."""
-
-    values: np.ndarray
-    e: int
-
-    @classmethod
-    def of(cls, tensor, e=None):
-        """one float tensor under the exponent rule; [e] overrides the tensor's own peak"""
-        q, e = nn.quantize(np.asarray(tensor, np.float64), e=e)
-        return cls(np.asarray(q, np.int64), e)
-
-
-class QuantizedHead(nnx.Module):
-    """The two tables of `nn.Head` as the machine holds them -- and ONE exponent over both.
-
-    THE SEAT AND PHASE TABLES SHARE IT and take it from the larger peak: their rows ADD --
-    the embedding sums them and the Embed op of the circuit walks them as one tensor --
-    thus a difference of exponents would be a difference of formats inside one sum. Here
-    that rule is the shape of the module and cannot be broken by a caller.
-
-    The four seat tables are ONE tensor, seat 0 first, and the circuit reaches a row of it
-    with a shift and an add from the base: row (seat * CLASSES + class)."""
-
-    def __init__(self, *, seats, phase, e):
-        # `nnx.data`: these are the machine's own arrays and never a pytree of device
-        # tensors -- the whole engine is host numpy in int64
-        self.seats = nnx.data(np.asarray(seats, np.int64))
-        self.phase = nnx.data(np.asarray(phase, np.int64))
-        self.e = int(e)
-
-    @property
-    def d(self):
-        return self.seats.shape[-1]
-
-    @classmethod
-    def of(cls, head):
-        """the float `nn.Head` under the exponent rule, one exponent over both tables"""
-        seats, phase = (np.asarray(t, np.float64) for t in head.tensors())
-        shared = nn.max_exponent(
-            max(float(np.abs(t).max(initial=0.0)) for t in (seats, phase))
-        )
-        return cls(
-            seats=nn.quantize(seats, e=shared)[0],
-            phase=nn.quantize(phase, e=shared)[0],
-            e=shared,
-        )
-
-    def embed(self, classes, phase):
-        """the embedding: the four seat rows and the phase row add in the shared exponent,
-        then shift to Q16"""
-        value = np.broadcast_to(self.phase[phase], (len(classes), self.d)).copy()
-        for seat in range(data.SEATS):
-            value = value + self.seats[seat, classes[:, seat]]
-        return rescale(value, at=self.e, to=H_Q)
-
-    def logits(self, stream, seat):
-        """the tied head of one seat: rms_norm of the stream the chain has written so far,
-        then that seat's table read backward; Q12 logits over the classes"""
-        return (rms_norm(stream, self.d) @ self.seats[seat].T) >> self.e
-
-    def add_row(self, stream, seat, drawn):
-        """what the chain adds after a seat draws: the drawn row, in the stream's format"""
-        return stream + rescale(self.seats[seat, drawn], at=self.e, to=H_Q)
-
-    def tensors(self):
-        """the two tables, in the order of the checkpoint and of the ROM"""
-        return [Weight(self.seats, self.e), Weight(self.phase, self.e)]
-
-
 class QuantizedLayer(nnx.Module):
     """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
     tensor and under the same names. Each of the six takes its OWN exponent; nothing forces
@@ -164,7 +89,7 @@ class QuantizedLayer(nnx.Module):
     @classmethod
     def of(cls, layer):
         """one float [model.Layer] under the exponent rule"""
-        return cls([Weight.of(tensor) for tensor in layer.tensors()])
+        return cls([nn.Weight.of(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in step.LAYER_TENSORS]
@@ -206,7 +131,7 @@ class QuantizedTransformer(step.Trunk):
         elaboration all take their model here, thus the pair under comparison cannot slip.
         The heads and the span come off the model, which is where a player set them."""
         return cls(
-            head=QuantizedHead.of(model.head),
+            head=nn.QuantizedHead.of(model.head),
             layers=[QuantizedLayer.of(layer) for layer in model.layers],
             heads=model.heads,
             context=context,
@@ -282,10 +207,10 @@ def load(path):
     q_value, q = (int(value) for value in tensors[TEMPER])
 
     def weight_at(at):
-        return Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
+        return nn.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
 
     twin = QuantizedTransformer(
-        head=QuantizedHead(
+        head=nn.QuantizedHead(
             seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
         ),
         layers=[
@@ -311,60 +236,10 @@ def load(path):
 # the integer engine: one running inference over a batch of seeds
 # ---------------------------------------------------------------------
 
-# The formats of the machine, `Model.Constants`. A Q number holds value * 2^-q.
-H_Q = 16  # the residual stream, in int32
-Y_Q = 12  # the normed vector, and the score of attention
+# THE FORMAT THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
+# the hidden vector, the epsilon, log2(e), the lead-in, and the shifts and roots that read
+# them -- stands in `nn.py`, where `Nn_quantized.Constants` has its twin.
 KV_Q = 12  # the query, the keys, the values and the context: the rings store these
-HID_Q = 10  # the feed-forward hidden vector after its ReLU
-EPS_Q = int(nn.round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
-LOG2E = nn.Temper(int(nn.round_half_up(math.ldexp(1.0 / math.log(2.0), 15))), 15, 1.0)
-
-# the silent lead-in of the boot, in steps: one bar, as the float sampler plays it
-LEAD = data.BAR_STEPS
-
-
-def rescale(value, *, at, to):
-    """value * 2^-at as value * 2^-to; the arithmetic shift floors, as the circuit's"""
-    if to >= at:
-        return value << (to - at)
-    return value >> (at - to)
-
-
-def apply_scale(scale, value):
-    """`Constants.apply`: value times a fixed-point multiplier, toward negative infinity"""
-    return (value * scale.q_value) >> scale.q
-
-
-def truncated(numerator, denominator):
-    """OCaml's `/` on integers, which goes TOWARD ZERO where numpy's `//` floors.
-
-    Every division of the circuit truncates, thus a floor here would part from it on the
-    negative half of the stream and nowhere else -- which is the kind of difference that
-    makes music and is still wrong."""
-    numerator = np.asarray(numerator, np.int64)
-    denominator = np.asarray(denominator, np.int64)
-    sign = np.sign(numerator) * np.sign(denominator)
-    return sign * (np.abs(numerator) // np.abs(denominator))
-
-
-def isqrt(values):
-    """floor of the square root, over an array: the one answer the [Isqrt] unit gives.
-
-    The float root is correct to a unit at these widths and the two steps settle it; the
-    loop is written all the same, because a silently wrong root is a silently wrong norm."""
-    values = np.asarray(values, np.int64)
-    guess = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
-    while True:
-        low = np.maximum(guess - ((guess * guess > values) & (guess > 0)), 0)
-        high = low + ((low + 1) * (low + 1) <= values)
-        if np.array_equal(high, guess):
-            return guess
-        guess = high
-
-
-def clamp16(value):
-    """the rails of int16: a value that passes them saturates and never wraps"""
-    return np.clip(value, nn.INT16_LOW, nn.INT16_HIGH)
 
 
 def exp2_q(value):
@@ -373,15 +248,6 @@ def exp2_q(value):
     Era four exponentiates a nonpositive score, thus the negation stands here and the
     shared table takes the magnitude."""
     return nn.exp2_of_magnitude(-np.asarray(value, np.int64))
-
-
-def rms_norm(h, d):
-    """rms_norm of the residual stream: the sum squares a Q12 copy -- one DSP-sized product
-    -- then one isqrt, and one truncating division for each element."""
-    copy = h >> 4
-    total = (copy * copy).sum(axis=-1, keepdims=True)
-    mean = (total >> (d.bit_length() - 1)) + EPS_Q
-    return clamp16(truncated(h * 256, isqrt(mean)))
 
 
 class Engine(NamedTuple):
@@ -436,17 +302,17 @@ def attend(twin, kc, vc, *, layer, cur, filled, query):
     keys = kc[:, layer, rows, :]  # [walks, filled, d]
     values = vc[:, layer, rows, :]
     context = np.zeros((len(query), d), np.int64)
-    shift = (2 * KV_Q) - Y_Q + ((head_d.bit_length() - 1) // 2)
+    shift = nn.score_shift(row_q=KV_Q, head_d=head_d)
     for head in range(heads):
         band = slice(head * head_d, (head + 1) * head_d)
-        slope = (twin.slope_span * (head + 1)) // heads
+        slope = nn.slope_exponent(span=twin.slope_span, heads=heads, head=head)
         raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (Y_Q - slope))
+        scores = (raw >> shift) - (ages << (nn.Y_Q - slope))
         peak = scores.max(axis=-1, keepdims=True)
-        weights = exp2_q(apply_scale(LOG2E, scores - peak))
+        weights = exp2_q(nn.apply_scale(nn.LOG2E.q_value, nn.LOG2E.q, scores - peak))
         total = weights.sum(axis=-1, keepdims=True)
         merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = clamp16(truncated(merged, total))
+        context[:, band] = nn.clamp16(nn.truncated(merged, total))
     return context
 
 
@@ -459,7 +325,7 @@ def forward(e, classes, phase):
     kc, vc = e.kc.copy(), e.vc.copy()
     h = twin.head.embed(classes, phase)
     for at, layer in enumerate(twin.layers):
-        y = rms_norm(h, d)
+        y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
 
         query, key, value = (
             projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
@@ -471,25 +337,27 @@ def forward(e, classes, phase):
         vc[:, at, cur, :] = (value >> 8) << 8
         context = attend(twin, kc, vc, layer=at, cur=cur, filled=filled, query=query)
         h = join(h, layer.wo, values=context, at=KV_Q)
-        y = rms_norm(h, d)
-        hidden = clamp16(
-            np.maximum(rescale(y @ layer.w1.values, at=Y_Q + layer.w1.e, to=HID_Q), 0)
+        y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
+        hidden = nn.clamp16(
+            np.maximum(
+                nn.rescale(y @ layer.w1.values, at=nn.Y_Q + layer.w1.e, to=nn.HID_Q), 0
+            )
         )
-        h = join(h, layer.w2, values=hidden, at=HID_Q)
+        h = join(h, layer.w2, values=hidden, at=nn.HID_Q)
     return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
 
 
 def projection(y, weight):
     """one of the three projections of a step: one matvec column, Q12 in int16. The circuit
     runs the three separately, on one MAC path."""
-    return clamp16(rescale(y @ weight.values, at=Y_Q + weight.e, to=KV_Q))
+    return nn.clamp16(nn.rescale(y @ weight.values, at=nn.Y_Q + weight.e, to=KV_Q))
 
 
 def join(h, weight, *, values, at):
     """a residual join: [values] times the weight lands on the stream; the exponent of the
     weight folds into the shift with [at], the format of [values]"""
     accumulated = values @ weight.values
-    return h + rescale(accumulated, at=at + weight.e, to=H_Q)
+    return h + nn.rescale(accumulated, at=at + weight.e, to=nn.H_Q)
 
 
 def tempered_weights(twin, logits):
@@ -498,7 +366,9 @@ def tempered_weights(twin, logits):
     The peak weighs 2^15, thus the floor is a plain share of it; a class the floor refuses
     weighs nothing and the pick cannot land on it."""
     peak = logits.max(axis=-1, keepdims=True)
-    weights = exp2_q(apply_scale(twin.temper, logits - peak))
+    weights = exp2_q(
+        nn.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
+    )
     return np.where(weights >= twin.min_weight, weights, 0)
 
 
@@ -534,7 +404,7 @@ def next_step(e):
     from the generator. The model opens the music itself after it, thus the walk needs no
     pitch and no table to begin."""
     phase = e.position % data.BAR_STEPS
-    if e.position < LEAD:
+    if e.position < nn.LEAD:
         classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
         draws = []
     else:

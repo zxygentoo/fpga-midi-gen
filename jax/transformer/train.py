@@ -86,13 +86,10 @@ def eval_loss(held, batches):
 
 
 def train(
+    held,
     *,
     corpus_path,
     train_on,
-    d,
-    layers,
-    heads,
-    span,
     context,
     batch,
     steps,
@@ -109,14 +106,14 @@ def train(
     average_top,
 ):
     """The loop of the era: the batch draw, the step, the two evaluations, the
-    best-by-valid checkpoint and the top-K average."""
+    best-by-valid checkpoint and the top-K average. [held] is the drawn model this run
+    opens on: the CLI builds it, because every flag of the shape is the model's own."""
     corpus = data.load_corpus(corpus_path)
     pool = data.train_pool(corpus, train_on)
     train_eval = eval_batches(corpus["train"], context, eval_limit, batch)
     valid_eval = eval_batches(corpus["valid"], context, eval_limit, batch)
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
-    held = model.Transformer.drawn(seed, d, layers, heads=heads, span=span)
     optimizer = nnx.Optimizer(
         held,
         nn.update_rule(
@@ -243,8 +240,12 @@ def train(
     default=0,
     help="also write the mean of the K best-by-valid snapshots as NAME-avg.ckpt",
 )
-def main(**flags):
-    train(**flags)
+def main(d, layers, heads, span, seed, **flags):
+    train(
+        model.Transformer.drawn(seed, d, layers, heads=heads, span=span),
+        seed=seed,
+        **flags,
+    )
 
 
 if __name__ == "__main__":

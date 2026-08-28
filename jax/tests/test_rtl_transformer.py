@@ -35,6 +35,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import nn
 from tests.test_transformer import tiny
 from transformer import quantized
 
@@ -115,10 +116,10 @@ def test_the_lead_in_draws_nothing_and_moves_no_generator(tmp_path):
     that spent a uniform there would draw a different piece from the same seed, and every
     step of it would be legal music."""
     _, twin = contract(tmp_path, seed=5, d=8, layers=1, heads=2)
-    played, draws = quantized.walk(twin, [1, 7], quantized.LEAD + 2)
-    assert (played[:, : quantized.LEAD] == 0).all(), "the lead-in is not silent"
-    assert all(not taken for taken in draws[: quantized.LEAD]), "the lead-in drew"
-    assert all(len(taken) == 4 for taken in draws[quantized.LEAD :])
+    played, draws = quantized.walk(twin, [1, 7], nn.LEAD + 2)
+    assert (played[:, : nn.LEAD] == 0).all(), "the lead-in is not silent"
+    assert all(not taken for taken in draws[: nn.LEAD]), "the lead-in drew"
+    assert all(len(taken) == 4 for taken in draws[nn.LEAD :])
     # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], quantized.LEAD + 2)
+    alone, _ = quantized.walk(twin, [7], nn.LEAD + 2)
     assert np.array_equal(alone[0], played[1])

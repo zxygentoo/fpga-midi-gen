@@ -68,8 +68,8 @@ def dropout_masks(key, rate, shape):
 
 
 # The draw of every matrix of both frozen eras: a normal at this deviation. It is not a
-# fan-in rule and it was measured against one -- `mamba/train.py`'s `draw_params` records
-# the reading on the convolution kernel, where 1/sqrt(K) read worse.
+# fan-in rule and it was measured against one -- `Mamba.drawn` records the reading on the
+# convolution kernel, where 1/sqrt(K) read worse.
 DRAW_SCALE = 0.02
 
 
@@ -312,6 +312,13 @@ TEMPER_Q = LOG2E_Q - 1
 EXP2_IN_Q = 12
 EXP2_OUT_Q = 15
 
+# THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`. A Q number holds value * 2^-q. The
+# OCaml side states these ONCE for all three circuits; this states them once for all the
+# twins, and a twin that wrote a format of its own would part from its circuit in silence.
+H_Q = 16  # the residual stream, in int32
+Y_Q = 12  # the normed vector, and the score of attention: int16
+HID_Q = 10  # the feed-forward hidden vector after its ReLU: int16
+
 
 def round_half_up(x):
     """Base's `Float.iround_nearest_exn`: floor(x + 0.5).
@@ -319,6 +326,81 @@ def round_half_up(x):
     A TIE GOES TOWARD PLUS INFINITY, thus -2.5 is -2 and 2.5 is 3, where Python's `round`
     and `numpy.rint` are half-to-even. Every rounding of every twin goes through here."""
     return np.floor(np.asarray(x, np.float64) + 0.5)
+
+
+# the rms epsilon of the float models, in the Q of the squared stream
+EPS_Q = int(round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
+
+# the silent lead-in of a boot, in steps: one bar, as the float samplers play it
+LEAD = data.BAR_STEPS
+
+
+def rescale(value, *, at, to):
+    """value * 2^-at as value * 2^-to; the arithmetic shift floors, as the circuits' does"""
+    if to >= at:
+        return value << (to - at)
+    return value >> (at - to)
+
+
+def apply_scale(q_value, q, value):
+    """`Constants.apply`: value times a fixed-point multiplier, toward negative infinity.
+
+    The two halves of the scale travel together because they are one fact: a multiply that
+    takes the wrong shift is silently wrong. [q_value] may be a per-head ROW, which is why
+    this takes the two numbers and not a `Temper`."""
+    return (value * q_value) >> q
+
+
+def truncated(numerator, denominator):
+    """OCaml's `/` on integers, which goes TOWARD ZERO where numpy's `//` floors.
+
+    Every division of every circuit truncates, thus a floor here would part from it on the
+    negative half of a stream and nowhere else -- which is the kind of difference that
+    makes music and is still wrong."""
+    numerator = np.asarray(numerator, np.int64)
+    denominator = np.asarray(denominator, np.int64)
+    sign = np.sign(numerator) * np.sign(denominator)
+    return sign * (np.abs(numerator) // np.abs(denominator))
+
+
+def isqrt(values):
+    """floor of the square root, over an array: the one answer the [Isqrt] unit gives.
+
+    The float root is correct to a unit at these widths and the two steps settle it; the
+    loop is written all the same, because a silently wrong root is a silently wrong norm."""
+    values = np.asarray(values, np.int64)
+    guess = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
+    while True:
+        low = np.maximum(guess - ((guess * guess > values) & (guess > 0)), 0)
+        high = low + ((low + 1) * (low + 1) <= values)
+        if np.array_equal(high, guess):
+            return guess
+        guess = high
+
+
+def rms_norm_q(v, *, at, width):
+    """rms_norm over [width] elements of a Q[at] vector, giving Q[Y_Q].
+
+    The sum squares a Q[Y_Q] copy -- one DSP-sized product -- then one isqrt, and one
+    truncating division for each element. The stream enters at [H_Q] and the gate of a
+    Mamba block at 2 [Y_Q], thus the shift of the NUMERATOR is the one thing that moves
+    between callers."""
+    copy = rescale(v, at=at, to=Y_Q)
+    total = (copy * copy).sum(axis=-1, keepdims=True)
+    mean = (total >> (width.bit_length() - 1)) + EPS_Q
+    return clamp16(truncated(v * (1 << ((2 * Y_Q) - at)), isqrt(mean)))
+
+
+def score_shift(*, row_q, head_d):
+    """`Constants.score_shift`: what carries a score walk's sum from Q(2 [row_q]) to Q[Y_Q]
+    and applies the 1/sqrt([head_d]) in the same shift, thus [head_d] is a power of four"""
+    return (2 * row_q) - Y_Q + ((head_d.bit_length() - 1) // 2)
+
+
+def slope_exponent(*, span, heads, head):
+    """`Constants.slope_exponent`: the ALiBi exponent of one head -- its slope is
+    2^-(this), thus the penalty of an age is a shift and never a multiply"""
+    return (span * (head + 1)) // heads
 
 
 def largest_exponent(magnitude, *, opening, cap):
@@ -398,6 +480,88 @@ class Temper(NamedTuple):
     def of(cls, temperature):
         q_value, q = temper_of(temperature)
         return cls(q_value, q, temperature)
+
+
+# log2(e): the exp2 form of an exponential, `Constants.log2e`. The temper is this
+# constant divided by the temperature and it takes one Q less, which is `temper_of`.
+LOG2E = Temper(int(round_half_up(math.ldexp(1.0 / math.log(2.0), LOG2E_Q))), LOG2E_Q, 1.0)
+
+
+class Weight(NamedTuple):
+    """One tensor of a twin's image: the int8 values in the shape the float tensor had, and
+    the exponent that reads them.
+
+    The values are int64 so that a product of two of them cannot wrap, and a contract file
+    writes them back as int32."""
+
+    values: np.ndarray
+    e: int
+
+    @classmethod
+    def of(cls, tensor, e=None):
+        """one float tensor under the exponent rule; [e] overrides the tensor's own peak"""
+        q, e = quantize(np.asarray(tensor, np.float64), e=e)
+        return cls(np.asarray(q, np.int64), e)
+
+
+class QuantizedHead(nnx.Module):
+    """The two tables of `Head` as the machine holds them -- and ONE exponent over both.
+
+    THE SEAT AND PHASE TABLES SHARE IT and take it from the larger peak: their rows ADD --
+    the embedding sums them and the Embed op of a circuit walks them as one tensor -- thus
+    a difference of exponents would be a difference of formats inside one sum. Here that
+    rule is the shape of the module and cannot be broken by a caller; a FILE can still
+    state two, and each era's `load` refuses one that does.
+
+    The four seat tables are ONE tensor, seat 0 first, and a circuit reaches a row of it
+    with a shift and an add from the base: row (seat * CLASSES + class).
+
+    Both frozen eras hold one of these, and the twin of each reads the stream at [H_Q]."""
+
+    def __init__(self, *, seats, phase, e):
+        # `nnx.data`: these are a machine's own arrays and never a pytree of device
+        # tensors -- the engines of the frozen eras are host numpy in int64
+        self.seats = nnx.data(np.asarray(seats, np.int64))
+        self.phase = nnx.data(np.asarray(phase, np.int64))
+        self.e = int(e)
+
+    @property
+    def d(self):
+        return self.seats.shape[-1]
+
+    @classmethod
+    def of(cls, head):
+        """the float `Head` under the exponent rule, one exponent over both tables"""
+        seats, phase = (np.asarray(t, np.float64) for t in head.tensors())
+        shared = max_exponent(
+            max(float(np.abs(t).max(initial=0.0)) for t in (seats, phase))
+        )
+        return cls(
+            seats=quantize(seats, e=shared)[0],
+            phase=quantize(phase, e=shared)[0],
+            e=shared,
+        )
+
+    def embed(self, classes, phase):
+        """the embedding: the four seat rows and the phase row add in the shared exponent,
+        then shift to Q[H_Q]"""
+        value = np.broadcast_to(self.phase[phase], (len(classes), self.d)).copy()
+        for seat in range(data.SEATS):
+            value = value + self.seats[seat, classes[:, seat]]
+        return rescale(value, at=self.e, to=H_Q)
+
+    def logits(self, stream, seat):
+        """the tied head of one seat: rms_norm of the stream the chain has written so far,
+        then that seat's table read backward; Q[Y_Q] logits over the classes"""
+        return (rms_norm_q(stream, at=H_Q, width=self.d) @ self.seats[seat].T) >> self.e
+
+    def add_row(self, stream, seat, drawn):
+        """what the chain adds after a seat draws: the drawn row, in the stream's format"""
+        return stream + rescale(self.seats[seat, drawn], at=self.e, to=H_Q)
+
+    def tensors(self):
+        """the two tables, in the order of the checkpoint and of the ROM"""
+        return [Weight(self.seats, self.e), Weight(self.phase, self.e)]
 
 
 def write_tally():
