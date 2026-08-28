@@ -344,6 +344,72 @@ def exp2_of_magnitude(magnitude):
     return np.where(whole >= 16, 0, entry >> np.minimum(whole, 62))
 
 
+# The sigmoid of a Q12 value, in Q15. The input is int16, thus its range is |v| < 8
+# exactly and a clamp costs nothing: 256 buckets of 256 Q12 units cover it, and the index
+# is the top eight bits with the sign flipped.
+#
+# The entry is the sigmoid at the CENTRE of its bucket and not at its left edge. The
+# bucket is 1/16 wide and the slope peaks at 1/4, thus the left edge would bias every
+# reading by up to 2^-10 of full scale; the centre halves the worst error and costs nothing
+# at elaboration. The centres are symmetric about zero, thus the two halves of the table
+# sum to 2^15 and sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
+SIGMOID_TABLE = np.array(
+    [
+        int(round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
+        for j in range(256)
+    ],
+    np.int64,
+)
+
+# The correction term of the softplus, ln(1 + exp(-|v|)), in Q12 over a Q12 magnitude:
+# softplus(v) = relu(v) + this. The ramp is exact and carries the whole of a large input,
+# thus the table only has to hold a quantity that falls to nothing: at |v| = 8, the largest
+# magnitude an int16 Q12 value takes, it is one unit of Q12. 256 buckets of 128 units cover
+# the range, and the entry is again the centre of its bucket.
+SOFTPLUS_TABLE = np.array(
+    [
+        int(round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
+        for j in range(256)
+    ],
+    np.int64,
+)
+
+
+def sigmoid_q(value):
+    """`Nn_quantized.sigmoid_q`: the sigmoid of a Q12 value in Q15 — the rule of the
+    [Sigmoid] unit. The index is the top eight bits with the sign flipped, which is no
+    arithmetic at all in a circuit."""
+    return SIGMOID_TABLE[((np.asarray(value, np.int64) >> 8) + 128) & 255]
+
+
+def silu(value):
+    """`Nn_quantized.silu`: the value times its sigmoid, shifted back to Q12 and clamped"""
+    value = np.asarray(value, np.int64)
+    return clamp16((value * sigmoid_q(value)) >> 15)
+
+
+def softplus(value):
+    """`Nn_quantized.softplus`: the ramp plus the correction the table holds.
+
+    The sum rides an int16, thus the input clamps before the table reads it and the result
+    clamps after. The clamp of the index catches the one value -32768 whose magnitude does
+    not fit the table."""
+    value = clamp16(np.asarray(value, np.int64))
+    index = np.minimum(255, np.abs(value) >> 7)
+    return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
+
+
+def clamp16(value):
+    """the rails of int16: a value that passes them saturates and never wraps"""
+    return np.clip(np.asarray(value, np.int64), INT16_LOW, INT16_HIGH)
+
+
+def clamps16(value):
+    """true where [clamp16] would clamp — the detector of the clamp counters"""
+    value = np.asarray(value, np.int64)
+    return (value > INT16_HIGH) | (value < INT16_LOW)
+
+
 def pick(weights, word):
     """`Nn_quantized.draw`: the class a 24-bit uniform word lands, over the batch.
 

@@ -58,3 +58,27 @@ module O = Source_intf.O
     the walk, read at [rewind], thus one seed names one sequence in the simulation and on
     the board. *)
 val create : model:Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+module For_test : sig
+  (** The walk, driven. [bin/gate_mamba.exe] runs it and prints what the circuit did, and
+      [jax/tests/test_rtl_mamba.py] states what it must have done; the frame and stream
+      benches of this module run the same harness against the OCaml engine while that
+      engine stands. *)
+  module Bench : sig
+    type t =
+      { rewind : unit -> unit (** load the generator and return the walk to its origin *)
+      ; play : unit -> int
+      (** strobe one step and give the frame it answers. It raises [Failure] when the step
+          is not answered, or when the walk runs past the budget the cost model states — a
+          machine that stalls must fail a gate and not hang it. *)
+      ; streams : unit -> int array list
+      (** the stream snapshots of the LAST step: one for each time the circuit wrote the
+          whole stream — the embed, then the join of each layer — in the order it wrote
+          them. It probes the write port of the h RAM, thus it reads what the machine did
+          and not what its output says. *)
+      }
+
+    (** [harness ~model ~seed ()] builds the simulation and its probes *)
+    val harness : model:Model.t -> seed:int -> unit -> t
+  end
+end

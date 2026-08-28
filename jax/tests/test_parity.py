@@ -14,35 +14,21 @@ byte for byte: one rounding, one exponent or one fold out of place moves a weigh
 moved weight moves the netlist. It is the gate of the quantizer and it costs one second.
 Between G0 and G1 a change to a model has nowhere to hide.
 
-Gate A and gate C are the WELDS of a frozen era, and they hold the JAX trainer to the
-OCaml float model beside it. They die with that model, and ERA FOUR'S ARE GONE: G0 holds
-its forward to a measured number and `test_rtl_transformer.py` holds its draw to the
-circuit itself, thus nothing is left for a weld to say.
-
-Gate A, the loss. `check_mamba loss` states the loss of the OCaml float model over the
-canonical valid windows, and this demands the same number of the JAX forward on the same
-windows. A pass proves the two forwards agree everywhere the loss can see. The shape
-travels in the OCaml output and this side states none of its own: held apart, two widths
-would go on matching a default while one side moved, and the gate would pass two different
-models.
-
-Gate C, the walk. `play_mamba` and `infer.py` print the same line for a step, thus the
-whole event stream compares as text. This is the gate the sampler needs, because the draw
-is where a rewrite is plausibly wrong and still makes music: a peak over the wrong set, a
-min-p floor applied before the temperature, an inclusive compare in the cumulative walk.
-Each shifts the distribution a little and nothing raises.
+THE WELDS ARE GONE. Gate A and gate C held a JAX trainer to the OCaml float model beside
+it, and each frozen era had a pair; both pairs went with the twins that replaced them. G0
+holds a forward to a measured number, `test_rtl_<era>.py` holds a draw to the circuit
+itself, and `test_drift.py` holds a twin to the float model it quantizes -- thus nothing is
+left for a weld to say, and no gate of this file reads an OCaml float model any more.
 
 Every gate needs a checkpoint that git ignores and binaries that dune builds. They SKIP
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
 disagree. From the repository root:
 
-    dune build bin/check_mamba.exe bin/play_mamba.exe
     dune build bin/gate_transformer.exe bin/gate_mamba.exe
     dune build board/nexys-4/gen_verilog.exe
 """
 
 import hashlib
-import re
 import subprocess
 from pathlib import Path
 
@@ -57,8 +43,6 @@ JAX_ROOT = Path(__file__).resolve().parent.parent
 ROOT = JAX_ROOT.parent
 CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
 CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
-# the tool's default corpus path is relative to the repository root, and pytest runs in [jax]
-CORPUS_JSON = ROOT / "corpus" / "JSB-Chorales-dataset" / "Jsb16thSeparated.json"
 BUILT = ROOT / "_build" / "default" / "bin"
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
@@ -191,8 +175,6 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
 MAMBA_CHECKPOINT = (
     ROOT / "_train" / "mamba" / "d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
 )
-CHECK_MAMBA = BUILT / "check_mamba.exe"
-MAMBA_PLAYER = BUILT / "play_mamba.exe"
 
 # The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28. Only
 # two numbers stand here: every width, the plan and the span come out of the file, and the
@@ -245,78 +227,6 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
     assert said == MAMBA_NETLIST_MD5, (
         f"the JAX quantizer states the netlist {said} and the golden is "
         f"{MAMBA_NETLIST_MD5}"
-    )
-
-
-def test_gate_a_the_mamba_forwards_agree():
-    """The recurrence states no shape of its own: the tool prints every width out of the
-    file, and this side reads the same file, thus the two cannot drift apart in a flag.
-    The context travels in the output because it is a choice of the REFEREE here — a window
-    of the recurrence opens on a zero state and the model has no context length at all."""
-    need(MAMBA_CHECKPOINT, CORPUS, CORPUS_JSON, CHECK_MAMBA)
-    from mamba import model as mamba_model
-
-    stated = run(
-        str(CHECK_MAMBA),
-        "loss",
-        "-ckpt",
-        str(MAMBA_CHECKPOINT),
-        "-corpus",
-        str(CORPUS_JSON),
-    )
-    said = dict(re.findall(r"(\w+) (-?[\d.]+)", stated))
-    windows, context = int(said["windows"]), int(said["context"])
-
-    params = mamba_model.load_params(str(MAMBA_CHECKPOINT))
-    corpus = data.load_corpus(CORPUS)
-    rows = data.eval_rows(corpus["valid"], context, windows)
-    assert len(rows) == windows, "the two sides cut a different count of windows"
-    classes, phases = data.stack_rows(rows)
-
-    nll = mamba_model.seat_nll(params, jnp.asarray(classes), jnp.asarray(phases))
-    here = seat_loss(nll)
-    there = float(said["loss"])
-    assert here == pytest.approx(there, abs=TOLERANCE), (
-        f"the JAX forward says {here:.6f} and the OCaml reference says {there:.6f}"
-    )
-
-
-@pytest.mark.parametrize("seed", [1, 7])
-def test_gate_c_the_two_mamba_walks_are_the_same_stream(seed):
-    need(MAMBA_CHECKPOINT, MAMBA_PLAYER)
-    steps = 64
-    theirs = run(
-        str(MAMBA_PLAYER),
-        "-ckpt",
-        str(MAMBA_CHECKPOINT),
-        "-seed",
-        str(seed),
-        "-steps",
-        str(steps),
-    )
-    ours = run(
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "mamba.infer",
-        "sample",
-        "--ckpt",
-        str(MAMBA_CHECKPOINT),
-        "--seeds",
-        str(seed),
-        "--steps",
-        str(steps),
-    )
-    lines = lambda text: [l for l in text.splitlines() if l.startswith("step")]
-    here, there = lines(ours), lines(theirs)
-    assert here, "the JAX walk printed no step lines"
-    assert len(here) == len(there) == steps, (
-        f"{len(here)} JAX steps against {len(there)} OCaml steps, wanted {steps}"
-    )
-    first = next((i for i, (a, b) in enumerate(zip(here, there)) if a != b), None)
-    assert first is None, (
-        f"the walks part at step {first}:\n  jax   {here[first]}\n  ocaml {there[first]}"
     )
 
 

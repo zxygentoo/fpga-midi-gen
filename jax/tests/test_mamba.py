@@ -43,14 +43,15 @@ SHAPE = dict(
 )
 
 
-def drawn_params(taps=model.CONV_TAPS, **over):
-    return train.draw_params(jax.random.PRNGKey(3), taps=taps, **(SHAPE | over))
+def drawn_params(seed=3, taps=model.CONV_TAPS, **over):
+    """the float params of a drawn model at the small test shape, or a widening of it"""
+    return train.draw_params(jax.random.PRNGKey(seed), taps=taps, **(SHAPE | over))
 
 
-def plan_of(spelt):
-    """a drawn model of the plan spelt out, at the small test shape"""
+def plan_of(spelt, **over):
+    """a drawn model of the plan spelt out, at the small test shape or a widening of it"""
     letters = [train.PLAN_LETTERS[c] for c in spelt.lower()]
-    return drawn_params(spelt=letters, layers=len(letters))
+    return drawn_params(spelt=letters, layers=len(letters), **over)
 
 
 def drawn_window(rows, length):

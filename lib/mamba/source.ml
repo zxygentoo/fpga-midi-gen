@@ -1838,40 +1838,83 @@ let engine_of shape ~weights =
   Quantized.Model.For_test.init (config_of shape) ~seed:weights
 ;;
 
+module For_test = struct
+  module Bench = struct
+    type t =
+      { rewind : unit -> unit
+      ; play : unit -> int
+      ; streams : unit -> int array list
+      }
+
+    (* The harness of both gates. [streams] gives the snapshots of the LAST step: one for
+       each time the circuit wrote the whole stream — the embed, then the join of each
+       layer — which is what the twin's own [layer_streams] states. It probes the write
+       port of the h RAM, thus the trace configuration is on and the gate reads what the
+       machine did and not what its output says. *)
+    let harness ~model ~seed () =
+      let module Sim = Cyclesim.With_interface (I) (O) in
+      let sim =
+        Sim.create
+          ~config:Cyclesim.Config.trace_all
+          (create ~model ~seed:(of_unsigned_int ~width:32 seed))
+      in
+      let inp = Cyclesim.inputs sim in
+      let out = Cyclesim.outputs ~clock_edge:Before sim in
+      let node name = Option.value_exn (Cyclesim.lookup_node_by_name sim name) in
+      let wen = node "hram_wen" in
+      let waddr = node "hram_waddr" in
+      let wdata = node "hram_wdata" in
+      let h = Array.create ~len:model.Model.d 0 in
+      let writes = ref 0 in
+      let snapshots = ref [] in
+      let budget = ref 20_000_000 in
+      let signed v = if v >= 1 lsl 31 then v - (1 lsl 32) else v in
+      let cycle () =
+        Cyclesim.cycle sim;
+        Int.decr budget;
+        if !budget <= 0 then failwith "the walk did not finish inside its budget";
+        if Cyclesim.Node.to_int wen = 1
+        then (
+          h.(Cyclesim.Node.to_int waddr) <- signed (Cyclesim.Node.to_int wdata);
+          Int.incr writes;
+          if !writes % model.Model.d = 0 then snapshots := Array.copy h :: !snapshots)
+      in
+      let rewind () =
+        inp.rewind := Bits.vdd;
+        cycle ();
+        inp.rewind := Bits.gnd;
+        cycle ()
+      in
+      let play () =
+        writes := 0;
+        snapshots := [];
+        inp.step := Bits.vdd;
+        cycle ();
+        inp.step := Bits.gnd;
+        cycle ();
+        (* the frame is whole only after the strobe: the command is what latches it *)
+        if not (Bits.to_bool !(out.valid)) then failwith "the step was not answered";
+        let frame = Bits.to_int_trunc !(out.frame) in
+        while not (Bits.to_bool !(out.idle)) do
+          cycle ()
+        done;
+        frame
+      in
+      { rewind; play; streams = (fun () -> List.rev !snapshots) }
+    ;;
+  end
+end
+
 let frames_agree ~shape ~weights ~seed ~steps =
   let model = Model.For_test.drawn shape ~seed:weights in
   let engine_model = engine_of shape ~weights in
-  let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let budget = ref 20_000_000 in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Int.decr budget;
-    assert (!budget > 0)
-  in
-  inp.rewind := Bits.vdd;
-  cycle ();
-  inp.rewind := Bits.gnd;
-  cycle ();
-  (* One step: the command, then the cycle [valid] answers it — the frame stands there,
-     because the chain that moves the drawn classes runs behind the recurrence. *)
-  let step () =
-    inp.step := Bits.vdd;
-    cycle ();
-    inp.step := Bits.gnd;
-    cycle ();
-    assert (Bits.to_bool !(out.valid));
-    let frame = Bits.to_int_trunc !(out.frame) in
-    while not (Bits.to_bool !(out.idle)) do
-      cycle ()
-    done;
-    frame
-  in
+  let h = For_test.Bench.harness ~model ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
   let circuit =
     List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> h.play () :: acc))
   in
   let (_ : Quantized.Engine.t), reference =
     List.fold_map
@@ -1952,52 +1995,14 @@ let memory_geometry (model : Model.t) =
 let streams_agree ~shape ~weights ~seed ~steps =
   let model = Model.For_test.drawn shape ~seed:weights in
   let engine_model = engine_of shape ~weights in
-  let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim =
-    Sim.create
-      ~config:Cyclesim.Config.trace_all
-      (create ~model ~seed:(of_unsigned_int ~width:32 seed))
-  in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let node name = Option.value_exn (Cyclesim.lookup_node_by_name sim name) in
-  let wen = node "hram_wen" in
-  let waddr = node "hram_waddr" in
-  let wdata = node "hram_wdata" in
-  let h = Array.create ~len:model.Model.d 0 in
-  let writes = ref 0 in
-  let snapshots = ref [] in
-  let signed v = if v >= 1 lsl 31 then v - (1 lsl 32) else v in
-  let cycle () =
-    Cyclesim.cycle sim;
-    if Cyclesim.Node.to_int wen = 1
-    then (
-      h.(Cyclesim.Node.to_int waddr) <- signed (Cyclesim.Node.to_int wdata);
-      Int.incr writes;
-      (* one snapshot for each time the whole stream is written: the embed, then the join
-         of each layer, then the accumulates of the chain *)
-      if !writes % model.Model.d = 0 then snapshots := Array.copy h :: !snapshots)
-  in
-  inp.rewind := Bits.vdd;
-  cycle ();
-  inp.rewind := Bits.gnd;
-  cycle ();
+  let bench = For_test.Bench.harness ~model ~seed () in
+  bench.rewind ();
   let engine = ref (Quantized.Engine.init engine_model ~seed) in
   let checked = ref 0 in
   let parted = ref 0 in
   for step = 0 to steps - 1 do
-    writes := 0;
-    snapshots := [];
-    inp.step := Bits.vdd;
-    cycle ();
-    inp.step := Bits.gnd;
-    cycle ();
-    (* the frame is whole only after the strobe: the command is what latches it *)
-    let frame = Bits.to_int_trunc !(out.frame) in
-    while not (Bits.to_bool !(out.idle)) do
-      cycle ()
-    done;
-    let taken = List.rev !snapshots in
+    let frame = bench.play () in
+    let taken = bench.streams () in
     let want =
       Quantized.Engine.For_test.layer_streams !engine ~frame ~phase:(step % Jsb.bar_steps)
     in

@@ -60,6 +60,40 @@ def test_the_exp2_table_is_the_shared_table():
     assert nn.exp2_of_magnitude(np.int64(1 << 20)) == 0
 
 
+def test_the_sigmoid_table_is_the_shared_table():
+    """The sigmoid of a Q12 value in Q15, 256 buckets AT THEIR CENTRES. The bucket is 1/16
+    wide and the slope peaks at 1/4, thus the left edge would bias every reading by up to
+    2^-10 of full scale. The centres are symmetric about zero, and that is the property
+    the table must have: the two halves sum to 2^15, thus sigmoid(-v) = 1 - sigmoid(v)
+    survives the quantization. `Nn_quantized.Constants.sigmoid_table` states the same rule,
+    and era five's RTL gate holds the two together through the circuit."""
+    table = nn.SIGMOID_TABLE
+    assert (table[0], table[128], table[255]) == (11, 16640, 32757)
+    for j in range(128):
+        assert table[j] + table[255 - j] == 32768
+    # the index is the top eight bits with the sign flipped, which is no arithmetic at all
+    assert nn.sigmoid_q(np.int64(0)) == 16640
+    assert nn.silu(np.int64(0)) == 0
+
+
+def test_the_softplus_table_is_the_correction_alone():
+    """softplus(v) = relu(v) + ln(1 + exp(-|v|)), and the table holds the correction. The
+    ramp is exact and carries the whole of a large input, thus the table only has to hold a
+    quantity that falls to nothing: at |v| = 8, the largest magnitude an int16 Q12 value
+    takes, it is one unit of Q12."""
+    table = nn.SOFTPLUS_TABLE
+    assert (table[0], table[128], table[255]) == (2807, 73, 1)
+    # ln 2 in Q12 is the correction at zero, and the ramp adds nothing there
+    assert nn.softplus(np.int64(0)) == 2807
+    # the index is the magnitude shifted by seven, thus a value of 7.0 in Q12 reads bucket
+    # 224 and the correction there is 4 units of Q12 -- the ramp carries the rest
+    assert nn.softplus(np.int64(4096 * 7)) == (4096 * 7) + table[224]
+    # the sum rides an int16, thus the result clamps
+    assert nn.softplus(np.int64(32767)) == nn.INT16_HIGH
+    # the clamp of the index catches the one value whose magnitude does not fit the table
+    assert nn.softplus(np.int64(-32768)) == table[255]
+
+
 def test_the_temper_is_log2e_over_the_temperature():
     """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
     temperature, because the circuits carry this constant on an 18-bit signed port."""

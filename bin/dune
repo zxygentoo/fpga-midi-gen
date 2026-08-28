@@ -114,5 +114,6 @@
   hardcaml
   jane_rope
   mgen_core
+  mgen_corpus
   mgen_mamba
   mgen_nexys4))

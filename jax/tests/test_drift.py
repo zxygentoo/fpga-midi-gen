@@ -33,6 +33,8 @@ import pytest
 
 import nn
 from diffusion import model, quantized
+from mamba import quantized as mamba_twin
+from tests.test_mamba import plan_of
 from tests.test_transformer import drawn_params as transformer_params
 from transformer import quantized as transformer_twin
 
@@ -248,3 +250,130 @@ def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
     assert low_peak >= TRANSFORMER_TOP1_FLOOR
     assert low_draw >= TRANSFORMER_SAME_DRAW_FLOOR
     assert low_cosine >= TRANSFORMER_COSINE_FLOOR
+
+
+# ==================================================================== #
+# Era five: the state-space model                                      #
+# ==================================================================== #
+
+# THE FEEDBACK AXIS OF THIS ERA IS THE STATE. A block carries a state that no window
+# forgets, thus a quantization error accumulates in a register rather than dying with a
+# ring's depth -- and the long walk below is what says whether it does. BOTH MODELS TAKE
+# ONE STEP FOR ONE STEP here, thus the comparison is linear in the walk and can run past
+# many decay lifetimes.
+
+# The whole plan of the era at a shape a test can afford: two blocks, the Zamba head and
+# the feed-forward. The head brings a SECOND source of drift that the trunk does not have
+# -- a coarse ring, a softmax and a division -- thus the report answers for the whole model
+# and not for the recurrence alone.
+MAMBA_SPELT = "MMZF"
+MAMBA_SHAPE = {"d": 16, "heads": 2, "state": 8, "taps": 4}
+MAMBA_RING = 16
+MAMBA_STEPS = 64
+
+
+def mamba_drift(weight_seed, walk_seed, steps=MAMBA_STEPS):
+    """the drift of one drawn model on one walk"""
+    return mamba_twin.drift(
+        plan_of(MAMBA_SPELT, seed=weight_seed, **MAMBA_SHAPE),
+        steps=steps,
+        seed=walk_seed,
+        ring=MAMBA_RING,
+    )
+
+
+# for each weight seed, summed over the four walks: the top-1 count, the same-draw count,
+# the draws they were counted over, and the lowest mean cosine of the four
+MAMBA_SWEPT = {
+    11: (723, 765, 768, 0.9976),
+    23: (704, 761, 768, 0.9962),
+    37: (709, 751, 768, 0.9962),
+    41: (706, 762, 768, 0.9967),
+}
+
+
+@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
+def test_the_mamba_sweep_states_its_measured_numbers(weight_seed):
+    """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved.
+
+    They were measured on this side and NOT carried over from the OCaml gate that stood
+    before it: the drawn weights come from a JAX draw now. The old table read 721, 718, 711
+    and 739 top-1 out of the same 768 draws."""
+    draws = same_peak = same_draw = 0
+    low_cosine = 1.0
+    for walk_seed in WALK_SEEDS:
+        said = mamba_drift(weight_seed, walk_seed)
+        draws += said.draws
+        same_peak += said.same_peak
+        same_draw += said.same_draw
+        low_cosine = min(low_cosine, said.mean_cosine)
+    wanted_peak, wanted_draw, wanted_draws, wanted_cosine = MAMBA_SWEPT[weight_seed]
+    assert (same_peak, same_draw, draws) == (wanted_peak, wanted_draw, wanted_draws)
+    assert low_cosine == pytest.approx(wanted_cosine, abs=5e-5)
+
+
+# at 64, 256 and 1024 steps of one model: the top-1 count, the draws, the mean cosine, and
+# the share of each clamp that fired
+MAMBA_LONG_WALK = {
+    64: (178, 192, 0.9976),
+    256: (886, 960, 0.9979),
+    1024: (3736, 4032, 0.9977),
+}
+
+
+@pytest.mark.parametrize("steps", sorted(MAMBA_LONG_WALK))
+def test_the_mamba_long_walk_does_not_compound(steps):
+    """THE LONG WALK, AND THE CLAMPS UNDER IT.
+
+    The state of a block carries forward for ever, thus a quantization error can compound
+    over a walk in a way one step never shows. The same model runs at 64, 256 and 1024
+    steps; a cumulative error would show as numbers that FALL with the length. They do not:
+    the top-1 share reads 0.927, 0.923 and 0.927 and the cosine stands flat.
+
+    The clamps stand beside them because the formats of this era are chosen with margin and
+    not metered on a trained checkpoint: a zero here is the finding that the margin holds,
+    and it is the finding the OCaml gate made before it."""
+    said = mamba_drift(11, 42, steps=steps)
+    peak, draws, cosine = MAMBA_LONG_WALK[steps]
+    assert (said.same_peak, said.draws) == (peak, draws)
+    assert said.mean_cosine == pytest.approx(cosine, abs=5e-5)
+    clamps = said.clamps
+    assert (clamps.dt, clamps.beta, clamps.state) == (0, 0, 0)
+    assert clamps.dt_seen and clamps.beta_seen and clamps.state_seen
+
+
+# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
+# 2026-08-20 against this model's own first measured minima, and they are much tighter than
+# era four's 0.55, 0.8 and 0.98 for a reason that is a format and not a virtue: this
+# datapath keeps the gate product whole into the norm that reads it, where a truncation
+# back to the working class cost 0.10 of the cosine on its own. A scheme that measures this
+# well must be held to it.
+MAMBA_TOP1_FLOOR = 0.80
+MAMBA_SAME_DRAW_FLOOR = 0.90
+MAMBA_COSINE_FLOOR = 0.99
+
+MAMBA_TRIALS = 12
+
+
+def test_the_mamba_floors_hold_on_drawn_seed_pairs(capsys):
+    """The scheme against a set of drawn models, not the four the sweep pins. A fail is a
+    break of the scheme and not a re-draw of the set; the printed minima keep the
+    calibration honest.
+
+    The old OCaml gate read 0.875, 0.979 and 0.9972 over 60 pairs of its own draw."""
+    generator = np.random.default_rng(7)
+    low_peak = low_draw = low_cosine = 1.0
+    for _ in range(MAMBA_TRIALS):
+        weight_seed, walk_seed = (int(v) for v in generator.integers(1, 1 << 20, 2))
+        said = mamba_drift(weight_seed, walk_seed)
+        low_peak = min(low_peak, said.same_peak / said.draws)
+        low_draw = min(low_draw, said.same_draw / said.draws)
+        low_cosine = min(low_cosine, said.mean_cosine)
+    with capsys.disabled():
+        print(
+            f"\n{MAMBA_TRIALS} drawn seed pairs: low top-1 {low_peak:.3f}  "
+            f"low same draw {low_draw:.3f}  low cosine {low_cosine:.4f}"
+        )
+    assert low_peak >= MAMBA_TOP1_FLOOR
+    assert low_draw >= MAMBA_SAME_DRAW_FLOOR
+    assert low_cosine >= MAMBA_COSINE_FLOOR
