@@ -126,17 +126,12 @@ let stem_input e ~seed =
 let run_stream e ~seed =
   let steps = e.Elaboration.steps in
   let rows = e.rows in
-  (* the stem's decode states the classes of the vocabulary and no other P, thus a
-     narrower column would read a plane the twin never wrote *)
-  if rows <> Model.rows
-  then
-    failwithf "the stem's decode states %d rows, thus this gate takes no other P" rows ();
   let sheet, hidden = stem_input e ~seed in
   Array.iteri sheet ~f:(fun step seats ->
     Array.iteri seats ~f:(fun seat cell ->
       printf "sheet %d %d %d\n" step seat cell;
       printf "hidden %d %d %d\n" step seat (Bool.to_int hidden.(step).(seat))));
-  let stem = Mgen_diffusion.Sheet.For_test.plane_activations sheet hidden ~steps in
+  let stem = Mgen_diffusion.Sheet.For_test.plane_activations sheet hidden ~steps ~rows in
   let module Bench =
     Forward.For_test.Bench (struct
       let e = e
@@ -145,7 +140,7 @@ let run_stream e ~seed =
   let pass =
     Bench.run
       ~planes:(fun ~step ~plane ->
-        Mgen_diffusion.Sheet.For_test.plane_column stem ~step ~plane)
+        Mgen_diffusion.Sheet.For_test.plane_column stem ~step ~plane ~rows)
       ()
   in
   (* THE WRITES OF A TURN COME OUT INTERLEAVED, thus a turn is what the cursor takes.

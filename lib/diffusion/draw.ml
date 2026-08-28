@@ -15,12 +15,12 @@ module type Shape = sig
 end
 
 (* the Q the exp2 unit reads, and the format the twin's logits carry *)
-let exp2_q = 12
+let exp2_q = Exp2.input_q
 let activation_bits = Model.activation_bits
 
 (* the magnitude port of [Exp2]: a wider value saturates into it, and the saturation is
    exact because the unit already gives zero at a magnitude of 16 and above *)
-let magnitude_bits = 22
+let magnitude_bits = Exp2.magnitude_bits
 
 (* the grid of the generator: the uniform is [k * 2 ** -24] *)
 let uniform_bits = Prng.uniform_bits
@@ -178,7 +178,7 @@ module Make (Shape : Shape) = struct
             , [ when_
                   i.start
                   [ counter <--. 0
-                  ; peak <-- of_signed_int ~width:activation_bits (-32768)
+                  ; peak <-- of_signed_int ~width:activation_bits Model.activation_low
                   ; sm.set_next Peak
                   ]
               ] )

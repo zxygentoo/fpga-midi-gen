@@ -619,7 +619,7 @@ def test_the_walk_rewrites_the_sheet():
     left every cell standing never fired -- and it must state a sheet of the same
     shape, every cell a class of the vocabulary"""
     coconet = tiny()
-    states, given = infer.opening_sheet(prng.states([1, 2]), 8)
+    states, given = model.opening_sheet(prng.states([1, 2]), 8)
     drawn, _ = infer.gibbs(coconet, given, states, walk=4, temperature=1.0)
     assert drawn.shape == given.shape
     assert (drawn != given).any()
@@ -633,7 +633,7 @@ def test_a_sheet_walks_the_same_alone_or_in_a_batch():
     coconet = tiny()
 
     def walk(seeds):
-        states, given = infer.opening_sheet(prng.states(seeds), 8)
+        states, given = model.opening_sheet(prng.states(seeds), 8)
         drawn, _ = infer.gibbs(coconet, given, states, walk=3, temperature=1.0)
         return drawn
 
@@ -648,12 +648,12 @@ def test_the_tempered_pick_is_the_policy_pick():
     grid lands on the LAST class that holds weight -- never past it."""
     raw = np.array([[0.0, -1.0, -10.0], [-10.0, 0.0, -1.0]])
     top = float(0xFFFFFF) * 2.0**-24
-    assert list(infer.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
+    assert list(model.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
     # a class ten nats under the peak weighs 4.5e-5 of it, which the top of the grid
     # reaches -- the same case Policy's own gate walks
-    assert list(infer.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
+    assert list(model.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
     # the middle of the grid stays on the heavy classes
-    assert list(infer.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
+    assert list(model.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
 
 
 def test_several_sheets_take_a_file_each():
@@ -670,7 +670,7 @@ def test_the_seeded_opening_puts_every_voice_in_its_own_register():
     from this corpus than a rest is, thus the draw is over each seat's own range and not
     over the whole roll -- and a cell the Bernoulli leaves standing then states a NOTE,
     which is what 99.8 percent of the corpus's cells state."""
-    _, drawn = infer.opening_sheet(prng.states([7, 8, 9, 10]), 32)
+    _, drawn = model.opening_sheet(prng.states([7, 8, 9, 10]), 32)
     assert drawn.shape == (4, 32, model.VOICES)
     assert not (drawn == data.SILENCE).any()
     pitches = data.pitches_of_classes(drawn)
@@ -684,7 +684,7 @@ def test_the_seeded_opening_is_the_seed_and_nothing_else():
     the OCaml reference and on the board"""
 
     def drawn(seeds):
-        return infer.opening_sheet(prng.states(seeds), 16)[1]
+        return model.opening_sheet(prng.states(seeds), 16)[1]
 
     assert np.array_equal(drawn([3, 4]), drawn([3, 4]))
     assert not np.array_equal(drawn([3, 4]), drawn([4, 3]))

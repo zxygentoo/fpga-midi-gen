@@ -43,7 +43,7 @@ struct
   let layers = e.layers
   let taps = Elaboration.taps
   let voices = Frame.voices
-  let planes = 2 * voices
+  let planes = Model.planes
   let widest f = Array.fold layers ~init:1 ~f:(fun widest l -> max widest (f l))
   let max_inputs = widest (fun l -> l.Elaboration.inputs)
   let max_groups = widest (fun l -> l.Elaboration.groups)
@@ -825,27 +825,35 @@ struct
         (flush_done &: is_head &: (flush_group.value ==: flush_group_count -:. 1))
         [ step_ready <-- vdd ]
     in
+    (* A TURN OPENS THE SAME WAY WHEREVER IT OPENS: the first turn out of [Idle] and every
+       turn after it in [Turn] zero one set of counters and prime one way. The two arms
+       state it one time, thus a counter this machine grows cannot be zeroed in one of
+       them and forgotten in the other.
+
+       EACH IS A FUNCTION AND NOT A LIST, and the elaboration is the reason: an assignment
+       carries the constant signal it was built from, thus one shared list would hand both
+       arms one set of constants and renumber every signal behind them. Two calls build
+       what the two arms always built. *)
+    let open_counters () =
+      [ lead_s <--. 0
+      ; lead_phase <--. 0
+      ; lead_group <--. 0
+      ; lead_cin <--. 0
+      ; lead_cycle <--. 0
+      ; flush_s <--. 0
+      ; flush_phase <--. 0
+      ; flush_group <--. 0
+      ]
+    in
+    let prime_turn () = [ priming <-- vdd; start_load <-- vdd; sm.set_next Prime ] in
     let machine =
       sm.switch
         [ ( State.Idle
           , [ when_
                 i.start
-                [ turn <--. 0
-                ; lead_s <--. 0
-                ; lead_phase <--. 0
-                ; lead_group <--. 0
-                ; lead_cin <--. 0
-                ; lead_cycle <--. 0
-                ; flush_s <--. 0
-                ; flush_phase <--. 0
-                ; flush_group <--. 0
-                ; flushing <-- gnd
-                ; turn_drained <-- gnd
-                ; step_ready <-- gnd
-                ; priming <-- vdd
-                ; start_load <-- vdd
-                ; sm.set_next Prime
-                ]
+                (([ turn <--. 0 ] @ open_counters ())
+                 @ [ flushing <-- gnd; turn_drained <-- gnd; step_ready <-- gnd ]
+                 @ prime_turn ())
             ] )
         ; Prime, [ when_ last_cycle [ priming <-- gnd; sm.set_next Dwell ] ]
         ; ( Dwell
@@ -881,19 +889,7 @@ struct
                 ; if_
                     (turn.value ==:. turn_count - 1)
                     [ sm.set_next Idle ]
-                    [ turn <-- turn.value +:. 1
-                    ; lead_s <--. 0
-                    ; lead_phase <--. 0
-                    ; lead_group <--. 0
-                    ; lead_cin <--. 0
-                    ; lead_cycle <--. 0
-                    ; flush_s <--. 0
-                    ; flush_phase <--. 0
-                    ; flush_group <--. 0
-                    ; priming <-- vdd
-                    ; start_load <-- vdd
-                    ; sm.set_next Prime
-                    ]
+                    (([ turn <-- turn.value +:. 1 ] @ open_counters ()) @ prime_turn ())
                 ]
             ] )
         ]
@@ -973,11 +969,12 @@ struct
      of one step and one plane. The stream gate hands the twin's own decode over; a
      picture at a shape the twin does not hold hands over one of its own. *)
   let run ?(trace = false) ?(read_logits = true) ~planes () =
-    (* THE TRACE IS THE NAMED SIGNALS AND NOT EVERY SIGNAL, the rule [Source]'s harness
-       states: this is the largest circuit of the library and the gates run tens of
-       thousands of cycles through it. Every signal the probes look up and every signal
-       the waveforms display carries a [--] name, thus [`All_named] reaches all of them. *)
-    let sim = Sim.create ~config:(Cyclesim.Config.trace `All_named) Engine.create in
+    (* This is the largest circuit of the library and the gates run tens of thousands of
+       cycles through it, thus it takes the long bench's configuration —
+       [Harness.long_bench] holds what it sets and why. Every signal the probes look up
+       and every signal the waveforms display carries a [--] name, thus the named trace
+       reaches all of them. *)
+    let sim = Sim.create ~config:Harness.long_bench Engine.create in
     let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in
     let inp = Cyclesim.inputs sim in
     let out = Cyclesim.outputs sim in
@@ -1068,12 +1065,12 @@ end
    with. The cycle bench below reads it, and the STREAM gate that once read it beside the
    sheet and the mask is [jax/tests/test_rtl.py]'s, where the twin that states the wanted
    columns lives. *)
-let stem_input ~steps ~walk ~seed =
+let stem_input ~steps ~rows ~walk ~seed =
   let state, sheet = Model.opening_sheet (Prng.create_folded ~seed) ~steps in
   let threshold = Model.anneal_threshold ~step:0 ~walk in
   let (_ : Prng.state), hidden = Model.hidden_cells state ~steps ~threshold in
-  let stem = Sheet.For_test.plane_activations sheet hidden ~steps in
-  fun ~step ~plane -> Sheet.For_test.plane_column stem ~step ~plane
+  let stem = Sheet.For_test.plane_activations sheet hidden ~steps ~rows in
+  fun ~step ~plane -> Sheet.For_test.plane_column stem ~step ~plane ~rows
 ;;
 
 let%expect_test "the schedule of one column: the preamble, the nine terms, the drain" =
@@ -1286,7 +1283,7 @@ let%expect_test "the cycles of one forward, against the cost model" =
         let e = elaboration
       end)
     in
-    let planes = stem_input ~steps ~walk ~seed in
+    let planes = stem_input ~steps ~rows:elaboration.rows ~walk ~seed in
     let (_ : Hardcaml_waveterm.Waveform.t option), pass =
       B.run ~read_logits:false ~planes ()
     in

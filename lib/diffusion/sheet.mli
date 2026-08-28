@@ -104,16 +104,25 @@ end
     stem's input: [Forward]'s cycle bench and [bin/gate_diffusion.ml]. The plane face of
     the circuit must equal it, which is what this unit's own gate holds. *)
 module For_test : sig
-  (** [plane_activations classes hidden ~steps] is the stem's input tensor: the
-      [steps; rows; 2 * Frame.voices] activations that the class planes and the mask
-      planes carry over one masked sheet. A standing cell carries the one of the
-      activation format at the row it holds and nothing elsewhere; a hidden cell carries
-      it at EVERY row of its mask plane and nothing in its class plane. *)
-  val plane_activations : int array array -> bool array array -> steps:int -> int array
+  (** [plane_activations classes hidden ~steps ~rows] is the stem's input tensor: the
+      [steps; rows; Model.planes] activations that the class planes and the mask planes
+      carry over one masked sheet. A standing cell carries the one of the activation
+      format at the row it holds and nothing elsewhere; a hidden cell carries it at EVERY
+      row of its mask plane and nothing in its class plane.
 
-  (** [plane_column x ~step ~plane] is one column of that tensor: the [rows] activations
-      of one step and one plane, row 0 first. The index rule itself is
-      [Model.tensor_column]'s — every tensor of the era reads as [steps; rows; channels] —
-      thus what this states is the plane count alone. *)
-  val plane_column : int array -> step:int -> plane:int -> int array
+      [rows] IS P AND NOT [Model.rows]: the circuit takes its own P from [Shape], thus a
+      caller states the P it built the circuit at and a bench at a narrow P compares
+      against the tensor that P really writes. *)
+  val plane_activations
+    :  int array array
+    -> bool array array
+    -> steps:int
+    -> rows:int
+    -> int array
+
+  (** [plane_column x ~step ~plane ~rows] is one column of that tensor: the [rows]
+      activations of one step and one plane, row 0 first. The index rule is the era's one
+      tensor shape — every tensor the circuit writes reads as [steps; rows; channels] —
+      thus what this decode states is the plane count alone. *)
+  val plane_column : int array -> step:int -> plane:int -> rows:int -> int array
 end

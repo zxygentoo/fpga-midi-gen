@@ -26,7 +26,7 @@ printed minima keep the calibration honest.
 import numpy as np
 import pytest
 
-from diffusion import infer, model, quantized
+from diffusion import model, quantized
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
 # the head, over a quarter of the board's sheet -- two measures
@@ -41,7 +41,7 @@ WALK_SEEDS = (42, 43, 44, 45)
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
-    states, given = infer.opening_sheet(quantized.engine_states([walk_seed]), STEPS)
+    states, given = model.opening_sheet(quantized.engine_states([walk_seed]), STEPS)
     return quantized.drift(coconet, states, given, walk=passes)
 
 

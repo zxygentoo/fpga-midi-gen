@@ -487,12 +487,6 @@ module Rtl = struct
   include Make (Hardcaml.Signal)
 end
 
-let bases_of sizes =
-  Array.of_list
-    (List.folding_map (Array.to_list sizes) ~init:0 ~f:(fun base size ->
-       base + size, base))
-;;
-
 let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
   Model.check_shape model;
   if steps < 1 then invalid_argf "a sheet of %d steps" steps ();
@@ -541,9 +535,9 @@ let create ?(rows = Model.rows) (model : Model.t) ~steps ~lanes ~walk =
   then invalid_argf "a sheet of %d steps cannot carry a fused pair" steps ();
   let layers =
     let weight_bases =
-      bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
+      Model.bases_of (Array.map twin ~f:(fun l -> l.inputs * taps * groups_of l))
     in
-    let norm_bases = bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
+    let norm_bases = Model.bases_of (Array.map twin ~f:(fun l -> groups_of l * lanes)) in
     Array.mapi twin ~f:(fun at (l : Model.layer) ->
       { role = role_at ~count at
       ; inputs = l.inputs
@@ -999,8 +993,10 @@ let%expect_test "the circuit walks the turn the block order states" =
     let apart = ref 0 in
     let walked = ref 0 in
     let first = ref "" in
+    let blocks = ref 0 in
     Array.iteri t.turns ~f:(fun at turn ->
       let want = blocks_of_turn t turn in
+      blocks := !blocks + List.length want;
       let got = ref [] in
       let nest =
         ref
@@ -1071,7 +1067,7 @@ let%expect_test "the circuit walks the turn the block order states" =
       "%s: %d turns, %d blocks, %d cycles walked, %d turns apart\n"
       name
       (Array.length t.turns)
-      (Array.sum (module Int) t.turns ~f:(fun turn -> List.length (blocks_of_turn t turn)))
+      !blocks
       !walked
       !apart;
     if not (String.is_empty !first) then printf "  the first pair opens %s\n" !first

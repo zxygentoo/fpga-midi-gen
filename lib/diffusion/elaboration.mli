@@ -259,12 +259,12 @@ val to_string : t -> string
 
 (** The maps the image and the circuit must agree on, over any combinational type.
 
-    Signal land cannot call [column_address], [channel_of] or [norm_word] above — it holds
-    signals and not integers — thus the circuit's answer until now was to state each map a
-    second time and let a run-time gate weld the two. [Vocab.Rtl] already held the better
-    answer for the vocabulary's own map: ONE RULE OVER [Comb], evaluated at [Bits] by a
-    test and elaborated at [Signal] by the circuit. The two halves then stop being two,
-    and the fused rung that moves the store map moves it in one place.
+    Signal land cannot call [column_address] or [norm_word] above — it holds signals and
+    not integers — thus the circuit's answer until now was to state each map a second time
+    and let a run-time gate weld the two. [Vocab.Rtl] already held the better answer for
+    the vocabulary's own map: ONE RULE OVER [Comb], evaluated at [Bits] by a test and
+    elaborated at [Signal] by the circuit. The two halves then stop being two, and the
+    fused rung that moves the store map moves it in one place.
 
     **THE PIN IS A LABELLED ARGUMENT.** The address maps carry a multiply, and the
     multiply is kept out of the DSPs the array owns ([Column_array.no_dsp]).
@@ -283,8 +283,8 @@ module Rtl : sig
       -> channel:Comb.t
       -> Comb.t
 
-    (** [channel_of ~pin t ~group ~lane] is [channel_of] as a circuit, at [channel_bits t]
-        bits. *)
+    (** [channel_of ~pin t ~group ~lane] is the channel a lane of a group holds, as a
+        circuit, at [channel_bits t] bits. *)
     val channel_of : pin:(Comb.t -> Comb.t) -> t -> group:Comb.t -> lane:Comb.t -> Comb.t
 
     (** [bank_at banks ~address] is which bank of [banks] holds a flat address, at

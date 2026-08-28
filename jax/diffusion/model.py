@@ -7,10 +7,19 @@ is handed the roll with some cells hidden and states a categorical distribution 
 pitch rows for every cell, hidden or not. Nothing here is causal and nothing here draws:
 the whole sheet is one input, and a piece is written knowing its own ending.
 
-Three things stand here, because the trainer, the sampler and the two referees all read
-them: the sheet and its mask planes, the net with its checkpoint, and the two mask
-distributions -- the orderless-NADE draw of the training loss and the annealed Bernoulli
-of the Gibbs walk.
+Four things stand here, because the trainer, the sampler, the integer twin and the two
+referees all read them: the sheet and its mask planes, the net with its checkpoint, the
+two mask distributions -- the orderless-NADE draw of the training loss and the annealed
+Bernoulli of the Gibbs walk -- and the rules of the walk itself.
+
+THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `opening_sheet`,
+`anneal_threshold`, `hidden_cells`, `logits` and `tempered_pick` are what the float walk
+of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do
+IDENTICALLY: the same opening from the same seed, the same threshold at the same pass,
+the same uniform for the same cell. A rule stated in one walker and restated in the other
+is a rule that can drift, and Gate C of `tests/test_parity.py` compares exactly these two
+walks. `lib/diffusion/model.ml` holds the first three under the same names, thus the two
+sides of the seam read module for module; the draw is that side's own unit, `Draw`.
 
 THE NET IS A MODULE TREE AND NOT A LIST OF LAYERS. [Coconet] holds a stem, the residual
 pairs and a head, thus `__call__` reads as the paper's own diagram and no index arithmetic
@@ -60,7 +69,9 @@ from flax import nnx
 from safetensors.numpy import load_file
 
 import data
+import measure
 import nn
+import prng
 
 # ---------------------------------------------------------------------
 # the sheet: the classes of a crop as the paper's input planes
@@ -165,6 +176,65 @@ def anneal(step, total):
         ANNEAL_LOW,
         ANNEAL_HIGH - (ANNEAL_HIGH - ANNEAL_LOW) * step / (ANNEAL_SPAN * total),
     )
+
+
+# ---------------------------------------------------------------------
+# the rules of the walk: the opening, and the mask of one pass
+# ---------------------------------------------------------------------
+
+
+def opening_sheet(states, steps):
+    """`Model.opening_sheet`: a sheet of random notes for each walk of the batch, each
+    voice inside the register of its own seat -- one uniform for each cell in the cell
+    order, step-major and seat-minor, and the class [low + floor(u * width)] over
+    [measure.RANGES].
+
+    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper
+    starts on "an empty (zero everywhere) piano roll" and its roll has no silence row, thus
+    an empty cell there states nothing. THIS roll holds silence as a class, so an empty cell
+    states a REST with the authority of context, and the corpus rests in 0.35 percent of its
+    cells; a sheet of notes needs no special first step, and four voices sounding is 99.8
+    percent of the corpus. Measured 2026-08-25 over 256 sheets, the two openings are the
+    same instrument, and the silent one was removed.
+
+    The draw is over the registers and not the whole roll, because a bass at 81 and a
+    soprano at 36 are further from this corpus than a rest is. The product [u * width] is
+    exact on the 24-bit grid, thus the OCaml reference states the same class from the same
+    seed."""
+    sheets = len(states)
+    classes = np.zeros((sheets, steps, VOICES), np.int32)
+    everyone = np.ones(sheets, bool)
+    lows = np.array([low - data.PITCH_LOW + 1 for low, _ in measure.RANGES])
+    widths = np.array([high - low + 1 for low, high in measure.RANGES])
+    for step in range(steps):
+        for voice in range(VOICES):
+            states, u = prng.uniform(states, everyone)
+            classes[:, step, voice] = lows[voice] + np.floor(u * widths[voice]).astype(
+                np.int32
+            )
+    return states, classes
+
+
+def anneal_threshold(step, total):
+    """`Model.anneal_threshold`: the masking threshold of pass [step] of [total], on the
+    24-bit grid of the generator. A cell hides exactly when its word falls under it."""
+    return math.floor(anneal(step, total) * 2.0**prng.UNIFORM_BITS)
+
+
+def hidden_cells(states, steps, threshold):
+    """`Model.hidden_cells`: the mask of one pass -- one uniform for each cell in the cell
+    order, step-major and seat-minor, hidden exactly when its word falls under the
+    threshold.
+
+    The word compare and the float compare `u * 2^24 < threshold` are one test: the product
+    is the word, exactly, on the grid, thus the two walks hide the same cells."""
+    everyone = np.ones(len(states), bool)
+    hidden = np.zeros((len(states), steps, VOICES), dtype=bool)
+    for step in range(steps):
+        for voice in range(VOICES):
+            states, word = prng.uniform_word(states, everyone)
+            hidden[:, step, voice] = word < threshold
+    return states, hidden
 
 
 # ---------------------------------------------------------------------
@@ -446,3 +516,25 @@ def nll_of_logits(said, classes):
     VOICES], in nats, before any mask or any divisor"""
     logp = jax.nn.log_softmax(said, axis=-2)
     return -jnp.take_along_axis(logp, classes[..., None, :], axis=-2)[..., 0, :]
+
+
+@nnx.jit
+def logits(coconet, classes, hidden):
+    """The logits of one pass over the batch, from the masked sheet.
+
+    It takes the model as an ARGUMENT and stands at the module level, thus its compiled
+    form is keyed on the shapes and every walk of a run reuses the first compile -- the
+    audition's walk and the drift report's teacher forcing alike, on one cache."""
+    said, _ = coconet(planes(classes, hidden))
+    return said
+
+
+def tempered_pick(raw, temperature, uniform):
+    """The draw of one cell over the batch: `Policy.draw_class` of the OCaml reference, row
+    for row. [raw] is [sheets, ROWS] float64.
+
+    The era draws with no min-p floor, thus the temper is the peak alone. One `pick`
+    answers for all three eras, and its docstring holds the argument that no fallback is
+    needed here: the peak weighs one, thus the last running total is one or more, and the
+    draw is strictly under it, thus a class always passes."""
+    return nn.pick(nn.temper(raw, temperature, 0.0), uniform)

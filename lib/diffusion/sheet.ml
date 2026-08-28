@@ -29,17 +29,17 @@ let activation_bits = Model.activation_bits
    The integer twin of the era is [jax/diffusion/quantized.py], and what a gate below the
    seam needs of it is exactly this decode. *)
 
-let rows = Model.rows
 let voices = Model.voices
-
-(* the planes the stem reads: one class plane and one mask plane for each seat *)
-let planes = 2 * voices
+let planes = Model.planes
 
 (* the one of the activation format, which a hot row of a plane carries *)
 let activation_one = 1 lsl Model.activation_q
 
-(* the input planes in the activation format: a cell of the masked roll is 0 or one, exact *)
-let plane_activations sheet hidden ~steps =
+(* THE INPUT PLANES IN THE ACTIVATION FORMAT: a cell of the masked roll is 0 or one,
+   exact. [rows] is P and not [Model.rows]: the circuit takes its own P from [Shape], thus
+   the software half takes it too and a bench at a narrow P compares against the tensor
+   that P really writes. *)
+let plane_activations sheet hidden ~steps ~rows =
   let x = Array.create ~len:(steps * rows * planes) 0 in
   for step = 0 to steps - 1 do
     for voice = 0 to voices - 1 do
@@ -58,13 +58,15 @@ let plane_activations sheet hidden ~steps =
    hold, read out of the flat array of a [steps; rows; channels] tensor. Every tensor the
    circuit writes has that one shape — the stem's planes, a layer's output, the head's
    logits — thus the index rule stands here one time and no reader slices one by hand. *)
-let tensor_column x ~step ~channel ~channels =
+let tensor_column x ~step ~channel ~channels ~rows =
   Array.init rows ~f:(fun row -> x.((((step * rows) + row) * channels) + channel))
 ;;
 
 (* one column of the stem's input tensor: [tensor_column] at the PLANE count, which is the
    only thing this decode adds to the index rule *)
-let plane_column x ~step ~plane = tensor_column x ~step ~channel:plane ~channels:planes
+let plane_column x ~step ~plane ~rows =
+  tensor_column x ~step ~channel:plane ~channels:planes ~rows
+;;
 
 module For_test = struct
   let plane_activations = plane_activations
@@ -74,11 +76,6 @@ end
 module Make (Shape : Shape) = struct
   let steps = Shape.steps
   let rows = Shape.rows
-
-  (* the seats of a step, and the planes over them: a class plane and a mask plane for
-     each seat *)
-  let voices = Frame.voices
-  let planes = 2 * voices
   let step_bits = address_bits_for steps
   let seat_bits = address_bits_for voices
   let class_bits = address_bits_for rows
@@ -201,7 +198,7 @@ module Bench (Shape : Shape) = struct
   module Sim = Cyclesim.With_interface (Sheet.I) (Sheet.O)
 
   let steps = Shape.steps
-  let planes = Sheet.planes
+  let rows = Shape.rows
 
   (* What one read cycle names: one cell for the walk, one column for the stem and one
      step for the score. ONE CYCLE ANSWERS ALL THREE, thus the bench always asks all three
@@ -297,7 +294,7 @@ module Bench (Shape : Shape) = struct
   let check ~opening ~hidden ~redraw =
     let sim = snd (filled ~opening ~hidden ~redraw ()) in
     let sheet = redrawn ~opening ~hidden ~redraw in
-    let stem = plane_activations sheet hidden ~steps in
+    let stem = plane_activations sheet hidden ~steps ~rows in
     let frames = Model.frames_of_sheet sheet in
     let cells = Array.of_list (Model.cell_order ~steps) in
     let disagrees agrees = if agrees then 0 else 1 in
@@ -314,7 +311,7 @@ module Bench (Shape : Shape) = struct
               (Array.equal
                  Int.equal
                  answer.activations
-                 (plane_column stem ~step:plane_step ~plane))
+                 (plane_column stem ~step:plane_step ~plane ~rows))
       ; frames = counts.frames + disagrees (answer.frame = frames.(score))
       }
     in

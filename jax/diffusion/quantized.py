@@ -41,8 +41,9 @@ The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
 - The draw is era four's pipeline: the logit differences shift up to the Q12 the exp2 unit
   reads -- exact, a left shift -- then temper against the peak under `log2e / T`, exp2 over
   the shared table gives Q15 weights, and the pick takes a 24-bit uniform.
-- The masks and the opening are the integer rules of the walk already, and the twin
-  consumes the same uniforms in the same places as `infer.gibbs`.
+- The masks and the opening are integer rules already and stand in `diffusion/model.py`,
+  where both walks read them; the twin consumes the same uniforms in the same places as
+  `infer.gibbs`.
 
 What the quantization costs is a measurement and not a promise: `drift` states it, on the
 walk the board really takes.
@@ -70,6 +71,7 @@ layers. The metadata is written as well, for a reader that has a Python tool in 
 """
 
 import math
+from collections import deque
 from typing import NamedTuple
 
 import jax
@@ -79,7 +81,6 @@ from flax import nnx
 from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
-import nn
 import prng
 from diffusion import model as sheet
 
@@ -93,7 +94,6 @@ from diffusion import model as sheet
 ACTIVATION_Q = 6
 ACTIVATION_ONE = 1 << ACTIVATION_Q
 ACTIVATION_BITS = 16
-ACCUMULATOR_BITS = 32
 
 INT16_LOW = -(1 << (ACTIVATION_BITS - 1))
 INT16_HIGH = (1 << (ACTIVATION_BITS - 1)) - 1
@@ -131,18 +131,26 @@ def round_half_up(x):
 # ---------------------------------------------------------------------
 
 
-def max_exponent(peak):
-    """`Nn_quantized.max_exponent`: the largest exponent, from 14 down, that keeps
-    round(peak * 2^e) at 127 or less.
+def largest_exponent(magnitude, *, opening, cap):
+    """The largest exponent, from [opening] down, that keeps round(magnitude * 2^e) at
+    [cap] or less.
 
-    14 caps the all-zero tensor, where every exponent fits. The predicate falls
-    monotonically in e, thus the first e that fits is the largest."""
-    if peak <= 0.0:
-        return 14
-    e = 14
-    while round_half_up(np.ldexp(peak, e)) > 127:
+    [opening] caps the all-zero value, where every exponent fits. The predicate falls
+    monotonically in e, thus the first e that fits is the largest. It is one rule and the
+    two readings of it differ only in where they open and what they must fit: a weight
+    tensor into a byte, a gain into an int16."""
+    if magnitude <= 0.0:
+        return opening
+    e = opening
+    while round_half_up(np.ldexp(magnitude, e)) > cap:
         e -= 1
     return e
+
+
+def max_exponent(peak):
+    """`Nn_quantized.max_exponent`: the exponent of one int8 tensor -- from 14 down, the
+    largest that keeps round(peak * 2^e) inside the byte."""
+    return largest_exponent(peak, opening=14, cap=127)
 
 
 def quantize(weights):
@@ -161,11 +169,7 @@ def gain_scale(value, weight_exponent):
     The shift of the scale retires the weight exponent in the same move, thus the
     accumulator goes from Q(ACTIVATION_Q + e) to Q(ACTIVATION_Q) in one multiply. 30 caps
     the all-zero gain, as 14 caps the all-zero tensor."""
-    magnitude = abs(value)
-    e = 30
-    if magnitude > 0.0:
-        while round_half_up(np.ldexp(magnitude, e)) > 32767:
-            e -= 1
+    e = largest_exponent(abs(value), opening=30, cap=32767)
     return int(round_half_up(np.ldexp(value, e))), e + weight_exponent
 
 
@@ -364,15 +368,6 @@ class QuantizedResidualPair(nnx.Module):
         return first, write(tally, np.maximum(x + second, 0))
 
 
-def _collect(held, written):
-    return held + [written]
-
-
-def _hold_the_last(held, written):
-    del held
-    return written
-
-
 class QuantizedCoconet(sheet.Trunk):
     """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for layer.
 
@@ -398,25 +393,29 @@ class QuantizedCoconet(sheet.Trunk):
             temper=Temper.of(temperature),
         )
 
-    def _fold_writes(self, classes, hidden, tally, taken, keep):
-        """`Quantized.fold_layer_writes`: the trunk -- the stem, the residual pairs, the head
-        -- with `keep` folded over the destination tensor of EVERY layer as written, in the
-        layer order.
+    def _writes(self, classes, hidden, tally):
+        """`Quantized.fold_layer_writes`: the trunk -- the stem, the residual pairs, the
+        head -- yielding the destination tensor of EVERY layer as written, in the layer
+        order.
 
-        THE COLLECTOR IS WHAT PARTS `__call__` FROM `layer_writes`, AND THE TRUNK IS NOT
-        WALKED TWICE: a forward that read the last of a list would hold every layer's
-        destination tensor alive to give one back -- 48 of them at the elected shape."""
+        IT IS A GENERATOR AND THE TRUNK IS NOT WALKED TWICE. `__call__` keeps the last of
+        it and `layer_writes` keeps them all, thus the two entry points state one
+        arithmetic and a forward pass holds one destination tensor and never the trunk's
+        48."""
         x = self.stem(plane_activations(classes, hidden), True, tally)
-        taken = keep(taken, x)
+        yield x
         for pair in self.pairs:
             first, x = pair(x, tally)
-            taken = keep(keep(taken, first), x)
-        return keep(taken, self.head(x, False, tally))
+            yield first
+            yield x
+        yield self.head(x, False, tally)
 
     def __call__(self, classes, hidden, tally):
         """the logits of one pass over the batch: `[sheets, steps, ROWS, VOICES]` in the
         activation format, because the head takes no ReLU and keeps it"""
-        return self._fold_writes(classes, hidden, tally, None, _hold_the_last)
+        # the head's write is the last of them, and the deque holds one tensor where a
+        # list would hold the trunk's 48
+        return deque(self._writes(classes, hidden, tally), maxlen=1)[0]
 
     def layer_writes(self, classes, hidden, tally):
         """`Quantized.layer_writes`: the destination tensor of every layer AS WRITTEN, in the
@@ -426,7 +425,7 @@ class QuantizedCoconet(sheet.Trunk):
 
         IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `__call__` is the last of
         this list, thus the list is the arithmetic itself and never a second reading of it."""
-        return self._fold_writes(classes, hidden, tally, [], _collect)
+        return list(self._writes(classes, hidden, tally))
 
 
 def paired(layers):
@@ -639,33 +638,13 @@ def engine_states(seeds):
     return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
-def anneal_threshold(step, walk):
-    """`Model.anneal_threshold`: the masking threshold of pass `step` of `walk`, on the
-    24-bit grid of the generator. A cell hides exactly when its word falls under it."""
-    return math.floor(sheet.anneal(step, walk) * 2.0**prng.UNIFORM_BITS)
-
-
-def hidden_cells(states, steps, threshold, everyone):
-    """`Model.hidden_cells`: the mask of one pass -- one uniform for each cell in the
-    cell order, step-major and seat-minor, hidden exactly when its word falls under the
-    threshold.
-
-    The word compare and the float compare `u * 2^24 < threshold` are one test: the product
-    is the word, exactly, on the grid."""
-    hidden = np.zeros((len(states), steps, sheet.VOICES), dtype=bool)
-    for step in range(steps):
-        for voice in range(sheet.VOICES):
-            states, word = prng.uniform_word(states, everyone)
-            hidden[:, step, voice] = word < threshold
-    return states, hidden
-
-
 class Draw(NamedTuple):
     """One redraw of a pass -- `Quantized.Engine.draw`, over the batch.
 
     `hidden` holds the walks the mask hid this cell for. THE OTHER WALKS STATE NOTHING
     HERE: they consumed no uniform, thus `word` and `drawn` carry whatever the batched
-    arithmetic happened to compute for them and no reader may look."""
+    arithmetic happened to compute for them -- zero, where the mask hid the cell for no
+    walk at all and the draw was skipped whole -- and no reader may look."""
 
     step: int
     voice: int
@@ -693,10 +672,10 @@ def passes(twin, states, given, *, walk, tally):
     """`Quantized.Engine.next_pass`, one pass at a time: the masks, one integer forward, the
     redraws in the cell order.
 
-    `given` is the opening -- `infer.opening_sheet` draws it, and it is handed over rather
-    than drawn here so that the twin never reaches back into the audition. `states` holds
-    one generator for each sheet, thus every sheet of a batch is one reproducible piece:
-    the walk of seed 7 is the walk of seed 7 in any company, here and on the board.
+    `given` is the opening -- `model.opening_sheet` draws it, and it is handed over rather
+    than drawn here so that one walk cannot open on a sheet the other could not. `states`
+    holds one generator for each sheet, thus every sheet of a batch is one reproducible
+    piece: the walk of seed 7 is the walk of seed 7 in any company, here and on the board.
 
     A CELL THE MASK LEFT STANDING TAKES NO UNIFORM. The opening and the mask draw for every
     cell, but a redraw draws only where the mask hid; a walk that spends a uniform on a
@@ -704,18 +683,24 @@ def passes(twin, states, given, *, walk, tally):
     is `prng.uniform_word`'s `active`: a sheet whose cell stands keeps the state it came in
     with, and a sheet whose cell hides advances."""
     sheets, steps, voices = given.shape
-    everyone = np.ones(sheets, dtype=bool)
+    idle = np.zeros(sheets, np.int64)
     classes = given
     for at in range(walk):
-        states, hidden = hidden_cells(states, steps, anneal_threshold(at, walk), everyone)
+        threshold = sheet.anneal_threshold(at, walk)
+        states, hidden = sheet.hidden_cells(states, steps, threshold)
         said = twin(classes, hidden, tally)
         before, classes, draws = classes, classes.copy(), []
         for step in range(steps):
             for voice in range(voices):
                 active = hidden[:, step, voice]
-                states, word = prng.uniform_word(states, active)
-                drawn = np.zeros(sheets, np.int64)
+                # A CELL NO SHEET HID TAKES NO UNIFORM, and the draw is skipped whole: an
+                # inactive [uniform_word] leaves every generator where it stood, thus the
+                # walk is the same walk and only the arithmetic behind it is spared. The
+                # record stands all the same, because the cell order is what a reader of
+                # [draws] walks; [idle] is what no reader may look at.
+                word = drawn = idle
                 if active.any():
+                    states, word = prng.uniform_word(states, active)
                     drawn = pick(tempered_weights(twin, said[:, step, :, voice]), word)
                     classes[active, step, voice] = drawn[active]
                 draws.append(Draw(step, voice, active, word, drawn))
@@ -752,14 +737,6 @@ class Drift(NamedTuple):
     activation_peak: float  # the hottest write in real units; the format holds 512.0
 
 
-@nnx.jit
-def _float_logits(coconet, classes, hidden):
-    """the float model's logits over the batch. It is `infer.forward`'s pass, called here
-    from the model's own home so that the twin never imports the audition."""
-    said, _ = coconet(sheet.planes(classes, hidden))
-    return said
-
-
 def drift(coconet, states, given, *, walk, temperature=1.0):
     """`Quantized.Drift.walk`: the quantized walk, scored against the float model cell for
     cell.
@@ -767,8 +744,8 @@ def drift(coconet, states, given, *, walk, temperature=1.0):
     The engine walks; at every pass the float model is teacher-forced on the ENGINE'S sheet
     and the ENGINE'S mask, thus the two read one context and what stands between them is the
     arithmetic alone. The same-draw share reads the float draw ON THE VERY UNIFORM THE
-    ENGINE TOOK -- `infer.tempered_pick`'s two calls, from `nn`'s own home -- thus a
-    difference there is the arithmetic and never the generator.
+    ENGINE TOOK -- `model.tempered_pick`, the float walk's own draw -- thus a difference
+    there is the arithmetic and never the generator.
 
     The quantization happens here, from the float model handed in, thus the pair under
     comparison cannot slip."""
@@ -778,7 +755,7 @@ def drift(coconet, states, given, *, walk, temperature=1.0):
     cosine = 0.0
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         said = np.asarray(
-            _float_logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
+            sheet.logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
             dtype=np.float64,
         )
         for drawn in taken.draws:
@@ -792,7 +769,7 @@ def drift(coconet, states, given, *, walk, temperature=1.0):
             same_peak += int((here.argmax(axis=-1) == there.argmax(axis=-1)).sum())
             same_draw += int(
                 (
-                    nn.pick(nn.temper(there, temperature, 0.0), uniform)
+                    sheet.tempered_pick(there, temperature, uniform)
                     == drawn.drawn[active]
                 ).sum()
             )

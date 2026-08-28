@@ -49,6 +49,11 @@ val rows : int
 (** the seats of a step: the voices of [Frame] *)
 val voices : int
 
+(** the planes the stem reads: one class plane and one mask plane for each seat. It is a
+    fact of the roll, thus the sheet and the forward pass read it here and never state a
+    doubling of their own. *)
+val planes : int
+
 (** {1 The formats} *)
 
 (** the Q of the activation format: a value holds [v * 2^-activation_q] in int16. Every
@@ -59,6 +64,12 @@ val activation_q : int
     sentence, thus it stands beside it and every unit of the circuit slices on this one
     value rather than on a 16 of its own. *)
 val activation_bits : int
+
+(** the rails of the activation format, from [activation_bits]: a value that passes them
+    saturates and never wraps. Every clamp of the circuit reads them here. *)
+val activation_high : int
+
+val activation_low : int
 
 (** the width of the accumulator one dwell sums into: 32. [widest_inputs] is the promise
     this width keeps, and the column array is sized on it. *)
@@ -131,6 +142,11 @@ val rom_bits : t -> Hardcaml.Bits.t array
 
 (** the byte base of each kernel inside the image, in layer order *)
 val rom_bases : t -> int array
+
+(** [bases_of sizes] is where each of a run of sizes opens: the exclusive prefix scan,
+    [| 0; sizes.(0); sizes.(0) + sizes.(1); ... |]. [rom_bases] is one reading of it and
+    the elaboration's banks are the others, thus the rule stands in one place. *)
+val bases_of : int array -> int array
 
 (** {1 The walk} *)
 

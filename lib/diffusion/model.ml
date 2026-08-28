@@ -13,6 +13,11 @@ module Nn_quantized = Mgen_nn.Quantized
 let rows = Vocab.classes
 let voices = Frame.voices
 
+(* The planes the stem reads: one class plane and one mask plane for each seat. It is a
+   fact of the ROLL and not of any one unit, thus the sheet, the forward pass and
+   [check_shape] all read it here. *)
+let planes = 2 * voices
+
 (* ==================================================================== *)
 (* The formats *)
 (* ==================================================================== *)
@@ -33,6 +38,12 @@ let activation_q = 6
    compiler would say so — thus every unit of the circuit reads the format in one place. *)
 let activation_bits = 16
 let accumulator_bits = 32
+
+(* The rails of the format, from its width: a value that passes them saturates and never
+   wraps. They stand here for the same reason the width does — a unit that wrote 32767 of
+   its own could part from the twin's [INT16_HIGH] and no compiler would say so. *)
+let activation_high = (1 lsl (activation_bits - 1)) - 1
+let activation_low = -(1 lsl (activation_bits - 1))
 
 (* The int32 accumulator of the machine is exact below this width: 9 C products of int8 by
    int16 reach 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more can
@@ -73,8 +84,8 @@ let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
   let count = Array.length layers in
   if count < 3 then invalid_argf "%d layers is no sheet model" count ();
   if count % 2 <> 0 then invalid_argf "%d layers hold no whole residual pairs" count ();
-  if layers.(0).inputs <> 2 * voices
-  then invalid_argf "the stem reads %d planes, not %d" layers.(0).inputs (2 * voices) ();
+  if layers.(0).inputs <> planes
+  then invalid_argf "the stem reads %d planes, not %d" layers.(0).inputs planes ();
   if layers.(count - 1).outputs <> voices
   then
     invalid_argf
@@ -191,11 +202,16 @@ let rom_tensors { layers; temper = (_ : Nn_quantized.Constants.scale) } =
 
 let rom_bits model = Nn_quantized.rom_bits (rom_tensors model)
 
+(* The exclusive prefix scan: where each of a run of sizes opens. It stands here because
+   the ROM's bases are one reading of it and the elaboration's weight and norm banks are
+   the others, and a base rule stated twice is a base rule that can part. *)
+let bases_of sizes =
+  Array.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base)
+;;
+
 let rom_bases model =
-  let sizes =
-    List.map (rom_tensors model) ~f:(fun { q; e = (_ : int) } -> Array.length q)
-  in
-  Array.of_list (List.folding_map sizes ~init:0 ~f:(fun base size -> base + size, base))
+  bases_of
+    (Array.of_list_map (rom_tensors model) ~f:(fun { q; e = (_ : int) } -> Array.length q))
 ;;
 
 (* ==================================================================== *)

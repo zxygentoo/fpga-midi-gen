@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from diffusion import infer, model, quantized
+from diffusion import model, quantized
 
 JAX_ROOT = Path(__file__).resolve().parent.parent
 ROOT = JAX_ROOT.parent
@@ -97,7 +97,7 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = infer.opening_sheet(quantized.engine_states([seed]), steps)
+    states, given = model.opening_sheet(quantized.engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in cell_order(steps)

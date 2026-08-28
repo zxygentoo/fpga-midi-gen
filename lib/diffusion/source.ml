@@ -466,12 +466,12 @@ module Bench = struct
         let classes = e.Elaboration.rows
       end)
     in
-    (* THE TRACE IS THE NAMED SIGNALS AND NOT EVERY SIGNAL. A walk is thousands of cycles
-       over an array of [rows] by [lanes] lanes, thus a full trace would cost what the
-       machine could show and not what it computes. *)
+    (* A walk is thousands of cycles over an array of [rows] by [lanes] lanes, thus this
+       bench takes the long bench's configuration — [Harness.long_bench] holds what it
+       sets and why. *)
     let sim =
       Sim.create
-        ~config:(Cyclesim.Config.trace `All_named)
+        ~config:Harness.long_bench
         (create ~e ~seed:(of_unsigned_int ~width:32 seed))
     in
     let waves, sim = Cyclesim.Waveform.create_if ~enabled:trace sim in

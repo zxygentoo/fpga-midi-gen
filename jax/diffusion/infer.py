@@ -27,73 +27,18 @@ import os
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import math
 import time
 from pathlib import Path
 
 import click
 import jax.numpy as jnp
 import numpy as np
-from flax import nnx
 
 import data
-import measure
 import midi
-import nn
 import prng
 from diffusion import measure as sheet
 from diffusion import model, quantized
-
-
-def opening_sheet(states, steps):
-    """A sheet of random notes for each walk of the batch, each voice inside the register
-    of its own seat: one uniform for each cell in the cell order -- step-major, seat-minor
-    -- and the class [low + floor(u * width)] over [measure.RANGES].
-
-    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper
-    starts on "an empty (zero everywhere) piano roll" and its roll has no silence row, thus
-    an empty cell there states nothing. THIS roll holds silence as a class, so an empty cell
-    states a REST with the authority of context, and the corpus rests in 0.35 percent of its
-    cells; a sheet of notes needs no special first step, and four voices sounding is 99.8
-    percent of the corpus. Measured 2026-08-25 over 256 sheets, the two openings are the
-    same instrument, and the silent one was removed.
-
-    The draw is over the registers and not the whole roll, because a bass at 81 and a
-    soprano at 36 are further from this corpus than a rest is. The product [u * width] is
-    exact on the 24-bit grid, thus the OCaml reference states the same class from the same
-    seed -- the rule and the consumption are [Model.opening_sheet]'s."""
-    sheets = len(states)
-    classes = np.zeros((sheets, steps, model.VOICES), np.int32)
-    everyone = np.ones(sheets, bool)
-    lows = np.array([low - data.PITCH_LOW + 1 for low, _ in measure.RANGES])
-    widths = np.array([high - low + 1 for low, high in measure.RANGES])
-    for step in range(steps):
-        for voice in range(model.VOICES):
-            states, u = prng.uniform(states, everyone)
-            classes[:, step, voice] = lows[voice] + np.floor(u * widths[voice]).astype(
-                np.int32
-            )
-    return states, classes
-
-
-@nnx.jit
-def forward(coconet, classes, hidden):
-    """The logits of one pass over the batch. It takes the model as an ARGUMENT and stands
-    at the module level, thus its compiled form is keyed on the shapes and every walk of a
-    run reuses the first compile."""
-    said, _ = coconet(model.planes(classes, hidden))
-    return said
-
-
-def tempered_pick(raw, temperature, uniform):
-    """The draw of one cell over the batch: Policy.draw_class of the OCaml reference, row
-    for row. [raw] is [sheets, ROWS] float64.
-
-    The era draws with no min-p floor, thus the temper is the peak alone. One `pick`
-    answers for all three eras, and its docstring holds the argument that no fallback is
-    needed here: the peak weighs one, thus the last running total is one or more, and the
-    draw is strictly under it, thus a class always passes."""
-    return nn.pick(nn.temper(raw, temperature, 0.0), uniform)
 
 
 def gibbs(coconet, given, states, *, walk, temperature):
@@ -104,9 +49,10 @@ def gibbs(coconet, given, states, *, walk, temperature):
     when [u * 2^24] falls under [floor(anneal(n, walk) * 2^24)] -- the threshold rule of
     docs/diffusion_rtl.md, exact on the grid of the generator. One forward pass runs, and
     each hidden cell draws one uniform in the cell order and redraws through
-    [tempered_pick]. The cells are not conditionally independent, which is exactly why the
-    schedule anneals: a high masking probability mixes fast and resamples badly, and as it
-    falls the block shrinks toward the one-variable-at-a-time chain it approximates.
+    [model.tempered_pick]. The cells are not conditionally independent, which is exactly
+    why the schedule anneals: a high masking probability mixes fast and resamples badly,
+    and as it falls the block shrinks toward the one-variable-at-a-time chain it
+    approximates.
 
     EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era, thus the
     walk carries no mask over the mask and the machine of the next round carries none
@@ -115,26 +61,24 @@ def gibbs(coconet, given, states, *, walk, temperature):
     [states] holds one generator for each sheet, thus every sheet of a batch is one
     reproducible piece: the walk of seed 7 is the walk of seed 7 in any company, here, in
     the OCaml reference and on the board."""
-    sheets, steps, _ = given.shape
+    _, steps, _ = given.shape
     classes = given.copy()
-    everyone = np.ones(sheets, dtype=bool)
     for step in range(walk):
-        threshold = math.floor(model.anneal(step, walk) * 2**24)
-        hidden = np.zeros(given.shape, dtype=bool)
-        for at in range(steps):
-            for voice in range(model.VOICES):
-                states, u = prng.uniform(states, everyone)
-                hidden[:, at, voice] = u * 2.0**24 < threshold
+        threshold = model.anneal_threshold(step, walk)
+        states, hidden = model.hidden_cells(states, steps, threshold)
         said = np.asarray(
-            forward(coconet, jnp.asarray(classes), jnp.asarray(hidden)),
+            model.logits(coconet, jnp.asarray(classes), jnp.asarray(hidden)),
             dtype=np.float64,
         )
         for at in range(steps):
             for voice in range(model.VOICES):
                 active = hidden[:, at, voice]
-                states, u = prng.uniform(states, active)
+                # A CELL NO SHEET HID TAKES NO UNIFORM, and the draw is skipped whole: an
+                # inactive [uniform] leaves every generator where it stood, thus the walk
+                # is the same walk and only the arithmetic behind it is spared.
                 if active.any():
-                    picked = tempered_pick(said[:, at, :, voice], temperature, u)
+                    states, u = prng.uniform(states, active)
+                    picked = model.tempered_pick(said[:, at, :, voice], temperature, u)
                     classes[active, at, voice] = picked[active]
     return classes, states
 
@@ -162,12 +106,12 @@ def draw(coconet, *, crop, seeds, walk, temperature, twin):
     there the twin stands still while the float walk runs from the top state."""
     if twin:
         engine = quantized.QuantizedCoconet.of(coconet, temperature)
-        states, given = opening_sheet(quantized.engine_states(seeds), crop)
+        states, given = model.opening_sheet(quantized.engine_states(seeds), crop)
 
         def walked():
             return quantized.gibbs(engine, states, given, walk=walk)[0]
     else:
-        states, given = opening_sheet(prng.states(seeds), crop)
+        states, given = model.opening_sheet(prng.states(seeds), crop)
 
         def walked():
             return gibbs(coconet, given, states, walk=walk, temperature=temperature)[0]
@@ -296,7 +240,7 @@ def drift(ckpt, crop, seed, walk, temperature):
     arithmetic alone. The same-draw share reads the float draw on the very uniform the
     engine took, thus a difference there is the arithmetic and never the generator."""
     coconet = model.Coconet.load(ckpt)
-    states, given = opening_sheet(quantized.engine_states([seed]), crop)
+    states, given = model.opening_sheet(quantized.engine_states([seed]), crop)
     said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 

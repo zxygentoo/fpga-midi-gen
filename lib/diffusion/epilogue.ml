@@ -33,20 +33,23 @@ let latency = 5
 let activation_bits = Model.activation_bits
 let accumulator_bits = Model.accumulator_bits
 
-(* the whole gain product: an int32 sum by an int16 gain *)
-let product_bits = accumulator_bits + 16
+(* the whole gain product: an int32 sum by the gain the norm word carries *)
+let product_bits = accumulator_bits + Elaboration.gain_bits
 
 (* [clamp16] of the twin, as a circuit: the value saturates and never wraps. A wrap here
    would be silently wrong music, and the clamp is what the format election stands on. *)
 let clamp16 wide =
-  let high = of_signed_int ~width:(width wide) 32767 in
-  let low = of_signed_int ~width:(width wide) (-32768) in
+  (* the rails twice over: at the width of the value for the compare, and at the
+     activation format for what the clamp writes *)
+  let clamped value = of_signed_int ~width:activation_bits value in
+  let high = of_signed_int ~width:(width wide) Model.activation_high in
+  let low = of_signed_int ~width:(width wide) Model.activation_low in
   mux2
     (wide >+ high)
-    (of_signed_int ~width:activation_bits 32767)
+    (clamped Model.activation_high)
     (mux2
        (wide <+ low)
-       (of_signed_int ~width:activation_bits (-32768))
+       (clamped Model.activation_low)
        (sresize wide ~width:activation_bits))
 ;;
 
@@ -211,7 +214,7 @@ module Bench (Shape : Shape) = struct
     (* the tag is a row of the drain, thus it walks 0 to [rows] - 1 and begins again *)
     List.iteri work ~f:(fun at { sums; norms; biases; residual } ->
       inp.drained := Bits.vdd;
-      inp.row := Bits.of_unsigned_int ~width:(Bits.width !(inp.row)) (at % rows);
+      Harness.set inp.row (at % rows);
       inp.sums := Harness.pack sums ~width:accumulator_bits;
       inp.residual := Harness.pack residual ~width:activation_bits;
       inp.norms := pack_norms norms biases;
@@ -229,20 +232,15 @@ module Bench (Shape : Shape) = struct
     let wanted = List.map work ~f:(expected ~relu ~join) in
     let tags = List.mapi work ~f:(fun at (_ : row) -> at % rows) in
     let counted = List.length given = List.length wanted in
-    let complain wrong name = if wrong then Some name else None in
-    let complaints =
-      List.filter_opt
-        [ complain (not (List.equal Int.equal (List.map given ~f:fst) tags)) "tags"
-        ; complain (not counted) "count"
-        ; complain
-            (not
-               (counted
-                && List.for_all2_exn (List.map given ~f:snd) wanted ~f:(fun a b ->
-                  Array.equal Int.equal a b)))
-            "activations"
-        ]
-    in
-    if List.is_empty complaints then "ok" else String.concat ~sep:", " complaints
+    Harness.verdict
+      [ "tags", not (List.equal Int.equal (List.map given ~f:fst) tags)
+      ; "count", not counted
+      ; ( "activations"
+        , not
+            (counted
+             && List.for_all2_exn (List.map given ~f:snd) wanted ~f:(fun a b ->
+               Array.equal Int.equal a b)) )
+      ]
   ;;
 end
 
@@ -285,12 +283,9 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
         ; residual
         } )
     in
-    let take (state, held) (_ : int) =
-      let state, drawn = draw_row state in
-      state, drawn :: held
-    in
+    let draw state (_ : int) = draw_row state in
     let (_ : Prng.state), drawn =
-      List.fold (List.range 0 work_rows) ~init:(Prng.create ~seed:5, []) ~f:take
+      List.fold_map (List.range 0 work_rows) ~init:(Prng.create ~seed:5) ~f:draw
     in
     printf
       "G %d, relu %b, join %b, %d rows: %s\n"
@@ -298,7 +293,7 @@ let%expect_test "the epilogue states what the twin's layer tail states" =
       relu
       join
       work_rows
-      (B.check (List.rev drawn) ~relu ~join)
+      (B.check drawn ~relu ~join)
   in
   (* the stem and a pair's opening layer *)
   case ~lanes:4 ~relu:true ~join:false ~work_rows:200;

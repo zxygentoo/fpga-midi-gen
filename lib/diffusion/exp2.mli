@@ -36,12 +36,19 @@ open Hardcaml
     the entry register — and a new magnitude may stand at [nn] every cycle. *)
 val latency : int
 
+(** the width of the magnitude port, and the Q it reads at. A caller saturates into the
+    width and shifts into the Q, thus the two stand here and a caller states neither
+    number of its own. *)
+val magnitude_bits : int
+
+val input_q : int
+
 module I : sig
   type 'a t =
     { clock : 'a
     ; nn : 'a
-    (** the magnitude of the power, 22 bits: Q12, thus bits 11 to 0 are the fraction and
-        bits 21 to 12 the integer part *)
+    (** the magnitude of the power, [magnitude_bits] wide at [input_q]: bits 11 to 0 are
+        the fraction and bits 21 to 12 the integer part *)
     }
   [@@deriving hardcaml]
 end

@@ -277,7 +277,7 @@ module Bench (Shape : Shape) = struct
       inp.term_first := if first then Bits.vdd else Bits.gnd;
       inp.term_last := if last then Bits.vdd else Bits.gnd;
       inp.column := Harness.pack column ~width:activation_bits;
-      inp.row_shift := Bits.of_unsigned_int ~width:2 (tap % 3);
+      Harness.set inp.row_shift (tap % 3);
       inp.weights := Harness.pack weights ~width:weight_bits;
       cycle ()
     in
@@ -325,17 +325,11 @@ module Bench (Shape : Shape) = struct
     let order = List.concat_map dwells ~f:(fun (_ : dwell) -> List.range 0 rows) in
     let given = List.map drained ~f:snd in
     let counted = List.length given = List.length wanted in
-    let complain wrong name = if wrong then Some name else None in
-    let complaints =
-      List.filter_opt
-        [ complain (not (List.equal Int.equal (List.map drained ~f:fst) order)) "order"
-        ; complain (not counted) "count"
-        ; complain
-            (not (counted && List.for_all2_exn given wanted ~f:(Array.equal Int.equal)))
-            "sums"
-        ]
-    in
-    if List.is_empty complaints then "ok" else String.concat ~sep:", " complaints
+    Harness.verdict
+      [ "order", not (List.equal Int.equal (List.map drained ~f:fst) order)
+      ; "count", not counted
+      ; "sums", not (counted && List.for_all2_exn given wanted ~f:(Array.equal Int.equal))
+      ]
   ;;
 end
 
@@ -352,20 +346,11 @@ let%expect_test "the array sums what the twin sums" =
         let lanes = lanes
       end)
     in
-    let take (state, held) (_ : int) =
-      let state, drawn = B.draw_dwell state ~inputs in
-      state, drawn :: held
-    in
+    let draw state (_ : int) = B.draw_dwell state ~inputs in
     let (_ : Prng.state), drawn =
-      List.fold (List.range 0 dwells) ~init:(Prng.create ~seed:7, []) ~f:take
+      List.fold_map (List.range 0 dwells) ~init:(Prng.create ~seed:7) ~f:draw
     in
-    printf
-      "P %2d G %d Cin %d, %d dwells: %s\n"
-      rows
-      lanes
-      inputs
-      dwells
-      (B.check (List.rev drawn))
+    printf "P %2d G %d Cin %d, %d dwells: %s\n" rows lanes inputs dwells (B.check drawn)
   in
   case ~rows:3 ~lanes:1 ~inputs:1 ~dwells:1;
   case ~rows:6 ~lanes:3 ~inputs:2 ~dwells:3;

@@ -8,10 +8,16 @@ module Nn_quantized = Mgen_nn.Quantized
 
 let latency = 2
 
+(* The magnitude port and the point it reads at. A caller must saturate into this width
+   and shift into this Q, thus the two stand beside [latency] and no caller states a 22 or
+   a 12 of its own. *)
+let magnitude_bits = 22
+let input_q = 12
+
 module I = struct
   type 'a t =
     { clock : 'a
-    ; nn : 'a [@bits 22]
+    ; nn : 'a [@bits magnitude_bits]
     }
   [@@deriving hardcaml]
 end
@@ -55,7 +61,7 @@ let%expect_test "the fork answers what the shared unit answers" =
   let magnitudes = [ 0; 1; 300; 1000; 4095; 4096; 5000; 20000; 65535; 65536; 100000 ] in
   let held sim inp out =
     List.map magnitudes ~f:(fun nn ->
-      inp := Bits.of_unsigned_int ~width:22 nn;
+      Harness.set inp nn;
       Cyclesim.cycle sim;
       Cyclesim.cycle sim;
       Bits.to_unsigned_int !out)
