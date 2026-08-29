@@ -306,10 +306,7 @@ end
    47 percent more fabric, because every case of the program counter that writes a
    register widens that register's parallel case — and the seat register is the price of
    the room. *)
-type program =
-  { chain : Op.t list
-  ; forward : Op.t list
-  }
+type program = Op.t Mgen_nn.Program.t
 
 let schedule (model : Model.t) : program =
   let { Model.d; d_in; plan; _ } = model in
@@ -412,12 +409,7 @@ let schedule (model : Model.t) : program =
 (* L4 — the outer FSM; L1 and L3 live inside [create] *)
 (* ==================================================================== *)
 
-module State = struct
-  type t =
-    | Idle
-    | Run
-  [@@deriving compare ~localize, enumerate, sexp_of]
-end
+module State = Mgen_nn.Program.State
 
 let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
   let { Model.d; d_in; heads; state = n_state; span; ring = slots; temper; min_weight; _ }
@@ -907,15 +899,8 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
      an expression written inside one is elaborated once for each of them *)
   let quotient16 = clamp16 div_quotient in
   let below_peak = vramd -: peak.value in
-  let drawn_at_seat =
-    mux seat.value (List.map (Array.to_list drawn) ~f:(fun c -> c.Always.Variable.value))
-  in
-  let write_drawn value =
-    switch
-      seat.value
-      (List.init Frame.voices ~f:(fun s ->
-         of_unsigned_int ~width:seat_bits s, [ drawn.(s) <-- value ]))
-  in
+  let drawn_at_seat = Mgen_nn.Sampler.drawn_at_seat ~seat ~drawn in
+  let write_drawn = Mgen_nn.Sampler.write_drawn ~seat ~seats:drawn in
   let base_of (where : Op.where) =
     match where with
     | Fixed at -> rom_const at
@@ -928,47 +913,52 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
   (* the frame word of the classes the chain drew: [Vocab.Rtl] states the map, and seat 0
      takes the low byte *)
   let frame_word =
-    concat_msb
-      (List.rev_map (Array.to_list drawn) ~f:(fun c ->
-         Vocab.Rtl.code_of_class c.Always.Variable.value))
+    Mgen_nn.Sampler.frame_word ~code_of_class:Vocab.Rtl.code_of_class ~drawn
   in
   (* ================================================================== *)
   (* L3 — the compiler: one builder per op kind, then the chain *)
   (* ================================================================== *)
-  let by_tick bodies =
-    let last = List.length bodies - 1 in
-    switch
-      tick.value
-      (List.mapi bodies ~f:(fun k body ->
-         of_unsigned_int ~width:4 k, if k = last then body else (tick <--. k + 1) :: body))
+  (* The two case forms of L3 are [Mgen_nn.Program]'s and the weight chain under them is
+     [Mgen_nn.Sampler]'s — one text for the two step-frame eras, and their interfaces hold
+     what each is and why. Only [Temper] runs the weight chain here: the softmax that was
+     era four's other caller is gone with the attention. *)
+  let by_tick = Mgen_nn.Program.chain_over tick in
+  let by_stage = Mgen_nn.Program.case_over stage in
+  (* THE DRAW OF THE CHAIN reads these, and [Mgen_nn.Sampler] builds its four ops over
+     them. The record is a view: every field is a variable or a signal declared above, and
+     the shared module declares nothing of its own. *)
+  let sampler =
+    { Mgen_nn.Sampler.classes
+    ; temper
+    ; min_weight
+    ; tick
+    ; oo
+    ; u24
+    ; total
+    ; thi
+    ; thr
+    ; cum
+    ; found
+    ; diff
+    ; nn
+    ; vram_raddr
+    ; vram_wen
+    ; vram_waddr
+    ; vram_wdata
+    ; vramd
+    ; below_peak
+    ; mul_a
+    ; mul_b
+    ; product = mac.product
+    ; prng_step
+    ; prng_byte
+    ; exp2_e
+    ; weight_addr = oo_class
+    ; oo_class
+    ; write_drawn
+    }
   in
-  let by_stage bodies =
-    switch
-      stage.value
-      (List.mapi bodies ~f:(fun k body -> of_unsigned_int ~width:2 k, body))
-  in
-  (* [exp_weight_chain] is era four's: one vram value becomes its exp2 weight over the
-     same address. Only [Temper] runs it here — the softmax that was the other caller is
-     gone with the attention. *)
-  let exp_weight_chain ~addr ~(scale : Model.Constants.scale) ~land_ ~advance =
-    let at_addr = uresize addr ~width:vbits in
-    [ vram_raddr <-- at_addr
-    ; mul_a <-- sel_bottom diff.value ~width:25
-    ; mul_b <-- of_signed_int ~width:18 scale.q_value
-    ; by_tick
-        [ []
-        ; [ diff <-- below_peak ]
-        ; []
-        ; []
-        ; [ nn <-- sel_bottom (negate (sra mac.product ~by:scale.q)) ~width:22 ]
-        ; []
-        ; (* [Exp2.latency] cycles of it, and the magnitude stands from the tick after it
-             is written: the weight is whole here and the landing below reads it *)
-          []
-        ; [ vram_wen <-- vdd; vram_waddr <-- at_addr ] @ land_ @ [ tick <--. 0 ] @ advance
-        ]
-    ]
-  in
+  let exp_weight_chain = Mgen_nn.Sampler.exp_weight_chain sampler in
   (* [join_to_h ~from] is the residual read-modify-write: a finished row's sum lands on
      the stream one cycle behind its retirement, thus the walk and the join never contend
      for the h RAM. [rmw] is the retirement delayed one cycle and nothing else. *)
@@ -1579,139 +1569,33 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       entry, [ by_stage [ score_ages; weigh_ages; merge_lane; land_lane ] ]
-    | Temper ->
-      let entry = [ oo <--. 0; tick <--. 0; total <--. 0 ] in
-      let keep = exp2_e >=: of_unsigned_int ~width:16 min_weight in
-      let w = mux2 keep exp2_e (zero 16) in
-      let body =
-        exp_weight_chain
-          ~addr:oo_class
-          ~scale:temper
-          ~land_:
-            [ vram_wdata <-- uresize w ~width:32
-            ; total <-- total.value +: uresize w ~width:24
-            ]
-          ~advance:[ if_ (oo.value ==:. classes - 1) finish [ oo <-- oo.value +:. 1 ] ]
-      in
-      entry, body
-    | Draw ->
-      let entry = [ tick <--. 0 ] in
-      let body =
-        [ by_tick
-            [ [ prng_step <-- vdd ]
-            ; [ prng_step <-- vdd; u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ]
-            ; [ prng_step <-- vdd; u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ]
-            ; [ u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ] @ finish
-            ]
-        ]
-      in
-      entry, body
-    | Threshold ->
-      (* (u24 * total) >> 24 in two DSP passes: the high twelve bits of the total, then
-         the low twelve — the same integer as one wide multiply *)
-      let entry = [ tick <--. 0 ] in
-      let body =
-        [ mul_a <-- uresize u24.value ~width:25
-        ; mul_b
-          <-- uresize
-                (mux2
-                   (tick.value <:. 2)
-                   (select total.value ~high:23 ~low:12)
-                   (sel_bottom total.value ~width:12))
-                ~width:18
-        ; by_tick
-            [ []
-            ; []
-            ; [ thi <-- mac.product ]
-            ; []
-            ; [ thr
-                <-- sel_bottom
-                      (srl
-                         (sll (uresize thi.value ~width:56) ~by:12
-                          +: uresize mac.product ~width:56)
-                         ~by:24)
-                      ~width:24
-              ]
-              @ finish
-            ]
-        ]
-      in
-      entry, body
-    | Pick ->
-      (* The first class whose running total passes the threshold, and the last class
-         catches a walk that no weight stopped — which is the rule of the reference and
-         not a fallback: the threshold is below the total by construction. *)
-      let entry = [ oo <--. 0; tick <--. 0; cum <--. 0; found <--. 0 ] in
-      let body =
-        [ vram_raddr <-- uresize oo_class ~width:vbits
-        ; by_tick
-            [ []
-            ; [ (let w = sel_bottom vramd ~width:24 in
-                 let cum_next = cum.value +: uresize w ~width:25 in
-                 let passes = cum_next >: uresize thr.value ~width:25 in
-                 proc
-                   [ cum <-- cum_next
-                   ; when_
-                       ~:(found.value)
-                       [ when_ passes [ found <-- vdd; write_drawn oo_class ]
-                       ; when_
-                           (oo.value ==:. classes - 1)
-                           [ write_drawn (of_unsigned_int ~width:class_bits (classes - 1))
-                           ]
-                       ]
-                   ])
-              ; tick <--. 0
-              ; if_ (oo.value ==:. classes - 1) finish [ oo <-- oo.value +:. 1 ]
-              ]
-            ]
-        ]
-      in
-      entry, body
+    | Temper -> Mgen_nn.Sampler.tempered_weights sampler ~finish
+    | Draw -> Mgen_nn.Sampler.uniform_word sampler ~finish
+    | Threshold -> Mgen_nn.Sampler.threshold sampler ~finish
+    | Pick -> Mgen_nn.Sampler.pick sampler ~finish
   in
   (* the link: op [k]'s finish is op [k+1]'s entry and the pc move; the last op of a
      program takes the final actions instead *)
-  let rec link index final = function
-    | [] -> final, []
-    | op :: rest ->
-      let next_entry, tail = link (index + 1) final rest in
-      let entry, body = build op ~finish:next_entry in
-      entry @ [ pc <--. index ], (index, body) :: tail
-  in
-  (* The chain is one seat and it runs once for each of them, counting down from the
-     soprano. Its last op returns to its first until the bass has drawn, thus the loop
-     closes on the op boundary and costs no cycle of its own.
-
-     The head's entry is taken from a build of its own: an op's ENTRY is the actions its
-     predecessor runs and does not depend on the op's finish, thus building the head twice
-     states the loop back without a circular definition. *)
-  let chain_head = List.hd_exn prog.chain in
-  let chain_head_entry = fst (build chain_head ~finish:[]) @ [ pc <--. forward_length ] in
-  let chain_done =
-    [ if_
-        (seat.value ==:. 0)
-        [ sm.set_next Idle ]
-        ([ seat <-- seat.value -:. 1 ] @ chain_head_entry)
-    ]
-  in
-  let chain_entry, chain_bodies = link forward_length chain_done prog.chain in
-  let enter_chain = [ seat <--. Frame.voices - 1 ] @ chain_entry in
-  (* The forward has stated step [s], thus the chain would draw the step after it. Through
-     the lead-in the chain does not run: the frame stays silence, the drawn classes stand
-     at [Vocab.silence], and the PRNG does not move, because [Draw] is the only thing that
-     steps it. *)
-  let next_index = s.value +:. 1 in
-  let forward_done =
-    [ s <-- next_index
-    ; if_ (next_index >=:. Jsb.bar_steps) enter_chain [ sm.set_next Idle ]
-    ]
-  in
-  let forward_entry, forward_bodies = link 0 forward_done prog.forward in
-  let run_body =
-    [ switch
-        pc.value
-        (List.map (forward_bodies @ chain_bodies) ~f:(fun (index, body) ->
-           of_unsigned_int ~width:pc_bits index, body))
-    ]
+  (* L3 IS [Mgen_nn.Program]: the link, the seat loop and the parallel case over the
+     program counter are one text for the two step-frame eras, and its interface holds
+     what each is and why. *)
+  let { Mgen_nn.Program.forward_entry; run_body } =
+    Mgen_nn.Program.compile
+      ~build
+      ~pc
+      ~seat
+      ~idle:(fun () -> [ sm.set_next Idle ])
+      ~forward_done:(fun ~enter_chain ->
+        (* The forward has stated step [s], thus the chain would draw the step after it.
+           Through the lead-in the chain does not run: the frame stays silence, the drawn
+           classes stand at [Vocab.silence], and the PRNG does not move, because [Draw] is
+           the only thing that steps it. NO RING MOVES HERE: the rings of this era are
+           read off the step counter, thus era four's slot and filled flag have no twin. *)
+        let next_index = s.value +:. 1 in
+        [ s <-- next_index
+        ; if_ (next_index >=:. Jsb.bar_steps) enter_chain [ sm.set_next Idle ]
+        ])
+      prog
   in
   compile
     [ valid <-- gnd
@@ -1743,7 +1627,7 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
 
 let%expect_test "the program is data: the state table prints" =
   let model = Model.For_test.drawn Model.For_test.shape ~seed:11 in
-  let { chain; forward } = schedule model in
+  let { Mgen_nn.Program.chain; forward } = schedule model in
   let show tag ops =
     List.iteri ops ~f:(fun index op ->
       Stdio.printf "%s%-2d %s\n" tag index (Sexp.to_string (Op.sexp_of_t op)))

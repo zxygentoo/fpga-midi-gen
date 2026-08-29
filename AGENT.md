@@ -211,7 +211,8 @@ It is not 48000 Hz.
   - `lib/corpus` — the chorales (`Jsb`) and the vocabulary (`Vocab`).
   - `lib/nn` — what is one thing across the eras: the units, the fixed-point
     rules the circuits read, the placement rules, the bounds of the sampling
-    policy.
+    policy, the draw of the chain (`Sampler`) and the compiler of a
+    step-frame program (`Program`).
   - one directory for each era: `pink`, `transformer`, `mamba`, `diffusion`.
 - `bin/` — executables: the board driver (`board_tool`), the pink player,
   the corpus tool, and one RTL-gate driver for each era with a circuit

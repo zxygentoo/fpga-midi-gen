@@ -1159,3 +1159,78 @@ same four note-offs in another order: `jax/midi.py` drained `for pitch in
 ringing` over a PYTHON SET, whose iteration order is arbitrary, thus the
 twin's own wire bytes were not reproducible run to run. Sorted now, and the
 comment says why so that no one takes the sort for a taste.
+
+
+## 2026-08-29 — the op/schedule round (feat/op-schedule)
+
+**The last duplication of the frozen sources was not rhyme.** Era four
+and era five wrote the draw of the chain and the whole of L3 as one text
+under two module names. Two lifts took them: `Mgen_nn.Sampler` holds the
+four draw ops — `tempered_weights`, `uniform_word`, `threshold`, `pick` —
+the weight chain under them and the seat port that `Pick` writes;
+`Mgen_nn.Program` holds L3 itself — the program record polymorphic in
+the op, the two states, the two case forms, and `compile`, which is the
+link, the seat loop and the parallel case over the program counter. Each
+era keeps its `Op`, its `schedule`, its `build`, its `Cost` and L4.
+
+**BOTH PINS ARE IDENTICAL AFTER EACH LIFT, and that is the proof.**
+`a106ff1a` (four) and `e6abe8c2` (five) were written to the scratchpad at
+the head of the round from the golden contract files and re-measured at
+every step: after the seat port and the case forms, after era four's four
+draw cases, after era five's, after the shared weight chain, after the
+program type and the state, after era four's `compile` and after era
+five's. Byte for byte the same file each time. Era six's `ca16397a` was
+never touched. The lift is netlist-identical BY THE LETTER of the rule
+and not only by the structural count, thus **no Vivado build is owed** —
+the case the rule did not foresee never arose. The cycle benches read
+357,720 and 251,934 as before, the three socket simulations' `.expected`
+files did not move, and the 188 gates of `uv run pytest -n auto` pass.
+
+**Two rules of the netlist the lifts found, both now written in the
+code.** A term the era's text wrote out MORE THAN ONCE is written out
+more than once in the shared text — `uniform_word`'s three shifts, and
+`below_peak`, which is taken from the era because era four runs the
+weight chain from two ops — since naming it would make one node where the
+era made several. And a case form reads its width off its counter, thus
+one text serves era four's 3-bit tick and era five's 4-bit one. The
+runner needed two more: `~idle` is a THUNK, because `sm.set_next Idle`
+makes its constant when called and the era called it inside the chain's
+last op; and `forward_done ~enter_chain` is bound to a `let` before the
+link runs, because OCaml does not state the order it evaluates arguments
+in. Each of the four, done the obvious way instead, would have moved
+`top.v` in every name and in no structure.
+
+**The port record is 28 fields**, where the order estimated twenty. It is
+a VIEW and declares nothing — the eras declare their registers where they
+stood and pass them in — and that rule is what kept the md5.
+
+**Two smaller shares, no netlist behind either.**
+`Mgen_board.Socket.For_test.harness` is the one mounting of the three
+socket simulations: the block over a source, the line sampled cycle by
+cycle, the bytes decoded back off it. The run LENGTH stays each test's
+own, because era four counts steps times the period, era six covers a
+draw budget and era one takes the pink step. `bin/gate_common` is the
+three flags, the `verilog` command and the walk print of the gate
+drivers; it names no era library and could not, since the board library
+it elaborates through already depends on every era. Its `walk_command`
+takes the era's one-step function and not its bench, because the two
+eras' benches are different types — era five's also reports the stream
+writes.
+
+**THE STANDING QUESTION IS CLOSED, and the vocabulary core is withdrawn
+on the count.** `lib/nn/dune` had kept the op/schedule abstraction open
+by rule since 2026-08-13. Of the nine constructors the two `Op.t` share,
+THREE DIFFER IN A FIELD: `Matvec`'s source is widened by `Joined`,
+`Attend` names a `layer` in era four and a `ring` in era five, and
+`Rms_norm` carries `over` in era five alone. The true common set is
+`where`, `tensor`, `Embed`, `Accumulate` and the four fieldless draw ops
+— and the draw ops already meet in `Sampler`. That is rhyme, and the rule
+keeps rhyme in the eras. A `Common | Own` type would touch `build`,
+`schedule` and `Cost` in both eras and move every state table's sexp, for
+no netlist and no reader. L4 is withdrawn for the same reason: ten lines,
+differing by the ring slot era four keeps and era five has not.
+
+Sources: `lib/transformer/source.ml` 1416 to 1281 and
+`lib/mamba/source.ml` 2036 to 1920; the two gate drivers 87 to 46 and 116
+to 76; the three socket tests about twenty lines each. The four new homes
+are 662 lines, of which 271 are interface documentation.
