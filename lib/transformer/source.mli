@@ -1,8 +1,10 @@
 (** The transformer as a circuit: the note source of era four.
 
-    The block computes the integers of [Quantized], operation for operation. [Quantized]
-    is the reference, and the frame comparison in this module proves the match: the frames
-    of the circuit must equal the frames of [Quantized.Engine], step for step.
+    The block computes the integers of the JAX twin, operation for operation.
+    [jax/transformer/quantized.py] is the reference, and the gates of
+    [jax/tests/test_rtl_transformer.py] prove the match through
+    [bin/gate_transformer.exe]: the frames of the circuit must equal the frames of the
+    twin, step for step. Neither side can pass a gate by agreeing with itself.
 
     One step of music is one pass of the network and one frame on the socket. Nothing here
     chooses a seat and nothing masks a draw: a frame states which voice holds which pitch,
@@ -39,9 +41,28 @@ open Hardcaml
 module I = Source_intf.I
 module O = Source_intf.O
 
-(** [create ~model ~seed i] is the block. [model] is the quantized model of the
-    elaboration: the ROM image, the tensor bases and every exponent come from it, and the
-    shape it carries decides the width of every counter and address. The elaboration
-    checks the shape rules of the packing loudly. [seed] is the 32-bit seed of the walk,
-    read at [rewind], thus one seed names one sequence in the simulation and on the board. *)
-val create : model:Quantized.Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
+(** [create ~model ~seed i] is the block. [model] is the model of the CONTRACT FILE: the
+    ROM image, the tensor bases, every exponent and every shape number come from it, and
+    they decide the width of every counter and address. The elaboration checks the shape
+    rules of the packing loudly. [seed] is the 32-bit seed of the walk, read at [rewind],
+    thus one seed names one sequence in the simulation and on the board. *)
+val create : model:Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
+
+module For_test : sig
+  (** The walk, driven. [bin/gate_transformer.exe walk] runs it and prints what the
+      circuit answered, and [jax/tests/test_rtl_transformer.py] states what it must have
+      answered against the twin. The two sides cannot agree with each other by accident:
+      the driver knows nothing of the twin, and the twin runs no circuit. *)
+  module Bench : sig
+    type t =
+      { rewind : unit -> unit (** load the generator and return the walk to its origin *)
+      ; play : unit -> int
+      (** strobe one step and give the frame it answers. It raises [Failure] when the step
+          is not answered, or when the walk runs past the budget the cost model states — a
+          machine that stalls must fail a gate and not hang it. *)
+      }
+
+    (** [harness ~model ~seed ()] builds the simulation and its probes *)
+    val harness : model:Model.t -> seed:int -> unit -> t
+  end
+end

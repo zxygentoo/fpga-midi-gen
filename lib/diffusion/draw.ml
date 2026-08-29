@@ -6,6 +6,7 @@
 open Core
 open Hardcaml
 open Signal
+module Exp2 = Mgen_nn.Exp2
 module Nn_quantized = Mgen_nn.Quantized
 module Placement = Mgen_nn.Placement
 
@@ -225,7 +226,7 @@ let draw_cell ~(temper : Nn_quantized.Constants.scale) raw prng =
       (* the difference shifts up to the table's Q FIRST. Unshifted, every weight stands
          within a fraction of a nat of the peak and the draw is uniform — the fault the
          drift report caught at 3.4 percent same-draw. *)
-      Nn_quantized.exp2_q
+      Nn_quantized.For_test.exp2_q
         (Nn_quantized.Constants.apply
            temper
            ((logit - peak) lsl (exp2_q - Model.activation_q))))
@@ -291,7 +292,7 @@ let%expect_test "the draw states the class the twin states" =
     in
     printf "%d classes, %s, %d cells: %d disagree\n" classes name cells disagree
   in
-  let one = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0) in
+  let one = Nn_quantized.Constants.temper_at_one in
   (* a temper whose shift does not divide its value: the reading that negates before the
      scale parts from the twin by one unit here and nowhere else *)
   let ragged = { Nn_quantized.Constants.q_value = 23637; q = 13 } in
@@ -315,7 +316,7 @@ let%expect_test "the pick lands by the last class, and costs the cycles it state
       let classes = 48
     end)
   in
-  let temper = fst (Nn_quantized.policy ~temperature:1.0 ~min_p:0.0) in
+  let temper = Nn_quantized.Constants.temper_at_one in
   (* the peak at class 0 and every other class far under it: the hardest case for the
      totals to cover *)
   let steep = Array.init 48 ~f:(fun at -> if at = 0 then 3000 else -3000) in

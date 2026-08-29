@@ -1,13 +1,14 @@
-; The one line that names the era of the seat. [Top] speaks of [Source] and of
-; [Elaboration] and of nothing narrower, thus the library it opens decides which model the
-; bitstream carries; the eras before it stay in the tree untouched.
+; THE TOP LEVEL NAMES NO ERA. It takes the source as an argument, thus this library
+; opens no era's library and every era can elaborate its own top: `gen_verilog` names era
+; six for the board, and each era's gate driver names its own for the netlist gate of
+; `jax/tests/test_parity.py`.
 
 (library
  (name mgen_nexys4)
  (modules top)
- (libraries hardcaml mgen_board mgen_diffusion)
+ (libraries hardcaml mgen_board mgen_core)
  (flags
-  (:standard -open Mgen_board -open Mgen_diffusion)))
+  (:standard -open Mgen_board)))
 
 (executable
  (name gen_verilog)

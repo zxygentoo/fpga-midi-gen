@@ -8,7 +8,7 @@ the step frame — and the four voices of that step keep their names from
 the corpus to the synthesizer.
 
 The design has two halves. The corpus and the model are built, trained
-and elected by ear; the OCaml reference, the socket and the circuit are
+and elected by ear; the integer twin, the socket and the circuit are
 not. Each section states which of the two it is in.
 
 The design keeps the project rules. The board does the inference. The
@@ -766,6 +766,15 @@ not the other way around.
    by the drift report; and the circuit against the quantized model, by
    the stream comparison, event for event. The ear elected the model
    already, thus what these steps owe is that they did not change it.
+
+   **SUPERSEDED 2026-08-29 by the all-era cut.** The OCaml float model and
+   the OCaml integer twin were both cut; the chain now runs above the seam
+   and has three links instead of four. `test_parity.py` holds the float
+   model to a pinned loss and the JAX quantizer to a pinned netlist md5,
+   `test_drift.py` holds the twin to the float model, and
+   `test_rtl_transformer.py` holds the circuit to the twin through
+   `gate_transformer.exe`. The numbers below stand as the reading of the
+   day they were measured.
 
    The walk comparison is not exact by construction — two float
    implementations differ in the last bits, and a draw parts from its

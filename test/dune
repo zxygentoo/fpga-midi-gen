@@ -1,20 +1,12 @@
 (tests
- (names
-  test_txn
-  test_quantized_drift
-  test_mamba_drift
-  test_socket
-  test_pink_socket
-  test_diffusion_socket)
+ (names test_txn test_socket test_pink_socket test_diffusion_socket)
  (libraries
   base
   stdio
   hardcaml
-  qcheck-core
   mgen_core
   mgen_board
   mgen_pink
   mgen_transformer
-  mgen_mamba
   mgen_diffusion
   mgen_nexys4))

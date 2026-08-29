@@ -187,19 +187,17 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   (* ---------------------------------------------------------------- *)
   (* the two frames of a cell walk *)
   (* ---------------------------------------------------------------- *)
-  let lead_word =
-    concat_lsb [ lead_running.value; lead_tick.value; lead_seat.value; lead_step.value ]
-  in
-  let now_word = reg spec (reg spec lead_word) in
-  let tick_width = width lead_tick.value in
-  (* EACH FIELD IS TAKEN WHERE THE ONE BEFORE IT ENDED, and [lead_word] above states the
-     order: an offset written as a cumulative sum has to be moved by hand when a field is
-     added, and nothing below this frame would say that one was not. *)
-  let field ~low ~width = select now_word ~high:(low + width - 1) ~low, low + width in
-  let now_valid, low = field ~low:0 ~width:1 in
-  let now_tick, low = field ~low ~width:tick_width in
-  let now_seat, low = field ~low ~width:seat_bits in
-  let now_step, (_ : int) = field ~low ~width:step_bits in
+  (* THE NOW FRAME IS THE LEAD FRAME TWO REGISTERS BACK, FIELD BY FIELD. It was one wide
+     register over a packed word, with each field taken where the one before it ended;
+     every width then stood twice — once at the pack and once at the unpack — and an
+     offset written as a cumulative sum had to be moved by hand when a field was added.
+     Here each field travels as itself and takes its width from the value it carries, thus
+     a field added to the lead frame cannot arrive misaligned in the now frame. *)
+  let two_back v = reg spec (reg spec v) in
+  let now_valid = two_back lead_running.value in
+  let now_tick = two_back lead_tick.value in
+  let now_seat = two_back lead_seat.value in
+  let now_step = two_back lead_step.value in
   let now_writes = now_valid &: (now_tick ==:. cell_ticks - 1) in
   let phase_done =
     now_writes &: (now_seat ==:. voices - 1) &: (now_step ==:. steps - 1)
@@ -236,19 +234,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      phase cannot want it before its fourth. No attribute states a memory kind: one entry
      a pass is a read the tools may hold in whatever they have spare. *)
   let alpha =
-    let size = Array.length e.alpha_rom in
-    (multiport_memory
-       ~initialize_to:e.alpha_rom
-       size
-       ~write_ports:
-         [| { Write_port.write_clock = i.clock
-            ; write_address = zero (address_bits_for size)
-            ; write_enable = gnd
-            ; write_data = zero Elaboration.alpha_bits
-            }
-         |]
-       ~read_addresses:[| reg spec pass.value |]).(0)
-    |> reg spec
+    (Placement.rom ~read_addresses:[| reg spec pass.value |] e.alpha_rom).(0) |> reg spec
   in
   (* ---------------------------------------------------------------- *)
   (* the opening: one multiply, no divide, and no DSP *)

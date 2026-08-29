@@ -1,18 +1,6 @@
 (library
  (name mgen_transformer)
- (libraries
-  base
-  core
-  stdio
-  hardcaml
-  hardcaml_waveterm
-  nx
-  nx.io
-  rune
-  kaun
-  mgen_core
-  mgen_nn
-  mgen_corpus)
+ (libraries base core stdio hardcaml nx nx.io mgen_core mgen_nn mgen_corpus)
  (flags
   (:standard -open Mgen_core -open Mgen_corpus))
  (inline_tests

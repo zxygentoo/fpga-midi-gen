@@ -21,6 +21,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.16.1",
 ]
 
@@ -31,3 +32,9 @@ testpaths = ["tests"]
 [tool.ruff]
 # the width of the OCaml side: ocamlformat, profile janestreet
 line-length = 90
+
+[tool.ruff.lint]
+# E501 is not in the default set, thus the width above bound the formatter alone and 343
+# lines had passed it. `ruff format` is NOT adopted -- the OCaml side formats and the
+# Python side lints -- so the width is held by this rule and by nothing else.
+extend-select = ["E501"]

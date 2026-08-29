@@ -11,10 +11,11 @@
    keeps it from having to.
 
    The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
-   states over the frames of [Quantized.Engine], byte for byte and in order, and a second
+   states over the frames the circuit answers, byte for byte and in order, and a second
    run from the same seed repeats the first. The two halves of the model path are proved
-   separately — [Source] gives the same frames as the engine, and this gives the same
-   messages as the frames — thus a failure here names the sequencer and not the network.
+   separately — [jax/tests/test_rtl_transformer.py] holds [Source] to the integer twin,
+   and this holds the messages to the frames — thus a failure here names the sequencer and
+   not the network.
 
    The seat holds the transmitter, thus the test reads the line and not a message wire: it
    decodes the waveform with the software receiver, at a baud divisor short enough that a
@@ -24,11 +25,12 @@
    which is the whole rule the sequencer keeps. *)
 
 open Base
+module Harness = Mgen_core.Harness
 module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
-module Quantized = Mgen_transformer.Quantized
+module Model = Mgen_transformer.Model
 module Source = Mgen_transformer.Source
 
 (* The model of the test: drawn weights in the test shape, thus the test reads no
@@ -36,7 +38,7 @@ module Source = Mgen_transformer.Source
    period below must be longer than that — the sequencer holds the boundary until the
    source is idle, and a period that is too short would only stretch the step and prove
    nothing about the decode. *)
-let model = Quantized.Model.For_test.(init config ~seed:11)
+let model = Model.For_test.drawn Model.For_test.shape ~seed:11
 let clocks_per_ms = 4
 let step_ms = 9000
 
@@ -44,62 +46,45 @@ let step_ms = 9000
    36 000 cycles, thus the line is never the thing that holds a step. *)
 let clocks_per_bit = 4
 
-(* The harness drives the parameter views directly and samples the line in each cycle.
-   [play] runs one whole run of [steps] steps: run to 1, then run to 0 in the middle of
-   the last step, then the drain; it gives the messages that the line carried. *)
+(* [Socket.For_test] mounts the block and samples the line; the RUN LENGTH is this test's
+   own. [play] runs one whole run of [steps] steps: run to 1, then run to 0 in the middle
+   of the last step, then the drain; it gives the messages that the line carried. *)
 let harness () =
-  let open Hardcaml in
-  let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
-  let sim =
-    Sim.create (fun (i : _ Socket.I.t) ->
-      Socket.create
-        ~clocks_per_ms
-        ~clocks_per_bit
-        ~source:(Source.create ~model ~seed:i.params.seed)
-        i)
+  let h =
+    Socket.For_test.harness
+      ~clocks_per_ms
+      ~clocks_per_bit
+      ~source:(fun params -> Source.create ~model ~seed:params.seed)
+      ()
   in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let set field value = field := Bits.of_unsigned_int ~width:(Bits.width !field) value in
-  let wave = Buffer.create (1024 * 1024) in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Buffer.add_char wave (if Bits.to_bool !(out.serial) then '1' else '0')
-  in
-  (* every message of the sequencer is three bytes, thus the byte stream of the line
-     divides into messages with no ambiguity *)
-  let messages () =
-    Mgen_board.Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit
-    |> Bytes.to_list
-    |> List.map ~f:Char.to_int
-    |> List.chunks_of ~length:Midi.max_message_bytes
-  in
+  let inp = h.inputs in
   let play ~steps =
-    Buffer.clear wave;
-    let period = clocks_per_ms * Bits.to_int_trunc !(inp.params.step_ms) in
-    set inp.params.run 1;
-    for _ = 1 to ((steps - 1) * period) + (period / 2) do
-      cycle ()
-    done;
-    set inp.params.run 0;
-    for _ = 1 to 2 * period do
-      cycle ()
-    done;
-    messages ()
+    h.clear_line ();
+    let period = clocks_per_ms * Hardcaml.Bits.to_int_trunc !(inp.params.step_ms) in
+    Harness.set inp.params.run 1;
+    h.run_for ~cycles:(((steps - 1) * period) + (period / 2));
+    Harness.set inp.params.run 0;
+    h.run_for ~cycles:(2 * period);
+    h.messages ()
   in
-  inp, set, play
+  inp, Harness.set, play
 ;;
 
-(* the messages of the reference: the frames the engine draws, the silent frame of the
-   stop behind them, and [Frame.events_of_frames] over the whole run *)
+(* the messages of the reference: the frames THE SOURCE ITSELF answers, driven bare, the
+   silent frame of the stop behind them, and [Frame.events_of_frames] over the whole run.
+
+   THIS SIMULATION HOLDS THE SEQUENCER AND THE WIRE AND NOT THE MODEL. The frames are the
+   frames either way — [Source]'s own frame bench proves them equal to the twin's — thus
+   the question here is whether the socket carries them: the decode, the step boundary and
+   the byte order. Era six's socket simulation reads its source the same way. *)
 let reference_messages ~seed ~channel ~velocity ~steps =
-  let (_ : Quantized.Engine.t), frames =
-    List.fold_map
-      (List.range 0 steps)
-      ~init:(Quantized.Engine.init model ~seed)
-      ~f:(fun engine (_ : int) ->
-        let engine, step = Quantized.Engine.next_step engine in
-        engine, step.Quantized.Engine.frame)
+  let h = Source.For_test.Bench.harness ~model ~seed () in
+  h.rewind ();
+  (* [List.init] applies its function in the reverse index order, thus it cannot collect
+     from a simulation; the fold steps in the true order *)
+  let frames =
+    List.rev
+      (List.fold (List.range 0 steps) ~init:[] ~f:(fun got (_ : int) -> h.play () :: got))
   in
   Frame.events_of_frames (Array.of_list (frames @ [ Frame.silent ]))
   |> List.concat

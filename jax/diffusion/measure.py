@@ -4,8 +4,8 @@ Algorithm 1, and the tail of it.
     uv run python -m diffusion.measure nll     --ckpt ../_train/diffusion/NAME.ckpt
     uv run python -m diffusion.measure corpus
 
-The structure battery is NOT here: it knows nothing of a sheet or a mask, thus it stands in
-the common home, jax/measure.py. What stands here needs the model itself and the mask
+The structure battery is NOT here: it knows nothing of a sheet or a mask, thus it stands
+in the common home, jax/measure.py. What stands here needs the model itself and the mask
 planes.
 
 THE LIKELIHOOD is the paper's Algorithm 1, and it is the one number of this round that
@@ -31,11 +31,9 @@ from flax import nnx
 
 import data
 import measure
-import nn
 from diffusion import model
 
-JAX_ROOT = nn.JAX_ROOT
-CORPUS = str(JAX_ROOT / "_data" / "pieces.safetensors")
+CORPUS = str(data.PIECES)
 
 
 def corpus_sheets(corpus_path, split, crop, seed):
@@ -45,8 +43,9 @@ def corpus_sheets(corpus_path, split, crop, seed):
 
 
 def echo_structure(label, sheets):
-    """one row of the battery of jax/measure.py, printed under [label]. Every command of this
-    round prints rows and each prints the corpus row first, thus this stands here once."""
+    """one row of the battery of jax/measure.py, printed under [label]. Every command of
+    this round prints rows and each prints the corpus row first, thus this stands here
+    once."""
     for line in measure.structure_lines(label, measure.structure(sheets)):
         click.echo(line)
 
@@ -67,18 +66,18 @@ def frame_ordering(rng, steps):
     voices inside each frame.
 
     The paper's random ordering is over FRAMES and not over all D variables — that is the
-    difference between its framewise measurement and a notewise one. This round reports the
-    random ordering, which is the row of Table 1 that reads 0.57."""
+    difference between its framewise measurement and a notewise one. This round reports
+    the random ordering, which is the row of Table 1 that reads 0.57."""
     return rng.permutation(steps), np.stack(
         [rng.permutation(model.VOICES) for _ in range(steps)]
     )
 
 
 def forward_in_chunks(forward, classes, hidden, chunk):
-    """the log probabilities of a stack of sheets, [chunk] at a time: one sheet of the stack is
-    one frame of the piece, thus the stack is as tall as the crop and a 12 GB card wants it
-    cut. The chunks cross back to the host ONE TIME, because a read of a chunk blocks the
-    dispatch of the next."""
+    """the log probabilities of a stack of sheets, [chunk] at a time: one sheet of the
+    stack is one frame of the piece, thus the stack is as tall as the crop and a 12 GB
+    card wants it cut. The chunks cross back to the host ONE TIME, because a read of a
+    chunk blocks the dispatch of the next."""
     said = [
         forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk])
         for at in range(0, len(classes), chunk)
@@ -89,11 +88,11 @@ def forward_in_chunks(forward, classes, hidden, chunk):
 def framewise_lls(forward, classes, ordering, chunk):
     """The log-likelihood of every frame of one sheet under one ordering: Algorithm 1.
 
-    THE FRAMES ARE INDEPENDENT GIVEN THE ORDERING, and that is the whole reason this referee
-    is affordable. Algorithm 1 restores the ground truth of a frame the moment it finishes
-    writing it, thus frame l conditions on the TRUE frames before it in the ordering and on
-    nothing the model wrote outside itself. The T frames therefore run as one stack and the
-    walk costs I forward passes and not I times T.
+    THE FRAMES ARE INDEPENDENT GIVEN THE ORDERING, and that is the whole reason this
+    referee is affordable. Algorithm 1 restores the ground truth of a frame the moment it
+    finishes writing it, thus frame l conditions on the TRUE frames before it in the
+    ordering and on nothing the model wrote outside itself. The T frames therefore run as
+    one stack and the walk costs I forward passes and not I times T.
 
     Inside a frame the model does condition on itself: voice k reads what the model put in
     the k - 1 voices before it. That is what makes this framewise and not notewise.
@@ -125,12 +124,12 @@ def framewise_lls(forward, classes, ordering, chunk):
 def piece_nll(forward, classes, rng, orderings, chunk):
     """Algorithm 1 for one sheet, frame by frame: the nats of every frame of it.
 
-    The caller means these, which is Algorithm 1's return, AND keeps them: a mean cannot see
-    a rare bad moment and the ear can.
+    The caller means these, which is Algorithm 1's return, AND keeps them: a mean cannot
+    see a rare bad moment and the ear can.
 
-    The orderings are combined IN PROBABILITY SPACE, one frame at a time — logsumexp over the
-    ensemble, less the log of its size. A mean of log-likelihoods would be an unnormalised
-    geometric mean and would waste probability mass."""
+    The orderings are combined IN PROBABILITY SPACE, one frame at a time — logsumexp over
+    the ensemble, less the log of its size. A mean of log-likelihoods would be an
+    unnormalised geometric mean and would waste probability mass."""
     lls = np.stack(
         [
             framewise_lls(forward, classes, frame_ordering(rng, len(classes)), chunk)
@@ -154,8 +153,8 @@ def framewise_nll(coconet, sheets, *, orderings, chunk, seed, report=None):
     """The referee over a set of sheets: Algorithm 1's mean nats for each frame, its
     standard error, and the frames themselves.
 
-    The standard error is over the PIECES, as the paper's Table 1 reports it. The frames are
-    kept for [tail_line]."""
+    The standard error is over the PIECES, as the paper's Table 1 reports it. The frames
+    are kept for [tail_line]."""
     forward = partial(log_probabilities, coconet)
     rng = np.random.default_rng(seed)
     frames = []
@@ -177,20 +176,20 @@ def framewise_nll(coconet, sheets, *, orderings, chunk, seed, report=None):
 # nats for one frame above which the ear would call it a wrong moment. A frame is four
 # voices, thus 2 nats is a joint probability of 0.14 for the whole sonority.
 LOUD = 2.0
-# resamples of the pieces behind each percentile. A percentile carries no standard error of
-# its own, and two models an eighth of a nat apart cannot be told from each other without
-# one -- the round has already been caught by that once, on the parallels.
+# resamples of the pieces behind each percentile. A percentile carries no standard error
+# of its own, and two models an eighth of a nat apart cannot be told from each other
+# without one -- the round has already been caught by that once, on the parallels.
 RESAMPLES = 1000
 MARKS = (50, 90, 99)
 
 
 def tail_shape(frames, seed=0):
-    """The tail of the framewise nats: the percentiles of [MARKS], the share of frames over
-    [LOUD], and a bootstrap error for each of them.
+    """The tail of the framewise nats: the percentiles of [MARKS], the share of frames
+    over [LOUD], and a bootstrap error for each of them.
 
-    THE RESAMPLE IS OVER PIECES and not over frames: the frames of one chorale are one draw
-    of a composer and not 128 of them, thus resampling frames would state an error several
-    times too small and every model would separate from every other."""
+    THE RESAMPLE IS OVER PIECES and not over frames: the frames of one chorale are one
+    draw of a composer and not 128 of them, thus resampling frames would state an error
+    several times too small and every model would separate from every other."""
     rng = np.random.default_rng(seed)
     draws = frames[rng.integers(len(frames), size=(RESAMPLES, len(frames)))]
     draws = draws.reshape(RESAMPLES, -1)
@@ -207,13 +206,14 @@ def tail_shape(frames, seed=0):
 def tail_line(frames, seed=0):
     """THE RARE BAD MOMENT, which the mean of [framewise_nll] cannot see.
 
-    One strange chord in a phrase is heard, and it moves the average of 128 frames by nothing
-    at all. A model with a shorter tail at the same mean is wrong less often and not less
-    badly, which is the trade the ear elects.
+    One strange chord in a phrase is heard, and it moves the average of 128 frames by
+    nothing at all. A model with a shorter tail at the same mean is wrong less often and
+    not less badly, which is the trade the ear elects.
 
-    READ IT AGAINST WHAT IT MEASURES. These are corpus sheets, thus a frame of high nats is
-    one where BACH surprised the model, and not one where the model wrote something strange.
-    The second question is [structure]'s clash, which reads the model's own draws."""
+    READ IT AGAINST WHAT IT MEASURES. These are corpus sheets, thus a frame of high nats
+    is one where BACH surprised the model, and not one where the model wrote something
+    strange. The second question is [structure]'s clash, which reads the model's own
+    draws."""
     read = tail_shape(frames, seed)
     marks = "   ".join(
         f"{name} {value:5.3f} +- {error:.3f}"

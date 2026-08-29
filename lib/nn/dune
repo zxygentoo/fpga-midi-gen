@@ -1,25 +1,26 @@
 (library
  (name mgen_nn)
- ; The common parts of the neural-net sources. Era four and era five each hold a model in
- ; four layers — the JAX trainer, the OCaml float reference, the integer twin and the
- ; circuit — and what is one thing across the eras stands here one time: the units, the
- ; fixed-point rules, the sampling policy and the checkpoint seam. What only rhymes
- ; between the eras — the op vocabularies, the schedules, the parameter structures — stays
- ; in the era libraries, and the op and schedule abstraction is an open question by
- ; standing rule.
- (libraries
-  base
-  stdio
-  hardcaml
-  hardcaml_waveterm
-  nx
-  nx.io
-  mgen_core
-  mgen_corpus)
+ ; The common parts of the neural-net sources. Each of the three eras holds a model in two
+ ; layers — the JAX model and its integer twin above the seam, the [Model] and the circuit
+ ; below it — and what is one thing across the eras stands here one time: the units, the
+ ; fixed-point rules the circuits read and the tables they elaborate. NOTHING HERE
+ ; QUANTIZES and nothing here draws in float: those are rules of a checkpoint and of a
+ ; sampling policy, and both live above the seam with the twins. What only rhymes between
+ ; the eras — the op vocabularies, the schedules, the parameter structures — stays in the
+ ; era libraries.
+ ;
+ ; THE OP/SCHEDULE QUESTION IS CLOSED, and the op/schedule round closed it by measuring.
+ ; The draw of the chain and L3's compiler were not rhyme: they were one text under two
+ ; module names, and they are [Sampler] and [Program] now, both netlist-identical. THE
+ ; VOCABULARIES STAY IN THE ERAS: of the nine constructors the two [Op.t] share, three
+ ; differ in a field, thus the true common set is [where], [tensor], [Embed], [Accumulate]
+ ; and the four draw ops -- and the draw ops already meet in [Sampler]. That is rhyme. So
+ ; is L4, where ten lines differ by the ring era four keeps and era five has not.
+ (libraries base core stdio hardcaml hardcaml_waveterm nx nx.io mgen_core)
  (flags
-  (:standard -open Mgen_core -open Mgen_corpus))
+  (:standard -open Mgen_core))
  (inline_tests
   (flags
    (:standard -source-tree-root .)))
  (preprocess
-  (pps ppx_hardcaml ppx_expect ppx_sexp_conv)))
+  (pps ppx_hardcaml ppx_expect ppx_compare ppx_enumerate ppx_sexp_conv)))

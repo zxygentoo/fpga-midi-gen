@@ -95,10 +95,13 @@ models, the integer twins and the oracle gates, all in `jax/`.
 - `jax`, `jaxlib` and `jax-cuda12-plugin` move together or not at all. A
   plugin one release behind the runtime is refused, and the trainer falls
   back to the CPU with no message, ten times slower.
-- Era six is Flax NNX and optax. The frozen eras keep `nn.adamw`,
-  `nn.schedule` and `nn.train`.
-- `ruff` at line-length 90, the width of ocamlformat. E501 is not selected,
-  thus ruff does not check the width of a docstring.
+- Every era is Flax NNX and optax. The rate curve and the update rule are
+  `nn.learning_rates` and `nn.update_rule`. The two step-frame eras run one
+  loop, `frames.train`; era six keeps its own, because the sheet recipe is
+  not the frames recipe.
+- `ruff` at line-length 90, the width of ocamlformat. E501 is selected, thus
+  ruff holds every line — a docstring too. `ruff format` is NOT adopted: the
+  OCaml side formats and the Python side lints.
 
 ## Hardware
 
@@ -202,29 +205,34 @@ It is not 48000 Hz.
 
 - `lib/` — the OCaml libraries, software and RTL together:
   - `lib/core` — the host control constants, MIDI, the frame, the PRNG, the
-    Cyclesim harness, the player.
+    Cyclesim harness.
   - `lib/board` — the UART, COBS, the control port and transport, the
     sequencer, the socket, the seed switches.
   - `lib/corpus` — the chorales (`Jsb`) and the vocabulary (`Vocab`).
   - `lib/nn` — what is one thing across the eras: the units, the fixed-point
-    rules, the sampling policy, the placement rules, the checkpoint seam.
+    rules the circuits read, the placement rules, the bounds of the sampling
+    policy, the draw of the chain (`Sampler`) and the compiler of a
+    step-frame program (`Program`).
   - one directory for each era: `pink`, `transformer`, `mamba`, `diffusion`.
-- `bin/` — executables: the board driver (`board_tool`), the players and the
-  referees of the eras, the corpus tool, the driver of the RTL gate.
+- `bin/` — executables: the board driver (`board_tool`), the pink player,
+  the corpus tool, and one RTL-gate driver for each era with a circuit
+  (`gate_transformer`, `gate_mamba`, `gate_diffusion`).
 - `board/` — the top level, the configuration and the scripts of each board,
   for example `board/nexys-4`. `board/_generated/` holds the Verilog and
   `board/_build/` the Vivado work; git ignores both.
-- `jax/` — the Python side: `data.py`, `nn.py`, `prng.py`, `midi.py` and
-  `measure.py` are common, each era has a directory, and `tests/` holds the
-  oracle gates. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
+- `jax/` — the Python side: `data.py`, `prng.py`, `midi.py` and `measure.py`
+  are common; `nn.py` holds what the float models share and `fixed.py` the
+  integer rules of the twins, as `lib/nn` parts them; `frames.py` is the
+  training recipe of eras four and five. Each era has a directory, and
+  `tests/` holds the oracle gates. Git ignores `jax/_data/`; `corpus_tool`
+  rebuilds it.
 - `corpus/` — the chorale corpus.
 - `_train/` — the training runs: the logs and the checkpoints. Git ignores
   it. Every run pipes to `_train/NAME.log` beside its checkpoint.
 - `docs/` — the design documents: `<era>.md` for the model and `<era>_rtl.md`
   for the circuit. A work order is process: write it in `docs/`, never commit
   it, and delete it when its round is done.
-- `test/` — the integration tests: the socket simulations and the frozen
-  eras' drift gates.
+- `test/` — the integration tests: the socket simulations.
 
 # Design
 
@@ -263,8 +271,7 @@ Run all tests with `dune runtest`, and then `uv run pytest` in `jax/`.
 - Unit tests are expect tests (`ppx_expect`), in the module that they test.
 - A waveform expect test is visual documentation. If a waveform can show the
   behavior of a module clearly, write one.
-- `test/` holds the integration tests: the socket simulations with Cyclesim,
-  and the frozen eras' drift gates.
+- `test/` holds the integration tests: the socket simulations with Cyclesim.
 
 - The FLOAT model is an audition tool: train, run it on the host, send the
   MIDI to the S-1 through USB, listen. The FPGA is not in this loop, and the

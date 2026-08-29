@@ -99,9 +99,10 @@ type t =
       tensor — the fused pair keeps four columns live — thus the ring costs the WIDTH of a
       column and not the length of the sheet: eleven tiles at any T. *)
   ; norm_rom : Hardcaml.Bits.t array
-  (** one word for each output channel, in the layer order: the bias in the low
-      [bias_bits], the shift above it, the gain's value on top. The three stand at one
-      address because the epilogue wants them at one time. *)
+  (** one word for each output channel, in the layer order: the bias in the low bits, the
+      shift above it, the gain's value on top — the format [norm_word] packs and
+      [Rtl.norm_fields] slices. The three stand at one address because the epilogue wants
+      them at one time. *)
   ; alpha_rom : Hardcaml.Bits.t array
   (** the anneal thresholds of [Model.anneal_threshold], one for each pass, on the 24-bit
       grid of the generator *)
@@ -115,18 +116,14 @@ type t =
 (** the taps of one 3 by 3 kernel: 9. A dwell counts them. *)
 val taps : int
 
-(** the bits of one [alpha_rom] entry: the grid of the generator, [Prng.uniform_bits] *)
-val alpha_bits : int
-
-(** The fields of a norm word, low to high: the bias, the shift, the value of the gain.
+(** The widths of a norm word above its bias field, and the width of the whole.
 
     THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT: the two exponent rules
     cap a gain's q at 44, which six bits hold. Sizing it on the elected model's own peak
     would save a bit and would make a drawn-weight timing probe elaborate a DIFFERENT
     netlist from the trained build. [create] refuses a q the field cannot hold. *)
-val bias_bits : int
-
 val shift_bits : int
+
 val gain_bits : int
 val norm_bits : int
 

@@ -12,9 +12,10 @@ import mido
 NOTE_ON, NOTE_OFF = 0x90, 0x80
 RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
 # The share of its velocity a note keeps at the last step of a fade. It is not zero, and
-# not because a fade should end loud: A NOTE-ON OF VELOCITY ZERO IS A NOTE-OFF on the wire,
-# and a note the fade silenced would never be released. A quarter is about twelve decibels
-# under the full stroke, which the ear reads as an ending and the synth still sounds.
+# not because a fade should end loud: A NOTE-ON OF VELOCITY ZERO IS A NOTE-OFF on the
+# wire, and a note the fade silenced would never be released. A quarter is about twelve
+# decibels under the full stroke, which the ear reads as an ending and the synth still
+# sounds.
 FADE_FLOOR = 0.25
 DEVICE = "/dev/snd/midiC2D0"
 
@@ -31,10 +32,10 @@ def fading(step, steps, fade):
     A FADE ON THIS WIRE REACHES ONLY THE NOTES THAT BEGIN INSIDE IT. Velocity is a fact of
     the onset, and the S-1 states that a control change is audible only on the next note,
     thus neither velocity nor CC 7 can quiet a chord that already rings. Measured over the
-    corpus crops on 2026-08-25, a crop's last note has been sounding 4.5 steps in the mean:
-    a fade of 4 steps therefore catches two thirds of the final notes and finds NO onset at
-    all in 18 percent of crops, where a fade of 16 -- one bar -- catches 99 percent and is
-    never empty. That is the reason for the default and not a taste.
+    corpus crops on 2026-08-25, a crop's last note has been sounding 4.5 steps in the
+    mean: a fade of 4 steps therefore catches two thirds of the final notes and finds NO
+    onset at all in 18 percent of crops, where a fade of 16 -- one bar -- catches 99
+    percent and is never empty. That is the reason for the default and not a taste.
 
     It is the same gesture as [rest] and it has the same limit: it says an ending is
     happening, and it cannot make a phrase that never closed sound closed."""
@@ -64,8 +65,14 @@ def play(music, *, device, step_ms, channel, velocity, fade=0):
                         ringing.discard(pitch)
                 time.sleep(step_ms / 1000.0)
         finally:
-            # the drain: each open note closes, as the sequencer does at a stop
-            for pitch in ringing:
+            # The drain: each open note closes, as the sequencer does at a stop. SORTED,
+            # and that is not a taste: the board releases in an order of its own and the
+            # capture gate compares these bytes to it, thus an unordered set would put a
+            # different tail on the wire at every run and the gate would read a miss that
+            # is nobody's fault. Measured 2026-08-29 against the board at seed 47872: 276
+            # messages byte for byte, and the four the drain states were the same four in
+            # another order.
+            for pitch in sorted(ringing):
                 wire.write(bytes([NOTE_OFF | channel, pitch, RELEASE_VELOCITY]))
 
 
@@ -80,10 +87,10 @@ def rest(steps, *, step_ms):
     THE DEFAULT IS TWO BARS, and the ear set it on 2026-08-25 in two readings: a quarter
     note helps and a bar was what it wanted, and then [fading] arrived and a bar was short
     again. That follows -- a sheet now ENDS quiet, thus the silence after it has less to
-    part from and must run longer to read as a break at all. IT DOES NOT FIX THE ENDING. A sheet is a crop of eight measures
-    and it stops where the corpus was cut -- it does not arrive -- and no silence after a
-    phrase that never closed will make it sound closed. That is the deferred round, the
-    whole piece with its cadence, and not this wait."""
+    part from and must run longer to read as a break at all. IT DOES NOT FIX THE ENDING. A
+    sheet is a crop of eight measures and it stops where the corpus was cut -- it does not
+    arrive -- and no silence after a phrase that never closed will make it sound closed.
+    That is the deferred round, the whole piece with its cadence, and not this wait."""
     time.sleep(steps * step_ms / 1000.0)
 
 
@@ -110,6 +117,35 @@ def save(music, path, *, step_ms, channel, velocity, fade=0):
             waited = 0
         waited += 1
     midi.save(path)
+
+
+def playback_options(command):
+    """The six flags every `sample` command takes: where the music goes and how it is
+    struck.
+
+    They are one set because the wire is one wire -- an era changes the music and never
+    the sending of it -- and a flag added here is added to every audition at once. The
+    shaping of a piece is NOT here: --gap and --fade are era six's, which parts a batch
+    into pieces and closes each one."""
+    options = [
+        click.option(
+            "--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}"
+        ),
+        click.option(
+            "--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid"
+        ),
+        click.option("--device", default=DEVICE),
+        click.option("--step-ms", default=200),
+        click.option(
+            "--channel", default=2, help="the S-1 factory default, MIDI channel 3"
+        ),
+        click.option("--velocity", default=100),
+    ]
+    # click reads a stack of decorators from the bottom up, thus the reverse keeps --help
+    # in the order written above
+    for option in reversed(options):
+        command = option(command)
+    return command
 
 
 def parse_seeds(ctx, param, value):

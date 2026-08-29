@@ -17,46 +17,57 @@ the wire side itself is midi.py, shared by both eras.
 """
 
 import os
-from pathlib import Path
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import click
-import jax
 import jax.numpy as jnp
 import numpy as np
+from flax import nnx
 
 import data
+import frames
 import midi
+import nn
 import prng
-from nn import draw_frame
-from mamba import model
+from mamba import model, quantized
 
 
-def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT):
+def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twin=False):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     [ring] is the depth of the attention layer's keys and values, and it exists only where
-    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size and
-    has no window at all. Training attends over the WHOLE window, thus a ring shorter than
-    the training window is a truncation, and whether the truncation costs anything depends
-    on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and a ring of
-    256 reads the same as one of 512, measured. At a longer span it would not.
+    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size
+    and has no window at all. Training attends over the WHOLE window, thus a ring shorter
+    than the training window is a truncation, and whether the truncation costs anything
+    depends on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and
+    a ring of 256 reads the same as one of 512, measured. At a longer span it would not.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
     opens at zero, which is where a training window opens, thus the model meets the
     condition it trained on. The lead-in counts inside [steps] and stands at the head of
-    the music, because it is silence the walk really plays."""
+    the music, because it is silence the walk really plays.
+
+    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
+    -- and the temperature and the floor bake into it as the bitstream carries them. The
+    two walks open on different generators: the float walk folds its seed and the twin
+    takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
+    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION,
+    where the twin stands still while the float walk runs from the folded state."""
+    if twin:
+        engine = quantized.QuantizedMamba.of(
+            held, ring=ring, temperature=temperature, min_p=min_p
+        )
+        return quantized.walk(engine, seeds, steps)[0]
     batch = len(seeds)
-    shape = model.shape_of(params)
-    forward = jax.jit(
-        lambda carry, classes, phases: model.forward_step(params, carry, classes, phases)
+    forward = nnx.jit(
+        lambda held, carry, classes, phases: held.forward_step(carry, classes, phases)
     )
     rng = prng.states(seeds)
-    carry = model.initial_carry(shape, batch, context=ring)
+    carry = held.initial_carry(batch, context=ring)
     lead = data.BAR_STEPS
     silence = np.zeros((batch, data.SEATS), dtype=np.int32)
-    frames = []
+    played = []
     h = None
     for step in range(steps):
         # through the lead-in nothing is drawn and the generator does not move, exactly as
@@ -64,43 +75,52 @@ def sample(params, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT)
         if step < lead:
             frame = silence
         else:
-            rng, frame = draw_frame(params, h, rng, temperature, min_p)
-        frames.append(frame)
-        phases = np.full(batch, step % model.PHASE_BUCKETS, dtype=np.int32)
-        carry, stream = forward(carry, jnp.asarray(frame), jnp.asarray(phases))
+            rng, frame = held.head.draw_frame(h, rng, temperature, min_p)
+        played.append(frame)
+        phases = np.full(batch, step % nn.PHASE_BUCKETS, dtype=np.int32)
+        carry, stream = forward(held, carry, jnp.asarray(frame), jnp.asarray(phases))
         h = np.asarray(stream).astype(np.float64)
-    return np.stack(frames, axis=1)
+    return np.stack(played, axis=1)
 
 
-@click.command(help=__doc__)
+@click.group(help=__doc__)
+def main():
+    pass
+
+
+@main.command(help=draw.__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
+@click.option(
+    "--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH"
+)
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 # The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
-# it does the two eras are auditioned on one policy. The OCaml side states these once, as
-# Mamba.elected_temperature and Mamba.elected_min_p; no constant crosses the language
-# seam, thus they stand here again and the two must move together.
-@click.option("--temperature", default=1.0)
-@click.option("--min-p", default=0.05)
+# it does the two eras are auditioned on one policy. `quantized.ELECTED_*` is the one home
+# of these two numbers since the all-era cut took the OCaml `Policy` away, thus the
+# audition and the contract file temper alike.
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=quantized.ELECTED_MIN_P)
 @click.option(
     "--ring",
     default=model.ATTN_CONTEXT,
     help="the depth of the attention layer's key and value ring, in steps. It is the "
     "one context this model has, and only where the plan attends at all.",
 )
-@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
-@click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
-@click.option("--device", default=midi.DEVICE)
-@click.option("--step-ms", default=200)
-@click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
-@click.option("--velocity", default=100)
-def main(
+@click.option(
+    "--quantized",
+    "twin",
+    is_flag=True,
+    help="draw the integer twin of the circuit: the piece the board plays at this seed",
+)
+@midi.playback_options
+def sample(
     ckpt,
     seeds,
     steps,
     temperature,
     min_p,
     ring,
+    twin,
     to_synth,
     to_file,
     device,
@@ -108,32 +128,59 @@ def main(
     channel,
     velocity,
 ):
-    params = model.load_params(ckpt)
-    walks = sample(
-        params, seeds=seeds, steps=steps, temperature=temperature, min_p=min_p,
+    walks = draw(
+        model.Mamba.load(ckpt),
+        seeds=seeds,
+        steps=steps,
+        temperature=temperature,
+        min_p=min_p,
         ring=ring,
+        twin=twin,
     )
     music = [data.decode(walk) for walk in walks]
 
-    if to_synth or to_file:
-        if len(seeds) > 1:
-            raise click.UsageError("--play and --save take one seed")
-        if to_file:
-            midi.save(music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity)
-            click.echo(f"wrote {to_file}")
-        if to_synth:
-            midi.play(
-                music[0],
-                device=device,
-                step_ms=step_ms,
-                channel=channel,
-                velocity=velocity,
-            )
-        return
-    for seed, walk in zip(seeds, music):
-        if len(seeds) > 1:
-            click.echo(f"# seed {seed}")
-        click.echo("\n".join(midi.step_line(step, events) for step, events in enumerate(walk)))
+    frames.audition(
+        music,
+        seeds,
+        to_synth=to_synth,
+        to_file=to_file,
+        device=device,
+        step_ms=step_ms,
+        channel=channel,
+        velocity=velocity,
+    )
+
+
+@main.command()
+@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", required=True, type=click.Path(dir_okay=False))
+@click.option(
+    "--ring",
+    default=quantized.ELECTED_RING,
+    help="the depth of the attention layer's key and value ring, in steps. It is a "
+    "choice of the INFERENCE and no fact of the training run, thus the file carries it.",
+)
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=quantized.ELECTED_MIN_P)
+def quantize(ckpt, out, ring, temperature, min_p):
+    """Write the contract file of one checkpoint: the quantized model, and nothing else.
+
+    It is the only thing that crosses the seam for a build. Every width and the plan come
+    out of the checkpoint's own shapes; the ring is the one number no training run states,
+    and the temperature and the floor bake into the temper and the min-p share."""
+    twin = quantized.QuantizedMamba.of(
+        model.Mamba.load(ckpt), ring=ring, temperature=temperature, min_p=min_p
+    )
+    quantized.save(out, twin)
+    plan = "".join(quantized.LETTERS[kind] for kind in twin.plan)
+    click.echo(
+        f"wrote {out}: d {twin.d}, plan {plan}, {twin.heads} heads, "
+        f"span {twin.span}, ring {twin.ring}"
+    )
+    click.echo(
+        f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
+        f"temperature {twin.temper.temperature}, min weight {twin.min_weight}"
+    )
 
 
 if __name__ == "__main__":

@@ -35,8 +35,7 @@ import data
 import measure
 from mamba import model
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-CORPUS = str(JAX_ROOT / "_data" / "frames.safetensors")
+CORPUS = str(data.FRAMES)
 CONTEXT = 256  # the training window, thus the window the referee's eval rows cut at
 # seat 0 is the bass and seat 3 the soprano, as the chained head reads them
 VOICES = measure.VOICE_NAMES
@@ -47,7 +46,7 @@ VOICES = measure.VOICE_NAMES
 # ==================================================================== #
 
 
-def losses(params, corpus_path=CORPUS, limit=128, batch=16):
+def losses(held, corpus_path=CORPUS, limit=128, batch=16):
     """The loss cut three ways, and the four seats.
 
     77.91 percent of the voice slots repeat the step before. They are easy, they dominate
@@ -67,7 +66,7 @@ def losses(params, corpus_path=CORPUS, limit=128, batch=16):
     seats = np.zeros(data.SEATS)
     for classes, phases in data.eval_batches(corpus["valid"], CONTEXT, limit, batch):
         classes, phases = jnp.asarray(classes), jnp.asarray(phases)
-        nll = model.seat_nll(params, classes, phases)
+        nll = held.seat_nll(classes, phases)
         by_step = jnp.sum(nll, axis=-1)
         moving = data.moving(classes) >= 2
         total += float(jnp.sum(by_step))
@@ -131,7 +130,8 @@ def over_seeds(rows):
 
     THE ERROR IS NOT DECORATION. A single-seed reading did not survive a second seed once
     in this era: a texture gap of 3.7 steps at one seed read 0.3 at the next, and a
-    conclusion was withdrawn for it. Two walks are the floor and sixteen is comfortable."""
+    conclusion was withdrawn for it. Two walks are the floor and sixteen is comfortable.
+    """
     return {
         name: (
             st.mean([row[name] for row in rows]),
@@ -178,7 +178,7 @@ def main():
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--corpus", "corpus_path", default=CORPUS)
 def forced(ckpt, corpus_path):
-    row = losses(model.load_params(ckpt), corpus_path)
+    row = losses(model.Mamba.load(ckpt), corpus_path)
     for line in loss_lines(Path(ckpt).stem[:22], row):
         click.echo(line)
 
@@ -196,8 +196,10 @@ def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):
     from mamba import infer
 
     seeds = midi.parse_seeds(None, None, seeds)
-    walks = infer.sample(
-        model.load_params(ckpt),
+    # [infer.draw] and NOT [infer.sample], which is a click Command and cannot be called
+    # with a model
+    walks = infer.draw(
+        model.Mamba.load(ckpt),
         seeds=seeds,
         steps=steps,
         temperature=temperature,

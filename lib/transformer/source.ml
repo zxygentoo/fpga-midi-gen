@@ -45,9 +45,9 @@
      register later, for headroom this clock does not spend. The bespoke readers of [preg]
      anchor it as the DSP's final register, thus the tools cannot fold the accumulator in.
    - The dormant debt, recorded: the product latency — two cycles from the operands to
-     [preg] — is hand-encoded as tick positions, in [exp_weight_chain] for the Exp and
-     Temper chains and in the Threshold chain. If the pipe ever deepens, replace the tick
-     counts with a wait on a valid bit; do not renumber. *)
+     [preg] — is hand-encoded as tick positions, in [Mgen_nn.Sampler]'s [exp_weight_chain]
+     for the Exp and Temper chains and in its [threshold] chain. If the pipe ever deepens,
+     replace the tick counts with a wait on a valid bit; do not renumber. *)
 
 open Base
 open Hardcaml
@@ -65,16 +65,11 @@ module Mac = Mgen_nn.Mac.Make (struct
     let walk_bits = 9
   end)
 
-let clamp16 v =
-  let v = sresize v ~width:32 in
-  mux2
-    (v >+ of_signed_int ~width:32 32767)
-    (of_signed_int ~width:16 32767)
-    (mux2
-       (v <+ of_signed_int ~width:32 (-32768))
-       (of_signed_int ~width:16 (-32768))
-       (sel_bottom v ~width:16))
-;;
+(* the int16 rails as a circuit, from the one home of them: the compare stands at the
+   OPERAND'S OWN WIDTH. Every value clamped here is 32 bits or wider — 40 and 48 in this
+   era — thus a resize to 32 before the compare would wrap a wide product into the rails
+   and pass it. [Mgen_nn.Quantized]'s own gate holds the two forms apart. *)
+let clamp16 = Mgen_nn.Quantized.Rtl.clamp16
 
 (* value * 2^-from as value * 2^-target; the shift count is an elaboration constant *)
 let rescale ~from ~target v =
@@ -132,8 +127,8 @@ module Op = struct
   type t =
     (* The five rows of the input add row for row — the seat row of each of the four
        seats, and the bar phase — thus one exponent covers them all and the walk reads two
-       bases. [Quantized.Model.check_shape] holds the rule, and [create] calls it before
-       it reads a base. The seat rows are addressed by the classes the chain drew. *)
+       bases. [Model.check_shape] holds the rule, and [create] calls it before it reads a
+       base. The seat rows are addressed by the classes the chain drew. *)
     | Embed of
         { seats : int
         ; phase : int
@@ -174,8 +169,10 @@ module Op = struct
     let pending_hold = Divider.busy_cycles + 1
     let root = Isqrt.busy_cycles + 1
 
-    (* the ticks of [exp_weight_chain], [Draw], [Threshold] and [Pick] *)
-    let exp_weight = 7
+    (* the ticks of [exp_weight_chain], [Draw], [Threshold] and [Pick]. The chain's own
+       work is six ticks and the rest is the wait on the unit, thus the count follows
+       [Exp2.latency] and cannot drift from it. *)
+    let exp_weight = 6 + Exp2.latency
     let draw = 4
     let threshold = 5
     let pick = 2
@@ -183,8 +180,8 @@ module Op = struct
 
   (* The analytic cost of one op, in cycles from its go to its finish, both the cycle a
      predecessor's finish runs. [n] is the filled slot count of the ring at this step. *)
-  let cycles (config : Transformer.Config.t) ~n (op : t) =
-    let { Transformer.Config.d; heads; _ } = config in
+  let cycles (model : Model.t) ~n (op : t) =
+    let { Model.d; heads; _ } = model in
     let head_d = d / heads in
     let classes = Vocab.classes in
     match op with
@@ -221,11 +218,11 @@ end
 (* The two programs of the source. It runs [forward] over the frame it is about to state,
    and then [chain] to draw the frame after it.
 
-   The chain runs from the soprano down and it stands FIRST in the step of the reference —
-   [Quantized.Engine.next_step] draws and then forwards. The circuit takes the two in the
-   other order for one reason: it answers [step] from a frame it drew already, thus the
-   forward of the stated frame and the chain of the next one both fall inside one step
-   period, and the wire never waits for the network.
+   The chain runs from the soprano down and it stands FIRST in the step of the twin —
+   [jax/transformer/quantized.py]'s [next_step] draws and then forwards. The circuit takes
+   the two in the other order for one reason: it answers [step] from a frame it drew
+   already, thus the forward of the stated frame and the chain of the next one both fall
+   inside one step period, and the wire never waits for the network.
 
    **[chain] is ONE seat and the machine runs it [Frame.voices] times**, counting the seat
    register down from the soprano. The four seats were inlined at first, which made the
@@ -237,25 +234,15 @@ end
    a register widens that register's parallel case, and inlining put four writers where
    era three had one. The seat register is the price of the room, and it buys back three
    quarters of the chain's control. *)
-type program =
-  { chain : Op.t list
-  ; forward : Op.t list
-  }
+type program = Op.t Mgen_nn.Program.t
 
-let schedule (model : Quantized.Model.t) : program =
-  let { Transformer.Config.d
-      ; layers
-      ; heads = (_ : int)
-      ; context = (_ : int)
-      ; slope_span = (_ : int)
-      }
-    =
-    model.config
-  in
+let schedule (model : Model.t) : program =
+  let d = model.d in
+  let layers = Model.layers model in
   let dff = 4 * d in
   let classes = Vocab.classes in
-  let bases = Quantized.Model.rom_bases model in
-  let tensor_at (q : Quantized.Model.quantized) base = { Op.base; e = q.e } in
+  let bases = Model.rom_bases model in
+  let tensor_at (q : Model.quantized) base = { Op.base; e = q.e } in
   (* every matvec reads [`Y] into [d] rows of [d] terms, inner-major; the defaults hold
      for all but the two FFN weights and the seat readout *)
   let matvec ?(src = `Y) ?(outer_major = false) ?(inner = d) ?(outer = d) w base landing =
@@ -263,7 +250,7 @@ let schedule (model : Quantized.Model.t) : program =
   in
   let layer l =
     let w = model.params.layers.(l) in
-    let b = bases.Transformer.Params_data.layers.(l) in
+    let b = bases.Model.Params_data.layers.(l) in
     [ Op.Rms_norm
     ; matvec w.wq b.wq To_q
     ; matvec w.wk b.wk (To_ring { k = true; layer = l })
@@ -308,23 +295,18 @@ let schedule (model : Quantized.Model.t) : program =
 
 (* the step: [forward] runs under [Run], and [chain] behind it; [Idle] holds the frame the
    chain drew and takes the commands *)
-module State = struct
-  type t =
-    | Idle
-    | Run
-  [@@deriving compare ~localize, enumerate, sexp_of]
-end
+module State = Mgen_nn.Program.State
 
-let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
-  let { Quantized.Model.config; params; temper; min_weight } = model in
-  let { Transformer.Config.d; heads; context = slots; slope_span = span; layers } =
-    config
+let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
+  let { Model.d; heads; context = slots; slope_span = span; params; temper; min_weight } =
+    model
   in
+  let layers = Model.layers model in
   let head_d = d / heads in
   let dff = 4 * d in
   let classes = Vocab.classes in
   (* the shift rules of the reference; the packing below derives every width *)
-  Quantized.Model.check_shape model;
+  Model.check_shape model;
   (* the bar phase is a slice of the step counter, as every period of this design is *)
   assert (Int.is_pow2 Jsb.bar_steps);
   let dbits = Int.floor_log2 d in
@@ -338,15 +320,15 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* vram serves the scores, the FFN hidden, the logits and the sampler weights *)
   let vram_size = Int.max classes (Int.max dff slots) in
   let vbits = address_bits_for vram_size in
-  let score_shift = Quantized.Constants.score_shift ~head_d in
+  let score_shift = Model.Constants.score_shift ~head_d in
   let prog = schedule model in
   let forward_length = List.length prog.forward in
   let pc_bits = address_bits_for (forward_length + List.length prog.chain) in
-  let rom_bits = Quantized.Model.rom_bits model in
+  let rom_bits = Model.rom_bits model in
   let rom_addr_bits = address_bits_for (Array.length rom_bits) in
   let rom_const at = of_unsigned_int ~width:rom_addr_bits at in
   let min32 = of_signed_int ~width:32 (-(1 lsl 31)) in
-  let eps48 = of_unsigned_int ~width:48 Quantized.Constants.eps_q in
+  let eps48 = of_unsigned_int ~width:48 Model.Constants.eps_q in
   let spec = Reg_spec.create ~clock:i.clock ~clear:i.clear () in
   let open Always in
   let sm = State_machine.create (module State) spec in
@@ -474,9 +456,9 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* The banking rules are in [docs/transformer_rtl.md]; the measurements behind them are
      here. The tools demoted deep write-portless arrays to slice logic under two different
      select shapes — the six-layer image in slice logic is 69 percent of the device — thus
-     a bank is an initialized memory with a gated-off write port, and RAM_STYLE pins it.
-     The address registers once before the tree, and each bank registers its data once
-     behind it: two cycles from address to data, as one ROM, because
+     a bank is a [Placement.rom] under [block_rom]: an image, one read, and no write logic
+     at all. The address registers once before the tree, and each bank registers its data
+     once behind it: two cycles from address to data, as one ROM, because
      [reg (reg rom.(addr))] equals [reg (rom.(reg addr))] when the contents never change.
      The address register is load-bearing, not style: with a combinational address, the
      tools retime the data register onto the address pins of every block RAM primitive and
@@ -489,18 +471,10 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
     if Int.is_pow2 n && n <= 1 lsl 15
     then (
       let data =
-        (multiport_memory
-           ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
-           ~initialize_to:bits
-           n
-           ~write_ports:
-             [| { Write_port.write_clock = i.clock
-                ; write_address = zero (width addr)
-                ; write_enable = gnd
-                ; write_data = zero 8
-                }
-             |]
-           ~read_addresses:[| addr |]).(0)
+        (Mgen_nn.Placement.rom
+           ~attributes:[ Mgen_nn.Placement.block_rom ]
+           ~read_addresses:[| addr |]
+           bits).(0)
       in
       reg spec ~enable:nohold data)
     else (
@@ -527,7 +501,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
-  (* The read of a ring restores the eight zero low bits that [Quantized.coarse_to_ring]
+  (* The read of a ring restores the eight zero low bits that the twin's [coarse_to_ring]
      dropped at the write. Every memory the walk reads stands two registers deep, and
      [nohold] freezes each stage with the walk's tags; the small RAMs keep the
      one-register tap for the bespoke chains.
@@ -665,8 +639,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
     mux
       hd.value
       (List.init heads ~f:(fun head ->
-         let exponent = Quantized.Constants.slope_exponent ~span ~heads ~head in
-         sll (uresize mac.row ~width:32) ~by:(Quantized.Constants.y_q - exponent)))
+         let exponent = Model.Constants.slope_exponent ~span ~heads ~head in
+         sll (uresize mac.row ~width:32) ~by:(Model.Constants.y_q - exponent)))
   in
   (* The derived values of L1, named once. A builder runs for each op of the program —
      [2 * layers + 1] [Rms_norm] and [layers] [Attend], thus five and two at two layers
@@ -705,15 +679,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
      arithmetic. *)
   (* the class the seat the chain is at has drawn, and the write of that register: the two
      halves of the seat's port into [drawn], each one parallel case *)
-  let drawn_at_seat =
-    mux seat.value (List.map (Array.to_list drawn) ~f:(fun c -> c.Always.Variable.value))
-  in
-  let write_drawn value =
-    switch
-      seat.value
-      (List.init Frame.voices ~f:(fun s ->
-         of_unsigned_int ~width:seat_bits s, [ drawn.(s) <-- value ]))
-  in
+  let drawn_at_seat = Mgen_nn.Sampler.drawn_at_seat ~seat ~drawn in
+  let write_drawn = Mgen_nn.Sampler.write_drawn ~seat ~seats:drawn in
   let base_of (where : Op.where) =
     match where with
     | Fixed at -> rom_const at
@@ -726,57 +693,54 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
   (* the frame word of the classes the chain drew: [Vocab.Rtl] states the map, and seat 0
      takes the low byte *)
   let frame_word =
-    concat_msb
-      (List.rev_map (Array.to_list drawn) ~f:(fun c ->
-         Vocab.Rtl.code_of_class c.Always.Variable.value))
+    Mgen_nn.Sampler.frame_word ~code_of_class:Vocab.Rtl.code_of_class ~drawn
   in
   (* ================================================================== *)
   (* L3 — the compiler: one builder per op kind, then the chain *)
   (* ================================================================== *)
-  (* [by_tick bodies] is one bespoke chain: body [k] runs at tick [k]. The tick steps by
-     itself, thus a body states only its work and the position in the list states its
-     time. The last body owns what follows it, because a chain ends either on [finish] or
-     on a return to tick 0. A parallel case and not a chain of guards: see the L3 note of
-     the module comment. *)
-  let by_tick bodies =
-    let last = List.length bodies - 1 in
-    switch
-      tick.value
-      (List.mapi bodies ~f:(fun k body ->
-         of_unsigned_int ~width:3 k, if k = last then body else (tick <--. k + 1) :: body))
+  (* The two case forms of L3 are [Mgen_nn.Program]'s and the weight chain under them is
+     [Mgen_nn.Sampler]'s — one text for the two step-frame eras, and their interfaces hold
+     what each is and why. A parallel case and not a chain of guards: see the L3 note of
+     the module comment. [Attend] and [Temper] are the two callers of the weight chain
+     here; they differ in the address, in the scale, in what the landing makes of the
+     weight, and in how the walk advances. *)
+  let by_tick = Mgen_nn.Program.chain_over tick in
+  let by_stage = Mgen_nn.Program.case_over stage in
+  (* THE DRAW OF THE CHAIN reads these, and [Mgen_nn.Sampler] builds its four ops over
+     them. The record is a view: every field is a variable or a signal declared above, and
+     the shared module declares nothing of its own. *)
+  let sampler =
+    { Mgen_nn.Sampler.classes
+    ; temper
+    ; min_weight
+    ; tick
+    ; oo
+    ; u24
+    ; total
+    ; thi
+    ; thr
+    ; cum
+    ; found
+    ; diff
+    ; nn
+    ; vram_raddr
+    ; vram_wen
+    ; vram_waddr
+    ; vram_wdata
+    ; vramd
+    ; below_peak
+    ; mul_a
+    ; mul_b
+    ; product = mac.product
+    ; prng_step
+    ; prng_byte
+    ; exp2_e
+    ; weight_addr = oo8
+    ; oo_class
+    ; write_drawn
+    }
   in
-  (* [by_stage bodies] is the stages of a multi-stage op, as a parallel case. A stage
-     moves [stage] itself, because the stages wait on different things — a walk, a unit, a
-     chain — thus the list states only the work of each. *)
-  let by_stage bodies =
-    switch
-      stage.value
-      (List.mapi bodies ~f:(fun k body -> of_unsigned_int ~width:2 k, body))
-  in
-  (* [exp_weight_chain] is the bespoke chain that turns one vram value into its exp2
-     weight, over the same address: read the value, take its distance below the peak,
-     scale that into the exp2 argument, and land the weight where the value stood.
-     [Attend] runs it over the ages of a head and [Temper] over the codes; they differ in
-     the address, in the scale, in what the landing makes of the weight, and in how the
-     walk advances. The scale carries its own Q, thus the port and the shift under it
-     cannot disagree. The tick numbers of the multiply and of the exp2 read live here
-     alone — the dormant debt of the module comment has one home. *)
-  let exp_weight_chain ~addr ~(scale : Quantized.Constants.scale) ~land_ ~advance =
-    let at_addr = uresize addr ~width:vbits in
-    [ vram_raddr <-- at_addr
-    ; mul_a <-- sel_bottom diff.value ~width:25
-    ; mul_b <-- of_signed_int ~width:18 scale.q_value
-    ; by_tick
-        [ []
-        ; [ diff <-- below_peak ]
-        ; []
-        ; []
-        ; [ nn <-- sel_bottom (negate (sra mac.product ~by:scale.q)) ~width:22 ]
-        ; []
-        ; [ vram_wen <-- vdd; vram_waddr <-- at_addr ] @ land_ @ [ tick <--. 0 ] @ advance
-        ]
-    ]
-  in
+  let exp_weight_chain = Mgen_nn.Sampler.exp_weight_chain sampler in
   (* [join_to_h ~from] is the residual read-modify-write: a finished row's sum lands on
      the stream one cycle behind its retirement, thus the walk and the join never contend
      for the h RAM — a walk reads y, the hidden or the ROM, and never h. The join of a
@@ -801,7 +765,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ; hram_wdata
           <-- sel_bottom
                 (sresize hramd ~width:48
-                 +: rescale ~from ~target:Quantized.Constants.h_q rmw_sum.value)
+                 +: rescale ~from ~target:Model.Constants.h_q rmw_sum.value)
                 ~width:32
         ; when_ done_p.value ([ done_p <-- gnd ] @ finish)
         ]
@@ -839,7 +803,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
             ; hram_waddr <-- mac_row_d
             ; hram_wdata
               <-- sel_bottom
-                    (rescale ~from:e ~target:Quantized.Constants.h_q mac.sum)
+                    (rescale ~from:e ~target:Model.Constants.h_q mac.sum)
                     ~width:32
             ]
         ; when_ mac.done_ finish
@@ -932,11 +896,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         , common @ [ when_ mac.row_done writes; when_ mac.done_ finish ] )
       in
       let to_kv v =
-        clamp16
-          (rescale
-             ~from:(Quantized.Constants.y_q + w.e)
-             ~target:Quantized.Constants.kv_q
-             v)
+        clamp16 (rescale ~from:(Model.Constants.y_q + w.e) ~target:Model.Constants.kv_q v)
       in
       (match landing with
        | To_q ->
@@ -950,10 +910,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
            ]
        | To_hidden ->
          let shifted =
-           rescale
-             ~from:(Quantized.Constants.y_q + w.e)
-             ~target:Quantized.Constants.hid_q
-             mac.sum
+           rescale ~from:(Model.Constants.y_q + w.e) ~target:Model.Constants.hid_q mac.sum
          in
          let relu = mux2 (shifted <+ zero 48) (zero 48) shifted in
          simple
@@ -974,8 +931,8 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
        | Add_to_h ->
          let from_q =
            match src with
-           | `Y -> Quantized.Constants.kv_q
-           | `Hidden -> Quantized.Constants.hid_q
+           | `Y -> Model.Constants.kv_q
+           | `Hidden -> Model.Constants.hid_q
          in
          join_entry, common @ join_to_h ~from:(from_q + w.e) ~finish)
     | Attend { layer } ->
@@ -1020,7 +977,7 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
       let weigh_ages =
         exp_weight_chain
           ~addr:ii_slot
-          ~scale:Quantized.Constants.log2e
+          ~scale:Model.Constants.log2e
           ~land_:[ vram_wdata <-- uresize exp2_e ~width:32; den <-- den_next ]
           ~advance:
             [ if_
@@ -1071,148 +1028,34 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
         ]
       in
       entry, [ by_stage [ score_ages; weigh_ages; merge_lanes ] ]
-    | Temper ->
-      (* the tempered weight of each class: exp2, and refused under min-p *)
-      let entry = [ oo <--. 0; tick <--. 0; total <--. 0 ] in
-      (* the min-p refusal: a weight under the share of the peak weighs nothing *)
-      let keep = exp2_e >=: of_unsigned_int ~width:16 min_weight in
-      let w = mux2 keep exp2_e (zero 16) in
-      let body =
-        exp_weight_chain
-          ~addr:oo8
-          ~scale:temper
-          ~land_:
-            [ vram_wdata <-- uresize w ~width:32
-            ; total <-- total.value +: uresize w ~width:24
-            ]
-          ~advance:[ if_ (oo.value ==:. classes - 1) finish [ oo <-- oo.value +:. 1 ] ]
-      in
-      entry, body
-    | Draw ->
-      (* three PRNG bytes, high first: the walk of [Prng.uniform] *)
-      let entry = [ tick <--. 0 ] in
-      let body =
-        [ by_tick
-            [ [ prng_step <-- vdd ]
-            ; [ prng_step <-- vdd; u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ]
-            ; [ prng_step <-- vdd; u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ]
-            ; [ u24 <-- sel_bottom u24.value ~width:16 @: prng_byte ] @ finish
-            ]
-        ]
-      in
-      entry, body
-    | Threshold ->
-      (* (u24 * total) >> 24 in two DSP passes: the high twelve bits of the total, then
-         the low twelve — the same integer as one wide multiply *)
-      let entry = [ tick <--. 0 ] in
-      let body =
-        [ mul_a <-- uresize u24.value ~width:25
-        ; mul_b
-          <-- uresize
-                (mux2
-                   (tick.value <:. 2)
-                   (select total.value ~high:23 ~low:12)
-                   (sel_bottom total.value ~width:12))
-                ~width:18
-        ; by_tick
-            [ []
-            ; []
-            ; [ thi <-- mac.product ]
-            ; []
-            ; [ thr
-                <-- sel_bottom
-                      (srl
-                         (sll (uresize thi.value ~width:56) ~by:12
-                          +: uresize mac.product ~width:56)
-                         ~by:24)
-                      ~width:24
-              ]
-              @ finish
-            ]
-        ]
-      in
-      entry, body
-    | Pick ->
-      (* The first class whose running total passes the threshold, and the last class
-         catches a walk that no weight stopped — which is the rule of the reference and
-         not a fallback: the threshold is below the total by construction, thus the class
-         the walk names always holds weight. The class lands in the register of its seat. *)
-      let entry = [ oo <--. 0; tick <--. 0; cum <--. 0; found <--. 0 ] in
-      let body =
-        [ vram_raddr <-- uresize oo8 ~width:vbits
-        ; by_tick
-            [ []
-            ; [ (let w = sel_bottom vramd ~width:24 in
-                 let cum_next = cum.value +: uresize w ~width:25 in
-                 let passes = cum_next >: uresize thr.value ~width:25 in
-                 proc
-                   [ cum <-- cum_next
-                   ; when_
-                       ~:(found.value)
-                       [ when_ passes [ found <-- vdd; write_drawn oo_class ]
-                       ; when_
-                           (oo.value ==:. classes - 1)
-                           [ write_drawn (of_unsigned_int ~width:class_bits (classes - 1))
-                           ]
-                       ]
-                   ])
-              ; tick <--. 0
-              ; if_ (oo.value ==:. classes - 1) finish [ oo <-- oo.value +:. 1 ]
-              ]
-            ]
-        ]
-      in
-      entry, body
+    | Temper -> Mgen_nn.Sampler.tempered_weights sampler ~finish
+    | Draw -> Mgen_nn.Sampler.uniform_word sampler ~finish
+    | Threshold -> Mgen_nn.Sampler.threshold sampler ~finish
+    | Pick -> Mgen_nn.Sampler.pick sampler ~finish
   in
-  (* the link: op [k]'s finish is op [k+1]'s entry and the pc move; the last op of a
-     program takes the final actions instead *)
-  let rec link index final = function
-    | [] -> final, []
-    | op :: rest ->
-      let next_entry, tail = link (index + 1) final rest in
-      let entry, body = build op ~finish:next_entry in
-      entry @ [ pc <--. index ], (index, body) :: tail
-  in
-  (* The chain is one seat and it runs once for each of them, counting down from the
-     soprano. Its last op returns to its first until the bass has drawn, thus the loop
-     closes on the op boundary and costs no cycle of its own.
-
-     The head's entry is taken from a build of its own: an op's ENTRY is the actions its
-     predecessor runs and does not depend on the op's finish, thus building the head twice
-     states the loop back without a circular definition. Only the entry of that second
-     build is kept, and the bodies of it reach no output and leave the circuit. *)
-  let chain_head = List.hd_exn prog.chain in
-  let chain_head_entry = fst (build chain_head ~finish:[]) @ [ pc <--. forward_length ] in
-  let chain_done =
-    [ if_
-        (seat.value ==:. 0)
-        [ sm.set_next Idle ]
-        ([ seat <-- seat.value -:. 1 ] @ chain_head_entry)
-    ]
-  in
-  let chain_entry, chain_bodies = link forward_length chain_done prog.chain in
-  (* the chain opens at the soprano; the reference draws in the same order *)
-  let enter_chain = [ seat <--. Frame.voices - 1 ] @ chain_entry in
-  (* The forward has stated step [s], thus the chain would draw the step after it. Through
-     the lead-in the chain does not run: the frame stays silence, the drawn classes stand
-     at [Vocab.silence], and the PRNG does not move, because [Draw] is the only thing that
-     steps it. *)
-  let next_index = s.value +:. 1 in
-  let forward_done =
-    [ s <-- next_index
-    ; cur <-- cur.value +:. 1
-    ; filled <-- (filled.value |: (cur.value ==:. slots - 1))
-    ; if_ (next_index >=:. Jsb.bar_steps) enter_chain [ sm.set_next Idle ]
-    ]
-  in
-  let forward_entry, forward_bodies = link 0 forward_done prog.forward in
-  (* one parallel case, not a chain of guards: see the L3 note of the module comment *)
-  let run_body =
-    [ switch
-        pc.value
-        (List.map (forward_bodies @ chain_bodies) ~f:(fun (index, body) ->
-           of_unsigned_int ~width:pc_bits index, body))
-    ]
+  (* L3 IS [Mgen_nn.Program]: the link, the seat loop and the parallel case over the
+     program counter are one text for the two step-frame eras, and its interface holds
+     what each is and why. What stands here is what is era four's alone — the ring moves
+     of a step boundary, below. *)
+  let { Mgen_nn.Program.forward_entry; run_body } =
+    Mgen_nn.Program.compile
+      ~build
+      ~pc
+      ~seat
+      ~idle:(fun () -> [ sm.set_next Idle ])
+      ~forward_done:(fun ~enter_chain ->
+        (* The forward has stated step [s], thus the chain would draw the step after it.
+           Through the lead-in the chain does not run: the frame stays silence, the drawn
+           classes stand at [Vocab.silence], and the PRNG does not move, because [Draw] is
+           the only thing that steps it. THE RING MOVES HERE and it moves nowhere else:
+           era five's rings are written off its step counter and it has neither of these. *)
+        let next_index = s.value +:. 1 in
+        [ s <-- next_index
+        ; cur <-- cur.value +:. 1
+        ; filled <-- (filled.value |: (cur.value ==:. slots - 1))
+        ; if_ (next_index >=:. Jsb.bar_steps) enter_chain [ sm.set_next Idle ]
+        ])
+      prog
   in
   compile
     [ valid <-- gnd
@@ -1243,20 +1086,18 @@ let create ~(model : Quantized.Model.t) ~seed (i : _ I.t) : _ O.t =
 (* ==================================================================== *)
 
 let%expect_test "the program is data: the state table prints" =
-  let config =
-    { Transformer.Config.d = 16; layers = 1; heads = 4; context = 16; slope_span = 8 }
+  let shape =
+    { Model.For_test.d = 16; layers = 1; heads = 4; context = 16; slope_span = 8 }
   in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
-  let { chain; forward } = schedule model in
+  let model = Model.For_test.drawn shape ~seed:11 in
+  let { Mgen_nn.Program.chain; forward } = schedule model in
   let show tag ops =
     List.iteri ops ~f:(fun index op ->
       Stdio.printf "%s%-2d %s\n" tag index (Sexp.to_string (Op.sexp_of_t op)))
   in
   show "f" forward;
   show "c" chain;
-  let baseline =
-    schedule (Quantized.Model.For_test.init Transformer.Config.baseline ~seed:11)
-  in
+  let baseline = schedule (Model.For_test.drawn Model.For_test.elected ~seed:11) in
   Stdio.printf
     "baseline: %d forward ops, %d chain ops\n"
     (List.length baseline.forward)
@@ -1266,10 +1107,10 @@ let%expect_test "the program is data: the state table prints" =
     f0  (Embed(seats 0)(phase 3072)(e 10))
     f1  Rms_norm
     f2  (Matvec((src Y)(w((base(Fixed 3328))(e 10)))(outer_major false)(inner 16)(outer 16)(landing To_q)))
-    f3  (Matvec((src Y)(w((base(Fixed 3584))(e 11)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k true)(layer 0)))))
+    f3  (Matvec((src Y)(w((base(Fixed 3584))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k true)(layer 0)))))
     f4  (Matvec((src Y)(w((base(Fixed 3840))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(layer 0)))))
     f5  (Attend(layer 0))
-    f6  (Matvec((src Y)(w((base(Fixed 4096))(e 11)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
+    f6  (Matvec((src Y)(w((base(Fixed 4096))(e 10)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
     f7  Rms_norm
     f8  (Matvec((src Y)(w((base(Fixed 4352))(e 10)))(outer_major false)(inner 16)(outer 64)(landing To_hidden)))
     f9  (Matvec((src Hidden)(w((base(Fixed 5376))(e 10)))(outer_major false)(inner 64)(outer 16)(landing Add_to_h)))
@@ -1284,80 +1125,63 @@ let%expect_test "the program is data: the state table prints" =
     |}]
 ;;
 
-(* the first step where the two walks part, if they part: a mismatch names the step to
-   read, and a walk of tens of steps hides that index inside two long lists *)
-let first_divergence circuit reference =
-  List.findi (List.zip_exn circuit reference) ~f:(fun (_ : int) (c, r) -> c <> r)
-  |> Option.map ~f:fst
-;;
+module For_test = struct
+  module Bench = struct
+    type t =
+      { rewind : unit -> unit
+      ; play : unit -> int
+      }
 
-(* The frame comparison: the circuit against the reference, step for step, on drawn
-   weights. This is the gate that holds the circuit to [Quantized], and the walk crosses
-   the lead-in — the first drawn step is the one that reads a context of silence. *)
-let frames_agree ~model ~seed ~steps =
-  let module Sim = Cyclesim.With_interface (I) (O) in
-  let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let budget = ref 5_000_000 in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Int.decr budget;
-    assert (!budget > 0)
-  in
-  inp.rewind := Bits.vdd;
-  cycle ();
-  inp.rewind := Bits.gnd;
-  cycle ();
-  (* One step: the command, then the cycle [valid] answers it — the frame stands there,
-     because the chain that moves the drawn classes runs behind the forward pass. *)
-  let step () =
-    inp.step := Bits.vdd;
-    cycle ();
-    inp.step := Bits.gnd;
-    cycle ();
-    assert (Bits.to_bool !(out.valid));
-    let frame = Bits.to_int_trunc !(out.frame) in
-    while not (Bits.to_bool !(out.idle)) do
-      cycle ()
-    done;
-    frame
-  in
-  let circuit =
-    List.rev
-      (List.fold (List.range 0 steps) ~init:[] ~f:(fun acc (_ : int) -> step () :: acc))
-  in
-  let (_ : Quantized.Engine.t), reference =
-    List.fold_map
-      (List.range 0 steps)
-      ~init:(Quantized.Engine.init model ~seed)
-      ~f:(fun engine (_ : int) ->
-        let engine, step = Quantized.Engine.next_step engine in
-        engine, step.Quantized.Engine.frame)
-  in
-  List.iteri circuit ~f:(fun index frame ->
-    if index < 2 || index >= Jsb.bar_steps - 1
-    then Stdio.printf "step %2d  %08x\n" index frame);
-  let divergence = first_divergence circuit reference in
-  Stdio.printf "%d steps, the frames agree: %b\n" steps (Option.is_none divergence);
-  Option.iter divergence ~f:(fun index ->
-    Stdio.printf "the first step that parts is %d\n" index;
-    Stdio.print_s ([%sexp_of: int list] circuit);
-    Stdio.print_s ([%sexp_of: int list] reference))
-;;
+    let harness ~model ~seed () =
+      let module Sim = Cyclesim.With_interface (I) (O) in
+      let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 seed)) in
+      let inp = Cyclesim.inputs sim in
+      let out = Cyclesim.outputs ~clock_edge:Before sim in
+      let budget = ref 5_000_000 in
+      let cycle () =
+        Cyclesim.cycle sim;
+        Int.decr budget;
+        if !budget <= 0 then failwith "the walk did not finish inside its budget"
+      in
+      let rewind () =
+        inp.rewind := Bits.vdd;
+        cycle ();
+        inp.rewind := Bits.gnd;
+        cycle ()
+      in
+      (* One step: the command, then the cycle [valid] answers it — the frame stands
+         there, because the chain that moves the drawn classes runs behind the forward
+         pass. *)
+      let play () =
+        inp.step := Bits.vdd;
+        cycle ();
+        inp.step := Bits.gnd;
+        cycle ();
+        if not (Bits.to_bool !(out.valid)) then failwith "the step was not answered";
+        let frame = Bits.to_int_trunc !(out.frame) in
+        while not (Bits.to_bool !(out.idle)) do
+          cycle ()
+        done;
+        frame
+      in
+      { rewind; play }
+    ;;
+  end
+end
 
 (* The ring address of one shape, by the packing rule the note at [ring_row] states: the
-   layer stands above the slot and the dimension. The layer field is empty at one layer,
-   thus the gate below prints these widths — the shape of a gate decides which half of
-   [ring_row] the simulation ever elaborates, and that fact belongs in the gate. *)
-let ring_geometry (config : Transformer.Config.t) =
-  let rows = config.layers * config.context * config.d in
-  let dbits = Int.floor_log2 config.d in
-  let slot_bits = Int.floor_log2 config.context in
+   layer stands above the slot and the dimension. The layer field is EMPTY at one layer,
+   thus the address a one-layer walk elaborates is not the address the board runs at six —
+   [jax/tests/test_rtl_transformer.py] walks the circuit at both, and this prints the two
+   packings beside each other so that the rule is readable and not only exercised. *)
+let ring_geometry (shape : Model.For_test.shape) =
+  let rows = shape.layers * shape.context * shape.d in
+  let dbits = Int.floor_log2 shape.d in
+  let slot_bits = Int.floor_log2 shape.context in
   let ring_bits = address_bits_for rows in
   Stdio.printf
     "layers %d: %d ring rows, ring_bits %d = layer_bits %d + slot_bits %d + dbits %d\n"
-    config.layers
+    shape.layers
     rows
     ring_bits
     (ring_bits - slot_bits - dbits)
@@ -1365,88 +1189,14 @@ let ring_geometry (config : Transformer.Config.t) =
     dbits
 ;;
 
-let%expect_test "the source agrees with the reference, frame for frame" =
-  let config = Quantized.Model.For_test.config in
-  ring_geometry config;
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:42 ~steps:20;
+let%expect_test "the ring address carries a layer field only above one layer" =
+  ring_geometry Model.For_test.shape;
+  ring_geometry
+    { Model.For_test.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 };
   [%expect
     {|
     layers 1: 512 ring rows, ring_bits 9 = layer_bits 0 + slot_bits 4 + dbits 5
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b6cbcd00
-    step 18  b6cad0d0
-    step 19  a6d1adbd
-    20 steps, the frames agree: true
-    |}]
-;;
-
-(* The seed 0 on the circuit. It is the fixed point of xorshift32 and the panel can state
-   it — all the slide switches down is the rest position of the board — thus the walk
-   stands still: every threshold is 0 and each seat takes the first class that min-p left
-   standing. [Quantized] states that walk, and this holds the circuit to it, where a PRNG
-   that reset to another state or a threshold that rounded the other way would show.
-
-   The drawn weights of this model leave class 0 standing at every seat, thus the frame is
-   silence and the walk plays nothing after the lead-in. The board answers the same with
-   the trained model in flash, measured 2026-08-19: all the slide switches down is a
-   silent board. *)
-let%expect_test "the source agrees with the reference at the seed 0" =
-  let config = Quantized.Model.For_test.config in
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:11) ~seed:0 ~steps:20;
-  [%expect
-    {|
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  00000000
-    step 17  00000000
-    step 18  00000000
-    step 19  00000000
-    20 steps, the frames agree: true
-    |}]
-;;
-
-(* The same gate at two layers. It is not a wider shape for its own sake: at one layer the
-   layer field of the ring address is empty and the per-layer ROM bases all read the first
-   layer's, thus the [else] branch of [ring_row] and every address that carries a layer
-   are dead in a one-layer simulation and live only on the board, which runs six. This
-   gate elaborates them.
-
-   The shape is the shape of [test/test_quantized_drift.ml], thus the frame gate of the
-   circuit and the drift floors of the scheme stand on one model shape. The weights come
-   from another seed than the gate above, thus the two gates do not share a model. The
-   walk runs past the ring — sixteen slots — thus the second layer reads its own rows back
-   after the wrap and not only inside the lead-in.
-
-   The first drawn step reads the same frame as the gate above, and the two models are not
-   the same model: the walk seed is the same, thus the uniforms are the same, and weights
-   of scale 0.02 put the classes so near each other that a pick is almost the quantile of
-   its uniform alone. The steps after it part. Each gate compares a circuit against its
-   own reference in any case. *)
-let%expect_test "the source agrees with the reference at two layers" =
-  let config =
-    { Transformer.Config.d = 16; layers = 2; heads = 4; context = 16; slope_span = 4 }
-  in
-  ring_geometry config;
-  frames_agree ~model:(Quantized.Model.For_test.init config ~seed:23) ~seed:42 ~steps:24;
-  [%expect
-    {|
     layers 2: 512 ring rows, ring_bits 9 = layer_bits 1 + slot_bits 4 + dbits 4
-    step  0  00000000
-    step  1  00000000
-    step 15  00000000
-    step 16  aac7cbad
-    step 17  b5cbcd00
-    step 18  b6c9d0cf
-    step 19  a6d1adbc
-    step 20  c9a7b0ae
-    step 21  bfaeaab9
-    step 22  adc0cfa5
-    step 23  bac1b5b6
-    24 steps, the frames agree: true
     |}]
 ;;
 
@@ -1456,16 +1206,15 @@ let%expect_test "the source agrees with the reference at two layers" =
    bench spends dropping the strobe. The ring's fill [n] is the step index, capped at the
    slot count. *)
 let bench ~steps () =
-  let config = Quantized.Model.For_test.config in
-  let model = Quantized.Model.For_test.init config ~seed:11 in
+  let model = Model.For_test.drawn Model.For_test.shape ~seed:11 in
   let prog = schedule model in
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create (create ~model ~seed:(of_unsigned_int ~width:32 42)) in
   let inp = Cyclesim.inputs sim in
   let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let slots = config.context in
+  let slots = model.Model.context in
   let sum_ops ops ~n =
-    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles config ~n op)
+    List.fold ops ~init:0 ~f:(fun total op -> total + Op.cycles model ~n op)
   in
   let count_until_idle () =
     let cycles = ref 0 in
@@ -1523,10 +1272,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 16850, model 16850, delta 0
-    step 15: draws,  measured 31956, model 31956, delta 0
-    step 16: draws,  measured 31956, model 31956, delta 0
-    step 17: draws,  measured 31956, model 31956, delta 0
-    18 steps, 0 disagree, total 356808
+    step  0: silent, measured 16852, model 16852, delta 0
+    step 15: draws,  measured 32180, model 32180, delta 0
+    step 16: draws,  measured 32180, model 32180, delta 0
+    step 17: draws,  measured 32180, model 32180, delta 0
+    18 steps, 0 disagree, total 357720
     |}]
 ;;

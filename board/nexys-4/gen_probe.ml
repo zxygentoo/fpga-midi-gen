@@ -46,7 +46,7 @@ let circuit unit lanes =
       end)
     in
     let module Probe = Hardcaml.Circuit.With_interface (Unit.I) (Unit.O) in
-    let temper = fst (Mgen_nn.Quantized.policy ~temperature:1.0 ~min_p:0.0) in
+    let temper = Mgen_nn.Quantized.Constants.temper_at_one in
     Probe.create_exn ~name:"probe" (Unit.create ~temper)
   | "forward" ->
     (* RING 2: the whole column engine — the weight ROM through the broadcast trees into

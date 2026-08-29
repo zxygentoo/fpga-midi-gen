@@ -153,7 +153,7 @@ let create ~clocks_per_ms (i : _ I.t) : _ O.t =
   (* A switch and not a chain of guards. [Always] compiles a statement list into one mux
      level for each statement that writes a target, thus [voices] guards put [voices]
      muxes in series on every held register; a switch whose matches are constants compiles
-     into one parallel case. The same rule holds the op dispatch of [Transformer.Source]. *)
+     into one parallel case. The same rule holds the op dispatch of every era's [Source]. *)
   let at_slot f =
     switch
       slot.value

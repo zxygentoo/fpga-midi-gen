@@ -1,14 +1,19 @@
-(* The exp2 lookup — see exp2.mli for the contract. The table read registers, thus [nn]
-   must stand for two cycles and [e] holds on the second. *)
+(* The exp2 lookup — see exp2.mli for the contract. Every part of the answer derives from
+   ONE registered magnitude, thus the unit takes a magnitude a cycle and the caller's cone
+   ends at this register. *)
 
 open Base
 open Hardcaml
 open Signal
 
+let latency = 2
+let magnitude_bits = 22
+let input_q = 12
+
 module I = struct
   type 'a t =
     { clock : 'a
-    ; nn : 'a [@bits 22]
+    ; nn : 'a [@bits magnitude_bits]
     }
   [@@deriving hardcaml]
 end
@@ -19,17 +24,16 @@ end
 
 let create (i : _ I.t) : _ O.t =
   let spec = Reg_spec.create ~clock:i.clock () in
-  let data =
-    reg
-      spec
-      (rom
-         ~read_addresses:[| select i.nn ~high:11 ~low:4 |]
-         Quantized.Constants.exp2_bits).(0)
+  (* the magnitude WHOLE, before the memory: the entry, the shift and the zero test then
+     derive from one registered value, and the caller's cone ends here *)
+  let nn = reg spec i.nn in
+  let table =
+    rom ~read_addresses:[| select nn ~high:11 ~low:4 |] Quantized.Constants.exp2_bits
   in
-  let big = select i.nn ~high:21 ~low:16 <>:. 0 in
-  let shifted =
-    mux (select i.nn ~high:15 ~low:12) (List.init 16 ~f:(fun k -> srl data ~by:k))
-  in
+  let data = reg spec table.(0) in
+  let integer = reg spec (select nn ~high:15 ~low:12) in
+  let big = reg spec (select nn ~high:21 ~low:16 <>:. 0) in
+  let shifted = mux integer (List.init 16 ~f:(fun k -> srl data ~by:k)) in
   { O.e = mux2 big (zero 16) shifted }
 ;;
 
@@ -37,8 +41,8 @@ let create (i : _ I.t) : _ O.t =
 (* The gates *)
 (* ==================================================================== *)
 
-(* One simulator, and one reading on it. The table read stands in a register, thus [nn]
-   holds for two cycles and [e] is whole on the second — the contract's own timing. *)
+(* One simulator, and one reading on it: a magnitude, [latency] cycles, the weight. These
+   gates read the ANSWER and not the pipeline; the waveform below holds the timing. *)
 let harness () =
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create create in
@@ -52,7 +56,7 @@ let harness () =
 ;;
 
 (* the unit takes the magnitude of the power, thus the reference's rule reads [-nn] *)
-let oracle nn = Quantized.exp2_q (-nn)
+let oracle nn = Quantized.For_test.exp2_q (-nn)
 
 let%expect_test "the exp2 unit is the table and the shift" =
   let e = harness () in
@@ -105,25 +109,23 @@ let%expect_test "the gate: every reading the unit can make, against the referenc
     |}]
 ;;
 
-let%expect_test "the waveform of the read: [nn] stands two cycles and [e] lands on the \
-                 second"
-  =
-  (* The one timing rule of this unit. The table read stands in a register, thus the entry
-     is a cycle behind [nn] while the shift is not: the cycle after a change carries the
-     OLD entry under the NEW shift, and [e] is whole only on the second cycle of a held
-     [nn]. That stale cycle is why the contract asks the caller to hold.
+let%expect_test "the waveform of the read: a magnitude a cycle, and [e] two behind" =
+  (* THE TIMING RULE OF THIS UNIT, and the reason for its three registers. The entry, the
+     shift and the zero test all derive from ONE registered magnitude, thus they cannot
+     part: a magnitude never meets another magnitude's shift, and a caller may present a
+     new one every cycle.
 
-     The three values are chosen to show it. Each stands two cycles, and no two neighbours
-     share a table entry — a pair that shared one would hide the fault, because the stale
-     entry would give the right answer by accident:
+     The three values are chosen so that no two neighbours share a table entry — a pair
+     that shared one would hide a fault, because a stale entry would give the right answer
+     by accident:
 
      - 0 is entry 0 under no shift, thus 1.0 as 32768
      - 2048 is entry 128 under no shift, thus 1/sqrt 2 as 23170
      - 4096 is entry 0 under one shift, thus 16384
 
-     Read the stale cycles in the picture: [e] holds 32768 into the first cycle of 2048,
-     and reads 11585 — entry 128 shifted once, which belongs to neither — into the first
-     cycle of 4096. *)
+     Read the pipeline in the picture: each weight stands [latency] cycles behind its
+     magnitude, and no cycle carries a mixed reading. Each magnitude is held two cycles
+     here only so that the picture is legible; one cycle each would answer the same. *)
   let module Sim = Cyclesim.With_interface (I) (O) in
   let sim = Sim.create ~config:Cyclesim.Config.trace_all create in
   let waves, sim = Cyclesim.Waveform.create sim in
@@ -149,9 +151,9 @@ let%expect_test "the waveform of the read: [nn] stands two cycles and [e] lands 
     │               ││────────────┬───────────┬───────────               │
     │nn             ││ 0          │2048       │4096                      │
     │               ││────────────┴───────────┴───────────               │
-    │               ││──────┬───────────┬─────┬─────┬─────               │
-    │e              ││ 0    │32768      │23170│11585│16384               │
-    │               ││──────┴───────────┴─────┴─────┴─────               │
+    │               ││──────┬─────────────────┬───────────               │
+    │e              ││ 0    │32768            │23170                     │
+    │               ││──────┴─────────────────┴───────────               │
     └───────────────┘└───────────────────────────────────────────────────┘
     |}]
 ;;

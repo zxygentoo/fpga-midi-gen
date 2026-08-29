@@ -311,6 +311,17 @@ band load carries the phase it was fired for, and the flush nest walks the
 block order a second time. `Elaboration.Rtl.layer_of` turns a turn and a
 phase into the table's index, and the table's mux is the one it always was.
 
+**A FRAME TRAVELS FIELD BY FIELD.** Each frame was one wide register over a
+`concat_lsb` word, unpacked by a `field` reader that took each field where
+the one before it ended. Every width then stood twice — once at the pack,
+once at the unpack — and the offsets were cumulative sums that had to move
+together when a field was added, with nothing below to say that one had
+not. Since 2026-08-29 each field is its own register at the width of the
+value it carries, under the same `hold`: `Forward`'s two frames and
+`Source`'s one lost their packer, their unpacker and every restated width.
+The netlist moved for it — one wide register became several narrow ones —
+and the walk, the stream and the socket simulation did not.
+
 ### The prior art
 
 Searched 2026-08-26, before any RTL. **THE FIELD HAS BUILT THIS MACHINE
@@ -713,17 +724,22 @@ mask.
   unit cannot check: a caller that states one that is not the peak states
   another distribution, and nothing says so.
 
-  **THE TABLE IS A FORK, AND THE FORK IS WHY A CELL COSTS 3 P AND NOT 5 P.**
-  The shared `Exp2` registers its table entry but takes the shift and the zero
-  test from its magnitude as it stands, thus it asks a caller to hold that
-  magnitude for two cycles — a walk of 48 classes would pay it twice over, and
-  a magnitude a cycle reads one class's entry under another class's shift. The
-  draw's fuzz read that fault as 58 disagreements of 60 before the fork stood.
-  `lib/diffusion/exp2.ml` registers the shift beside the entry: two flip-flops,
-  and a gate that states what a holding caller reads does not move. **WHETHER
-  TO BACKPORT IT TO `lib/nn` IS A DECISION FOR WHEN ERA SIX SETTLES** — a unit
-  two shipped eras carry does not move for a round that has not shipped — and
-  that gate is the evidence for it.
+  **THE TABLE TAKES ONE MAGNITUDE A CYCLE, AND THAT IS WHY A CELL COSTS 3 P AND
+  NOT 5 P.** `Exp2` once registered its table entry but took the shift and the
+  zero test from its magnitude as it stands, thus it asked a caller to hold
+  that magnitude for two cycles — a walk of 48 classes would pay it twice
+  over, and a magnitude a cycle read one class's entry under another class's
+  shift. The draw's fuzz read that fault as 58 disagreements of 60. Era six
+  forked the unit to register the magnitude WHOLE before the memory: three
+  flip-flops, and every part of the answer derives from one value.
+
+  **THE FORK WAS BACKPORTED 2026-08-29** and `lib/nn/exp2.ml` is the one unit
+  again. The two frozen eras took the register and one more tick in each chain
+  that reads it — era four's weight chain, era five's temper and decay — which
+  costs era four 224 cycles of a drawing step and era five 210, about a third
+  of a percent each, and moved both netlists. They gain what era six gained
+  besides: the caller's magnitude cone now ends at a register instead of
+  reaching the table's address pins.
 
   **THE SEAM TO THE DRAW IS A LEVEL AND A STROBE, AND NO TAG CROSSES IT.**
   `step_ready` is a LEVEL: "the file stands whole" is a state of the forward's
@@ -1090,7 +1106,7 @@ than replication:
 - **The draw's magnitude cone is cut in four**: the walk register behind the
   class mux — all three walks share it, thus the one-mux rule stands — the
   temper register, then the table's own address and entry registers, the
-  era-four rule applied to the `Exp2` fork. Cycles are the resource the walk
+  era-four rule applied to `Exp2`. Cycles are the resource the walk
   has and levels are what break: the pipe adds seven cycles to a hidden cell
   (`busy_cycles` 147 to 154) and the service moves from 2.7 to 2.8 percent
   of a pass. The retire pipe carries its walk's state, because the peak
@@ -1515,13 +1531,21 @@ checkpoint is **708 bytes and 236 messages, byte for byte, in order**.
 
 Gate B stands whole at the golden candidate.
 
-**THE FLASH HOLDS IT, 2026-08-28.** The tree elects rung 3 in `gen_verilog`
-— `l48-h20-100k`, T 128, G 5, N 512 — and its Verilog is the byte of the
-one that built `board/_build/cut-rung3` (md5 `4e367cef…`), thus the flashed
-bitstream is the tree's own build and no lottery was rolled again. QSPI
-erased, programmed, verified, booted; the cell dump answers over the UART
-behind the boot. The unfused rung 2 that held the flash since 2026-08-27
-stands aside as `board/_build/top-rung2-unfused.bit`.
+**THE FLASH TOOK IT ON 2026-08-28.** The tree elects rung 3 in
+`gen_verilog` — `l48-h20-100k`, T 128, G 5, N 512 — and its Verilog was the
+byte of the one that built `board/_build/cut-rung3` (md5 `4e367cef…`), thus
+the flashed bitstream was the tree's own build and no lottery was rolled
+again. QSPI erased, programmed, verified, booted; the cell dump answers over
+the UART behind the boot. The unfused rung 2 that had held the flash since
+2026-08-27 stood aside as `board/_build/top-rung2-unfused.bit`.
+
+**THE FLASH HOLDS `ca16397a` SINCE 2026-08-29**, the same shape rebuilt after
+the lifts into `lib/nn`: `Placement.rom` took a dead write port out of every
+weight and norm bank and the frames became registers of their own, and the
+`Explore` directives of `build.tcl` placed and routed it at +0.070 / +0.021
+with no clock-skew adjustment. The capture at seed 47872 reads 840 bytes and
+280 messages byte for byte against the twin — the netlist moved and the music
+did not.
 
 ## The iteration strategy
 
@@ -1633,20 +1657,19 @@ items, so the seams stay clean:
   local.
 - **The scheduling.** Draw the next sheet while this one plays; the lane
   count and N come from phase I's measurement.
-- **The gap and the fade**, as the software states them: `Player`'s
-  `velocity_at ~step` is the fade's one point of variation, and velocity
-  is a fact of the onset.
+- **The gap and the fade**, as the software states them: the `--gap` and
+  `--fade` of `jax/diffusion/infer.py` over `Midi.fading`'s rule, whose
+  share of the velocity at a step is the fade's one point of variation,
+  and velocity is a fact of the onset.
+
+  THE OCaml SIDE OF THE FADE IS ALREADY DEAD CODE AND WAS KEPT FOR THIS
+  ITEM. The all-era cut of 2026-08-29 found `Midi.fading` read by nothing
+  but `Midi.faded_velocity`, and `faded_velocity` read by nothing but its
+  own expect test — the case `AGENT.md` names, an export alive only because
+  a test uses it. Both were left whole rather than cut, because this item
+  is what would wire them; `jax/midi.py` carries a fade of its own and the
+  board carries none. **The round that takes this item decides them: wire
+  them to the sequencer, or cut them and let the software keep the fade.**
 - **The seed succession.** The rule that names the seed of sheet k is a
   contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.
-- **The frames as interfaces.** The lead and now frames of `Forward` and of
-  `Source` are packed by hand: a `concat_lsb`, two registers on the word,
-  and a `field` unpacker that restates each width. An interface record
-  with `[@bits]` and `Of_signal.pipeline` is the same registers under their
-  own names, and it deletes the packer, the unpacker and the restated
-  widths in both files. It waits here and not in the simplify round because
-  it changes the netlist — one wide register becomes several narrow ones —
-  thus the `top.v` md5 gate cannot cover it, and the timing lottery asks
-  for a build. Phase II reopens `Forward`'s frames and owes that build. One
-  check at the time: `Of_signal.pipeline` must take the `~enable:run` that
-  `Forward`'s `hold` gives its registers.

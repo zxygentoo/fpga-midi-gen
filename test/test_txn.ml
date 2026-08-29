@@ -33,7 +33,9 @@ let () =
      the fused floor asks 60, thus the twin's shape is one this elaboration refuses *)
   let model = Mgen_diffusion.Model.For_test.drawn ~layers:4 ~width:8 ~seed:11 in
   let e = Mgen_diffusion.Elaboration.create model ~steps:4 ~lanes:1 ~walk:2 in
-  let sim = Cyclesim.create (Mgen_nexys4.Top.create ~e ()) in
+  let sim =
+    Cyclesim.create (Mgen_nexys4.Top.create ~source:(Mgen_diffusion.Source.create ~e) ())
+  in
   let rxd = Cyclesim.in_port sim "RsRx" in
   let rstn = Cyclesim.in_port sim "btnCpuReset" in
   let sw = Cyclesim.in_port sim "sw" in

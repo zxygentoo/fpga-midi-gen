@@ -13,16 +13,16 @@ two mask distributions -- the orderless-NADE draw of the training loss and the a
 Bernoulli of the Gibbs walk -- and the rules of the walk itself.
 
 THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `opening_sheet`,
-`anneal_threshold`, `hidden_cells`, `logits` and `tempered_pick` are what the float walk of
-`diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do IDENTICALLY:
-the same opening from the same seed, the same threshold at the same pass, the same uniform
-for the same cell. `quantized.drift` and `tests/test_drift.py` compare exactly those two
-walks, cell for cell on the same uniform. `lib/diffusion/model.ml` holds the first three
-under the same names.
+`anneal_threshold`, `hidden_cells`, `logits` and `tempered_pick` are what the float walk
+of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do
+IDENTICALLY: the same opening from the same seed, the same threshold at the same pass, the
+same uniform for the same cell. `quantized.drift` and `tests/test_drift.py` compare
+exactly those two walks, cell for cell on the same uniform. `lib/diffusion/model.ml` holds
+the first three under the same names.
 
-THE NET IS A MODULE TREE AND NOT A LIST OF LAYERS, thus `__call__` reads as the paper's own
-diagram and an odd layer count is UNREPRESENTABLE. `diffusion/quantized.py` carries the
-same skeleton in integers, thus "the same net in the arithmetic the board holds" is
+THE NET IS A MODULE TREE AND NOT A LIST OF LAYERS, thus `__call__` reads as the paper's
+own diagram and an odd layer count is UNREPRESENTABLE. `diffusion/quantized.py` carries
+the same skeleton in integers, thus "the same net in the arithmetic the board holds" is
 auditable layer for layer.
 
 WHAT IS PINNED FROM THE PAPER, AND WHERE IT CAME FROM. The referee of this round compares
@@ -45,8 +45,8 @@ against a published number, thus every constant of the model carries its source:
 
 The pitch axis is the paper's reason to convolve over it: "the locality of contrapuntal
 rules and their near-invariance to translation, both in time and in pitch space". Pitch in
-the channels would have to learn each interval separately at every absolute pitch, from 228
-chorales.
+the channels would have to learn each interval separately at every absolute pitch, from
+228 chorales.
 
 Checkpoints are safetensors, "0" upward in construction order: for each layer the kernel,
 the two norm terms, and the two population statistics. The layer count follows from the
@@ -111,12 +111,25 @@ def cells(steps):
     return steps * VOICES
 
 
+def cell_order(steps):
+    """`Model.cell_order`: the (step, voice) pairs of one sheet, A STEP AT A TIME AND THE
+    SEATS OF A STEP INSIDE IT.
+
+    IT IS A CONTRACT AND NOT A CONVENIENCE. Every uniform of a walk is drawn in this
+    order, on the host and in the circuit alike, and a walk that visits the cells in
+    another order draws a different piece from the same seed with nothing to say so. Every
+    reader -- the opening, the mask, the two engines, the gates -- walks this one list, so
+    that the order is stated one time."""
+    return [(step, voice) for step in range(steps) for voice in range(VOICES)]
+
+
 def planes(classes, hidden):
-    """The paper's input: [batch, steps, ROWS, 2 * VOICES], the masked roll beside the mask.
+    """The paper's input: [batch, steps, ROWS, 2 * VOICES], the masked roll beside the
+    mask.
 
     A masked cell shows zero in every row of its roll column and one in every row of its
-    mask plane. The mask is over cells and broadcasts up the pitch axis, which is what makes
-    it readable to a convolution over that axis."""
+    mask plane. The mask is over cells and broadcasts up the pitch axis, which is what
+    makes it readable to a convolution over that axis."""
     roll = jnp.moveaxis(jax.nn.one_hot(classes, ROWS, dtype=jnp.float32), -1, -2)
     masked = jnp.asarray(hidden, jnp.float32)[..., None, :]
     return jnp.concatenate(
@@ -130,8 +143,8 @@ def planes(classes, hidden):
 
 
 def orderless_masks(key, batch, steps):
-    """The training mask of orderless NADE: a uniform masked count, then a uniform subset of
-    that size, one draw for each sheet of the batch.
+    """The training mask of orderless NADE: a uniform masked count, then a uniform subset
+    of that size, one draw for each sheet of the batch.
 
     The rank of a uniform draw states the subset without a shuffle, and states it for the
     whole batch at one time."""
@@ -172,30 +185,30 @@ def anneal(step, total):
 
 
 def opening_sheet(states, steps):
-    """`Model.opening_sheet`: a sheet of random notes for each walk of the batch, each voice
-    inside the register of its own seat -- one uniform for each cell in the cell order, and
-    the class [low + floor(u * width)] over [measure.RANGES].
+    """`Model.opening_sheet`: a sheet of random notes for each walk of the batch, each
+    voice inside the register of its own seat -- one uniform for each cell in the cell
+    order, and the class [low + floor(u * width)] over [measure.RANGES].
 
-    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper's roll
-    has no silence row, thus an empty cell there states nothing; THIS roll holds silence as a
-    class, so an empty cell would state a REST with the authority of context. Measured
-    2026-08-25 over 256 sheets, the two openings are the same instrument, and the silent one
-    was removed.
+    WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper's
+    roll has no silence row, thus an empty cell there states nothing; THIS roll holds
+    silence as a class, so an empty cell would state a REST with the authority of context.
+    Measured 2026-08-25 over 256 sheets, the two openings are the same instrument, and the
+    silent one was removed.
 
-    The draw is over the registers and not the whole roll, because a bass at 81 and a soprano
-    at 36 are further from this corpus than a rest is. The product [u * width] is exact on
-    the 24-bit grid, thus the circuit states the same class from the same seed."""
+    The draw is over the registers and not the whole roll, because a bass at 81 and a
+    soprano at 36 are further from this corpus than a rest is. The product [u * width] is
+    exact on the 24-bit grid, thus the circuit states the same class from the same seed.
+    """
     sheets = len(states)
     classes = np.zeros((sheets, steps, VOICES), np.int32)
     everyone = np.ones(sheets, bool)
     lows = np.array([low - data.PITCH_LOW + 1 for low, _ in measure.RANGES])
     widths = np.array([high - low + 1 for low, high in measure.RANGES])
-    for step in range(steps):
-        for voice in range(VOICES):
-            states, u = prng.uniform(states, everyone)
-            classes[:, step, voice] = lows[voice] + np.floor(u * widths[voice]).astype(
-                np.int32
-            )
+    for step, voice in cell_order(steps):
+        states, u = prng.uniform(states, everyone)
+        classes[:, step, voice] = lows[voice] + np.floor(u * widths[voice]).astype(
+            np.int32
+        )
     return states, classes
 
 
@@ -210,14 +223,13 @@ def hidden_cells(states, steps, threshold):
     order, step-major and seat-minor, hidden exactly when its word falls under the
     threshold.
 
-    The word compare and the float compare `u * 2^24 < threshold` are one test: the product
-    is the word, exactly, on the grid, thus the two walks hide the same cells."""
+    The word compare and the float compare `u * 2^24 < threshold` are one test: the
+    product is the word, exactly, on the grid, thus the two walks hide the same cells."""
     everyone = np.ones(len(states), bool)
     hidden = np.zeros((len(states), steps, VOICES), dtype=bool)
-    for step in range(steps):
-        for voice in range(VOICES):
-            states, word = prng.uniform_word(states, everyone)
-            hidden[:, step, voice] = word < threshold
+    for step, voice in cell_order(steps):
+        states, word = prng.uniform_word(states, everyone)
+        hidden[:, step, voice] = word < threshold
     return states, hidden
 
 
@@ -246,9 +258,10 @@ class PopulationNorm(nnx.Module):
     pitch on an axis.
 
     IT IS NOT `nnx.BatchNorm`, AND THE POPULATION IS THE REASON. That module keeps an
-    exponential moving average at a fixed momentum from its first call; the era's rule is a
-    WARMED decay -- `train.population_decay` -- and the fold happens OUTSIDE the gradient,
-    from the statistics a training pass gives back. [fold] is where a decay writes."""
+    exponential moving average at a fixed momentum from its first call; the era's rule is
+    a WARMED decay -- `train.population_decay` -- and the fold happens OUTSIDE the
+    gradient, from the statistics a training pass gives back. [fold] is where a decay
+    writes."""
 
     def __init__(self, features, *, norm_scale=NORM_SCALE):
         self.scale = nnx.Param(jnp.full(features, norm_scale, jnp.float32))
@@ -274,8 +287,9 @@ class PopulationNorm(nnx.Module):
         return normed * self.scale[...] + self.shift[...], Statistics(mean, variance)
 
     def fold(self, seen, decay):
-        """the population keeps [decay] of itself and takes the rest from [seen]. The share is
-        the TRAINER's rule and the write is this module's; nothing else may move one."""
+        """the population keeps [decay] of itself and takes the rest from [seen]. The
+        share is the TRAINER's rule and the write is this module's; nothing else may move
+        one."""
         self.mean[...] = decay * self.mean[...] + (1.0 - decay) * seen.mean
         self.variance[...] = decay * self.variance[...] + (1.0 - decay) * seen.variance
 
@@ -283,9 +297,10 @@ class PopulationNorm(nnx.Module):
 class NormedConv(nnx.Module):
     """One layer of the paper: the convolution, then the batch norm of equation 6.
 
-    The convolution carries NO BIAS -- the norm behind it carries the shift -- and its padding
-    is zero at both edges, because both edges are real: a crop opens and closes on a boundary
-    the model must see, and past the ends of the pitch axis there is no music."""
+    The convolution carries NO BIAS -- the norm behind it carries the shift -- and its
+    padding is zero at both edges, because both edges are real: a crop opens and closes on
+    a boundary the model must see, and past the ends of the pitch axis there is no music.
+    """
 
     def __init__(self, inputs, outputs, *, norm_scale=NORM_SCALE, rngs):
         self.conv = nnx.Conv(
@@ -314,8 +329,8 @@ class NormedConv(nnx.Module):
         ]
 
     def take(self, tensors):
-        """the reverse of [tensors]: the five of one layer, written in. The two stand together
-        so that the layout cannot drift apart."""
+        """the reverse of [tensors]: the five of one layer, written in. The two stand
+        together so that the layout cannot drift apart."""
         kernel, scale, shift, mean, variance = tensors
         self.conv.kernel[...] = jnp.asarray(kernel)
         self.norm.scale[...] = jnp.asarray(scale)
@@ -342,13 +357,13 @@ class Trunk(nnx.Module):
     """The skeleton both models of the era carry: a stem, the residual pairs, a head.
 
     [Coconet] fills it with the float layers and `quantized.QuantizedCoconet` with their
-    integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus a reader can put the
-    two side by side and audit them layer for layer."""
+    integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus a reader can put
+    the two side by side and audit them layer for layer."""
 
     def every_layer(self):
-        """every layer in the order the network runs. The checkpoint, the population fold, the
-        quantizer and the contract file all walk a trunk this way, and this is the one place
-        either tree states that order."""
+        """every layer in the order the network runs. The checkpoint, the population fold,
+        the quantizer and the contract file all walk a trunk this way, and this is the one
+        place either tree states that order."""
         walked = [self.stem]
         for pair in self.pairs:
             walked += [pair.first, pair.second]
@@ -358,8 +373,8 @@ class Trunk(nnx.Module):
 class Coconet(Trunk):
     """The paper's net: a stem, (L - 2) / 2 residual pairs, a head.
 
-    The first layer takes the 2I input planes to H channels and the last takes H to the four
-    voices, thus neither can carry a residual. The head keeps its norm and takes no
+    The first layer takes the 2I input planes to H channels and the last takes H to the
+    four voices, thus neither can carry a residual. The head keeps its norm and takes no
     activation, as equation 7 states, thus its norm is a learned scale on the logits.
 
     THE LAYER COUNT IS EVEN AND AT LEAST FOUR, and the tree is why."""
@@ -411,22 +426,23 @@ class Coconet(Trunk):
     def save(self, path):
         """The whole model as one flat list, in the order the network runs.
 
-        THE POPULATION STATISTICS TRAVEL INSIDE THE CHECKPOINT. They are not parameters, but
-        the model cannot state a probability without them, and a reader that had to find them
-        in a second file would sooner or later pair them with weights they never saw."""
+        THE POPULATION STATISTICS TRAVEL INSIDE THE CHECKPOINT. They are not parameters,
+        but the model cannot state a probability without them, and a reader that had to
+        find them in a second file would sooner or later pair them with weights they never
+        saw."""
         flat = [tensor for layer in self.every_layer() for tensor in layer.tensors()]
         nn.save_checkpoint(path, flat)
 
     @classmethod
     def load(cls, path):
-        """The model of one checkpoint. A model of L layers holds 5 L tensors, thus the count
-        states the layers and the stem's kernel states the width."""
+        """The model of one checkpoint. A model of L layers holds 5 L tensors, thus the
+        count states the layers and the stem's kernel states the width."""
         tensors = load_file(str(path))
         layers, spare = divmod(len(tensors), LAYER_TENSORS)
         if spare or layers < 4 or layers % 2:
             raise ValueError(f"{path}: {len(tensors)} tensors is no sheet model")
-        # the draw is thrown away one tensor at a time below: it is the cost of one He draw
-        # and it buys the one constructor
+        # the draw is thrown away one tensor at a time below: it is the cost of one He
+        # draw and it buys the one constructor
         held = cls(layers, int(tensors["0"].shape[3]), rngs=nnx.Rngs(0))
         for at, layer in enumerate(held.every_layer()):
             base = LAYER_TENSORS * at
@@ -438,14 +454,14 @@ class Coconet(Trunk):
         """A model of DRAWN weights, at a shape a gate can afford, thus no gate reads a
         checkpoint that git ignores.
 
-        The draw follows the SHAPE of the trainer and not its values. It draws with numpy at
-        a stated seed and not with the module's own initializer, because a gate's expected
-        numbers must not move when a framework changes its key rule.
+        The draw follows the SHAPE of the trainer and not its values. It draws with numpy
+        at a stated seed and not with the module's own initializer, because a gate's
+        expected numbers must not move when a framework changes its key rule.
 
         THE NORM SCALE OPENS AT 1.0 AND NOT AT THE TRAINER'S TENTH. At the tenth a DRAWN
         trunk decays its activations tenfold at every layer — a trained norm grows out of
-        that opening, an untrained one never leaves it — and by the third layer a gate over
-        the integer twin reads the resolution floor of the format instead of the
+        that opening, an untrained one never leaves it — and by the third layer a gate
+        over the integer twin reads the resolution floor of the format instead of the
         arithmetic."""
         held = cls(layers, width, norm_scale=norm_scale, rngs=nnx.Rngs(0))
         rng = np.random.default_rng(seed)
@@ -478,16 +494,17 @@ def nll_of_logits(said, classes):
 def logits(coconet, classes, hidden):
     """The logits of one pass over the batch, from the masked sheet.
 
-    It takes the model as an ARGUMENT and stands at the module level, thus its compiled form
-    is keyed on the shapes and every walk of a run reuses the first compile."""
+    It takes the model as an ARGUMENT and stands at the module level, thus its compiled
+    form is keyed on the shapes and every walk of a run reuses the first compile."""
     said, _ = coconet(planes(classes, hidden))
     return said
 
 
 def tempered_pick(raw, temperature, uniform):
-    """The draw of one cell over the batch: `Mgen_nn.Policy.draw_class`, row for row.
+    """The draw of one cell over the batch: the tempered weights, the min-p floor and the
+    pick, row for row.
     [raw] is [sheets, ROWS] float64.
 
-    The era draws with no min-p floor, thus the temper is the peak alone. `nn.pick`'s own
-    docstring holds the argument that no fallback is needed."""
-    return nn.pick(nn.temper(raw, temperature, 0.0), uniform)
+    The era draws with no min-p floor, thus the temper is the peak alone.
+    `nn.pick_share`'s own docstring holds the argument that no fallback is needed."""
+    return nn.pick_share(nn.temper(raw, temperature, 0.0), uniform)

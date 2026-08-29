@@ -86,7 +86,7 @@ every step: two passes of `T * d` terms for each layer, 32,768 of the
 81,920 multiplies of an era-four layer. The recurrence costs a constant
 that does not know `T`. The estimate below puts the step at about 2.4 ms
 against era four's 7, on the same one-multiplier machine. **The trunk
-measured 2.93 ms, and the elected plan 4.03** — 403,074 cycles, and with
+measured 2.93 ms, and the elected plan 4.04** — 404,314 cycles, and with
 the head the step grows again until the ring fills at step 256, then
 holds. The wire's 8 ms floor stands over both numbers, thus the argument
 bought margin and the head spent some of it.
@@ -396,7 +396,7 @@ and shared.
   other over a whole forward — the convolution, the state, the gated norm
   and the residual joins — and over windows shorter than the tap ring,
   where a pad written the other way round would show. The step form is
-  the definition; the OCaml reference and the circuit compute that one.
+  the definition; the integer twin and the circuit compute that one.
 - **The recipe opens where era four closed.** The same hand-rolled AdamW
   with a decoupled decay and a global-norm clip, the same batch draw —
   a uniform stream, then a uniform window — the same reporting: nats
@@ -690,8 +690,8 @@ heard era five at a texture era four would have had near T 0.9.
 
 The corpus reads hold 78.17 and onsets 0.81. **Seed 7 at T 1.2 lands on
 both to the second decimal.** The ear elects the policy;
-`Mamba.elected_temperature` stands at 1.0 until it does, and a change there
-is a change of the bitstream.
+`jax/mamba/quantized.py`'s `ELECTED_TEMPERATURE` stands at 1.0 until it does,
+and a change there is a change of the bitstream.
 
 **The silence-arrival share does not rank models at these sample sizes.**
 CADENCED divides by the silences of a walk; a walk of 512 steps holds three
@@ -828,6 +828,15 @@ the chain, because a chain with a broken link proves nothing.
    `docs/mamba_rtl.md`. The frame gate holds it to the twin — at two
    layers as well as one, from the first day. This gate is exact and
    stays exact.
+
+   **STEPS 3 AND 4 WERE CUT 2026-08-29 by the all-era cut.** The OCaml
+   float model and the OCaml integer twin both went; the JAX model is the
+   float reference and `jax/mamba/quantized.py` is the twin. The gates of
+   steps 3 to 5 read the same way from above the seam: `test_parity.py`
+   holds the float model to a pinned loss and the JAX quantizer to a
+   pinned netlist md5, `test_drift.py` carries the drift sweep with its
+   floors, and `test_rtl_mamba.py` holds the circuit to the twin — frame
+   for frame and write for write — through `gate_mamba.exe`.
 6. **The build.** `gen_verilog` seats the mamba source with its
    checkpoint constant; the six-layer Vivado build runs, and the timing
    and utilization reports land beside the estimates of this document.

@@ -23,12 +23,13 @@ Two gates, and each one exists because a whole class of fault does not move a fr
   gate's offset, an operand taken on the address side of a two-cycle read, and a ring run
   off its end -- and none of them moved a frame.
 
-P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK. Its input is data: the driver draws
-each class over P and prints the sheet it drew, thus a narrow P is a legal sheet and the
-composition layer's P-parametric paths -- the class bits, the store map, the ring, the tag
-width, the drain rule at a short chain -- keep an oracle at more than one width. THE WALK
-CASES STAY AT P 48: a walk draws inside `model.seat_openings`, whose registers reach class
-46, and a narrower column would be a different walk and not the same walk at another P.
+P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK. Its input is data: the driver
+draws each class over P and prints the sheet it drew, thus a narrow P is a legal sheet and
+the composition layer's P-parametric paths -- the class bits, the store map, the ring, the
+tag width, the drain rule at a short chain -- keep an oracle at more than one width. THE
+WALK CASES STAY AT P 48: a walk draws inside `model.seat_openings`, whose registers reach
+class 46, and a narrower column would be a different walk and not the same walk at another
+P.
 
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
@@ -36,50 +37,33 @@ root:
     dune build bin/gate_diffusion.exe
 """
 
-import subprocess
-from pathlib import Path
 
 import numpy as np
 import pytest
 
+import fixed
 from diffusion import model, quantized
+from tests import gate
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-ROOT = JAX_ROOT.parent
-DRIVER = ROOT / "_build" / "default" / "bin" / "gate_diffusion.exe"
+DRIVER = gate.driver("gate_diffusion.exe")
 
 VOICES = model.VOICES
 
 
 def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
     """the driver's report, one line as a list of its words"""
-    if not DRIVER.exists():
-        pytest.skip(f"absent, nothing to gate: {DRIVER.name}")
-    done = subprocess.run(
-        [
-            str(DRIVER),
-            subcommand,
-            "-int8",
-            str(path),
-            "-steps",
-            str(steps),
-            "-lanes",
-            str(lanes),
-            "-walk",
-            str(walk),
-            "-seed",
-            str(seed),
-            "-rows",
-            str(rows),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    gate.need(DRIVER)
+    stdout = gate.run(
+        DRIVER,
+        subcommand,
+        "-int8", path,
+        "-steps", steps,
+        "-lanes", lanes,
+        "-walk", walk,
+        "-seed", seed,
+        "-rows", rows,
     )
-    # check=False: the assert carries the stderr into the report, where a
-    # CalledProcessError would show the command alone
-    assert done.returncode == 0, done.stderr
-    return [line.split() for line in done.stdout.splitlines() if line]
+    return [line.split() for line in stdout.splitlines() if line]
 
 
 def contract_file(tmp_path, *, weight_seed, layers, width):
@@ -88,12 +72,6 @@ def contract_file(tmp_path, *, weight_seed, layers, width):
     path = tmp_path / f"l{layers}-h{width}-s{weight_seed}.int8"
     quantized.save(path, twin)
     return path, twin
-
-
-def cell_order(steps):
-    """Model.cell_order: a step at a time, and the seats of a step inside it. Every
-    uniform of the walk is drawn in this order and every write follows it."""
-    return [(step, voice) for step in range(steps) for voice in range(VOICES)]
 
 
 # ---------------------------------------------------------------------
@@ -106,12 +84,12 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = model.opening_sheet(quantized.engine_states([seed]), steps)
+    states, given = model.opening_sheet(fixed.engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
-        for step, voice in cell_order(steps)
+        for step, voice in model.cell_order(steps)
     ]
-    tally = quantized.counters()
+    tally = fixed.write_tally()
     for at, taken in enumerate(
         quantized.passes(twin, states, given, walk=walk, tally=tally)
     ):
@@ -123,7 +101,7 @@ def wanted_walk(twin, *, steps, walk, seed):
                 voice,
                 int(taken.hidden[0, step, voice]),
             )
-            for step, voice in cell_order(steps)
+            for step, voice in model.cell_order(steps)
         ]
         wanted += [
             (
@@ -147,11 +125,11 @@ def wanted_walk(twin, *, steps, walk, seed):
 def test_the_walk_is_the_twins_walk(
     tmp_path, seed, layers, width, lanes, steps, walk, weight_seed
 ):
-    """SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 -- the panel can state it
-    and the engine takes its seed as the SEED cell does -- thus every uniform is 0, every
-    cell hides at every pass and every draw takes the top of the grid. The walk that stands
-    still is the design, and the gate holds the circuit to that stillness like any other
-    walk: the pass counts show it, because every cell is redrawn."""
+    """SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 -- the panel can state
+    it and the engine takes its seed as the SEED cell does -- thus every uniform is 0,
+    every cell hides at every pass and every draw takes the top of the grid. The walk that
+    stands still is the design, and the gate holds the circuit to that stillness like any
+    other walk: the pass counts show it, because every cell is redrawn."""
     path, twin = contract_file(
         tmp_path, weight_seed=weight_seed, layers=layers, width=width
     )
@@ -212,9 +190,9 @@ def stem_input(lines, steps):
         # AN IMAGE THAT REALLY BANKS: 1 080 words plan as 1 024 and 512, thus this case
         # reads through the bank mux where the two above read through one bank alone.
         ("H 8, G 4, three pairs, T 6", 8, 8, 4, 6, 3, 8),
-        # A STORE THAT REALLY BANKS: 129 steps of 8 channels make a store of 1 032 columns,
-        # which plans as 1 024 and 512, thus this case reads and writes THROUGH the store's
-        # bank mux and its write select.
+        # A STORE THAT REALLY BANKS: 129 steps of 8 channels make a store of 1 032
+        # columns, which plans as 1 024 and 512, thus this case reads and writes THROUGH
+        # the store's bank mux and its write select.
         ("H 8, G 2, one pair, T 129", 4, 8, 2, 129, 4, 8),
         # THE RING WRAPS TWICE. Five columns over four ring slots is one wrap; two pairs
         # and the head behind them read every wrapped column, thus a ring one column short
@@ -241,7 +219,7 @@ def test_the_store_writes_are_the_twins(
         "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
     )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, quantized.counters(), rows=rows)
+    want = twin.layer_writes(classes, hidden, fixed.write_tally(), rows=rows)
     checked = 0
     for word in lines:
         if word[0] == "write":
@@ -263,8 +241,8 @@ def test_the_store_writes_are_the_twins(
             f"{where}: {int((got != column).sum())} of {len(column)} rows part\n"
             f"  want {list(column[:12])}\n  got  {list(got[:12])}"
         )
-    # every layer's whole tensor and every offered step, thus a driver that printed nothing
-    # cannot pass
+    # every layer's whole tensor and every offered step, thus a driver that printed
+    # nothing cannot pass
     columns = sum(steps * layer.outputs for layer in twin.every_layer()[:-1])
     assert checked == columns + (steps * VOICES), (
         f"{name}: {checked} columns checked, and the shape holds "

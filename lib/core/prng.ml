@@ -51,8 +51,8 @@ let uniform state =
 ;;
 
 (* A walk, not an [init]: the order of the elements of [init] is free, thus it cannot
-   carry a state. The guard is the choke point of [normals] and [bernoullis]: a negative
-   count would walk past 0 and never stop. *)
+   carry a state. The guard is the choke point of [normals]: a negative count would walk
+   past 0 and never stop. *)
 let uniforms ~count state =
   if count < 0 then invalid_arg "Prng: the count of draws is 0 or more";
   let rec walk state n draws =
@@ -77,12 +77,6 @@ let normals ~count ~scale state =
   let state, draws = uniforms ~count:(2 * count) state in
   let normal i = scale *. box_muller draws.(2 * i) draws.((2 * i) + 1) in
   state, Array.init count ~f:normal
-;;
-
-let bernoullis ~count ~probability state =
-  let state, draws = uniforms ~count state in
-  let hit u = if Float.(u < probability) then 1.0 else 0.0 in
-  state, Array.map draws ~f:hit
 ;;
 
 let return value state = state, value

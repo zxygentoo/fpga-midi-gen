@@ -54,7 +54,7 @@ let%expect_test "the gate: EVERY reading the unit can make, against the referenc
      rule under it. A fuzz would rediscover a subset of this. *)
   let rows = List.range 0 256 in
   let at row = (row - 128) * 256 in
-  let disagrees v = s v <> Quantized.sigmoid_q v in
+  let disagrees v = s v <> Quantized.For_test.sigmoid_q v in
   Stdio.printf
     "%d rows, %d disagree with the reference at the low end, %d at the high\n"
     (List.length rows)

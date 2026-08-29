@@ -13,13 +13,6 @@
  (libraries core core_unix core_unix.command_unix mgen_core mgen_pink))
 
 (executable
- (name play_transformer)
- (modules play_transformer)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_transformer))
-
-(executable
  (name corpus_tool)
  (modules corpus_tool)
  (preprocess
@@ -33,31 +26,26 @@
   mgen_core
   mgen_corpus))
 
-(executable
- (name check_transformer)
- (modules check_transformer)
+; What the three gate drivers share: the flags, the netlist command and the walk print.
+; It is a library and not a module of one of them, because bin/dune builds one executable
+; per file. It names NO era library -- the model reader and the source are arguments --
+; and it could not name one: mgen_nexys4, which it elaborates through, already depends on
+; every era.
+
+(library
+ (name gate_common)
+ (modules gate_common)
  (preprocess
   (pps ppx_let))
  (libraries
   core
   core_unix
   core_unix.command_unix
+  hardcaml
+  jane_rope
+  mgen_core
   mgen_corpus
-  mgen_transformer))
-
-(executable
- (name play_mamba)
- (modules play_mamba)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_core mgen_mamba))
-
-(executable
- (name check_mamba)
- (modules check_mamba)
- (preprocess
-  (pps ppx_let))
- (libraries core core_unix core_unix.command_unix mgen_corpus mgen_mamba))
+  mgen_nexys4))
 
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
@@ -73,5 +61,44 @@
   core_unix
   core_unix.command_unix
   hardcaml
+  gate_common
   mgen_core
   mgen_diffusion))
+
+; The driver of the RTL gates of era four: it runs the circuit in Cyclesim and states what
+; the circuit did, and it elaborates the era's own top level for the netlist gate. The
+; ORACLE is jax/transformer/quantized.py and the gates are jax/tests/test_rtl_transformer.py
+; and test_parity.py, thus nothing here states what the circuit should have done.
+
+(executable
+ (name gate_transformer)
+ (modules gate_transformer)
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  gate_common
+  mgen_core
+  mgen_nexys4
+  mgen_transformer))
+
+; The driver of the RTL gates of era five: it runs the circuit in Cyclesim and states what
+; the circuit did, and it elaborates the era's own top level for the netlist gate. The
+; ORACLE is jax/mamba/quantized.py and the gates are jax/tests/test_rtl_mamba.py and
+; test_parity.py, thus nothing here states what the circuit should have done.
+
+(executable
+ (name gate_mamba)
+ (modules gate_mamba)
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  gate_common
+  mgen_core
+  mgen_mamba
+  mgen_nexys4))
