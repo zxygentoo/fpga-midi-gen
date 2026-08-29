@@ -396,7 +396,7 @@ and shared.
   other over a whole forward — the convolution, the state, the gated norm
   and the residual joins — and over windows shorter than the tap ring,
   where a pad written the other way round would show. The step form is
-  the definition; the OCaml reference and the circuit compute that one.
+  the definition; the integer twin and the circuit compute that one.
 - **The recipe opens where era four closed.** The same hand-rolled AdamW
   with a decoupled decay and a global-norm clip, the same batch draw —
   a uniform stream, then a uniform window — the same reporting: nats

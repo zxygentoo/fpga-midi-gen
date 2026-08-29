@@ -8,7 +8,7 @@ the step frame — and the four voices of that step keep their names from
 the corpus to the synthesizer.
 
 The design has two halves. The corpus and the model are built, trained
-and elected by ear; the OCaml reference, the socket and the circuit are
+and elected by ear; the integer twin, the socket and the circuit are
 not. Each section states which of the two it is in.
 
 The design keeps the project rules. The board does the inference. The
