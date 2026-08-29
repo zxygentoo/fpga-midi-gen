@@ -81,16 +81,11 @@ module Mac = Mgen_nn.Mac.Make (struct
     let walk_bits = 14
   end)
 
-let clamp16 v =
-  let v = sresize v ~width:32 in
-  mux2
-    (v >+ of_signed_int ~width:32 32767)
-    (of_signed_int ~width:16 32767)
-    (mux2
-       (v <+ of_signed_int ~width:32 (-32768))
-       (of_signed_int ~width:16 (-32768))
-       (sel_bottom v ~width:16))
-;;
+(* the int16 rails as a circuit, from the one home of them: the compare stands at the
+   OPERAND'S OWN WIDTH. Every value clamped here is 32 bits or wider — 32, 40, 43 and 48
+   in this era — thus a resize to 32 before the compare would wrap a wide product into the
+   rails and pass it. [Mgen_nn.Quantized]'s own gate holds the two forms apart. *)
+let clamp16 = Mgen_nn.Quantized.Rtl.clamp16
 
 (* value * 2^-from as value * 2^-target; the shift count is an elaboration constant *)
 let rescale ~from ~target v =
@@ -663,18 +658,10 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
     if Int.is_pow2 count && count <= 1 lsl 15
     then (
       let data =
-        (multiport_memory
-           ~attributes:[ Rtl_attribute.Vivado.Ram_style.block ]
-           ~initialize_to:bits
-           count
-           ~write_ports:
-             [| { Write_port.write_clock = i.clock
-                ; write_address = zero (width addr)
-                ; write_enable = gnd
-                ; write_data = zero 8
-                }
-             |]
-           ~read_addresses:[| addr |]).(0)
+        (Mgen_nn.Placement.rom
+           ~attributes:[ Mgen_nn.Placement.block_rom ]
+           ~read_addresses:[| addr |]
+           bits).(0)
       in
       reg spec data)
     else (

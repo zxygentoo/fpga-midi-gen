@@ -367,7 +367,34 @@ struct
 
        WITH ONE BANK NONE OF THIS ELABORATES, thus a shape that does not bank builds the
        memory it always did. *)
-    let block_memory ?image ~banks ~address ~write_enable ~write_address ~write_data () =
+    let banked_read ~banks ~address reads =
+      match reads with
+      | [ read ] -> read
+      | reads ->
+        let slices = word_slices (width (List.hd_exn reads)) in
+        replicas ~count:(List.length slices) (fun () ->
+          hold (hold (Elaboration.Rtl.bank_at banks ~address)))
+        |> List.map2_exn slices ~f:(fun (high, low) which ->
+          mux which (List.map reads ~f:(fun read -> select read ~high ~low)))
+        |> concat_lsb
+    in
+    (* A BANK WITH AN IMAGE AND NO WRITE IS A ROM AND NOTHING ELSE. It was a
+       [block_memory] with its write enable tied low, which put an [always] block that can
+       never fire into the Verilog for every bank; [Placement.rom] states the image and no
+       write port at all. The banking, the holds and the select are the store path's,
+       because the banking is a fact of the plan and not of the direction. *)
+    let banked_rom ~image ~banks ~address =
+      let read_bank (bank : Elaboration.bank) =
+        let bits = address_bits_for bank.depth in
+        (Placement.rom
+           ~attributes:[ Placement.block_rom ]
+           ~read_addresses:[| hold (uresize address ~width:bits) |]
+           (image bank)).(0)
+        |> hold
+      in
+      List.map (Array.to_list banks) ~f:read_bank |> banked_read ~banks ~address
+    in
+    let block_memory ~banks ~address ~write_enable ~write_address ~write_data () =
       let bank_write_enable =
         if Array.length banks = 1
         then fun (_ : int) -> write_enable
@@ -379,7 +406,6 @@ struct
         let bits = address_bits_for bank.depth in
         (multiport_memory
            ~attributes:[ Placement.block_ram ]
-           ?initialize_to:(Option.map image ~f:(fun words -> words bank))
            bank.depth
            ~write_ports:
              [| { Write_port.write_clock = i.clock
@@ -391,28 +417,15 @@ struct
            ~read_addresses:[| hold (uresize address ~width:bits) |]).(0)
         |> hold
       in
-      match List.mapi (Array.to_list banks) ~f:read_bank with
-      | [ read ] -> read
-      | reads ->
-        let slices = word_slices (width (List.hd_exn reads)) in
-        replicas ~count:(List.length slices) (fun () ->
-          hold (hold (Elaboration.Rtl.bank_at banks ~address)))
-        |> List.map2_exn slices ~f:(fun (high, low) which ->
-          mux which (List.map reads ~f:(fun read -> select read ~high ~low)))
-        |> concat_lsb
+      List.mapi (Array.to_list banks) ~f:read_bank |> banked_read ~banks ~address
     in
     (* a ROM of one bank is the same port with an image behind it and its write side wired
        off: the norms want it, and nothing about them asks for a plan *)
     let rom image address =
-      let size = Array.length image in
-      block_memory
+      banked_rom
         ~image:(fun (_ : Elaboration.bank) -> image)
-        ~banks:[| { Elaboration.base = 0; depth = size } |]
+        ~banks:[| { Elaboration.base = 0; depth = Array.length image } |]
         ~address
-        ~write_enable:gnd
-        ~write_address:(zero (address_bits_for size))
-        ~write_data:(zero (Bits.width image.(0)))
-        ()
     in
     (* THE WEIGHT ADDRESS ONLY COUNTS. The image is packed in the dwell order, thus one
        column's dwell walks a layer's whole range straight through and the address reloads
@@ -422,14 +435,10 @@ struct
        stands BEFORE the operand replicas of the array, thus the replica bank still breaks
        the broadcast and the mux's own fanout is the replica count and no more. *)
     let weights =
-      block_memory
+      banked_rom
         ~image:(Elaboration.weight_bank_image e)
         ~banks:e.weight_banks
         ~address:weight_address.value
-        ~write_enable:gnd
-        ~write_address:(zero weight_address_bits)
-        ~write_data:(zero (Bits.width e.weight_rom.(0)))
-        ()
     in
     (* ---------------------------------------------------------------- *)
     (* the bands: the window, the residual columns, the output columns and the norm bank *)

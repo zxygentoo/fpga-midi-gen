@@ -247,6 +247,90 @@ let draw ~weights prng =
 (* These rules decide every byte the boards hold. The frame gates of the eras read them
    only through walks of tens of thousands of cycles, thus a break there says "the frames
    disagree" and says nothing about which rule broke. *)
+(* The gate the frozen eras' adoption of [Rtl.clamp16] stands on, and the record of what
+   that adoption FIXED. Eras four and five each carried a clamp of their own that read
+   [sresize v ~width:32] before the compare. Every operand they feed it is wider than 32
+   bits — measured at the elaboration on 2026-08-29: era four states 40 and 48, era five
+   32, 40, 43 and 48 — thus the retired form truncated first and compared afterwards, and
+   a product past the int32 range wrapped into the rails and passed as if it were small.
+   The two forms are therefore NOT one function at these widths, which is what the order
+   of the round expected them to be; they agree inside the int32 range alone. *)
+let%expect_test "the frozen eras' clamp and the shared one, at the widths they feed" =
+  let retired wide =
+    let open Hardcaml.Signal in
+    let v = sresize wide ~width:32 in
+    mux2
+      (v >+ of_signed_int ~width:32 int16_high)
+      (of_signed_int ~width:Rtl.bits int16_high)
+      (mux2
+         (v <+ of_signed_int ~width:32 int16_low)
+         (of_signed_int ~width:Rtl.bits int16_low)
+         (sel_bottom v ~width:Rtl.bits))
+  in
+  let both ~width:w value =
+    let wide = Hardcaml.Signal.input "wide" w in
+    let circuit =
+      Hardcaml.Circuit.create_exn
+        ~name:"clamps"
+        [ Hardcaml.Signal.output "shared" (Rtl.clamp16 wide)
+        ; Hardcaml.Signal.output "retired" (retired wide)
+        ]
+    in
+    let sim = Hardcaml.Cyclesim.create circuit in
+    Hardcaml.Cyclesim.in_port sim "wide" := Hardcaml.Bits.of_signed_int ~width:w value;
+    Hardcaml.Cyclesim.cycle sim;
+    let read name = Hardcaml.Bits.to_signed_int !(Hardcaml.Cyclesim.out_port sim name) in
+    read "shared", read "retired"
+  in
+  (* the widths the two eras really feed, and at each: the rails, then the values that
+     only a compare at the operand's OWN width can see — the first past the int32 range,
+     and the extreme of the operand. A width of 32 has none of those, thus it is the one
+     row where the two forms cannot part. *)
+  let past_int32 w = if w > 32 then [ 1 lsl 31; -(1 lsl 31) - 1 ] else [] in
+  List.iter [ 32; 40; 43; 48 ] ~f:(fun w ->
+    Stdio.printf "at width %d:\n" w;
+    List.iter
+      (([ int16_high + 1; int16_low - 1 ] @ past_int32 w)
+       @ [ (1 lsl (w - 1)) - 1; -(1 lsl (w - 1)) ])
+      ~f:(fun value ->
+        let shared, old = both ~width:w value in
+        Stdio.printf
+          "  %20d -> shared %6d  retired %6d%s\n"
+          value
+          shared
+          old
+          (if shared = old then "" else "   THE RETIRED FORM WRAPPED")));
+  [%expect
+    {|
+    at width 32:
+                     32768 -> shared  32767  retired  32767
+                    -32769 -> shared -32768  retired -32768
+                2147483647 -> shared  32767  retired  32767
+               -2147483648 -> shared -32768  retired -32768
+    at width 40:
+                     32768 -> shared  32767  retired  32767
+                    -32769 -> shared -32768  retired -32768
+                2147483648 -> shared  32767  retired -32768   THE RETIRED FORM WRAPPED
+               -2147483649 -> shared -32768  retired  32767   THE RETIRED FORM WRAPPED
+              549755813887 -> shared  32767  retired     -1   THE RETIRED FORM WRAPPED
+             -549755813888 -> shared -32768  retired      0   THE RETIRED FORM WRAPPED
+    at width 43:
+                     32768 -> shared  32767  retired  32767
+                    -32769 -> shared -32768  retired -32768
+                2147483648 -> shared  32767  retired -32768   THE RETIRED FORM WRAPPED
+               -2147483649 -> shared -32768  retired  32767   THE RETIRED FORM WRAPPED
+             4398046511103 -> shared  32767  retired     -1   THE RETIRED FORM WRAPPED
+            -4398046511104 -> shared -32768  retired      0   THE RETIRED FORM WRAPPED
+    at width 48:
+                     32768 -> shared  32767  retired  32767
+                    -32769 -> shared -32768  retired -32768
+                2147483648 -> shared  32767  retired -32768   THE RETIRED FORM WRAPPED
+               -2147483649 -> shared -32768  retired  32767   THE RETIRED FORM WRAPPED
+           140737488355327 -> shared  32767  retired     -1   THE RETIRED FORM WRAPPED
+          -140737488355328 -> shared -32768  retired      0   THE RETIRED FORM WRAPPED
+    |}]
+;;
+
 let%expect_test "the clamp saturates at both rails, at a narrow width and at a wide one" =
   (* THE 48-BIT CASE IS THE ONE THIS FORM EXISTS FOR. Era six's epilogue clamps a gain
      product 48 bits wide; a clamp that resized to 32 before the compare would wrap 2^47

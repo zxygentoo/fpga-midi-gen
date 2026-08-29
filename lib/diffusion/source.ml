@@ -236,19 +236,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
      phase cannot want it before its fourth. No attribute states a memory kind: one entry
      a pass is a read the tools may hold in whatever they have spare. *)
   let alpha =
-    let size = Array.length e.alpha_rom in
-    (multiport_memory
-       ~initialize_to:e.alpha_rom
-       size
-       ~write_ports:
-         [| { Write_port.write_clock = i.clock
-            ; write_address = zero (address_bits_for size)
-            ; write_enable = gnd
-            ; write_data = zero Elaboration.alpha_bits
-            }
-         |]
-       ~read_addresses:[| reg spec pass.value |]).(0)
-    |> reg spec
+    (Placement.rom ~read_addresses:[| reg spec pass.value |] e.alpha_rom).(0) |> reg spec
   in
   (* ---------------------------------------------------------------- *)
   (* the opening: one multiply, no divide, and no DSP *)
