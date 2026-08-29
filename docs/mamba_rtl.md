@@ -59,9 +59,11 @@ era four's did not: memory that survives the step. Its rules — the
 formats, the zero origin, the read-modify-write — are the new content of
 this document.
 
-**Two tables arrive**: the sigmoid and the softplus correction, in the
-idiom of `Exp2` — a registered read, no start and no busy, the caller
-holds the input two cycles.
+**Two tables arrive**: the sigmoid and the softplus correction — a
+registered read, no start and no busy, the caller holds the input two
+cycles. That was `Exp2`'s idiom too until the backport of 2026-08-29 gave
+it a registered magnitude and a weight every cycle; these two keep the
+older shape, because no caller here wants one a cycle.
 
 **The KV rings and `Attend` do NOT leave, and this document said they
 would.** The trunk needs none of them: the state RAM takes their seat,
@@ -460,14 +462,17 @@ The head and the feed-forward, at a FULL ring of 256:
 | the feed-forward: a norm, then the two matvecs | 2,906 + 32,777 |
 | **the feed-forward layer** | **35,683** |
 
-**403,074 cycles a drawn step — 4.03 ms at 100 MHz**, against the trunk
+**404,314 cycles a drawn step — 4.04 ms at 100 MHz**, against the trunk
 alone at 294,090. The schedule test prints this number out of `Op.cycles`
-at the elected shape, thus the document and the model cannot part.
+at the elected shape, thus the document and the model cannot part. It read
+403,074 until 2026-08-29, when the Exp2 backport gave the unit a registered
+magnitude and the two chains that read it — the temper and the decay —
+each waited one tick more.
 
 **It is no longer constant in the walk, and the head is why.** `Attend`
 walks the ages the ring holds, thus a step grows until the ring fills at
 step 256 and every step after that costs the same. The first drawn step
-holds 16 ages and costs 365,634; the steady step costs 403,074. The wire's
+holds 16 ages and costs 365,914; the steady step costs 404,314. The wire's
 8 ms floor still stands over both, thus the source is never the tempo and
 the growth is not audible.
 

@@ -713,17 +713,22 @@ mask.
   unit cannot check: a caller that states one that is not the peak states
   another distribution, and nothing says so.
 
-  **THE TABLE IS A FORK, AND THE FORK IS WHY A CELL COSTS 3 P AND NOT 5 P.**
-  The shared `Exp2` registers its table entry but takes the shift and the zero
-  test from its magnitude as it stands, thus it asks a caller to hold that
-  magnitude for two cycles — a walk of 48 classes would pay it twice over, and
-  a magnitude a cycle reads one class's entry under another class's shift. The
-  draw's fuzz read that fault as 58 disagreements of 60 before the fork stood.
-  `lib/diffusion/exp2.ml` registers the shift beside the entry: two flip-flops,
-  and a gate that states what a holding caller reads does not move. **WHETHER
-  TO BACKPORT IT TO `lib/nn` IS A DECISION FOR WHEN ERA SIX SETTLES** — a unit
-  two shipped eras carry does not move for a round that has not shipped — and
-  that gate is the evidence for it.
+  **THE TABLE TAKES ONE MAGNITUDE A CYCLE, AND THAT IS WHY A CELL COSTS 3 P AND
+  NOT 5 P.** `Exp2` once registered its table entry but took the shift and the
+  zero test from its magnitude as it stands, thus it asked a caller to hold
+  that magnitude for two cycles — a walk of 48 classes would pay it twice
+  over, and a magnitude a cycle read one class's entry under another class's
+  shift. The draw's fuzz read that fault as 58 disagreements of 60. Era six
+  forked the unit to register the magnitude WHOLE before the memory: three
+  flip-flops, and every part of the answer derives from one value.
+
+  **THE FORK WAS BACKPORTED 2026-08-29** and `lib/nn/exp2.ml` is the one unit
+  again. The two frozen eras took the register and one more tick in each chain
+  that reads it — era four's weight chain, era five's temper and decay — which
+  costs era four 224 cycles of a drawing step and era five 210, about a third
+  of a percent each, and moved both netlists. They gain what era six gained
+  besides: the caller's magnitude cone now ends at a register instead of
+  reaching the table's address pins.
 
   **THE SEAM TO THE DRAW IS A LEVEL AND A STROBE, AND NO TAG CROSSES IT.**
   `step_ready` is a LEVEL: "the file stands whole" is a state of the forward's
@@ -1090,7 +1095,7 @@ than replication:
 - **The draw's magnitude cone is cut in four**: the walk register behind the
   class mux — all three walks share it, thus the one-mux rule stands — the
   temper register, then the table's own address and entry registers, the
-  era-four rule applied to the `Exp2` fork. Cycles are the resource the walk
+  era-four rule applied to `Exp2`. Cycles are the resource the walk
   has and levels are what break: the pipe adds seven cycles to a hidden cell
   (`busy_cycles` 147 to 154) and the service moves from 2.7 to 2.8 percent
   of a pass. The retire pipe carries its walk's state, because the peak

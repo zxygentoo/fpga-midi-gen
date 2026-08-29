@@ -234,10 +234,11 @@ module Op = struct
     let divide_behind = Divider.busy_cycles + 1
     let root = Isqrt.busy_cycles + 1
 
-    (* the ticks of the bespoke chains *)
+    (* The ticks of the bespoke chains. The two that read [Exp2] count their own work and
+       then the wait on the unit, thus neither can drift from [Exp2.latency]. *)
     let silu = 6
-    let decay = 9
-    let exp_weight = 7
+    let decay = 8 + Exp2.latency
+    let exp_weight = 6 + Exp2.latency
     let draw = 4
     let threshold = 5
     let pick = 2
@@ -974,6 +975,9 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
         ; []
         ; [ nn <-- sel_bottom (negate (sra mac.product ~by:scale.q)) ~width:22 ]
         ; []
+        ; (* [Exp2.latency] cycles of it, and the magnitude stands from the tick after it
+             is written: the weight is whole here and the landing below reads it *)
+          []
         ; [ vram_wen <-- vdd; vram_waddr <-- at_addr ] @ land_ @ [ tick <--. 0 ] @ advance
         ]
     ]
@@ -1335,6 +1339,8 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
             ; []
             ; [ nn <-- sel_bottom (sra mac.product ~by:decay_q) ~width:22 ]
             ; []
+            ; (* [Exp2.latency] cycles of it, as [exp_weight_chain] waits *)
+              []
             ; [ switch
                   hd.value
                   (List.init heads ~f:(fun k ->
@@ -1762,13 +1768,21 @@ let%expect_test "the program is data: the state table prints" =
      bench above holds that model to the measured circuit at a shape a test can run. *)
   let elected = Model.For_test.drawn Model.For_test.elected ~seed:11 in
   let baseline = schedule elected in
-  let step ops = List.sum (module Int) ops ~f:(Op.cycles elected ~n:elected.ring) in
+  (* BOTH ENDS OF THE WALK, because [docs/mamba_rtl.md] states both: [Attend] walks the
+     ages the ring holds, thus a step grows until the ring fills and every step after it
+     costs the same. The first drawn step holds 16. *)
+  let drawn ~n =
+    let at ops = List.sum (module Int) ops ~f:(Op.cycles elected ~n) in
+    at baseline.forward + (Frame.voices * at baseline.chain)
+  in
   Stdio.printf
-    "%s: %d forward ops, %d chain ops, %d cycles a drawn step\n"
+    "%s: %d forward ops, %d chain ops, %d cycles at the first drawn step, %d at a full \
+     ring\n"
     (Model.Kind.spell elected.plan)
     (List.length baseline.forward)
     (List.length baseline.chain)
-    (step baseline.forward + (Frame.voices * step baseline.chain));
+    (drawn ~n:16)
+    (drawn ~n:elected.ring);
   [%expect
     {|
     f0  (Embed(seats 0)(phase 3072)(e 10))
@@ -1800,7 +1814,7 @@ let%expect_test "the program is data: the state table prints" =
     c4  Threshold
     c5  Pick
     c6  (Accumulate(base(Seat_block 0))(e 10))
-    MMMMMMZF: 77 forward ops, 7 chain ops, 403074 cycles a drawn step
+    MMMMMMZF: 77 forward ops, 7 chain ops, 365914 cycles at the first drawn step, 404314 at a full ring
     |}]
 ;;
 
@@ -2025,10 +2039,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 12379, model 12379, delta 0
-    step 15: draws,  measured 20621, model 20621, delta 0
-    step 16: draws,  measured 20621, model 20621, delta 0
-    step 17: draws,  measured 20621, model 20621, delta 0
-    18 steps, 0 disagree, total 251090
+    step  0: silent, measured 12383, model 12383, delta 0
+    step 15: draws,  measured 20831, model 20831, delta 0
+    step 16: draws,  measured 20831, model 20831, delta 0
+    step 17: draws,  measured 20831, model 20831, delta 0
+    18 steps, 0 disagree, total 251934
     |}]
 ;;

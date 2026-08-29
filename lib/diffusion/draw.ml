@@ -6,6 +6,7 @@
 open Core
 open Hardcaml
 open Signal
+module Exp2 = Mgen_nn.Exp2
 module Nn_quantized = Mgen_nn.Quantized
 module Placement = Mgen_nn.Placement
 

@@ -174,8 +174,10 @@ module Op = struct
     let pending_hold = Divider.busy_cycles + 1
     let root = Isqrt.busy_cycles + 1
 
-    (* the ticks of [exp_weight_chain], [Draw], [Threshold] and [Pick] *)
-    let exp_weight = 7
+    (* the ticks of [exp_weight_chain], [Draw], [Threshold] and [Pick]. The chain's own
+       work is six ticks and the rest is the wait on the unit, thus the count follows
+       [Exp2.latency] and cannot drift from it. *)
+    let exp_weight = 6 + Exp2.latency
     let draw = 4
     let threshold = 5
     let pick = 2
@@ -766,6 +768,9 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
         ; []
         ; [ nn <-- sel_bottom (negate (sra mac.product ~by:scale.q)) ~width:22 ]
         ; []
+        ; (* [Exp2.latency] cycles of it, and the magnitude stands from the tick after it
+             is written: the weight is whole here and the landing below reads it *)
+          []
         ; [ vram_wen <-- vdd; vram_waddr <-- at_addr ] @ land_ @ [ tick <--. 0 ] @ advance
         ]
     ]
@@ -1415,10 +1420,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 16850, model 16850, delta 0
-    step 15: draws,  measured 31956, model 31956, delta 0
-    step 16: draws,  measured 31956, model 31956, delta 0
-    step 17: draws,  measured 31956, model 31956, delta 0
-    18 steps, 0 disagree, total 356808
+    step  0: silent, measured 16852, model 16852, delta 0
+    step 15: draws,  measured 32180, model 32180, delta 0
+    step 16: draws,  measured 32180, model 32180, delta 0
+    step 17: draws,  measured 32180, model 32180, delta 0
+    18 steps, 0 disagree, total 357720
     |}]
 ;;
