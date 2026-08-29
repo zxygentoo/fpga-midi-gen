@@ -8,7 +8,7 @@ spread.
 
 The rest of the era is held elsewhere, and deliberately. `test_parity.py` holds the
 forward to its measured loss and the QUANTIZER through the netlist the elaboration states;
-`test_draw.py` holds the arithmetic of the draw; `test_quantized.py` holds the integer
+`test_draw.py` holds the arithmetic of the draw; `test_fixed.py` holds the integer
 rules the quantizer stands on; `test_train.py` holds the loop. What is left is the one
 rule no referee outside this repository can see, because a chain drawn upward is still a
 model that trains and still a model that plays -- and the CONTRACT FILE, whose round trip

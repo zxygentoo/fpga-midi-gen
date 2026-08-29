@@ -1099,8 +1099,9 @@ order expected to list do not exist**: every `Mac`, `Divider`, `Isqrt` and
 `Exp2` reference in both frozen sources already reads the unit's own
 export, and the unification round is why.
 
-ALL THREE NETLISTS NOW OWE A VIVADO BUILD, and era six's owes the flash
-and the capture besides: the board still holds `4e367cef`.
+ALL THREE NETLISTS OWED A VIVADO BUILD FOR THIS, and era six's owed the
+flash and the capture besides; the three builds and the flash are the last
+two entries below, of the same day.
 
 **The three builds, and the lottery took all three of them first.** Every
 era was built twice: once on the default flow, and once placed and routed

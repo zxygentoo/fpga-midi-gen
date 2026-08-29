@@ -1531,13 +1531,21 @@ checkpoint is **708 bytes and 236 messages, byte for byte, in order**.
 
 Gate B stands whole at the golden candidate.
 
-**THE FLASH HOLDS IT, 2026-08-28.** The tree elects rung 3 in `gen_verilog`
-— `l48-h20-100k`, T 128, G 5, N 512 — and its Verilog is the byte of the
-one that built `board/_build/cut-rung3` (md5 `4e367cef…`), thus the flashed
-bitstream is the tree's own build and no lottery was rolled again. QSPI
-erased, programmed, verified, booted; the cell dump answers over the UART
-behind the boot. The unfused rung 2 that held the flash since 2026-08-27
-stands aside as `board/_build/top-rung2-unfused.bit`.
+**THE FLASH TOOK IT ON 2026-08-28.** The tree elects rung 3 in
+`gen_verilog` — `l48-h20-100k`, T 128, G 5, N 512 — and its Verilog was the
+byte of the one that built `board/_build/cut-rung3` (md5 `4e367cef…`), thus
+the flashed bitstream was the tree's own build and no lottery was rolled
+again. QSPI erased, programmed, verified, booted; the cell dump answers over
+the UART behind the boot. The unfused rung 2 that had held the flash since
+2026-08-27 stood aside as `board/_build/top-rung2-unfused.bit`.
+
+**THE FLASH HOLDS `ca16397a` SINCE 2026-08-29**, the same shape rebuilt after
+the lifts into `lib/nn`: `Placement.rom` took a dead write port out of every
+weight and norm bank and the frames became registers of their own, and the
+`Explore` directives of `build.tcl` placed and routed it at +0.070 / +0.021
+with no clock-skew adjustment. The capture at seed 47872 reads 840 bytes and
+280 messages byte for byte against the twin — the netlist moved and the music
+did not.
 
 ## The iteration strategy
 
@@ -1653,6 +1661,15 @@ items, so the seams stay clean:
   `--fade` of `jax/diffusion/infer.py` over `Midi.fading`'s rule, whose
   share of the velocity at a step is the fade's one point of variation,
   and velocity is a fact of the onset.
+
+  THE OCaml SIDE OF THE FADE IS ALREADY DEAD CODE AND WAS KEPT FOR THIS
+  ITEM. The all-era cut of 2026-08-29 found `Midi.fading` read by nothing
+  but `Midi.faded_velocity`, and `faded_velocity` read by nothing but its
+  own expect test — the case `AGENT.md` names, an export alive only because
+  a test uses it. Both were left whole rather than cut, because this item
+  is what would wire them; `jax/midi.py` carries a fade of its own and the
+  board carries none. **The round that takes this item decides them: wire
+  them to the sequencer, or cut them and let the software keep the fade.**
 - **The seed succession.** The rule that names the seed of sheet k is a
   contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.

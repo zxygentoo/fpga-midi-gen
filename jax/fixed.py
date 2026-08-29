@@ -9,7 +9,7 @@ here is read by every twin and, through them, by every circuit.
 
 `lib/nn/quantized.ml` is the same module in OCaml and the elaborations read it. The two
 are TWO STATEMENTS OF ONE RULE and nothing in the types welds them; what holds them
-together is `tests/test_quantized.py`, which states the numbers both must give. THE TWO
+together is `tests/test_fixed.py`, which states the numbers both must give. THE TWO
 SIDES ARE LAID OUT ALIKE ON PURPOSE: this file stands to `nn.py` as `lib/nn/quantized.ml`
 stands to the rest of `lib/nn`.
 

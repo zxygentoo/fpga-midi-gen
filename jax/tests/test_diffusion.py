@@ -762,7 +762,7 @@ def test_the_loss_falls_over_a_short_run():
 # ==================================================================== #
 
 # The SCALAR rules the twin stands on -- the exponent, the rounding, the table, the temper
-# -- are shared with every era and stand in `test_quantized.py`. What is era six's own
+# -- are shared with every era and stand in `test_fixed.py`. What is era six's own
 # stands here: the tree that carries the float model's skeleton, and the file that crosses
 # the seam.
 

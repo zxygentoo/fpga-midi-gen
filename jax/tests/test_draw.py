@@ -4,7 +4,7 @@
 make music: a peak taken over the wrong axis, a min-p floor applied before the
 temperature, an inclusive compare in the cumulative walk. Each shifts the distribution a
 little and nothing raises. The INTEGER pick beside them is `fixed.pick`, over Q15 weights
-and a 24-bit word, and `test_quantized.py` gates it.
+and a 24-bit word, and `test_fixed.py` gates it.
 
 No mask stands here any more. The era of the token measured its peak over the legal set
 alone, because an illegal code could hold the largest logit; no frame is illegal, thus the

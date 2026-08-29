@@ -250,13 +250,13 @@ DIFFUSION_LOSS = 0.193459
 DIFFUSION_CROP = 128
 
 # The golden candidate at T 128, G 5, N 512, RE-PINNED 2026-08-29 by this gate at the end
-# of the lifts into `lib/nn`. `4e367cef` was the number of 2026-08-28 and it is WHAT THE
-# FLASH STILL HOLDS: the Exp2 backport did not move it — the fork became the shared unit
-# verbatim and the signal graph with it — and neither did the shared `clamp16`, which era
-# six already read. `Placement.rom` moved it (the weight and norm banks lost a dead write
-# port each) and the frames moved it again (one wide register became several narrow ones).
-# THE BOARD IS THEREFORE BEHIND THIS NUMBER until era six's build is flashed and its
-# capture at the panel seed is compared to the twin's wire bytes.
+# of the lifts into `lib/nn`, AND IT IS WHAT THE FLASH HOLDS: the bitstream went in that
+# day and the capture at seed 47872 read 840 bytes and 280 messages byte for byte against
+# the twin. `4e367cef` was the number of 2026-08-28, which it replaces. The Exp2 backport
+# did not move it — the fork became the shared unit verbatim and the signal graph with it
+# — and neither did the shared `clamp16`, which era six already read. `Placement.rom`
+# moved it (the weight and norm banks lost a dead write port each) and the frames moved it
+# again (one wide register became several narrow ones).
 DIFFUSION_NETLIST_MD5 = "ca16397aa3c91be2d8fe4c34736d0834"
 
 

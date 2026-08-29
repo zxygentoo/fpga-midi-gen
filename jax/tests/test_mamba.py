@@ -11,7 +11,7 @@ lands here.
 
 THE CONTRACT FILE stands at the foot of this module: what crosses the seam to the
 elaboration, and the rules the circuit cannot hold. `test_parity.py` holds the quantizer
-through the netlist and `test_quantized.py` holds the integer rules it stands on.
+through the netlist and `test_fixed.py` holds the integer rules it stands on.
 """
 
 import math
