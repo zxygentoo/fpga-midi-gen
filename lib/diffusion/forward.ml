@@ -283,45 +283,31 @@ struct
     (* THE SOURCE OF A FETCHED COLUMN TRAVELS WITH THE FETCH: the columns that land under
        B's last input channel are A's and come from X, and a slot that read the layer
        register would take Y. *)
-    let fetch_word =
-      concat_lsb
-        [ out_of_roll; tap_step; sel_bottom fetch_cin ~width:plane_bits; fetch_reads_y ]
-    in
-    let landed = hold (hold fetch_word) in
-    (* EACH FIELD IS TAKEN WHERE THE ONE BEFORE IT ENDED, and the packing above states the
-       order. Written as cumulative sums these offsets are a set of expressions that must
-       move together when a field is added, and nothing below would say that one did not. *)
-    let field word ~low ~width = select word ~high:(low + width - 1) ~low, low + width in
-    let landed_zero, low = field landed ~low:0 ~width:1 in
-    let landed_step, low = field landed ~low ~width:step_bits in
-    let landed_plane, low = field landed ~low ~width:plane_bits in
-    let landed_reads_y, (_ : int) = field landed ~low ~width:1 in
+    (* A FRAME TRAVELS FIELD BY FIELD AND NOT AS A PACKED WORD. Both frames here were one
+       wide register with each field taken where the one before it ended: every width
+       stood twice, once at the pack and once at the unpack, and the offsets were a set of
+       cumulative sums that had to move together when a field was added — with nothing
+       below to say that one had not. Each field is now its own register at the width of
+       the value it carries, under the same [hold] the packed word rode. *)
+    let two_back v = hold (hold v) in
+    let landed_zero = two_back out_of_roll in
+    let landed_step = two_back tap_step in
+    let landed_plane = two_back (sel_bottom fetch_cin ~width:plane_bits) in
+    let landed_reads_y = two_back fetch_reads_y in
     (* ---------------------------------------------------------------- *)
     (* THE NOW FRAME: the term that really happens *)
     (* ---------------------------------------------------------------- *)
     (* THE NOW FRAME CARRIES THE PHASE AND THE SEMANTIC COLUMN; [s] never leaves the lead
        frame. [ends] rides too: the turn closes on the now frame's own last block. *)
     let lead_column = column_of ~s:lead_s.value ~phase:lead_phase.value in
-    let lead_word =
-      concat_lsb
-        [ sm.is Dwell
-        ; lead_cycle.value
-        ; lead_cin.value
-        ; lead_group.value
-        ; lead_column
-        ; lead_phase.value
-        ; walk.ends
-        ]
-    in
-    let now_word = hold (hold lead_word) in
-    let now_running, low = field now_word ~low:0 ~width:1 in
+    let now_running = two_back (sm.is Dwell) in
     let now_valid = now_running &: run in
-    let now_cycle, low = field now_word ~low ~width:tap_bits in
-    let now_cin, low = field now_word ~low ~width:cin_bits in
-    let now_group, low = field now_word ~low ~width:group_bits in
-    let now_step, low = field now_word ~low ~width:step_bits in
-    let now_phase, low = field now_word ~low ~width:1 in
-    let now_ends, (_ : int) = field now_word ~low ~width:1 in
+    let now_cycle = two_back lead_cycle.value in
+    let now_cin = two_back lead_cin.value in
+    let now_group = two_back lead_group.value in
+    let now_step = two_back lead_column in
+    let now_phase = two_back lead_phase.value in
+    let now_ends = two_back walk.ends in
     let now_layer = layer_of ~phase:now_phase in
     let now_last_cin =
       now_cin ==: fact now_layer ~width:cin_bits (fun l -> l.inputs) -:. 1

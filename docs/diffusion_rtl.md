@@ -311,6 +311,17 @@ band load carries the phase it was fired for, and the flush nest walks the
 block order a second time. `Elaboration.Rtl.layer_of` turns a turn and a
 phase into the table's index, and the table's mux is the one it always was.
 
+**A FRAME TRAVELS FIELD BY FIELD.** Each frame was one wide register over a
+`concat_lsb` word, unpacked by a `field` reader that took each field where
+the one before it ended. Every width then stood twice — once at the pack,
+once at the unpack — and the offsets were cumulative sums that had to move
+together when a field was added, with nothing below to say that one had
+not. Since 2026-08-29 each field is its own register at the width of the
+value it carries, under the same `hold`: `Forward`'s two frames and
+`Source`'s one lost their packer, their unpacker and every restated width.
+The netlist moved for it — one wide register became several narrow ones —
+and the walk, the stream and the socket simulation did not.
+
 ### The prior art
 
 Searched 2026-08-26, before any RTL. **THE FIELD HAS BUILT THIS MACHINE
@@ -1645,14 +1656,3 @@ items, so the seams stay clean:
 - **The seed succession.** The rule that names the seed of sheet k is a
   contract to pin with `infer.py sample --seeds` and the JAX handoff before
   phase II elaborates.
-- **The frames as interfaces.** The lead and now frames of `Forward` and of
-  `Source` are packed by hand: a `concat_lsb`, two registers on the word,
-  and a `field` unpacker that restates each width. An interface record
-  with `[@bits]` and `Of_signal.pipeline` is the same registers under their
-  own names, and it deletes the packer, the unpacker and the restated
-  widths in both files. It waits here and not in the simplify round because
-  it changes the netlist — one wide register becomes several narrow ones —
-  thus the `top.v` md5 gate cannot cover it, and the timing lottery asks
-  for a build. Phase II reopens `Forward`'s frames and owes that build. One
-  check at the time: `Of_signal.pipeline` must take the `~enable:run` that
-  `Forward`'s `hold` gives its registers.
