@@ -20,6 +20,7 @@ module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
 module Pink = Mgen_pink.Pink
+module Harness = Mgen_core.Harness
 module Socket = Mgen_board.Socket
 module Source = Mgen_pink.Source
 
@@ -31,48 +32,27 @@ let clocks_per_bit = 4
 let step_ms = 400
 
 let harness ~seed =
-  let open Hardcaml in
-  let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
-  let sim =
-    Sim.create (fun (i : _ Socket.I.t) ->
-      Socket.create
-        ~clocks_per_ms
-        ~clocks_per_bit
-        ~source:(Source.create ~model:Pink.default ~seed:i.params.seed)
-        i)
+  let h =
+    Socket.For_test.harness
+      ~clocks_per_ms
+      ~clocks_per_bit
+      ~source:(fun params -> Source.create ~model:Pink.default ~seed:params.seed)
+      ()
   in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let set field value = field := Bits.of_unsigned_int ~width:(Bits.width !field) value in
-  let wave = Buffer.create (1024 * 1024) in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Buffer.add_char wave (if Bits.to_bool !(out.serial) then '1' else '0')
-  in
-  set inp.params.seed seed;
-  set inp.params.channel Control_intf.Default.channel;
-  set inp.params.velocity Control_intf.Default.velocity;
-  set inp.params.step_ms step_ms;
-  (* every message of the sequencer is three bytes, thus the byte stream of the line
-     divides into messages with no ambiguity *)
-  let messages () =
-    Mgen_board.Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit
-    |> Bytes.to_list
-    |> List.map ~f:Char.to_int
-    |> List.chunks_of ~length:Midi.max_message_bytes
-  in
+  let inp = h.inputs in
+  Harness.set inp.params.seed seed;
+  Harness.set inp.params.channel Control_intf.Default.channel;
+  Harness.set inp.params.velocity Control_intf.Default.velocity;
+  Harness.set inp.params.step_ms step_ms;
+  (* the RUN LENGTH is this test's own: the pink step, and the drain behind it *)
   let play ~steps =
-    Buffer.clear wave;
+    h.clear_line ();
     let period = clocks_per_ms * step_ms in
-    set inp.params.run 1;
-    for _ = 1 to ((steps - 1) * period) + (period / 2) do
-      cycle ()
-    done;
-    set inp.params.run 0;
-    for _ = 1 to 2 * period do
-      cycle ()
-    done;
-    messages ()
+    Harness.set inp.params.run 1;
+    h.run_for ~cycles:(((steps - 1) * period) + (period / 2));
+    Harness.set inp.params.run 0;
+    h.run_for ~cycles:(2 * period);
+    h.messages ()
   in
   play
 ;;

@@ -33,6 +33,7 @@
    has to track the machine's cycles. *)
 
 open Base
+module Harness = Mgen_core.Harness
 module Socket = Mgen_board.Socket
 module Control_intf = Mgen_core.Control_intf
 module Frame = Mgen_core.Frame
@@ -67,50 +68,28 @@ let draw_budget =
   + Elaboration.cell_walk_cycles e
 ;;
 
-(* The harness drives the parameter views directly and samples the line in each cycle.
-   [play] runs one whole run: run to 1, the draw, the sheet and some silence past it, then
-   run to 0 and the drain; it gives the messages that the line carried. *)
+(* [Socket.For_test] mounts the block and samples the line; the RUN LENGTH is this test's
+   own. [play] runs one whole run: run to 1, the draw, the sheet and some silence past it,
+   then run to 0 and the drain; it gives the messages that the line carried. *)
 let harness () =
-  let open Hardcaml in
-  let module Sim = Cyclesim.With_interface (Socket.I) (Socket.O) in
-  let sim =
-    Sim.create (fun (i : _ Socket.I.t) ->
-      Socket.create
-        ~clocks_per_ms
-        ~clocks_per_bit
-        ~source:(Source.create ~e ~seed:i.params.seed)
-        i)
+  let h =
+    Socket.For_test.harness
+      ~clocks_per_ms
+      ~clocks_per_bit
+      ~source:(fun params -> Source.create ~e ~seed:params.seed)
+      ()
   in
-  let inp = Cyclesim.inputs sim in
-  let out = Cyclesim.outputs ~clock_edge:Before sim in
-  let set field value = field := Bits.of_unsigned_int ~width:(Bits.width !field) value in
-  let wave = Buffer.create (1024 * 1024) in
-  let cycle () =
-    Cyclesim.cycle sim;
-    Buffer.add_char wave (if Bits.to_bool !(out.serial) then '1' else '0')
-  in
-  (* every message of the sequencer is three bytes, thus the byte stream of the line
-     divides into messages with no ambiguity *)
-  let messages () =
-    Mgen_board.Uart_rx.For_test.decode_line (Buffer.contents wave) ~clocks_per_bit
-    |> Bytes.to_list
-    |> List.map ~f:Char.to_int
-    |> List.chunks_of ~length:Midi.max_message_bytes
-  in
+  let inp = h.inputs in
   let play () =
-    Buffer.clear wave;
-    let period = clocks_per_ms * Bits.to_int_trunc !(inp.params.step_ms) in
-    set inp.params.run 1;
-    for _ = 1 to draw_budget + ((steps + 2) * period) do
-      cycle ()
-    done;
-    set inp.params.run 0;
-    for _ = 1 to 2 * period do
-      cycle ()
-    done;
-    messages ()
+    h.clear_line ();
+    let period = clocks_per_ms * Hardcaml.Bits.to_int_trunc !(inp.params.step_ms) in
+    Harness.set inp.params.run 1;
+    h.run_for ~cycles:(draw_budget + ((steps + 2) * period));
+    Harness.set inp.params.run 0;
+    h.run_for ~cycles:(2 * period);
+    h.messages ()
   in
-  inp, set, play
+  inp, Harness.set, play
 ;;
 
 (* the messages of the reference: the frames the source answers over the whole sheet, the
