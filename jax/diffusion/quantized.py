@@ -524,7 +524,15 @@ def passes(twin, states, given, *, walk, tally):
 
     A CELL THE MASK LEFT STANDING TAKES NO UNIFORM: a walk that spends one on a standing
     cell states a different piece and no gate below says so. Over a batch that rule is
-    `prng.uniform_word`'s `active`."""
+    `prng.uniform_word`'s `active`.
+
+    THE TWO LOOPS HERE ARE NOT THE COST OF A WALK, and a round that scans them will find
+    that out late. Profiled 2026-08-29 at T128 N512 on the golden shape: the walk is 60.3
+    s for one sheet, of which the forward above is 81.6 percent and these loops are 18.4 —
+    and they are batched numpy that barely grows with the batch, thus they fall to 1.7
+    percent at sixteen sheets, which is how a sweep runs. The forward is a jitted int32
+    convolution and not overhead. The build-log entry of that day holds the whole
+    profile."""
     sheets, steps, _ = given.shape
     idle = np.zeros(sheets, np.int64)
     classes = given

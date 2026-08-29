@@ -115,12 +115,14 @@ TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
 # reference beside it stated the same 1.628177.
 TRANSFORMER_LOSS = 1.628177
 
-# The netlist of the elected checkpoint, MEASURED 2026-08-28 on `develop bb3b943`: era
-# four's own `gen_verilog` of `7c3d356^` (with `_train/transformer/` before the checkpoint
-# name) over HEAD's `top.ml`, with `~e` read as `~model`. The netlist moved at the
-# unification round -- the one divider, the nine-bit `Mac` functor -- and the build-log
-# records it as MET +0.005 at default directives.
-TRANSFORMER_NETLIST_MD5 = "4ab6e292c6c26ca0befa68fb6026d3f5"
+# The netlist of the elected checkpoint, RE-PINNED 2026-08-29 by this gate through
+# `gate_transformer.exe verilog`, at the end of the lifts into `lib/nn`. Three of them
+# moved it, in this order: the Exp2 backport (`4ab6e292` -> `323bd22d`), the shared
+# `clamp16` (-> `c43ee3b2`) and `Placement.rom` (-> here). `Placement.block_ram` moved
+# nothing, which is the answer that gate was asked for. `4ab6e292` had stood since the
+# unification round's one divider and nine-bit `Mac` functor, at MET +0.005.
+# IT OWES A VIVADO BUILD before it merges.
+TRANSFORMER_NETLIST_MD5 = "a106ff1a991ed756f4c78af99b8d5b35"
 
 GATE_TRANSFORMER = BUILT / "gate_transformer.exe"
 
@@ -183,11 +185,14 @@ MAMBA_SHAPE = {"windows": 75, "context": 256}
 # beside it stated the same 1.640810.
 MAMBA_LOSS = 1.640810
 
-# The netlist of the elected checkpoint, MEASURED 2026-08-28 on `develop bb3b943`: era
-# five's own `gen_verilog` of `46b1243^` over HEAD's `top.ml`, with `~e` read as `~model`.
-# It is the number the unification round proved on 2026-08-23; five days of refactors to
-# `lib/nn` and `lib/core` did not move it.
-MAMBA_NETLIST_MD5 = "a648db223e3cb91896c23c0881f24634"
+# The netlist of the elected checkpoint, RE-PINNED 2026-08-29 by this gate through
+# `gate_mamba.exe verilog`, at the end of the lifts into `lib/nn`. It moved with era
+# four's and at the same three steps: the Exp2 backport (`a648db22` -> `68fef409`), the
+# shared `clamp16` (-> `d64f3e63`) and `Placement.rom` (-> here). `a648db22` was the
+# unification round's number of 2026-08-23, which five days of refactors to `lib/nn` and
+# `lib/core` had not moved.
+# IT OWES A VIVADO BUILD before it merges.
+MAMBA_NETLIST_MD5 = "e6abe8c20c983a930b99a626c18a9b13"
 
 GATE_MAMBA = BUILT / "gate_mamba.exe"
 
@@ -244,9 +249,15 @@ GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.e
 DIFFUSION_LOSS = 0.193459
 DIFFUSION_CROP = 128
 
-# the netlist the flash holds: the golden candidate at T 128, G 5, N 512, MEASURED
-# 2026-08-28 by this gate on `develop bb3b943`
-DIFFUSION_NETLIST_MD5 = "4e367cef6e38b2ae1f06ab3cf42a9c42"
+# The golden candidate at T 128, G 5, N 512, RE-PINNED 2026-08-29 by this gate at the end
+# of the lifts into `lib/nn`. `4e367cef` was the number of 2026-08-28 and it is WHAT THE
+# FLASH STILL HOLDS: the Exp2 backport did not move it — the fork became the shared unit
+# verbatim and the signal graph with it — and neither did the shared `clamp16`, which era
+# six already read. `Placement.rom` moved it (the weight and norm banks lost a dead write
+# port each) and the frames moved it again (one wide register became several narrow ones).
+# THE BOARD IS THEREFORE BEHIND THIS NUMBER until era six's build is flashed and its
+# capture at the panel seed is compared to the twin's wire bytes.
+DIFFUSION_NETLIST_MD5 = "ca16397aa3c91be2d8fe4c34736d0834"
 
 
 def diffusion_gate_masks(sheets, crop):

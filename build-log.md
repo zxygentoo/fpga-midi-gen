@@ -986,3 +986,175 @@ freeze; and eight dead OCaml exports — `Prng.bernoullis` deleted
 outright, the rest un-exported. E501 is selected in `pyproject.toml`
 and the 343 lines over 90 columns are rewrapped: the Python side lints
 where the OCaml side formats, and `ruff format` stays unadopted.
+
+**The `lax.scan` walk was withdrawn on measurement, before it was
+written.** It had been carried since era six on one number — 57.4 s per
+sheet at T128 N512 — and never on where those seconds go. Profiled
+2026-08-29 on the golden `l48-h20` contract file, the walk reads 60.3 s
+per sheet on this machine, and the two cell loops of `quantized.passes`
+that the round meant to scan are 18.4 percent of it. THEY ARE ALREADY
+BATCHED NUMPY and nearly constant in absolute time — 0.2 s at one sheet,
+0.3 s at sixteen — so the batch dilutes them to 8.1 percent at four
+sheets and 1.7 at sixteen, which is how every sweep runs. A perfect scan
+therefore buys 1.23× at one sheet, 1.09× at four and 1.02× at sixteen,
+under the 1.5× bar that cut the chunked window form at 1.17× and 1.35×.
+
+The other 81.6 percent is the forward, and it is not overhead: inside one
+layer the jitted int32 convolution is 86.4 percent, the host-to-device
+copy 5.7, the device-to-host 0.2 and the numpy epilogue 7.7, with three
+cached kernels over the 48 layers and no recompilation anywhere in a
+walk. Even a perfect fusion of that epilogue into the jit — the numpy
+tail this project already declined for wanting x64 — reaches about 11
+percent of the walk. THE TWIN'S WALK IS CONVOLUTION-BOUND, and the only
+lever left is the one the sampler already has: the batch of seeds.
+
+**The `Exp2` fork was backported, and the two frozen netlists moved.**
+Era six had forked the unit because the shared one registered its table
+entry but read the shift and the zero test from the magnitude as it
+stands: a magnitude a cycle then meets one class's entry under another
+class's shift, which the draw's fuzz read as 58 disagreements of 60.
+`lib/nn/exp2.ml` is now the fork — the magnitude registered WHOLE before
+the memory, `latency` 2, one magnitude a cycle — and `lib/diffusion/exp2`
+is gone.
+
+THE LIFT IS NOT FREE FOR THE FROZEN ERAS, and the order's "verbatim" hid
+it: both read `exp2_e` exactly one cycle after driving `nn`, so the extra
+register handed them a stale weight and era four's socket simulation went
+from 24 messages to 28 — different music, caught by the `.expected` and
+not by argument. Each chain that reads the unit gained one tick: era
+four's `exp_weight_chain`, era five's temper and decay. The cycle counts
+follow, and both cost models now derive their tick count from
+`Exp2.latency` so that neither can drift from it again:
+
+| era | drawn step, before | after | delta |
+|---|---|---|---|
+| four | 31,956 | 32,180 | +224 (+0.70 %) |
+| five, MMMMMMZF | 403,074 | 404,314 | +1,240 (+0.31 %) |
+
+Both benches read delta 0 against their models at the new counts. Era
+six's `4e367cef` HELD — the code is the same code and the signal graph
+does not move — and the two frozen pins were re-measured through the
+pytest gate: era four `4ab6e292` → `323bd22d`, era five `a648db22` →
+`68fef409`. BOTH OWE A VIVADO BUILD before the merge. What the frozen
+eras gain besides the shared unit: the caller's magnitude cone now ends
+at a register instead of reaching the table's address pins, which is the
+cut that era six's ring-3 timing round paid for.
+
+**The rest of the lifts into `lib/nn`, and every netlist moved.** Four
+adoptions after the Exp2 backport, each measured through the pytest md5
+gate on its own so that the round knows which one moved what:
+
+| the lift | era four | era five | era six |
+|---|---|---|---|
+| the Exp2 backport | `4ab6e292` → `323bd22d` | `a648db22` → `68fef409` | held |
+| the shared `clamp16` | → `c43ee3b2` | → `d64f3e63` | held |
+| `Placement.block_ram` | held | held | held |
+| `Placement.rom` + the frames | → `a106ff1a` | → `e6abe8c2` | `4e367cef` → `ca16397a` |
+
+**`clamp16`: the two forms were NOT one function, and the order expected
+them to be.** Every operand the frozen eras clamp is wider than 32 bits —
+measured at the elaboration: era four states 40 and 48, era five 32, 40,
+43 and 48 — and their retired clamp read `sresize v ~width:32` BEFORE the
+compare. A value past the int32 range therefore truncated first and
+compared afterwards: `+2^31` came out as −32768, the WRONG RAIL, and a
+48-bit product came out as −1. `Mgen_nn.Quantized.Rtl.clamp16` compares at
+the operand's own width, and a new gate beside it holds the two forms
+against each other at all four widths and marks every reading where the
+retired one wrapped. Nothing on any covered walk reached those values —
+no `.expected` moved and both RTL gates still hold the circuits to their
+twins — thus this is a latent hazard removed and not a fault repaired.
+
+**`Placement.rom` is `Signal.rom` that takes an attribute.** Hardcaml's
+own `rom` carries none, so a weight ROM that wanted a block-RAM attribute
+had to be built as a `multiport_memory` with a DEAD WRITE PORT — an enable
+tied low, which puts an `always` block that can never fire into the
+Verilog of every bank. The new form has no write port at all: an `initial`
+block, one `assign` for each read, and a hand-made `ROM_STYLE` attribute,
+because Hardcaml states RAM_STYLE and SRL_STYLE and no ROM_STYLE. It
+builds the primitive itself, thus it also states the checks
+`Signal.rom` takes from Hardcaml's validation — and one of them caught a
+one-word alpha ROM whose address Hardcaml sizes at one bit where
+`ceil_log2` says zero. Four sites took it: the two frozen weight ROMs,
+era six's norm and weight banks — `block_memory` split into a ROM path and
+a store path, the banking, the holds and the select shared — and era six's
+alpha ROM, which carries no attribute by design. Era six's Verilog now
+reads 3 ROM_STYLE, 3 RAM_STYLE and 5 `initial` blocks.
+
+**The frames travel field by field** (the Phase II item, closed). Each of
+the three frames — `Forward`'s fetch and lead, `Source`'s cell walk — was
+one wide register over a `concat_lsb` word with a `field` reader taking
+each field where the one before it ended: every width stood twice and the
+offsets were cumulative sums that had to move together. Each field is now
+its own register at the width of the value it carries, under the same
+`hold`. DEVIATION FROM THE DESIGN NOTE, which asked for an interface
+record with `[@bits]` and `Of_signal.pipeline`: every width here comes out
+of the elaboration and not the source, thus `[@bits]` would want a functor
+for each of the three frames. The per-field form gives what the note asked
+of it — the packer, the unpacker and every restated width are gone, and
+one wide register became several narrow ones — without that machinery.
+
+**`Placement.block_ram` moved nothing**, which is what that gate was asked
+for: the attribute is the same attribute. **The unit restatements the
+order expected to list do not exist**: every `Mac`, `Divider`, `Isqrt` and
+`Exp2` reference in both frozen sources already reads the unit's own
+export, and the unification round is why.
+
+ALL THREE NETLISTS NOW OWE A VIVADO BUILD, and era six's owes the flash
+and the capture besides: the board still holds `4e367cef`.
+
+**The three builds, and the lottery took all three of them first.** Every
+era was built twice: once on the default flow, and once placed and routed
+again under `-directive Explore` after the first was refused. THE DEFAULT
+FLOW LOST ALL THREE by the rule this log has kept since era six: a build
+that meets by under about 10 ps, or that meets only through `phys_opt`'s
+clock skew, plays a different piece on each run.
+
+| era | default WNS / WHS | skew adj | **Explore WNS / WHS** | skew adj |
+|---|---|---|---|---|
+| four | +0.013 / +0.041 | 1 | **+0.143 / +0.041** | 0 |
+| five | +0.030 / +0.005 | 2 | **+0.236 / +0.107** | 0 |
+| six | +0.008 / +0.017 | 3 | **+0.070 / +0.021** | 0 |
+
+Era five's default build failed on the HOLD side — 5 ps — where the other
+two failed on setup; era six's needed the post-route `phys_opt` to climb
+from −0.202 to +0.008 and carried three skew adjustments to do it. **All
+three Explore builds carry NO skew adjustment at all**, no failing
+endpoint, and margins in the band their eras have always met in: era five
+at +0.236 against the +0.197 of its elected build, era four at +0.143
+against +0.059, era six at +0.070 against the golden +0.147.
+
+**THE TILE CENSUS IS THE GATE THE ROM SWAP HAD TO PASS, AND IT PASSED
+EXACTLY**: 126 tiles for era four (123 RAMB36, 6 RAMB18), 80.5 for era
+five (75 and 11), 108.5 for era six — every one of them the number its
+last build read, RAMB for RAMB. `Placement.rom` cost no block RAM
+anywhere; what it bought is a Verilog with no dead `always` block behind
+a ROM bank. Era four stands at 3,002 slice LUTs against 2,999, era five
+at 3,704 against 3,447, era six at 25,364 with all 240 DSPs.
+
+Vivado peaked at 3.4 GiB of resident memory over the six builds, the
+machine never fell below 16.2 GiB available, and the swap was never
+touched — the builds ran one at a time for that reason, because this box
+has 2 GB of swap and no earlyoom, thus a thrash here is a freeze.
+
+**Era six is in the flash, and the capture is byte-exact.** The Explore
+bitstream of `ca16397a` went into the QSPI on 2026-08-29 — `Program/Verify
+Operation successful`, 0 errors — and the board booted from it. The control
+port answered over the console UART on the first read, which is the smoke
+test that the new netlist is alive.
+
+THE CAPTURE, at seed 47872 as the golden's was: the seed written over the
+control port because the panel switches stood at 0, and 0 is the one seed
+that holds the walk still. `amidi` on the S-1's thru against the twin's wire
+bytes from `diffusion.infer sample --quantized --seeds 47872 --gap 0
+--fade 0 --play --device FILE` — the fade off, because the fade is the
+software player's and Phase II owns the board's. **840 bytes, 280 messages,
+BYTE FOR BYTE IN ORDER.** The ROM swap and the frames moved the netlist and
+did not move one byte of the music.
+
+**THE FIRST READING MISSED ON FOUR BYTES, AND THE FAULT WAS THE HOST'S** —
+the order predicted the direction: a miss is the MIDI encoding, never the
+twin. 276 messages agreed in order and the last four, the drain, were the
+same four note-offs in another order: `jax/midi.py` drained `for pitch in
+ringing` over a PYTHON SET, whose iteration order is arbitrary, thus the
+twin's own wire bytes were not reproducible run to run. Sorted now, and the
+comment says why so that no one takes the sort for a taste.

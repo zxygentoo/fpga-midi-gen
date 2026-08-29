@@ -86,7 +86,7 @@ every step: two passes of `T * d` terms for each layer, 32,768 of the
 81,920 multiplies of an era-four layer. The recurrence costs a constant
 that does not know `T`. The estimate below puts the step at about 2.4 ms
 against era four's 7, on the same one-multiplier machine. **The trunk
-measured 2.93 ms, and the elected plan 4.03** — 403,074 cycles, and with
+measured 2.93 ms, and the elected plan 4.04** — 404,314 cycles, and with
 the head the step grows again until the ring fills at step 256, then
 holds. The wire's 8 ms floor stands over both numbers, thus the argument
 bought margin and the head spent some of it.

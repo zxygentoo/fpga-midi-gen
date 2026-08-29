@@ -65,8 +65,14 @@ def play(music, *, device, step_ms, channel, velocity, fade=0):
                         ringing.discard(pitch)
                 time.sleep(step_ms / 1000.0)
         finally:
-            # the drain: each open note closes, as the sequencer does at a stop
-            for pitch in ringing:
+            # The drain: each open note closes, as the sequencer does at a stop. SORTED,
+            # and that is not a taste: the board releases in an order of its own and the
+            # capture gate compares these bytes to it, thus an unordered set would put a
+            # different tail on the wire at every run and the gate would read a miss that
+            # is nobody's fault. Measured 2026-08-29 against the board at seed 47872: 276
+            # messages byte for byte, and the four the drain states were the same four in
+            # another order.
+            for pitch in sorted(ringing):
                 wire.write(bytes([NOTE_OFF | channel, pitch, RELEASE_VELOCITY]))
 
 
