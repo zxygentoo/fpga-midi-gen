@@ -29,38 +29,25 @@ disagree. From the repository root:
 """
 
 import hashlib
-import subprocess
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import data
+from tests import gate
+from tests.gate import need, run
 from transformer import model
 
-ROOT = data.JAX_ROOT.parent
+ROOT = gate.ROOT
 CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
 CORPUS = data.FRAMES
-BUILT = ROOT / "_build" / "default" / "bin"
+BUILT = gate.BUILT
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
 # sides reduce in different orders. A disagreement that matters -- a different mask, a
 # different phase, a transposed table -- moves the third decimal at least.
 TOLERANCE = 2e-4
-
-
-def need(*paths):
-    missing = [p.name for p in paths if not p.exists()]
-    if missing:
-        pytest.skip(f"absent, nothing to gate: {', '.join(missing)}")
-
-
-def run(*argv):
-    # check=False: the assert below carries the stderr into the report, where a
-    # CalledProcessError would show the command alone
-    done = subprocess.run(argv, capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stderr
-    return done.stdout
 
 
 def contract_file(era, checkpoint, tmp_path):

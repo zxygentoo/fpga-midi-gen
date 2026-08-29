@@ -82,14 +82,52 @@ def eval_batches(split, context, limit, batch):
 
 
 def eval_loss(held, batches):
-    """nats for each step, the mean over the evaluation windows"""
-    total = 0.0
+    """nats for each step, the mean over the evaluation windows.
+
+    The sums stay on the device until the loop ends, because a read at every batch blocks
+    the dispatch of the next one."""
+    total = jnp.zeros((), jnp.float32)
     steps = 0
     for classes, phases in batches:
-        sums = eval_fn(held, classes, phases)
-        total += float(sums[0])
-        steps += int(sums[1])
-    return total / max(steps, 1)
+        batch_total, batch_steps = eval_fn(held, classes, phases)
+        total += batch_total
+        steps += batch_steps
+    return float(total) / max(int(steps), 1)
+
+
+def recipe_options(dropout):
+    """The fourteen flags of the RECIPE, which every step-frame trainer wears.
+
+    They are one set because the loop is one loop: each is a parameter of `train` and none
+    of them is a parameter of a model, thus a change to the recipe's defaults has one home
+    and the two eras cannot drift apart on it. Only the dropout is an era's own number,
+    because it scales with the capacity the era carries. A trainer states its MODEL's
+    flags itself, and nothing else."""
+    options = [
+        click.option("--corpus", "corpus_path", default=str(data.FRAMES)),
+        click.option("--context", default=256, help="the training window, in steps"),
+        click.option("--batch", default=16),
+        click.option("--steps", default=96000),
+        click.option("--lr", default=1e-3),
+        click.option("--seed", default=6),
+        click.option("--warmup", default=300),
+        click.option("--wd", "weight_decay", default=0.01),
+        click.option("--clip", default=1.0),
+        click.option("--dropout", default=dropout),
+        click.option("--log-every", default=100),
+        click.option("--eval-every", default=1600),
+        click.option("--eval-limit", default=128),
+        click.option("--ckpt", default=None),
+    ]
+
+    def worn(command):
+        # click reads a stack of decorators from the bottom up, thus the reverse keeps
+        # --help in the order written above
+        for option in reversed(options):
+            command = option(command)
+        return command
+
+    return worn
 
 
 def train(

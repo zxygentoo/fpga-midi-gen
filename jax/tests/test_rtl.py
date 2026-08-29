@@ -37,50 +37,33 @@ root:
     dune build bin/gate_diffusion.exe
 """
 
-import subprocess
 
 import numpy as np
 import pytest
 
-import data
 import fixed
 from diffusion import model, quantized
+from tests import gate
 
-ROOT = data.JAX_ROOT.parent
-DRIVER = ROOT / "_build" / "default" / "bin" / "gate_diffusion.exe"
+DRIVER = gate.driver("gate_diffusion.exe")
 
 VOICES = model.VOICES
 
 
 def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
     """the driver's report, one line as a list of its words"""
-    if not DRIVER.exists():
-        pytest.skip(f"absent, nothing to gate: {DRIVER.name}")
-    done = subprocess.run(
-        [
-            str(DRIVER),
-            subcommand,
-            "-int8",
-            str(path),
-            "-steps",
-            str(steps),
-            "-lanes",
-            str(lanes),
-            "-walk",
-            str(walk),
-            "-seed",
-            str(seed),
-            "-rows",
-            str(rows),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    gate.need(DRIVER)
+    stdout = gate.run(
+        DRIVER,
+        subcommand,
+        "-int8", path,
+        "-steps", steps,
+        "-lanes", lanes,
+        "-walk", walk,
+        "-seed", seed,
+        "-rows", rows,
     )
-    # check=False: the assert carries the stderr into the report, where a
-    # CalledProcessError would show the command alone
-    assert done.returncode == 0, done.stderr
-    return [line.split() for line in done.stdout.splitlines() if line]
+    return [line.split() for line in stdout.splitlines() if line]
 
 
 def contract_file(tmp_path, *, weight_seed, layers, width):

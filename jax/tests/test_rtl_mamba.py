@@ -31,41 +31,23 @@ root:
     dune build bin/gate_mamba.exe
 """
 
-import subprocess
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 import fixed
 from mamba import quantized
+from tests import gate
 from tests.test_mamba import plan_of
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-DRIVER = ROOT / "_build" / "default" / "bin" / "gate_mamba.exe"
+DRIVER = gate.driver("gate_mamba.exe")
 
 
 def drive(subcommand, path, *, seed, steps):
     """the lines the driver states, each as a list of its words"""
-    if not DRIVER.exists():
-        pytest.skip(f"absent, nothing to gate: {DRIVER.name}")
-    done = subprocess.run(
-        [
-            str(DRIVER),
-            subcommand,
-            "-int8",
-            str(path),
-            "-seed",
-            str(seed),
-            "-steps",
-            str(steps),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    return [line.split() for line in done.stdout.splitlines()]
+    gate.need(DRIVER)
+    stdout = gate.run(DRIVER, subcommand, "-int8", path, "-seed", seed, "-steps", steps)
+    return [line.split() for line in stdout.splitlines()]
 
 
 def contract(tmp_path, spelt, *, ring=8, **shape):

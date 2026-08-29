@@ -15,7 +15,6 @@ retrain is planned. THE DRAW IS THE MODEL'S -- `Mamba.drawn` -- because the gate
 
 import click
 
-import data
 import frames
 import nn
 from mamba import model
@@ -60,7 +59,6 @@ def parse_half_lives(ctx, param, value):
 
 
 @click.command(help=__doc__)
-@click.option("--corpus", "corpus_path", default=str(data.FRAMES))
 @click.option("--d", default=64)
 @click.option("--layers", default=6)
 @click.option("--heads", default=4)
@@ -107,19 +105,7 @@ def parse_half_lives(ctx, param, value):
     help="the draw of the convolution kernel; measured against 1/sqrt(K), see "
     "Mamba.drawn",
 )
-@click.option("--context", default=256, help="the training window, in steps")
-@click.option("--batch", default=16)
-@click.option("--steps", default=96000)
-@click.option("--lr", default=1e-3)
-@click.option("--seed", default=6)
-@click.option("--warmup", default=300)
-@click.option("--wd", "weight_decay", default=0.01)
-@click.option("--clip", default=1.0)
-@click.option("--dropout", default=0.2)
-@click.option("--log-every", default=100)
-@click.option("--eval-every", default=1600)
-@click.option("--eval-limit", default=128)
-@click.option("--ckpt", default=None)
+@frames.recipe_options(dropout=0.2)
 def main(
     d,
     layers,

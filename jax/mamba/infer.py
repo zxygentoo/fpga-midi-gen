@@ -67,7 +67,7 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     carry = held.initial_carry(batch, context=ring)
     lead = data.BAR_STEPS
     silence = np.zeros((batch, data.SEATS), dtype=np.int32)
-    frames = []
+    played = []
     h = None
     for step in range(steps):
         # through the lead-in nothing is drawn and the generator does not move, exactly as
@@ -76,11 +76,11 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
             frame = silence
         else:
             rng, frame = held.head.draw_frame(h, rng, temperature, min_p)
-        frames.append(frame)
+        played.append(frame)
         phases = np.full(batch, step % nn.PHASE_BUCKETS, dtype=np.int32)
         carry, stream = forward(held, carry, jnp.asarray(frame), jnp.asarray(phases))
         h = np.asarray(stream).astype(np.float64)
-    return np.stack(frames, axis=1)
+    return np.stack(played, axis=1)
 
 
 @click.group(help=__doc__)

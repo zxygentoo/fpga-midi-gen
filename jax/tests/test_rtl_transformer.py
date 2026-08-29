@@ -30,41 +30,23 @@ root:
     dune build bin/gate_transformer.exe
 """
 
-import subprocess
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 import fixed
+from tests import gate
 from tests.test_transformer import tiny
 from transformer import quantized
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-DRIVER = ROOT / "_build" / "default" / "bin" / "gate_transformer.exe"
+DRIVER = gate.driver("gate_transformer.exe")
 
 
 def drive(path, *, seed, steps):
     """the classes the circuit drew at each step, as the driver states them"""
-    if not DRIVER.exists():
-        pytest.skip(f"absent, nothing to gate: {DRIVER.name}")
-    done = subprocess.run(
-        [
-            str(DRIVER),
-            "walk",
-            "-int8",
-            str(path),
-            "-seed",
-            str(seed),
-            "-steps",
-            str(steps),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    lines = [line.split() for line in done.stdout.splitlines() if line.startswith("step")]
+    gate.need(DRIVER)
+    stdout = gate.run(DRIVER, "walk", "-int8", path, "-seed", seed, "-steps", steps)
+    lines = [line.split() for line in stdout.splitlines() if line.startswith("step")]
     assert len(lines) == steps, f"the driver stated {len(lines)} steps, wanted {steps}"
     return np.array([[int(word) for word in line[3:]] for line in lines])
 
