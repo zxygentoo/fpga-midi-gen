@@ -26,6 +26,27 @@
   mgen_core
   mgen_corpus))
 
+; What the three gate drivers share: the flags, the netlist command and the walk print.
+; It is a library and not a module of one of them, because bin/dune builds one executable
+; per file. It names NO era library -- the model reader and the source are arguments --
+; and it could not name one: mgen_nexys4, which it elaborates through, already depends on
+; every era.
+
+(library
+ (name gate_common)
+ (modules gate_common)
+ (preprocess
+  (pps ppx_let))
+ (libraries
+  core
+  core_unix
+  core_unix.command_unix
+  hardcaml
+  jane_rope
+  mgen_core
+  mgen_corpus
+  mgen_nexys4))
+
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
 ; jax/tests/test_rtl.py, thus nothing here states what the circuit should have done.
@@ -40,6 +61,7 @@
   core_unix
   core_unix.command_unix
   hardcaml
+  gate_common
   mgen_core
   mgen_diffusion))
 
@@ -57,10 +79,8 @@
   core
   core_unix
   core_unix.command_unix
-  hardcaml
-  jane_rope
+  gate_common
   mgen_core
-  mgen_corpus
   mgen_nexys4
   mgen_transformer))
 
@@ -78,9 +98,7 @@
   core
   core_unix
   core_unix.command_unix
-  hardcaml
-  jane_rope
+  gate_common
   mgen_core
-  mgen_corpus
   mgen_mamba
   mgen_nexys4))
