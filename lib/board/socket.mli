@@ -36,3 +36,40 @@ val create
   -> source:(Signal.t Source_intf.I.t -> Signal.t Source_intf.O.t)
   -> Signal.t I.t
   -> Signal.t O.t
+
+(** The mounting every socket simulation stands in: the block over a source, the line
+    sampled cycle by cycle, and the bytes decoded back off it.
+
+    It stands here and not in one test, because the three integration tests of the
+    repository — era one's, era four's and era six's — mounted this same simulation three
+    times, and the era that copied it would be the era whose mounting drifted from the one
+    before it.
+
+    WHAT IS NOT HERE IS THE RUN LENGTH. Each test states how long its own run is: era four
+    counts steps times the period, era six covers a draw budget, era one takes the pink
+    step. That rule is the test's, thus [run_for] takes the cycles and states none. *)
+module For_test : sig
+  type t =
+    { inputs : Bits.t ref I.t (** the parameter views, to write with [Harness.set] *)
+    ; clear_line : unit -> unit
+    (** forget what the line has carried so far — a run opens with this *)
+    ; run_for : cycles:int -> unit (** cycle the simulation, sampling the line *)
+    ; messages : unit -> int list list
+    (** the bytes the line has carried since [clear_line], as messages. Every message of
+        the sequencer is three bytes, thus the byte stream divides into messages with no
+        ambiguity. *)
+    }
+
+  (** [harness ~clocks_per_ms ~clocks_per_bit ~source ()] mounts [source] in the seat.
+      [source] reads the seed off the parameter views, thus a test writes the seed like
+      any other parameter and the simulation needs no rebuild. *)
+  val harness
+    :  clocks_per_ms:int
+    -> clocks_per_bit:int
+    -> source:
+         (Signal.t Control_regs.Params.t
+          -> Signal.t Source_intf.I.t
+          -> Signal.t Source_intf.O.t)
+    -> unit
+    -> t
+end

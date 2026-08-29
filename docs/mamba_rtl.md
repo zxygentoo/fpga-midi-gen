@@ -26,7 +26,7 @@ The modules of the era:
 | `jax/mamba/quantized.py` | the quantizer of the checkpoint, and the integer twin: the recurrence, the chain and the sampler |
 | `Mamba.Model` (`lib/mamba/model.ml`) | the model as the circuit reads it: the formats, the plan, the contract file and the ROM image |
 | `Mamba.Source` (`lib/mamba/source.ml`) | the same integers as a circuit: the schedule, the datapath and the socket machine |
-| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/fixed.py` |
+| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — the draw of the chain (`Sampler`), and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/fixed.py` |
 
 **The units live in `lib/nn`, and the unification round put them there.**
 The prototype imported era four's units as they stood and copied the two
@@ -123,9 +123,9 @@ the decode and the board around the socket do not know the era changed.
 
 Int8 with a per-tensor power-of-two exponent, `w ~ q * 2^-e`, the
 largest `e` that keeps `round(max|w| * 2^e)` at 127 or less — the rule
-of era four, unchanged, and the same `Quantized.Model` machinery
-pattern. The seat tensor and the bar phase share one exponent because
-their rows add; that rule and its check carry over.
+of era four, unchanged, and the same quantizer above the seam and the
+same `Model` reader below it. The seat tensor and the bar phase share one
+exponent because their rows add; that rule and its check carry over.
 
 `a_log`, `dt_bias` and `d_skip` are `H` values a layer. They quantize at
 elaboration into the constants the ops carry — `a * log2(e)` folds into
@@ -196,8 +196,8 @@ cumulative in a way era four never had.
 
 ### The operations
 
-Each operation is one definition in `quantized.ml`, and the circuit
-computes the same integers. Every product fits one DSP48, 25 by 18
+Each operation is one definition in `jax/mamba/quantized.py`, and the
+circuit computes the same integers. Every product fits one DSP48, 25 by 18
 signed. `rms_norm`, the embed, the chain and the sampler are era four's
 operations unchanged. The new ones:
 
@@ -265,15 +265,18 @@ The five layers stand:
 | L0 | the units of `mgen_nn` — `Divider` with the magnitude inside the walk, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and `Prng.Rtl` from the core |
 | L1 | the datapath: the RAMs, the state RAM, the tap rings, the banked weight ROM, `Mac` |
 | L2 | the schedule: the step as a list of operations, built from the config |
-| L3 | the compiler: the list folds into the cases of a program counter |
+| L3 | the compiler, `Mgen_nn.Program`: the list folds into the cases of a program counter. The four draw ops it compiles are `Mgen_nn.Sampler` |
 | L4 | the outer machine: the step strobe, the lead-in, the held frame |
 
-L3 and L4 carry over structurally whole: the op-finish-runs-next-entry
-convention, the single `switch` on the pc, the tick counter that steps
-itself, the seat register and the four-times-one-seat chain, the
-lead-in that draws nothing and moves no PRNG. The forward program
-changes its op list; the chain program is era four's seven ops,
-restated.
+L3 carries over LITERALLY and not by convention: since the op/schedule
+round it is one text, `Mgen_nn.Program`, which both eras call — the
+op-finish-runs-next-entry rule, the single `switch` on the pc, the tick
+counter that steps itself, the seat register and the four-times-one-seat
+chain. L4 carries over structurally and stays each era's own: the rewind
+and the step strobe are ten lines, and era four clears a ring slot where
+this era has none. The lead-in that draws nothing and moves no PRNG is
+`Program`'s too. The forward program changes its op list; the chain
+program is era four's seven ops, restated.
 
 One thing carried over that this machine turns out not to need:
 
@@ -350,7 +353,7 @@ valid bit; do not renumber.
 | Memory | Size | Content |
 |---|---|---|
 | weight ROM | 235,776 x 8 at the elected plan | the image, flat order |
-| exp2 ROM | 256 x 16 | era four's table, from `Quantized.Constants` |
+| exp2 ROM | 256 x 16 | era four's table, from `Mgen_nn.Quantized.Constants` |
 | sigmoid ROM | 256 x 16 | Q15 over signed Q12 in, clamped at |v| = 8 |
 | softplus ROM | 256 x 16 | the correction term, Q12 over |v| up to 16 |
 | **state RAM** | **6 x 128 x 16 x 16 b = 24,576 B** | the recurrence; int16, in place |

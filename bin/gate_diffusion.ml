@@ -52,10 +52,9 @@ let elaboration_param =
   fun () -> Elaboration.create ?rows (Model.of_int8_checkpoint path) ~steps ~lanes ~walk
 ;;
 
-let seed_param =
-  let open Command.Param in
-  flag "-seed" (required int) ~doc:"N the seed of the walk"
-;;
+(* the one flag era six shares with the frozen drivers; its geometry flags below are the
+   sheet's own and no other era has them *)
+let seed_param = Gate_common.seed_param
 
 (* one column of activations, as a line states it *)
 let row values = String.concat ~sep:" " (List.map (Array.to_list values) ~f:Int.to_string)

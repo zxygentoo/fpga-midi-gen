@@ -14,23 +14,27 @@ it; the source of era three is never ported, because the source of era
 four takes its seat. `Pink` holds the model seat until it does.
 
 The design keeps the project rules. The reference of the circuit is exact
-integer arithmetic in OCaml — `Quantized` — and the circuit must match it
-bit for bit. The float model is not the reference of the circuit:
-post-training quantization separates them, and the drift report measures
-that distance.
+integer arithmetic, and the circuit must match it bit for bit. THAT
+REFERENCE IS ABOVE THE SEAM: `jax/transformer/quantized.py` is the integer
+twin, `bin/gate_transformer.exe` runs the bench and prints what the circuit
+did, and `jax/tests/test_rtl_transformer.py` states what it must have done.
+Neither side can pass that gate by agreeing with itself. The float model is
+not the reference of the circuit: post-training quantization separates them,
+and the drift report measures that distance.
 
 The modules of the era:
 
 | Module | It owns |
 |---|---|
-| `Quantized` | the quantization of the checkpoint, and the integer model: the exact arithmetic, the chain and the sampler |
+| `Model` | the model as the circuit reads it: the shape, the contract file, the ROM image and its bases |
 | `Source` | the same integers as a circuit: the schedule, the datapath and the socket machine |
-| `Mac` | the walk behind the one multiplier: the issue counters, the tags and the accumulator |
-| `Divider`, `Isqrt`, `Exp2` | the arithmetic units the walk cannot do: one division, one square root, one table |
+| `Mgen_nn.Program` | L3: the program, the link, the seat loop and the case over the counter — one text with era five |
+| `Mgen_nn.Sampler` | the draw of the chain: `Temper`, `Draw`, `Threshold` and `Pick`, shared with era five |
+| `Mgen_nn.Mac` | the walk behind the one multiplier: the issue counters, the tags and the accumulator |
+| `Mgen_nn.Divider`, `Isqrt`, `Exp2` | the arithmetic units the walk cannot do: one division, one square root, one table |
 
-`Sounding_state.Rtl` is not in that table, and the reason is the whole
-design: no frame is illegal, thus the grammar of the instrument needs no
-registers.
+No module holds the grammar of the instrument, and the reason is the whole
+design: no frame is illegal, thus that grammar needs no registers.
 
 ![The transformer source: the five layers of the machine, the memories, and
 one step drawn as the program that the counter runs](transformer_rtl.svg)
@@ -146,20 +150,21 @@ reach 93 percent of their range and none of them crosses it. The peak of
 the int16 class is the normed vector, which is bounded by construction.
 
 The KV ring keeps the top byte of a `k` or `v` row and restores eight
-zero low bits at the read — `Quantized.coarse_to_ring`. The format stays
-Q12 at a granularity of 2^-4, and the ring costs half the block RAM. The
+zero low bits at the read — the twin's `fixed.coarse_to_ring`. The
+format stays Q12 at a granularity of 2^-4, and the ring costs half the
+block RAM. The
 reference holds the same rule, thus the coarse row is not a loss of the
 circuit alone.
 
 ### The operations
 
-Each operation is one definition in `Quantized`, and the circuit computes
-the same integers. Every product fits one DSP48 — 25 by 18, signed — and
-the timing of the machine rests on that rule.
+Each operation is one definition in `jax/transformer/quantized.py`, and
+the circuit computes the same integers. Every product fits one DSP48 — 25
+by 18, signed — and the timing of the machine rests on that rule.
 
 `rms_norm`, `matvec`, `attention` and `exp2` are the operations of era
 three and they do not change; that document's statement of each one still
-holds, and `Quantized` is the definition in any case. Three change:
+holds, and the twin is the definition in any case. Three change:
 
 - **embed**: five rows add — the seat row of each of the four seats, at
   `seats + (s * 48 + c_s) * d`, and the bar-phase row at `step mod 16` —
@@ -193,7 +198,7 @@ five layers of era three:
 | L0 | the primitives: `Divider`, `Isqrt`, `Exp2`, `Prng.Rtl` |
 | L1 | the datapath: the RAMs, the KV rings, the banked weight ROM, and `Mac` behind the one multiplier |
 | L2 | the schedule: the step as a list of operations, built from the config |
-| L3 | the compiler: the list folds into cases of a program counter |
+| L3 | the compiler, `Mgen_nn.Program`: the list folds into cases of a program counter. The four draw ops it compiles are `Mgen_nn.Sampler` |
 | L4 | the outer machine: the step strobe, the lead-in and the socket |
 
 **L2 and L4 are where the frame pays.** The schedule of era three held a

@@ -20,77 +20,23 @@ open Core
 module Model = Mgen_mamba.Model
 module Source = Mgen_mamba.Source
 
-let model_param =
-  let%map_open.Command path =
-    flag "-int8" (required string) ~doc:"PATH the contract file of the model"
-  in
-  fun () -> Model.of_int8_checkpoint path
-;;
-
-let verilog_command =
-  Command.basic
-    ~summary:"write the Verilog of era five's board top level into a directory"
-    (let%map_open.Command model = model_param
-     and dir = anon ("output-directory" %: string) in
-     fun () ->
-       Core_unix.mkdir_p dir ~perm:0o755;
-       let model = model () in
-       let rtl =
-         Hardcaml.Rtl.create
-           Verilog
-           [ Mgen_nexys4.Top.create ~source:(Source.create ~model) () ]
-         |> Hardcaml.Rtl.full_hierarchy
-         |> Rope.to_string
-       in
-       Out_channel.write_all (Filename.concat dir "top.v") ~data:rtl)
-;;
-
-let seed_param =
-  let open Command.Param in
-  flag "-seed" (required int) ~doc:"N the seed of the walk"
-;;
-
-let steps_param =
-  let open Command.Param in
-  flag "-steps" (required int) ~doc:"N the steps of the walk"
-;;
-
-(* The walk, step by step. It prints the FRAME the socket face answered and the CLASSES
-   that frame states, through [Vocab]'s own decode: the vocabulary is the corpus library's
-   rule and it stays on this side, thus the twin holds no format of its own. *)
-let walk_command =
-  Command.basic
-    ~summary:"one walk: the frame of each step, and the classes it states"
-    (let%map_open.Command model = model_param
-     and seed = seed_param
-     and steps = steps_param in
-     fun () ->
-       let h = Source.For_test.Bench.harness ~model:(model ()) ~seed () in
-       h.rewind ();
-       for step = 0 to steps - 1 do
-         let frame = h.play () in
-         printf
-           "step %d %08x %s\n"
-           step
-           frame
-           (String.concat
-              ~sep:" "
-              (List.map (Mgen_corpus.Vocab.classes_of_frame frame) ~f:Int.to_string))
-       done)
-;;
+let model_param = Gate_common.int8_param Model.of_int8_checkpoint
 
 (* Every write of the whole residual stream, in the order the machine made them: the
    embed, then the join of each layer. ERA FIVE'S FOUR FAULTS WERE ALL FAULTS OF THE
    COMPOSITION LAYER — a weight address whose stride was not the tensor's, a channel block
    read at the gate's offset, an operand taken on the address side of a two-cycle read,
-   and a ring run off its end — and none of them moved a frame. *)
+   and a ring run off its end — and none of them moved a frame.
+
+   IT STAYS IN THIS FILE: it reads [streams], which era four's bench has not, thus it is
+   not a thing the drivers share. *)
 let stream_command =
   Command.basic
     ~summary:
       "one walk: every write of the whole stream, in the order the machine made them"
     (let%map_open.Command model = model_param
-     and seed = seed_param
-     and steps = steps_param in
+     and seed = Gate_common.seed_param
+     and steps = Gate_common.steps_param in
      fun () ->
        let h = Source.For_test.Bench.harness ~model:(model ()) ~seed () in
        h.rewind ();
@@ -110,7 +56,21 @@ let command =
     ~summary:
       "drive the circuit of era five and state what it did; jax/tests/test_rtl_mamba.py \
        states what it must have done"
-    [ "walk", walk_command; "stream", stream_command; "verilog", verilog_command ]
+    [ ( "walk"
+      , Gate_common.walk_command
+          ~summary:"one walk: the frame of each step, and the classes it states"
+          ~model:model_param
+          ~walk:(fun ~model ~seed ->
+            let h = Source.For_test.Bench.harness ~model ~seed () in
+            h.rewind ();
+            h.play) )
+    ; "stream", stream_command
+    ; ( "verilog"
+      , Gate_common.verilog_command
+          ~summary:"write the Verilog of era five's board top level into a directory"
+          ~model:model_param
+          ~source:(fun model -> Source.create ~model) )
+    ]
 ;;
 
 let () = Command_unix.run command
