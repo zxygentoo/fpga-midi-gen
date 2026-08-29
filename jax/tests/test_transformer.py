@@ -155,7 +155,7 @@ def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
     path = tmp_path / "tiny.int8"
     quantized.save(path, tiny())
     tensors = load_file(str(path))
-    tensors[quantized.EXPONENTS][1] += 1
+    tensors[fixed.EXPONENTS][1] += 1
     save_file(tensors, str(path))
     with pytest.raises(ValueError, match="share one exponent"):
         quantized.load(path)

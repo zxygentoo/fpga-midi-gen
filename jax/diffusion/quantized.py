@@ -58,10 +58,9 @@ float scales, because the fold happens here, one time, and the file carries the 
     "temper"          int32   [2]                      the temper: q_value, then q
     "activation_q"    int32   []                       the Q of the activation format
 
-EVERY TENSOR IS INT32 AND TWO OF THEM ARE NOT LAYERS. Both are facts of the reader:
-`Nx_io.load_safetensors` skips every dtype it does not hold, thus an int8 tensor would
-arrive at the elaboration as a hole; and it gives no access to `__metadata__`, thus the
-temper and the Q travel as named tensors. The metadata is written as well, for a reader
+EVERY TENSOR IS INT32 AND TWO OF THEM ARE NOT LAYERS. The first is a fact of the OCaml
+reader, which `fixed.py`'s "the contract file" section states once for the three eras;
+the second is this era's layout, above. The metadata is written as well, for a reader
 that has a Python tool in hand.
 """
 
@@ -72,8 +71,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from safetensors import safe_open
-from safetensors.numpy import load_file, save_file
 
 import prng
 from diffusion import model as sheet
@@ -87,8 +84,11 @@ from fixed import (
     largest_exponent,
     pick,
     quantize,
+    read_contract,
     round_half_up,
+    scalar_tensor,
     tallied_write,
+    write_contract,
     write_tally,
 )
 
@@ -382,11 +382,11 @@ def save(path, twin):
         for on, tensor in enumerate(layer.tensors()):
             tensors[str(base + on)] = tensor
     tensors[TEMPER] = twin.temper.tensor()
-    tensors[ACTIVATION] = np.array(ACTIVATION_Q, np.int32)
-    save_file(
+    tensors[ACTIVATION] = scalar_tensor(ACTIVATION_Q)
+    write_contract(
+        path,
         tensors,
-        str(path),
-        metadata={
+        {
             "temper_q_value": str(twin.temper.q_value),
             "temper_q": str(twin.temper.q),
             "activation_q": str(ACTIVATION_Q),
@@ -400,9 +400,7 @@ def load(path):
 
     The temperature is provenance and not arithmetic -- the temper is already folded --
     thus it travels in the metadata alone and only a reader with a Python tool sees it."""
-    tensors = load_file(str(path))
-    with safe_open(str(path), framework="numpy") as opened:
-        metadata = opened.metadata() or {}
+    tensors, metadata = read_contract(path)
     count, spare = divmod(len(tensors) - len(BESIDE_THE_LAYERS), LAYER_TENSORS)
     if spare or count < 4 or count % 2:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized sheet model")

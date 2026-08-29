@@ -3,8 +3,10 @@ on.
 
 What stands here is the part of the integer arithmetic that is ONE THING ACROSS THE ERAS:
 the fixed-point rails, the exponent rule of a checkpoint, the sampling policy, the shared
-tables, the integer draw, and the walk of the step-frame eras around their trunks -- the
-lead-in, the chain and the attention over a ring. Each era's twin keeps what is its own --
+tables, the integer draw, the walk of the step-frame eras around their trunks -- the
+lead-in, the chain and the attention over a ring -- and the CONTRACT FILE, whose writer
+and reader stand here for the three eras because its layout is a contract with the OCaml
+side and not one era's. Each era's twin keeps what is its own --
 the parameter structures, the state formats of a recurrence, and the trunk pass of one
 step. A rule written here is read by every twin and, through them, by every circuit.
 
@@ -24,6 +26,8 @@ from typing import NamedTuple
 
 import numpy as np
 from flax import nnx
+from safetensors import safe_open
+from safetensors.numpy import load_file, save_file
 
 import data
 import prng
@@ -262,6 +266,82 @@ class Weight(NamedTuple):
         return cls(np.asarray(q, np.int64), e)
 
 
+# ---------------------------------------------------------------------
+# the contract file: one writer and one reader
+# ---------------------------------------------------------------------
+
+# THE ARCHIVE IS THE SEAM, and two facts of the OCaml reader shape the whole of it. They
+# are stated here and nowhere else; each era's module docstring holds its own LAYOUT --
+# what stands beside the weights, and in what order -- and points at this section for the
+# rules under it.
+#
+# - EVERY TENSOR IS INT32, the int8 image included, because `Nx_io.load_safetensors`
+#   SKIPS every dtype it does not hold. An int8 tensor would arrive as a hole and the
+#   model would refuse for the wrong reason. The values are the int8 image all the same,
+#   and a twin holds them in int64 so that a product of two cannot wrap -- `Weight` keeps
+#   that half and the writer casts.
+# - EVERY SCALAR TRAVELS AS A NAMED TENSOR, because `Nx_io` gives no access to
+#   `__metadata__`. The metadata is written all the same, for a reader with a Python tool,
+#   and NOTHING IN IT IS REQUIRED: a file an older tool wrote has no temperature and reads
+#   back with `nan`.
+#
+# `Mgen_nn.Contract_file` is the reader of this layout below the seam. A name, a dtype or
+# a shape that moves here moves there, and `jax/tests/test_parity.py` fails first.
+
+EXPONENTS = "exponents"
+
+
+def scalar_tensor(value):
+    """one number as the archive carries it"""
+    return np.array(value, np.int32)
+
+
+def image_tensors(image):
+    """the numbered tensors of an image of `Weight`s, and the `exponents` row beside
+    them. The number is the position, thus the order of the list is the order of the ROM
+    and a reader walks it with no index of its own."""
+    tensors = {
+        str(at): np.asarray(weight.values, np.int32) for at, weight in enumerate(image)
+    }
+    tensors[EXPONENTS] = np.array([weight.e for weight in image], np.int32)
+    return tensors
+
+
+def image_of(tensors, exponents, *, first, count):
+    """[count] `Weight`s of the numbered tensors, from [first] -- the inverse of
+    `image_tensors`, at int64"""
+    return [
+        Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
+        for at in range(first, first + count)
+    ]
+
+
+def write_contract(path, tensors, metadata):
+    """the archive, written. The metadata values are strings and the caller makes them:
+    what a file records of its provenance is the era's own.
+
+    THE BYTES ARE NOT REPRODUCIBLE AND NEVER WERE. `safetensors` serialises
+    `__metadata__` out of a Rust hash map, whose order is randomised for each process,
+    thus two runs of one unchanged tree write two different files -- measured
+    2026-08-29, three runs and three md5s. What IS stable is everything a reader reads:
+    the tensor header, the metadata as a dict and the payload. Compare a contract file
+    parsed and never by its md5; the netlist md5 of `test_parity.py` is a different
+    number and it is stable, because the elaboration reads the tensors."""
+    save_file(tensors, str(path), metadata=metadata)
+
+
+def read_contract(path):
+    """the tensors and the metadata of an archive.
+
+    IT OPENS THE FILE TWICE because `safetensors` parts them: `load_file` gives the
+    tensors and only `safe_open` reaches the metadata. A file an older tool wrote has
+    none, and that reads back as an empty dict and not as a failure."""
+    tensors = load_file(str(path))
+    with safe_open(str(path), framework="numpy") as opened:
+        metadata = opened.metadata() or {}
+    return tensors, metadata
+
+
 def join(h, weight, *, values, at):
     """a residual join: [values] times the weight lands on the stream; the exponent of the
     weight folds into the shift with [at], the format of [values].
@@ -272,6 +352,35 @@ def join(h, weight, *, values, at):
     return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
 
 
+class QuantizedImage(nnx.Module):
+    """A layer whose WHOLE image is named tensors: nothing stands beside the weights, thus
+    the name list alone spells the layer.
+
+    THE TWIN HOLDS THE FLOAT LAYER'S TENSORS UNDER THE SAME ATTRIBUTE NAMES, and that is
+    the rule this class exists for: the float tree and the integer tree are one tree, and
+    a reader can audit them layer for layer. `names` is the class attribute that states
+    the order, and the order is the CHECKPOINT ORDER and the ROM order behind it, thus a
+    subclass cannot carry one kind and read another's names.
+
+    Each tensor takes its OWN exponent; nothing forces them together. A layer that is not
+    all weights -- one whose float tensors become facts of another shape -- is not one of
+    these and states itself."""
+
+    def __init__(self, weights):
+        # `nnx.data`: these are a machine's own arrays and never a pytree of device
+        # tensors -- the engines of the frozen eras are host numpy in int64
+        for name, weight in zip(self.names, weights):
+            setattr(self, name, nnx.data(weight))
+
+    @classmethod
+    def of(cls, layer):
+        """one float layer under the exponent rule, tensor for tensor"""
+        return cls([Weight.of(tensor) for tensor in layer.tensors()])
+
+    def tensors(self):
+        return [getattr(self, name) for name in self.names]
+
+
 class QuantizedHead(nnx.Module):
     """The two tables of `Head` as the machine holds them -- and ONE exponent over both.
 
@@ -279,7 +388,7 @@ class QuantizedHead(nnx.Module):
     the embedding sums them and the Embed op of a circuit walks them as one tensor -- thus
     a difference of exponents would be a difference of formats inside one sum. Here that
     rule is the shape of the module and cannot be broken by a caller; a FILE can still
-    state two, and each era's `load` refuses one that does.
+    state two, and `of_file` refuses one that does.
 
     The four seat tables are ONE tensor, seat 0 first, and a circuit reaches a row of it
     with a shift and an add from the base: row (seat * CLASSES + class).
@@ -296,6 +405,16 @@ class QuantizedHead(nnx.Module):
     @property
     def d(self):
         return self.seats.shape[-1]
+
+    @classmethod
+    def of_file(cls, tensors, exponents):
+        """the head of a contract file: tensors "0" and "1", under the one exponent.
+
+        THE REFUSAL STANDS HERE and not in an era's `load`, because the rule is this
+        class's: a file that states two exponents states two formats inside one sum."""
+        if exponents[0] != exponents[1]:
+            raise ValueError("the seat and phase tables must share one exponent")
+        return cls(seats=tensors["0"], phase=tensors["1"], e=int(exponents[0]))
 
     @classmethod
     def of(cls, head):

@@ -41,20 +41,17 @@ construction order -- carries the checkpoint, the file and the ROM, and no reade
 it. `d` and the layer count are NOT in the file: the seat tensor sizes d and the tensor
 count states the layers, as the float reader derives them.
 
-EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS. Both are facts of the reader:
-`Nx_io.load_safetensors` skips every dtype it does not hold, thus an int8 tensor would
-arrive at the elaboration as a hole; and it gives no access to `__metadata__`, thus every
-number the elaboration needs travels as a named tensor. The metadata is written as well,
-for a reader that has a Python tool in hand: the temperature, the min-p and the
-checkpoint are PROVENANCE, because the temper and the floor are already folded.
+EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS -- both facts of the OCaml reader, and
+`fixed.py`'s "the contract file" section states them once for the three eras and writes
+the archive. The metadata is written as well, for a reader that has a Python tool in
+hand: the temperature, the min-p and the checkpoint are PROVENANCE, because the temper
+and the floor are already folded.
 """
 
 from typing import NamedTuple
 
 import numpy as np
 from flax import nnx
-from safetensors import safe_open
-from safetensors.numpy import load_file, save_file
 
 import data
 import fixed
@@ -63,36 +60,24 @@ import nn
 from nn import TABLES
 from transformer import model as step
 
-EXPONENTS = "exponents"
 TEMPER = "temper"
 MIN_WEIGHT = "min_weight"
 HEADS = "heads"
 CONTEXT = "context"
 SLOPE_SPAN = "slope_span"
 # the tensors the file carries beside its numbered weights
-BESIDE_THE_WEIGHTS = (EXPONENTS, TEMPER, MIN_WEIGHT, HEADS, CONTEXT, SLOPE_SPAN)
+BESIDE_THE_WEIGHTS = (fixed.EXPONENTS, TEMPER, MIN_WEIGHT, HEADS, CONTEXT, SLOPE_SPAN)
 
 # the policy the ear elected, stated once in `fixed`; era four takes it as it stands
 ELECTED_TEMPERATURE = fixed.ELECTED_TEMPERATURE
 ELECTED_MIN_P = fixed.ELECTED_MIN_P
 
 
-class QuantizedLayer(nnx.Module):
+class QuantizedLayer(fixed.QuantizedImage):
     """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
-    tensor and under the same names. Each of the six takes its OWN exponent; nothing
-    forces them together."""
+    tensor and under the same names."""
 
-    def __init__(self, weights):
-        for name, weight in zip(step.LAYER_TENSORS, weights):
-            setattr(self, name, nnx.data(weight))
-
-    @classmethod
-    def of(cls, layer):
-        """one float [model.Layer] under the exponent rule"""
-        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
-
-    def tensors(self):
-        return [getattr(self, name) for name in step.LAYER_TENSORS]
+    names = step.LAYER_TENSORS
 
 
 class QuantizedTransformer(step.Trunk):
@@ -168,20 +153,16 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    image = twin.every_tensor()
-    tensors = {
-        str(at): np.asarray(weight.values, np.int32) for at, weight in enumerate(image)
-    }
-    tensors[EXPONENTS] = np.array([weight.e for weight in image], np.int32)
-    tensors[HEADS] = np.array(twin.heads, np.int32)
-    tensors[CONTEXT] = np.array(twin.context, np.int32)
-    tensors[SLOPE_SPAN] = np.array(twin.slope_span, np.int32)
+    tensors = fixed.image_tensors(twin.every_tensor())
+    tensors[HEADS] = fixed.scalar_tensor(twin.heads)
+    tensors[CONTEXT] = fixed.scalar_tensor(twin.context)
+    tensors[SLOPE_SPAN] = fixed.scalar_tensor(twin.slope_span)
     tensors[TEMPER] = twin.temper.tensor()
-    tensors[MIN_WEIGHT] = np.array(twin.min_weight, np.int32)
-    save_file(
+    tensors[MIN_WEIGHT] = fixed.scalar_tensor(twin.min_weight)
+    fixed.write_contract(
+        path,
         tensors,
-        str(path),
-        metadata={
+        {
             "temper_q_value": str(twin.temper.q_value),
             "temper_q": str(twin.temper.q),
             "temperature": repr(twin.temper.temperature),
@@ -195,30 +176,22 @@ def load(path):
 
     The temperature is provenance and not arithmetic -- the temper is already folded --
     thus it travels in the metadata alone and only a reader with a Python tool sees it."""
-    tensors = load_file(str(path))
-    with safe_open(str(path), framework="numpy") as opened:
-        metadata = opened.metadata() or {}
+    tensors, metadata = fixed.read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
     if count < len(TABLES) + step.PER_LAYER or spare:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized step model")
-    exponents = tensors[EXPONENTS]
-    if exponents[0] != exponents[1]:
-        raise ValueError("the seat and phase tables must share one exponent")
-
-    def weight_at(at):
-        return fixed.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
-
+    exponents = tensors[fixed.EXPONENTS]
     twin = QuantizedTransformer(
-        head=fixed.QuantizedHead(
-            seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
-        ),
+        head=fixed.QuantizedHead.of_file(tensors, exponents),
         layers=[
             QuantizedLayer(
-                [
-                    weight_at(len(TABLES) + step.PER_LAYER * at + on)
-                    for on in range(step.PER_LAYER)
-                ]
+                fixed.image_of(
+                    tensors,
+                    exponents,
+                    first=len(TABLES) + step.PER_LAYER * at,
+                    count=step.PER_LAYER,
+                )
             )
             for at in range(layers)
         ],

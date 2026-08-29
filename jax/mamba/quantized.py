@@ -64,9 +64,9 @@ kind, thus the reader walks the image sequentially and reads the kind before the
 projection is never 2d, thus no block can be read as anything else. A SQUARE first tensor
 is era four's plain attention, which this model does not hold, and it is refused.
 
-EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS. Both are facts of the reader:
-`Nx_io.load_safetensors` skips every dtype it does not hold, and it gives no access to
-`__metadata__`. The metadata is written as well, for a reader that has a Python tool in
+EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS -- both facts of the OCaml reader, and
+`fixed.py`'s "the contract file" section states them once for the three eras and writes
+the archive. The metadata is written as well, for a reader that has a Python tool in
 hand: the temperature, the min-p and the checkpoint are PROVENANCE, because the temper and
 the floor are already folded.
 """
@@ -76,8 +76,6 @@ from typing import NamedTuple
 
 import numpy as np
 from flax import nnx
-from safetensors import safe_open
-from safetensors.numpy import load_file, save_file
 
 import data
 import fixed
@@ -85,7 +83,6 @@ import measure
 import nn
 from mamba import model as recurrence
 
-EXPONENTS = "exponents"
 SPAN = "span"
 RING = "ring"
 TEMPER = "temper"
@@ -96,7 +93,7 @@ DT_BIAS = "dt_bias"
 D_SKIP = "d_skip"
 # the tensors the file carries beside its numbered weights
 BESIDE_THE_WEIGHTS = (
-    EXPONENTS,
+    fixed.EXPONENTS,
     SPAN,
     RING,
     TEMPER,
@@ -209,26 +206,7 @@ class QuantizedBlock(nnx.Module):
         return [self.decay, self.dt_bias, self.d_skip]
 
 
-class QuantizedImage(nnx.Module):
-    """A layer whose WHOLE image is named tensors, in the `IMAGE_TENSORS` order of its own
-    kind -- nothing beside the weights, thus the kind alone spells the layer.
-
-    The kind is the class attribute and the names are read through it, thus a twin cannot
-    carry one kind and read another's tensor names."""
-
-    def __init__(self, weights):
-        for name, weight in zip(IMAGE_TENSORS[self.kind], weights):
-            setattr(self, name, nnx.data(weight))
-
-    @classmethod
-    def of(cls, layer):
-        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
-
-    def tensors(self):
-        return [getattr(self, name) for name in IMAGE_TENSORS[self.kind]]
-
-
-class QuantizedAttention(QuantizedImage):
+class QuantizedAttention(fixed.QuantizedImage):
     """The Zamba attention layer as the machine holds it -- the twin of
     `model.Attention` at its widened kind.
 
@@ -236,6 +214,7 @@ class QuantizedAttention(QuantizedImage):
     circuit's query walk reads 2d terms and there is no narrow path."""
 
     kind = recurrence.ZATTN
+    names = IMAGE_TENSORS[recurrence.ZATTN]
 
     @classmethod
     def of(cls, layer):
@@ -246,10 +225,11 @@ class QuantizedAttention(QuantizedImage):
         return super().of(layer)
 
 
-class QuantizedFeedForward(QuantizedImage):
+class QuantizedFeedForward(fixed.QuantizedImage):
     """The feed-forward as the machine holds it -- the twin of `model.FeedForward`."""
 
     kind = recurrence.MLP
+    names = IMAGE_TENSORS[recurrence.MLP]
 
 
 TWIN_OF = {
@@ -362,15 +342,11 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    image = twin.every_tensor()
-    tensors = {
-        str(at): np.asarray(weight.values, np.int32) for at, weight in enumerate(image)
-    }
-    tensors[EXPONENTS] = np.array([weight.e for weight in image], np.int32)
-    tensors[SPAN] = np.array(twin.span, np.int32)
-    tensors[RING] = np.array(twin.ring, np.int32)
+    tensors = fixed.image_tensors(twin.every_tensor())
+    tensors[SPAN] = fixed.scalar_tensor(twin.span)
+    tensors[RING] = fixed.scalar_tensor(twin.ring)
     tensors[TEMPER] = twin.temper.tensor()
-    tensors[MIN_WEIGHT] = np.array(twin.min_weight, np.int32)
+    tensors[MIN_WEIGHT] = fixed.scalar_tensor(twin.min_weight)
     # the three per-head rows are one tensor each, a row for each BLOCK in the plan order,
     # because the elaboration reads one image and not a tree
     decay, dt_bias, d_skip = (
@@ -381,10 +357,10 @@ def save(path, twin):
     tensors[DECAY_Q] = np.full_like(decay, DECAY_Q_BITS)
     tensors[DT_BIAS] = dt_bias
     tensors[D_SKIP] = d_skip
-    save_file(
+    fixed.write_contract(
+        path,
         tensors,
-        str(path),
-        metadata={
+        {
             "plan": "".join(LETTERS[layer.kind] for layer in twin.layers),
             "temper_q_value": str(twin.temper.q_value),
             "temper_q": str(twin.temper.q),
@@ -399,26 +375,18 @@ def load(path):
 
     THE PLAN COMES BACK OUT OF THE SHAPES, by the rule the module docstring states, thus
     the reader of this side and the reader of the elaboration walk the image alike."""
-    tensors = load_file(str(path))
-    with safe_open(str(path), framework="numpy") as opened:
-        metadata = opened.metadata() or {}
+    tensors, metadata = fixed.read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     if count < len(nn.TABLES) + 1:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized state model")
-    exponents = tensors[EXPONENTS]
-    if exponents[0] != exponents[1]:
-        raise ValueError("the seat and phase tables must share one exponent")
+    exponents = tensors[fixed.EXPONENTS]
     d = tensors["0"].size // (data.SEATS * data.CLASSES)
-
-    def weight_at(at):
-        return fixed.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
-
     plan, groups, at = [], [], len(nn.TABLES)
     while at < count:
         kind = kind_of_image(tensors[str(at)].shape, d, path)
         names = IMAGE_TENSORS[kind]
         plan.append(kind)
-        groups.append([weight_at(at + on) for on in range(len(names))])
+        groups.append(fixed.image_of(tensors, exponents, first=at, count=len(names)))
         at += len(names)
     if at != count:
         raise ValueError(f"{path}: {count} image tensors do not fill whole layer groups")
@@ -441,9 +409,7 @@ def load(path):
         )
 
     twin = QuantizedMamba(
-        head=fixed.QuantizedHead(
-            seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
-        ),
+        head=fixed.QuantizedHead.of_file(tensors, exponents),
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
