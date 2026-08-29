@@ -88,12 +88,6 @@ val uniform : float t
     array; a count below 0 raises [Invalid_argument]. *)
 val normals : count:int -> scale:float -> float array t
 
-(** [bernoullis ~count ~probability] is [count] draws of the Bernoulli distribution: 1.0
-    at [probability], and 0.0 else. One draw takes one uniform. The hit weighs 1.0; a
-    caller that wants another weight multiplies the array. The rule of [count] is the rule
-    of [normals]. *)
-val bernoullis : count:int -> probability:float -> float array t
-
 (** An independent walk, drawn from this one — four steps make its 32 bits. Give one to a
     part of a computation that must draw on its own: it then holds no place in the order
     of the parent, thus the parent can gain or lose draws without moving it. *)

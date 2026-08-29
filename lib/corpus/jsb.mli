@@ -63,10 +63,6 @@ val voice_ranges : (int * int) array
     model, and the one clock the packed stream carries *)
 val bar_steps : int
 
-(** the period of the rolling coordinate, in steps: [bar_steps] bars, which is the memory
-    window of the model *)
-val window_steps : int
-
 val load : path:string -> t
 
 (** [transpose ~by chorale] moves each sounding cell [by] semitones and the legal shifts

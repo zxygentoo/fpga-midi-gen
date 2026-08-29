@@ -51,27 +51,19 @@ module Constants : sig
       training run behind it, thus it states this one. *)
   val temper_at_one : scale
 
-  (** exp2 of -j/256 in Q15: one table serves the softmax and the sampler of era four and
-      the decay of era five *)
-  val exp2_table : int array
+  (** The three tables of the units as circuit ROMs, 256 entries of 16 bits each: exp2 of
+      -j/256 in Q15, which serves the softmax and the sampler of era four and the decay of
+      era five; the sigmoid of a Q12 value in Q15, 256 buckets at their centres, whose
+      halves sum to 2^15 so that sigmoid(-v) = 1 - sigmoid(v) survives the quantization;
+      and the correction term of the softplus, ln(1 + exp(-|v|)), in Q12 over a Q12
+      magnitude, where softplus(v) = relu(v) + this.
 
-  (** the sigmoid of a Q12 value in Q15, 256 buckets at their centres; the halves sum to
-      2^15, thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization *)
-  val sigmoid_table : int array
-
-  (** the correction term of the softplus, ln(1 + exp(-|v|)), in Q12 over a Q12 magnitude:
-      softplus(v) = relu(v) + this *)
-  val softplus_table : int array
-
-  (** the same three tables as circuit ROMs: 256 entries of 16 bits each *)
+      The tables THEMSELVES are the software's own — [sigmoid_q] and [softplus] read them
+      here — thus only the ROM images cross the interface. *)
   val exp2_bits : Hardcaml.Bits.t array
 
   val sigmoid_bits : Hardcaml.Bits.t array
   val softplus_bits : Hardcaml.Bits.t array
-
-  (** [sigmoid_index v] is the row of a signed Q12 int16: the top eight bits with the sign
-      flipped, which is no arithmetic at all in a circuit *)
-  val sigmoid_index : int -> int
 
   (** [softplus_index v] is the magnitude shifted; the clamp catches the one value -32768
       whose magnitude does not fit the table *)

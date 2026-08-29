@@ -29,11 +29,8 @@ val watch_stop_play : unit -> stop_play
 (** [stop_requested t] is true once a signal has arrived *)
 val stop_requested : stop_play -> bool
 
-(** [stop_code t] is the exit code the signal names — 130 for SIGINT and 143 for SIGTERM,
-    which are the codes a shell reports for them — and 0 while none has arrived. *)
-val stop_code : stop_play -> int
-
-(** [exit_if_stopped t] leaves the program with [stop_code t] when a signal has arrived,
-    and gives back unit when none has. A player calls it after its drain, thus the notes
-    are already released when the process ends. *)
+(** [exit_if_stopped t] leaves the program with the code the signal names — 130 for SIGINT
+    and 143 for SIGTERM, which are the codes a shell reports for them — when one has
+    arrived, and gives back unit when none has. A player calls it after its drain, thus
+    the notes are already released when the process ends. *)
 val exit_if_stopped : stop_play -> unit
