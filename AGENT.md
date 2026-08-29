@@ -97,8 +97,8 @@ models, the integer twins and the oracle gates, all in `jax/`.
   back to the CPU with no message, ten times slower.
 - Every era is Flax NNX and optax. The rate curve and the update rule are
   `nn.learning_rates` and `nn.update_rule`. The two step-frame eras run one
-  loop, `frames.train`; era six keeps its own, because the sheet recipe is
-  not the frames recipe.
+  loop, `ar_train.train`; era six keeps its own, because the sheet recipe is
+  not the autoregressive recipe.
 - `ruff` at line-length 90, the width of ocamlformat. E501 is selected, thus
   ruff holds every line — a docstring too. `ruff format` is NOT adopted: the
   OCaml side formats and the Python side lints.
@@ -222,7 +222,7 @@ It is not 48000 Hz.
   `board/_build/` the Vivado work; git ignores both.
 - `jax/` — the Python side: `data.py`, `prng.py`, `midi.py` and `measure.py`
   are common; `nn.py` holds what the float models share and `fixed.py` the
-  integer rules of the twins, as `lib/nn` parts them; `frames.py` is the
+  integer rules of the twins, as `lib/nn` parts them; `ar_train.py` is the
   training recipe of eras four and five. Each era has a directory, and
   `tests/` holds the oracle gates. Git ignores `jax/_data/`; `corpus_tool`
   rebuilds it.

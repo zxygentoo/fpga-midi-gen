@@ -155,3 +155,35 @@ def parse_seeds(ctx, param, value):
         low, high = value.split("-")
         return list(range(int(low), int(high) + 1))
     return [int(seed) for seed in value.split(",")]
+
+
+def audition(music, seeds, *, to_synth, to_file, device, step_ms, channel, velocity):
+    """The tail of a `sample` command: play one walk, write one walk, or print them all.
+
+    A walk of the autoregressive eras is one endless piece and the batch is one seed
+    each, thus --play and --save take one seed and the print names the seed of every
+    walk it lists. Era six parts its batch into pieces and auditions them one after the
+    other, which is why its tail is its own."""
+    if to_synth or to_file:
+        if len(seeds) > 1:
+            raise click.UsageError("--play and --save take one seed")
+        if to_file:
+            save(
+                music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity
+            )
+            click.echo(f"wrote {to_file}")
+        if to_synth:
+            play(
+                music[0],
+                device=device,
+                step_ms=step_ms,
+                channel=channel,
+                velocity=velocity,
+            )
+        return
+    for seed, walk in zip(seeds, music):
+        if len(seeds) > 1:
+            click.echo(f"# seed {seed}")
+        click.echo(
+            "\n".join(step_line(step, events) for step, events in enumerate(walk))
+        )

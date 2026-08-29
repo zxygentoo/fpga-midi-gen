@@ -235,7 +235,7 @@ class Head(nnx.Module):
 
 
 class Trunk(nnx.Module):
-    """WHAT `frames.train` TAKES: a tied `Head` and a `layers` list under it.
+    """WHAT `ar_train.train` TAKES: a tied `Head` and a `layers` list under it.
 
     The step-frame eras are one skeleton -- the head states the frame and the layers carry
     the stream -- thus the three rules that read only that skeleton stand here and not

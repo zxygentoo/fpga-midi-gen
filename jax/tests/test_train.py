@@ -13,9 +13,9 @@ THE SCHEDULE IS INSIDE THE OPTIMIZER now and no loop can overwrite its peak, thu
 above has no home left; the curve is held here all the same, because the rate the loop
 applies is still the thing that decides whether a run trains.
 
-Era four and era five run ONE loop now -- `frames.train` -- thus this file holds the shape
-of a training run and not of a trainer: each era's own CLI, its own draw, and the loop
-they share.
+Era four and era five run ONE loop now -- `ar_train.train` -- thus this file holds the
+shape of a training run and not of a trainer: each era's own CLI, its own draw, and the
+loop they share.
 """
 
 import re

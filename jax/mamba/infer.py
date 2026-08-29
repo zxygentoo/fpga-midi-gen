@@ -26,7 +26,6 @@ import numpy as np
 from flax import nnx
 
 import data
-import frames
 import midi
 import nn
 import prng
@@ -139,7 +138,7 @@ def sample(
     )
     music = [data.decode(walk) for walk in walks]
 
-    frames.audition(
+    midi.audition(
         music,
         seeds,
         to_synth=to_synth,

@@ -5,7 +5,7 @@ Run it from the jax directory as a module:
     uv run python -m mamba.train --steps 200
 
 The recipe opens where era four closed, and it is now the same code: the loop, the
-evaluation and the checkpoint policy are `frames.train`. This file is the shape of the
+evaluation and the checkpoint policy are `ar_train.train`. This file is the shape of the
 model -- the plan, the state, the taps, the dt ladder -- and the flags that spell it.
 
 THE ERA IS FROZEN and this trainer is kept, not run: the elected checkpoint stands and no
@@ -15,7 +15,7 @@ retrain is planned. THE DRAW IS THE MODEL'S -- `Mamba.drawn` -- because the gate
 
 import click
 
-import frames
+import ar_train
 import nn
 from mamba import model
 
@@ -105,7 +105,7 @@ def parse_half_lives(ctx, param, value):
     help="the draw of the convolution kernel; measured against 1/sqrt(K), see "
     "Mamba.drawn",
 )
-@frames.recipe_options(dropout=0.2)
+@ar_train.recipe_options(dropout=0.2)
 def main(
     d,
     layers,
@@ -121,7 +121,7 @@ def main(
     half_lives,
     **flags,
 ):
-    frames.train(
+    ar_train.train(
         model.Mamba.drawn(
             seed,
             d=d,
