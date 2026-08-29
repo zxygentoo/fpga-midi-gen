@@ -65,7 +65,6 @@ temper and the Q travel as named tensors. The metadata is written as well, for a
 that has a Python tool in hand.
 """
 
-import math
 from collections import deque
 from typing import NamedTuple
 
@@ -83,7 +82,8 @@ from fixed import (
     INT16_HIGH,
     INT16_LOW,
     Temper,
-    exp2_of_magnitude,
+    apply_scale,
+    exp2_q,
     largest_exponent,
     pick,
     quantize,
@@ -381,7 +381,7 @@ def save(path, twin):
         base = LAYER_TENSORS * at
         for on, tensor in enumerate(layer.tensors()):
             tensors[str(base + on)] = tensor
-    tensors[TEMPER] = np.array([twin.temper.q_value, twin.temper.q], np.int32)
+    tensors[TEMPER] = twin.temper.tensor()
     tensors[ACTIVATION] = np.array(ACTIVATION_Q, np.int32)
     save_file(
         tensors,
@@ -422,14 +422,13 @@ def load(path):
             bias=tensors[str(base + 4)],
         )
 
-    q_value, q = (int(value) for value in tensors[TEMPER])
     stem, *trunk = [layer_at(at) for at in range(count)]
     head = trunk.pop()
     twin = QuantizedCoconet(
         stem=stem,
         pairs=paired(trunk),
         head=head,
-        temper=Temper(q_value, q, float(metadata.get("temperature", math.nan))),
+        temper=Temper.of_file(tensors, metadata, key=TEMPER),
     )
     check_shape(twin)
     return twin
@@ -478,7 +477,7 @@ def tempered_weights(twin, raw):
     raw = np.asarray(raw, np.int64)
     peak = raw.max(axis=-1, keepdims=True)
     shifted = (raw - peak) << (EXP2_IN_Q - ACTIVATION_Q)
-    return exp2_of_magnitude(-((shifted * twin.temper.q_value) >> twin.temper.q))
+    return exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, shifted))
 
 
 # ---------------------------------------------------------------------

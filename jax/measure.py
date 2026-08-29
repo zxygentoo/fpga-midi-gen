@@ -7,6 +7,11 @@ all read the same way, and a single walk is a stack of one. What an era measures
 OWN model lives beside that model: jax/diffusion/measure.py holds the paper's Algorithm 1,
 and jax/mamba/measure.py holds the forced pass and the walk of era five.
 
+ONE INSTRUMENT HERE READS LOGITS AND NOT CLASSES: the drift count at the end scores a
+twin's draw against the float model's on the very uniform the twin took -- what the
+quantization costs, which both step-frame twins report. It reads two rows and a draw, and
+no model of its own.
+
 THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER. A triad share of 40 percent says nothing
 until the corpus row beside it says 64, and three faults of the parallel instrument were
 found by reading it against the corpus and never against another model.
@@ -22,10 +27,13 @@ pathology and elect on neither.
 """
 
 import itertools
+from typing import NamedTuple
 
 import numpy as np
 
 import data
+import nn
+import prng
 
 # The intervals a chorale treats as a dissonance, in semitones and modulo the octave: the
 # two seconds, the tritone and the two sevenths. The perfect fourth is left out -- it is a
@@ -331,3 +339,43 @@ def structure_lines(label, row):
         f"{'':<22} " + "   ".join(pairs[:half]),
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
+
+
+# The drift: the twin's draw against the float model's, on the one uniform the twin took.
+# It is what the quantization costs, and both step-frame twins report it through these.
+
+
+def cosine(here, there):
+    """the cosine between an integer row and the float row of the same place"""
+    here = np.asarray(here, np.float64)
+    return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
+
+
+class Counted(NamedTuple):
+    """what a drift report has counted over the draws it has seen"""
+
+    draws: int = 0
+    same_peak: int = 0
+    same_draw: int = 0
+    cosine: float = 0.0
+
+
+def count_draws(counted, floated, chain_draws, *, temperature, min_p):
+    """One step's chain against the float logits of the same step, seat by seat, on the
+    very uniform the engine took.
+
+    The float draw runs at the policy the twin was quantized under -- the caller states
+    it, because the elected numbers are the twin's and not this instrument's."""
+    for taken in chain_draws:
+        row = floated[taken.seat]
+        mine = taken.logits[0]
+        uniform = np.array([float(taken.word[0]) * 2.0**-prng.UNIFORM_BITS])
+        weights = nn.temper(row[None], temperature, min_p)
+        counted = Counted(
+            draws=counted.draws + 1,
+            same_peak=counted.same_peak + int(np.argmax(mine) == np.argmax(row)),
+            same_draw=counted.same_draw
+            + int(nn.pick_share(weights, uniform)[0] == taken.drawn[0]),
+            cosine=counted.cosine + cosine(mine, row),
+        )
+    return counted

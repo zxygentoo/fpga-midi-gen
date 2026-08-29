@@ -81,8 +81,8 @@ from safetensors.numpy import load_file, save_file
 
 import data
 import fixed
+import measure
 import nn
-import prng
 from mamba import model as recurrence
 
 EXPONENTS = "exponents"
@@ -130,10 +130,9 @@ DECAY_HIGH = (1 << 24) - 1
 DT_BIAS_BOUND = 32767
 D_SKIP_BOUND = 131071
 
-# the policy the ear elected on 2026-08-18: the draw the bitstream commits to. Since
-# the all-era cut took the OCaml `Policy` away, these two are the only home of it.
-ELECTED_TEMPERATURE = 1.0
-ELECTED_MIN_P = 0.05
+# the policy the ear elected, stated once in `fixed`; era five has not re-elected it
+ELECTED_TEMPERATURE = fixed.ELECTED_TEMPERATURE
+ELECTED_MIN_P = fixed.ELECTED_MIN_P
 # The depth of the ring at INFERENCE, which is a choice of the player and not a fact of
 # the training run. It is era four's training window, thus a window of the loss reads
 # exactly the attention the trainer computed.
@@ -210,7 +209,26 @@ class QuantizedBlock(nnx.Module):
         return [self.decay, self.dt_bias, self.d_skip]
 
 
-class QuantizedAttention(nnx.Module):
+class QuantizedImage(nnx.Module):
+    """A layer whose WHOLE image is named tensors, in the `IMAGE_TENSORS` order of its own
+    kind -- nothing beside the weights, thus the kind alone spells the layer.
+
+    The kind is the class attribute and the names are read through it, thus a twin cannot
+    carry one kind and read another's tensor names."""
+
+    def __init__(self, weights):
+        for name, weight in zip(IMAGE_TENSORS[self.kind], weights):
+            setattr(self, name, nnx.data(weight))
+
+    @classmethod
+    def of(cls, layer):
+        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
+
+    def tensors(self):
+        return [getattr(self, name) for name in IMAGE_TENSORS[self.kind]]
+
+
+class QuantizedAttention(QuantizedImage):
     """The Zamba attention layer as the machine holds it -- the twin of
     `model.Attention` at its widened kind.
 
@@ -219,37 +237,19 @@ class QuantizedAttention(nnx.Module):
 
     kind = recurrence.ZATTN
 
-    def __init__(self, weights):
-        for name, weight in zip(IMAGE_TENSORS[recurrence.ZATTN], weights):
-            setattr(self, name, nnx.data(weight))
-
     @classmethod
     def of(cls, layer):
         if layer.kind == recurrence.ATTN:
             raise ValueError(
                 "a square query is era four's attention and no layer of this model"
             )
-        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
-
-    def tensors(self):
-        return [getattr(self, name) for name in IMAGE_TENSORS[recurrence.ZATTN]]
+        return super().of(layer)
 
 
-class QuantizedFeedForward(nnx.Module):
+class QuantizedFeedForward(QuantizedImage):
     """The feed-forward as the machine holds it -- the twin of `model.FeedForward`."""
 
     kind = recurrence.MLP
-
-    def __init__(self, weights):
-        for name, weight in zip(IMAGE_TENSORS[recurrence.MLP], weights):
-            setattr(self, name, nnx.data(weight))
-
-    @classmethod
-    def of(cls, layer):
-        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
-
-    def tensors(self):
-        return [getattr(self, name) for name in IMAGE_TENSORS[recurrence.MLP]]
 
 
 TWIN_OF = {
@@ -369,7 +369,7 @@ def save(path, twin):
     tensors[EXPONENTS] = np.array([weight.e for weight in image], np.int32)
     tensors[SPAN] = np.array(twin.span, np.int32)
     tensors[RING] = np.array(twin.ring, np.int32)
-    tensors[TEMPER] = np.array([twin.temper.q_value, twin.temper.q], np.int32)
+    tensors[TEMPER] = twin.temper.tensor()
     tensors[MIN_WEIGHT] = np.array(twin.min_weight, np.int32)
     # the three per-head rows are one tensor each, a row for each BLOCK in the plan order,
     # because the elaboration reads one image and not a tree
@@ -422,7 +422,6 @@ def load(path):
         at += len(names)
     if at != count:
         raise ValueError(f"{path}: {count} image tensors do not fill whole layer groups")
-    q_value, q = (int(value) for value in tensors[TEMPER])
     rows = iter(
         zip(tensors[DECAY_Q_VALUE], tensors[DT_BIAS], tensors[D_SKIP])
     )
@@ -448,7 +447,7 @@ def load(path):
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
-        temper=fixed.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
+        temper=fixed.Temper.of_file(tensors, metadata, key=TEMPER),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -482,11 +481,12 @@ def kind_of_image(shape, d, path):
 
 # THE FORMATS THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
 # the hidden vector, the epsilon, log2(e), the lead-in, and the shifts, roots and norms
-# that read them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin. the
-# value rows of a block and of the attention rings. Era four states a 12 of its own --
-# `KV_Q`, which names an attention ring's four tensors and nothing else -- thus the two
-# are one number and not one format; `Model.Constants` keeps them apart on the OCaml side
-# for that reason.
+# that read them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin.
+#
+# `V_Q` is the value rows of a block and of the attention rings: Q12 in int16. Era four
+# states a 12 of its own -- `KV_Q`, which names an attention ring's four tensors and
+# nothing else -- thus the two are one number and not one format; `Model.Constants` keeps
+# them apart on the OCaml side for that reason.
 V_Q = 12
 S_Q = 12  # the state of the recurrence
 ALPHA_Q = 15  # the decay of one step
@@ -519,6 +519,17 @@ class Clamps(NamedTuple):
     beta_seen: int = 0
     state: int = 0
     state_seen: int = 0
+
+    def counting(self, name, hit, size):
+        """[name] and its `_seen` twin, moved together -- a counter that rose without its
+        chances would read as a rate this walk never had"""
+        seen = f"{name}_seen"
+        return self._replace(
+            **{
+                name: getattr(self, name) + int(hit.sum()),
+                seen: getattr(self, seen) + size,
+            }
+        )
 
 
 class Engine(NamedTuple):
@@ -559,7 +570,7 @@ def engine(twin, seeds):
     )
 
 
-def block(e, layer, ordinal, h, state, taps):
+def block(e, layer, ordinal, h, state, taps, tally):
     """One block of the trunk: the stream after the residual join, and the clamps it met.
 
     It writes the state and the taps of its own region IN PLACE -- the two arrays are
@@ -592,10 +603,8 @@ def block(e, layer, ordinal, h, state, taps):
     # the decay of each head: softplus of the biased draw, then one exp2
     raw = zxbcdt[:, d_in + channels :]
     dt = fixed.softplus(raw + layer.dt_bias)
-    tally = e.clamps._replace(
-        dt=e.clamps.dt + int(((dt == fixed.INT16_HIGH) | (dt == fixed.INT16_LOW)).sum()),
-        dt_seen=e.clamps.dt_seen + dt.size,
-    )
+    rails = (dt == fixed.INT16_HIGH) | (dt == fixed.INT16_LOW)
+    tally = tally.counting("dt", rails, dt.size)
     alpha = fixed.exp2_of_magnitude(fixed.apply_scale(layer.decay, DECAY_Q_BITS, dt))
     # the state update and the readout, head by head. [beta] is the inject operand of the
     # head: [state] products of [dt] against B, written before the walk.
@@ -603,10 +612,7 @@ def block(e, layer, ordinal, h, state, taps):
     read = np.zeros((len(h), d_in), np.int64)
     for hd in range(heads):
         wide = (dt[:, hd, None] * b) >> (V_Q + V_Q - BETA_Q)
-        tally = tally._replace(
-            beta=tally.beta + int(fixed.clamps16(wide).sum()),
-            beta_seen=tally.beta_seen + wide.size,
-        )
+        tally = tally.counting("beta", fixed.clamps16(wide), wide.size)
         beta = fixed.clamp16(wide)
         lanes = np.arange(hd * head, (hd + 1) * head)
         rows = base + (lanes[:, None] * n) + np.arange(n)
@@ -614,10 +620,7 @@ def block(e, layer, ordinal, h, state, taps):
             (alpha[:, hd, None, None] * state[:, rows])
             + (x[:, lanes, None] * beta[:, None, :])
         ) >> ALPHA_Q
-        tally = tally._replace(
-            state=tally.state + int(fixed.clamps16(updated).sum()),
-            state_seen=tally.state_seen + updated.size,
-        )
+        tally = tally.counting("state", fixed.clamps16(updated), updated.size)
         state[:, rows] = fixed.clamp16(updated)
         # the readout reads the state the update just wrote, and the skip folds into the
         # row as its last term
@@ -638,36 +641,6 @@ def block(e, layer, ordinal, h, state, taps):
     return fixed.join(h, layer.w_out, values=g, at=V_Q), tally
 
 
-def attend(twin, kc, vc, *, ring, cur, filled, query):
-    """Attention over the newest [filled] steps of the ring: the merged context of the
-    query, head by head. Age a reads slot (cur - a) & (ring - 1), thus the ALiBi distance
-    IS the age and the causal wall is the walk."""
-    d, heads, slots = twin.d, twin.heads, twin.ring
-    head_d = d // heads
-    ages = np.arange(filled)
-    rows = (cur - ages) & (slots - 1)
-    keys, values = kc[:, ring, rows, :], vc[:, ring, rows, :]
-    context = np.zeros((len(query), d), np.int64)
-    shift = fixed.score_shift(row_q=V_Q, head_d=head_d)
-    for head in range(heads):
-        band = slice(head * head_d, (head + 1) * head_d)
-        slope = fixed.slope_exponent(span=twin.span, heads=heads, head=head)
-        raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (fixed.Y_Q - slope))
-        peak = scores.max(axis=-1, keepdims=True)
-        # THE NEGATION STANDS OUTSIDE THE SCALE, as it stands outside the temper of the
-        # draw: the circuit scales the score's distance BELOW the peak and negates the
-        # shifted product, thus a scale that did not divide exactly would round the other
-        # way if this side negated first.
-        weight = fixed.exp2_of_magnitude(
-            -fixed.apply_scale(fixed.LOG2E.q_value, fixed.LOG2E.q, scores - peak)
-        )
-        total = weight.sum(axis=-1, keepdims=True)
-        merged = (weight[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = fixed.clamp16(fixed.truncated(merged, total))
-    return context
-
-
 def attention(e, layer, ordinal, h, embedding, kc, vc):
     """One attention layer, era four's with one addition: the query and the key read the
     JOINED vector -- the normed stream beside the normed embedding -- thus their walk is
@@ -684,12 +657,19 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
             source, getattr(layer, name), transposed=False, at=fixed.Y_Q, to=V_Q
         )
 
-    # THE RING KEEPS THE TOP BYTE of a Q12 row: the circuit stores eight bits and restores
-    # eight zero low bits at the read. The query does not pass here.
-    kc[:, ordinal, cur, :] = (project("wk", joined) >> 8) << 8
-    vc[:, ordinal, cur, :] = (project("wv", y) >> 8) << 8
-    context = attend(
-        twin, kc, vc, ring=ordinal, cur=cur, filled=filled, query=project("wq", joined)
+    kc[:, ordinal, cur, :] = fixed.coarse_to_ring(project("wk", joined))
+    vc[:, ordinal, cur, :] = fixed.coarse_to_ring(project("wv", y))
+    # the rings of THIS attention site: era five's second axis is the site's ordinal, and
+    # slicing it here is what lets the shared `attend` name no era's axis
+    context = fixed.attend(
+        kc[:, ordinal],
+        vc[:, ordinal],
+        query=project("wq", joined),
+        cur=cur,
+        filled=filled,
+        heads=twin.heads,
+        span=twin.span,
+        row_q=V_Q,
     )
     return fixed.join(h, layer.wo, values=context, at=V_Q)
 
@@ -723,19 +703,13 @@ def layer_streams(e, classes, phase):
     tally = e.clamps
     for layer, ordinal in zip(twin.layers, twin.ordinals()):
         if layer.kind == recurrence.MAMBA:
-            h, tally = block(e._replace(clamps=tally), layer, ordinal, h, state, taps)
+            h, tally = block(e, layer, ordinal, h, state, taps, tally)
         elif layer.kind == recurrence.ZATTN:
             h = attention(e, layer, ordinal, h, embedding, kc, vc)
         else:
             h = feed_forward(twin, layer, h)
         written.append(h)
-    return written, (state, taps, kc, vc, tally)
-
-
-def forward(e, classes, phase):
-    """one step of the recurrence: the engine after it"""
-    written, (state, taps, kc, vc, tally) = layer_streams(e, classes, phase)
-    return e._replace(
+    return written, e._replace(
         h=written[-1],
         state=state,
         taps=taps,
@@ -746,64 +720,19 @@ def forward(e, classes, phase):
     )
 
 
-def tempered_weights(twin, logits):
-    """the Q15 weight of every class of one seat, and the min-p floor over it"""
-    peak = logits.max(axis=-1, keepdims=True)
-    weights = fixed.exp2_of_magnitude(
-        -fixed.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
-    )
-    return np.where(weights >= twin.min_weight, weights, 0)
-
-
-class Draw(NamedTuple):
-    """one draw of the chain, over the batch"""
-
-    seat: int
-    logits: np.ndarray  # [walks, CLASSES], Q12 -- what the drift report compares
-    word: np.ndarray  # [walks], the 24-bit uniform
-    drawn: np.ndarray  # [walks], the class
-
-
-def chain(e):
-    """One frame, drawn in a chain from the soprano down: each seat reads the stream that
-    the seats above it have written."""
-    twin = e.twin
-    stream, states, draws = e.h, e.states, []
-    everyone = np.ones(len(stream), bool)
-    for seat in reversed(range(data.SEATS)):
-        logits = twin.head.logits(stream, seat)
-        states, word = prng.uniform_word(states, everyone)
-        drawn = fixed.pick(tempered_weights(twin, logits), word)
-        if seat:
-            stream = twin.head.add_row(stream, seat, drawn)
-        draws.append(Draw(seat, logits, word, drawn))
-    return e._replace(states=states), draws
+def forward(e, classes, phase):
+    """one step of the recurrence: the engine after it"""
+    return layer_streams(e, classes, phase)[1]
 
 
 def next_step(e):
-    """one step of the walk: the engine after it, the classes of the frame, and the draws.
-
-    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
-    from the generator."""
-    phase = e.position % data.BAR_STEPS
-    if e.position < fixed.LEAD:
-        classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
-        draws = []
-    else:
-        e, draws = chain(e)
-        classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
-    return forward(e, classes, phase), classes, draws
+    """one step of the walk -- `fixed.next_step` over era five's own recurrence"""
+    return fixed.next_step(e, forward)
 
 
 def walk(twin, seeds, steps):
     """the classes of each step of the walk, and the draws behind them"""
-    e = engine(twin, seeds)
-    played, taken = [], []
-    for _ in range(steps):
-        e, classes, draws = next_step(e)
-        played.append(classes)
-        taken.append(draws)
-    return np.stack(played, axis=1), taken
+    return fixed.walk(engine(twin, seeds), steps, forward)
 
 
 def streams(twin, seeds, steps):
@@ -814,22 +743,36 @@ def streams(twin, seeds, steps):
     the engine would never take."""
     e = engine(twin, seeds)
     written = []
-    for _ in range(steps):
-        phase = e.position % data.BAR_STEPS
-        if e.position < fixed.LEAD:
-            classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
-        else:
-            e, draws = chain(e)
-            classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
-        rows, _ = layer_streams(e, classes, phase)
+    # `fixed.next_step` states the lead-in and the chain; the trunk pass it takes is the
+    # one this gate reads, thus a step runs the recurrence ONE time and not twice.
+    def recorded(e, classes, phase):
+        rows, e = layer_streams(e, classes, phase)
         written.append(rows)
-        e = forward(e, classes, phase)
+        return e
+
+    for _ in range(steps):
+        e, _, _ = fixed.next_step(e, recorded)
     return written
 
 
 # ---------------------------------------------------------------------
 # what the quantization costs
 # ---------------------------------------------------------------------
+
+
+@nnx.jit
+def float_step(held, carry, classes, phases):
+    """One float step of the walk, for the drift report to score the twin against.
+
+    It takes the model as an ARGUMENT and stands at the module level, thus its compiled
+    form is keyed on the shapes and every step of a drift run reuses the first compile."""
+    return held.forward_step(carry, classes, phases)
+
+
+@nnx.jit
+def float_row(held, stream, drawn):
+    """the float logits of the seats of one step, on the stream the step before it left"""
+    return held.head.logits(stream[:, None, :], drawn[None])[0, 0]
 
 
 class Drift(NamedTuple):
@@ -841,39 +784,6 @@ class Drift(NamedTuple):
     same_draw: int  # the draws where both models pick the same class
     mean_cosine: float
     clamps: Clamps
-
-
-def cosine(here, there):
-    """the cosine between an integer row and the float row of the same place"""
-    here = np.asarray(here, np.float64)
-    return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
-
-
-class Counted(NamedTuple):
-    """what the report has counted over the draws it has seen"""
-
-    draws: int = 0
-    same_peak: int = 0
-    same_draw: int = 0
-    cosine: float = 0.0
-
-
-def count_draws(counted, floated, chain_draws):
-    """one step's chain against the float logits of the same step, seat by seat, on the
-    very uniform the engine took"""
-    for taken in chain_draws:
-        row = floated[taken.seat]
-        mine = taken.logits[0]
-        uniform = np.array([float(taken.word[0]) * 2.0**-prng.UNIFORM_BITS])
-        weights = nn.temper(row[None], ELECTED_TEMPERATURE, ELECTED_MIN_P)
-        counted = Counted(
-            draws=counted.draws + 1,
-            same_peak=counted.same_peak + int(np.argmax(mine) == np.argmax(row)),
-            same_draw=counted.same_draw
-            + int(nn.pick_share(weights, uniform)[0] == taken.drawn[0]),
-            cosine=counted.cosine + cosine(mine, row),
-        )
-    return counted
 
 
 def drift(model, *, steps, seed, ring=ELECTED_RING):
@@ -892,11 +802,9 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""
-    import jax.numpy as jnp
-
     e = engine(QuantizedMamba.of(model, ring=ring), [seed])
     carry = model.initial_carry(1, context=ring)
-    counted = Counted()
+    counted = measure.Counted()
     stream = None
     for at in range(steps):
         e, classes, chain_draws = next_step(e)
@@ -904,14 +812,19 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
         # twin draws from the stream its own last forward left, thus the float row must be
         # the row that same forward states and never the one this step's classes make.
         if chain_draws and stream is not None:
-            floated = np.asarray(
-                model.head.logits(stream[:, None, :], jnp.asarray(classes[None]))
-            )[0, 0].astype(np.float64)
-            counted = count_draws(counted, floated, chain_draws)
-        carry, stream = model.forward_step(
+            floated = np.asarray(float_row(model, stream, classes)).astype(np.float64)
+            counted = measure.count_draws(
+                counted,
+                floated,
+                chain_draws,
+                temperature=ELECTED_TEMPERATURE,
+                min_p=ELECTED_MIN_P,
+            )
+        carry, stream = float_step(
+            model,
             carry,
-            jnp.asarray(classes, np.int32),
-            jnp.asarray([at % nn.PHASE_BUCKETS], np.int32),
+            np.asarray(classes, np.int32),
+            np.array([at % nn.PHASE_BUCKETS], np.int32),
         )
     return Drift(
         steps=steps,

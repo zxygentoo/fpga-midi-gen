@@ -78,22 +78,12 @@ class Layer(nnx.Module):
             getattr(self, name)[...] = jnp.asarray(value)
 
 
-class Trunk(nnx.Module):
+class Trunk(nn.Trunk):
     """The skeleton both models of the era carry: the tied head, then the layers.
 
     [Transformer] fills it with the float tensors and `quantized.QuantizedTransformer`
     with their integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus the two
     trees are one tree and a reader can audit them layer for layer."""
-
-    def every_tensor(self):
-        """Every tensor of the model in THE ONE ORDER -- the two tables, then the six of
-        each layer.
-
-        That order is the checkpoint's, the contract file's and the ROM's at once, and
-        this is the one place either tree states it."""
-        return self.head.tensors() + [
-            tensor for layer in self.layers for tensor in layer.tensors()
-        ]
 
 
 class Transformer(Trunk):
@@ -132,20 +122,6 @@ class Transformer(Trunk):
         for layer in self.layers:
             h = layer(h, bias, self.heads, drop)
         return h
-
-    def seat_nll(self, classes, phases, *, dropout=0.0, key=None):
-        """The negative log likelihood of every voice of every step: classes
-        [batch, length + 1, SEATS] -> [batch, length, SEATS].
-
-        The caller reduces. The loss does not carry across the encoding and neither does a
-        per-prediction mean: report nats for each step, which is the sum over the seats.
-        """
-        labels = classes[:, 1:]
-        h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
-        return self.head.nll(h, labels)
-
-    def parameter_count(self):
-        return sum(int(t.size) for t in self.every_tensor())
 
     def describe(self):
         """the shape of this model in one phrase, for the head of a training log"""

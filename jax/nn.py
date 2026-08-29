@@ -230,6 +230,47 @@ class Head(nnx.Module):
 
 
 # ---------------------------------------------------------------------
+# the trunk: what the step-frame trainer takes
+# ---------------------------------------------------------------------
+
+
+class Trunk(nnx.Module):
+    """WHAT `frames.train` TAKES: a tied `Head` and a `layers` list under it.
+
+    The step-frame eras are one skeleton -- the head states the frame and the layers carry
+    the stream -- thus the three rules that read only that skeleton stand here and not
+    once in each era. An era states its own `hidden` and its own `describe`; everything
+    below reads `hidden` through `seat_nll` and reads nothing else of the era.
+
+    Era six is NOT a subclass: its sheet is not a stream of frames, and its own trunk
+    walks `every_layer` where these walk `layers`."""
+
+    def every_tensor(self):
+        """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
+        tensors of each layer.
+
+        That order is the checkpoint's, the contract file's and the ROM's at once, and
+        this is the one place either tree states it."""
+        return self.head.tensors() + [
+            tensor for layer in self.layers for tensor in layer.tensors()
+        ]
+
+    def seat_nll(self, classes, phases, *, dropout=0.0, key=None):
+        """The negative log likelihood of every voice of every step: classes
+        [batch, length + 1, SEATS] -> [batch, length, SEATS].
+
+        The caller reduces. The loss does not carry across the encoding and neither does a
+        per-prediction mean: report nats for each step, which is the sum over the seats.
+        The two eras speak this same unit on these same windows, thus they compare."""
+        labels = classes[:, 1:]
+        h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
+        return self.head.nll(h, labels)
+
+    def parameter_count(self):
+        return sum(int(tensor.size) for tensor in self.every_tensor())
+
+
+# ---------------------------------------------------------------------
 # the trainer: the rate curve, the update rule, and the seam of a checkpoint
 # ---------------------------------------------------------------------
 

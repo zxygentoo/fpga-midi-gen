@@ -3,9 +3,10 @@ on.
 
 What stands here is the part of the integer arithmetic that is ONE THING ACROSS THE ERAS:
 the fixed-point rails, the exponent rule of a checkpoint, the sampling policy, the shared
-tables and the integer draw. Each era's twin keeps what is its own -- the parameter
-structures, the state formats of a recurrence, and the engines themselves. A rule written
-here is read by every twin and, through them, by every circuit.
+tables, the integer draw, and the walk of the step-frame eras around their trunks -- the
+lead-in, the chain and the attention over a ring. Each era's twin keeps what is its own --
+the parameter structures, the state formats of a recurrence, and the trunk pass of one
+step. A rule written here is read by every twin and, through them, by every circuit.
 
 `lib/nn/quantized.ml` is the same module in OCaml and the elaborations read it. The two
 are TWO STATEMENTS OF ONE RULE and nothing in the types welds them; what holds them
@@ -65,6 +66,12 @@ EPS_Q = int(round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
 
 # the silent lead-in of a boot, in steps: one bar, as the float samplers play it
 LEAD = data.BAR_STEPS
+
+# The policy the ear elected on 2026-08-18: the draw the bitstreams commit to. The OCaml
+# `Policy` went with the all-era cut, and this is the one home left -- an era that re-
+# elects shadows these two in its own module and says so.
+ELECTED_TEMPERATURE = 1.0
+ELECTED_MIN_P = 0.05
 
 
 def rescale(value, *, at, to):
@@ -154,14 +161,13 @@ def largest_exponent(magnitude, *, opening, cap):
 
 
 def max_exponent(peak):
-    """`Nn_quantized.max_exponent`: the exponent of one int8 tensor -- from 14 down, the
-    largest that keeps round(peak * 2^e) inside the byte."""
+    """The exponent of one int8 tensor -- from 14 down, the largest that keeps
+    round(peak * 2^e) inside the byte."""
     return largest_exponent(peak, opening=14, cap=127)
 
 
 def quantize(weights, e=None):
-    """`Nn_quantized.quantize`: the int8 form of one tensor, and the exponent that reads
-    it.
+    """The int8 form of one tensor, and the exponent that reads it.
 
     The byte is two's complement and the negative end is not used: the clamp is -127 and
     not -128, thus the image is symmetric and a negated weight is a negated byte. [e]
@@ -183,7 +189,10 @@ def fixed_q12(values, bound):
 
 
 def temper_of(temperature):
-    """`Nn_quantized.policy`: the sampling temper, log2(e) / T, as (q_value, q)."""
+    """The sampling temper, log2(e) / T, as (q_value, q).
+
+    `Nn_quantized.Constants.temper_at_one` is this rule at a temperature of one, which is
+    the elected policy and the one reading a contract file carries."""
     if temperature <= 0.0:
         raise ValueError("the temperature is positive")
     return int(round_half_up(np.ldexp(1.0 / math.log(2.0) / temperature, TEMPER_Q))), (
@@ -192,7 +201,7 @@ def temper_of(temperature):
 
 
 def min_weight_of(min_p):
-    """`Nn_quantized.policy`: the min-p floor as a share of the peak weight.
+    """The min-p floor as a share of the peak weight.
 
     The peak weighs 2^`EXP2_OUT_Q` after the temper, thus the floor is a plain share of it
     and the circuit compares two integers."""
@@ -216,6 +225,18 @@ class Temper(NamedTuple):
     def of(cls, temperature):
         q_value, q = temper_of(temperature)
         return cls(q_value, q, temperature)
+
+    @classmethod
+    def of_file(cls, tensors, metadata, *, key="temper"):
+        """the temper a contract file carries: the pair from its named tensor and the
+        temperature from the metadata, absent under a file an older tool wrote"""
+        q_value, q = (int(value) for value in tensors[key])
+        return cls(q_value, q, float(metadata.get("temperature", np.nan)))
+
+    def tensor(self):
+        """the pair as the contract file carries it -- `Nx_io` skips every dtype it does
+        not hold, thus every scalar of a file travels as an int32 tensor"""
+        return np.array([self.q_value, self.q], np.int32)
 
 
 # log2(e): the exp2 form of an exponential, `Constants.log2e`. The temper is this
@@ -337,8 +358,9 @@ def tallied_write(tally, value):
     return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
 
 
-# the quantized exponential: exp2 of -j/256 in Q15 -- `Nn_quantized.Constants.exp2_table`,
-# the one table the samplers of every era read
+# the quantized exponential: exp2 of -j/256 in Q15 -- the table `Nn_quantized.Constants`
+# builds and `Constants.exp2_bits` hands the circuit, the one table the samplers of every
+# era read
 EXP2_TABLE = np.array(
     [
         int(round_half_up(float(1 << EXP2_OUT_Q) * 2.0 ** (-j / 256.0)))
@@ -349,7 +371,7 @@ EXP2_TABLE = np.array(
 
 
 def exp2_of_magnitude(magnitude):
-    """`Nn_quantized.exp2_of_magnitude`: 2^-m in Q15 over a nonnegative Q12 magnitude.
+    """2^-m in Q15 over a nonnegative Q12 magnitude -- the rule of the `Exp2` unit.
 
     The integer part shifts and the top eight bits of the fraction index the table; a
     magnitude of 16 or more is 0. The shift is held under the width of the host word where
@@ -392,21 +414,20 @@ SOFTPLUS_TABLE = np.array(
 
 
 def sigmoid_q(value):
-    """`Nn_quantized.sigmoid_q`: the sigmoid of a Q12 value in Q15 — the rule of the
-    [Sigmoid] unit. The index is the top eight bits with the sign flipped, which is no
-    arithmetic at all in a circuit."""
+    """`Nn_quantized.For_test.sigmoid_q`: the sigmoid of a Q12 value in Q15 -- the rule
+    of the [Sigmoid] unit. The index is the top eight bits with the sign flipped, which is
+    no arithmetic at all in a circuit."""
     return SIGMOID_TABLE[((np.asarray(value, np.int64) >> 8) + 128) & 255]
 
 
 def silu(value):
-    """`Nn_quantized.silu`: the value times its sigmoid, shifted back to Q12 and
-    clamped"""
+    """the value times its sigmoid, shifted back to Q12 and clamped"""
     value = np.asarray(value, np.int64)
     return clamp16((value * sigmoid_q(value)) >> 15)
 
 
 def softplus(value):
-    """`Nn_quantized.softplus`: the ramp plus the correction the table holds.
+    """The ramp plus the correction the table holds -- the rule of the `Softplus` unit.
 
     The sum rides an int16, thus the input clamps before the table reads it and the result
     clamps after. The clamp of the index catches the one value -32768 whose magnitude does
@@ -448,3 +469,118 @@ def engine_states(seeds):
     """
     return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
+
+def exp2_q(value):
+    """`Nn_quantized.For_test.exp2_q`: 2^value in Q15 over a Q12 value that is 0 or less.
+
+    The eras exponentiate a nonpositive score and a decay that is a magnitude by
+    construction, thus the negation stands here and the shared table takes the
+    magnitude."""
+    return exp2_of_magnitude(-np.asarray(value, np.int64))
+
+
+def coarse_to_ring(row):
+    """what a KV ring keeps of a Q12 row: the top byte, with eight zero low bits restored
+    at the read. The circuit stores eight bits, thus the granularity is 2^-4 and the
+    format stays Q12. A query does not pass here -- only the stored rows coarsen."""
+    return (np.asarray(row, np.int64) >> 8) << 8
+
+
+def tempered_weights(twin, logits):
+    """the Q15 weight of every class of one seat, and the min-p floor over it.
+
+    The peak weighs 2^15, thus the floor is a plain share of it; a class the floor refuses
+    weighs nothing and the pick cannot land on it."""
+    peak = logits.max(axis=-1, keepdims=True)
+    weights = exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
+    return np.where(weights >= twin.min_weight, weights, 0)
+
+
+def attend(keys, values, *, query, cur, filled, heads, span, row_q):
+    """Attention of one site over the newest [filled] slots of its rings: the merged
+    context of [query], head by head.
+
+    [keys] and [values] are the rings of ONE site -- one layer of era four, one ring of
+    era five -- as [walks, slots, d]; the caller slices its own axis, thus no era's name
+    for that axis stands in here. [row_q] is the Q of a stored row, 12 under both eras,
+    and each states its own because the two are one number and not one format.
+
+    The ring is read NEWEST FIRST, which is what the ALiBi slope counts: the bias of a
+    slot is its age times the slope of its head, and an unwritten slot is never read."""
+    walks, slots, d = keys.shape
+    head_d = d // heads
+    ages = np.arange(filled)
+    rows = (cur - ages) & (slots - 1)
+    keys, values = keys[:, rows, :], values[:, rows, :]
+    context = np.zeros((walks, d), np.int64)
+    shift = score_shift(row_q=row_q, head_d=head_d)
+    for head in range(heads):
+        band = slice(head * head_d, (head + 1) * head_d)
+        slope = slope_exponent(span=span, heads=heads, head=head)
+        raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
+        scores = (raw >> shift) - (ages << (Y_Q - slope))
+        peak = scores.max(axis=-1, keepdims=True)
+        # THE NEGATION STANDS OUTSIDE THE SCALE, as it stands outside the temper of the
+        # draw: the circuit scales the score's distance BELOW the peak and negates the
+        # shifted product, thus a scale that did not divide exactly would round the other
+        # way if this side negated first. `exp2_q` is that order, named.
+        weights = exp2_q(apply_scale(LOG2E.q_value, LOG2E.q, scores - peak))
+        total = weights.sum(axis=-1, keepdims=True)
+        merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
+        context[:, band] = clamp16(truncated(merged, total))
+    return context
+
+
+class Draw(NamedTuple):
+    """one draw of the chain, over the batch"""
+
+    seat: int
+    logits: np.ndarray  # [walks, CLASSES], Q12 -- what the drift report compares
+    word: np.ndarray  # [walks], the 24-bit uniform
+    drawn: np.ndarray  # [walks], the class
+
+
+def chain(e):
+    """One frame, drawn in a chain from the soprano down: each seat reads the stream that
+    the seats above it have written. The draws come back in the order they happened."""
+    twin = e.twin
+    stream, states, draws = e.h, e.states, []
+    everyone = np.ones(len(stream), bool)
+    for seat in reversed(range(data.SEATS)):
+        logits = twin.head.logits(stream, seat)
+        states, word = prng.uniform_word(states, everyone)
+        drawn = pick(tempered_weights(twin, logits), word)
+        if seat:
+            stream = twin.head.add_row(stream, seat, drawn)
+        draws.append(Draw(seat, logits, word, drawn))
+    return e._replace(states=states), draws
+
+
+def next_step(e, forward):
+    """one step of the walk: the engine after it, the classes of the frame, and the draws.
+
+    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
+    from the generator. The model opens the music itself after it, thus the walk needs no
+    pitch and no table to begin. [forward] is the era's own trunk, and it is the only part
+    of a step that the two frozen eras do not share."""
+    phase = e.position % data.BAR_STEPS
+    if e.position < LEAD:
+        classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
+        draws = []
+    else:
+        e, draws = chain(e)
+        classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
+    return forward(e, classes, phase), classes, draws
+
+
+def walk(e, steps, forward):
+    """the classes of each step of the walk, and the draws behind them.
+
+    It is the integer twin of the float sampler, and the lead-in counts inside [steps] as
+    it does there."""
+    played, taken = [], []
+    for _ in range(steps):
+        e, classes, draws = next_step(e, forward)
+        played.append(classes)
+        taken.append(draws)
+    return np.stack(played, axis=1), taken

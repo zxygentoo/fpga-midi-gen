@@ -58,8 +58,8 @@ from safetensors.numpy import load_file, save_file
 
 import data
 import fixed
+import measure
 import nn
-import prng
 from nn import TABLES
 from transformer import model as step
 
@@ -72,10 +72,9 @@ SLOPE_SPAN = "slope_span"
 # the tensors the file carries beside its numbered weights
 BESIDE_THE_WEIGHTS = (EXPONENTS, TEMPER, MIN_WEIGHT, HEADS, CONTEXT, SLOPE_SPAN)
 
-# the policy the ear elected on 2026-08-18: the draw the bitstream commits to. Since
-# the all-era cut took the OCaml `Policy` away, these two are the only home of it.
-ELECTED_TEMPERATURE = 1.0
-ELECTED_MIN_P = 0.05
+# the policy the ear elected, stated once in `fixed`; era four takes it as it stands
+ELECTED_TEMPERATURE = fixed.ELECTED_TEMPERATURE
+ELECTED_MIN_P = fixed.ELECTED_MIN_P
 
 
 class QuantizedLayer(nnx.Module):
@@ -177,7 +176,7 @@ def save(path, twin):
     tensors[HEADS] = np.array(twin.heads, np.int32)
     tensors[CONTEXT] = np.array(twin.context, np.int32)
     tensors[SLOPE_SPAN] = np.array(twin.slope_span, np.int32)
-    tensors[TEMPER] = np.array([twin.temper.q_value, twin.temper.q], np.int32)
+    tensors[TEMPER] = twin.temper.tensor()
     tensors[MIN_WEIGHT] = np.array(twin.min_weight, np.int32)
     save_file(
         tensors,
@@ -206,7 +205,6 @@ def load(path):
     exponents = tensors[EXPONENTS]
     if exponents[0] != exponents[1]:
         raise ValueError("the seat and phase tables must share one exponent")
-    q_value, q = (int(value) for value in tensors[TEMPER])
 
     def weight_at(at):
         return fixed.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
@@ -227,7 +225,7 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=fixed.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
+        temper=fixed.Temper.of_file(tensors, metadata, key=TEMPER),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -241,19 +239,13 @@ def load(path):
 # THE FORMAT THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
 # the hidden vector, the epsilon, log2(e), the lead-in, and the shifts and roots that read
 # them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin.
-# the query, the keys, the values and the context: the rings store these rows. Era five
-# states a 12 of its own -- `V_Q`, which names a BLOCK's value rows as well as an
-# attention ring's and carries its gate at 2 * V_Q -- thus the two are one number and
-# not one format; `Model.Constants` keeps them apart on the OCaml side for that reason.
+#
+# `KV_Q` is the query, the keys, the values and the context: the rings store these rows,
+# Q12 in int16. Era five states a 12 of its own -- `V_Q`, which names a BLOCK's value rows
+# as well as an attention ring's and carries its gate at 2 * V_Q -- thus the two are one
+# number and not one format; `Model.Constants` keeps them apart on the OCaml side for that
+# reason.
 KV_Q = 12
-
-
-def exp2_q(value):
-    """`Nn_quantized.exp2_q`: 2^value in Q15 over a Q12 value that is 0 or less.
-
-    Era four exponentiates a nonpositive score, thus the negation stands here and the
-    shared table takes the magnitude."""
-    return fixed.exp2_of_magnitude(-np.asarray(value, np.int64))
 
 
 class Engine(NamedTuple):
@@ -295,35 +287,6 @@ def engine(twin, seeds):
     )
 
 
-def attend(twin, kc, vc, *, layer, cur, filled, query):
-    """Attention of one layer over the newest [filled] steps of the rings: the merged
-    context of [query], head by head.
-
-    Age a reads slot (cur - a) & (slots - 1), thus the ALiBi distance is the age itself
-    and the causal wall is the walk."""
-    d, heads, slots = twin.d, twin.heads, twin.context
-    head_d = d // heads
-    ages = np.arange(filled)
-    rows = (cur - ages) & (slots - 1)
-    keys = kc[:, layer, rows, :]  # [walks, filled, d]
-    values = vc[:, layer, rows, :]
-    context = np.zeros((len(query), d), np.int64)
-    shift = fixed.score_shift(row_q=KV_Q, head_d=head_d)
-    for head in range(heads):
-        band = slice(head * head_d, (head + 1) * head_d)
-        slope = fixed.slope_exponent(span=twin.slope_span, heads=heads, head=head)
-        raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (fixed.Y_Q - slope))
-        peak = scores.max(axis=-1, keepdims=True)
-        weights = exp2_q(
-            fixed.apply_scale(fixed.LOG2E.q_value, fixed.LOG2E.q, scores - peak)
-        )
-        total = weights.sum(axis=-1, keepdims=True)
-        merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = fixed.clamp16(fixed.truncated(merged, total))
-    return context
-
-
 def forward(e, classes, phase):
     """one step through the engine: the engine after it"""
     twin = e.twin
@@ -338,12 +301,20 @@ def forward(e, classes, phase):
         query, key, value = (
             projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
         )
-        # THE RING KEEPS THE TOP BYTE of a Q12 row: the circuit stores eight bits and
-        # restores eight zero low bits at the read, thus the granularity is 2^-4 and the
-        # format stays Q12. The query does not pass here -- only the stored rows coarsen.
-        kc[:, at, cur, :] = (key >> 8) << 8
-        vc[:, at, cur, :] = (value >> 8) << 8
-        context = attend(twin, kc, vc, layer=at, cur=cur, filled=filled, query=query)
+        kc[:, at, cur, :] = fixed.coarse_to_ring(key)
+        vc[:, at, cur, :] = fixed.coarse_to_ring(value)
+        # the rings of ONE layer: era four's second axis is the layer, and slicing it here
+        # is what lets the shared `attend` name no era's axis
+        context = fixed.attend(
+            kc[:, at],
+            vc[:, at],
+            query=query,
+            cur=cur,
+            filled=filled,
+            heads=twin.heads,
+            span=twin.slope_span,
+            row_q=KV_Q,
+        )
         h = fixed.join(h, layer.wo, values=context, at=KV_Q)
         y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
         hidden = fixed.clamp16(
@@ -366,76 +337,32 @@ def projection(y, weight):
     )
 
 
-def tempered_weights(twin, logits):
-    """the Q15 weight of every class of one seat, and the min-p floor over it.
-
-    The peak weighs 2^15, thus the floor is a plain share of it; a class the floor refuses
-    weighs nothing and the pick cannot land on it."""
-    peak = logits.max(axis=-1, keepdims=True)
-    weights = exp2_q(
-        fixed.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
-    )
-    return np.where(weights >= twin.min_weight, weights, 0)
-
-
-class Draw(NamedTuple):
-    """one draw of the chain, over the batch"""
-
-    seat: int
-    logits: np.ndarray  # [walks, CLASSES], Q12 -- what the drift report compares
-    word: np.ndarray  # [walks], the 24-bit uniform
-    drawn: np.ndarray  # [walks], the class
-
-
-def chain(e):
-    """One frame, drawn in a chain from the soprano down: each seat reads the stream that
-    the seats above it have written. The draws come back in the order they happened."""
-    twin = e.twin
-    stream, states, draws = e.h, e.states, []
-    everyone = np.ones(len(stream), bool)
-    for seat in reversed(range(data.SEATS)):
-        logits = twin.head.logits(stream, seat)
-        states, word = prng.uniform_word(states, everyone)
-        drawn = fixed.pick(tempered_weights(twin, logits), word)
-        if seat:
-            stream = twin.head.add_row(stream, seat, drawn)
-        draws.append(Draw(seat, logits, word, drawn))
-    return e._replace(states=states), draws
-
-
 def next_step(e):
-    """one step of the walk: the engine after it, the classes of the frame, and the draws.
-
-    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
-    from the generator. The model opens the music itself after it, thus the walk needs no
-    pitch and no table to begin."""
-    phase = e.position % data.BAR_STEPS
-    if e.position < fixed.LEAD:
-        classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
-        draws = []
-    else:
-        e, draws = chain(e)
-        classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
-    return forward(e, classes, phase), classes, draws
+    """one step of the walk -- `fixed.next_step` over era four's own trunk"""
+    return fixed.next_step(e, forward)
 
 
 def walk(twin, seeds, steps):
-    """the classes of each step of the walk, and the draws behind them.
-
-    It is the integer twin of the float sampler, and the lead-in counts inside [steps] as
-    it does there."""
-    e = engine(twin, seeds)
-    played, taken = [], []
-    for _ in range(steps):
-        e, classes, draws = next_step(e)
-        played.append(classes)
-        taken.append(draws)
-    return np.stack(played, axis=1), taken
+    """the classes of each step of the walk, and the draws behind them"""
+    return fixed.walk(engine(twin, seeds), steps, forward)
 
 
 # ---------------------------------------------------------------------
 # what the quantization costs
 # ---------------------------------------------------------------------
+
+
+@nnx.jit
+def float_row(held, window, phases, drawn, at):
+    """The float logits of the seats of ONE step, teacher-forced on the twin's history.
+
+    It takes the model as an ARGUMENT and stands at the module level, thus its compiled
+    form is keyed on the shapes and every step of a drift run reuses the first compile.
+    [window] and [phases] are padded to the model's context and [at] is the last real
+    position, which holds ONE shape over a whole run -- the causal wall keeps [at] from
+    seeing the padding."""
+    h = held.hidden(window, phases)[:, at, None, :]
+    return held.head.logits(h, drawn[None])[0, 0]
 
 
 class Drift(NamedTuple):
@@ -446,12 +373,6 @@ class Drift(NamedTuple):
     same_peak: int  # the draws where both models elect the same class
     same_draw: int  # the draws where both models pick the same class
     mean_cosine: float
-
-
-def cosine(here, there):
-    """the cosine between an integer row and the float row of the same place"""
-    here = np.asarray(here, np.float64)
-    return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
 
 
 def drift(model, *, context, steps, seed):
@@ -465,12 +386,9 @@ def drift(model, *, context, steps, seed):
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""
-    import jax.numpy as jnp
-
     e = engine(QuantizedTransformer.of(model, context=context), [seed])
     history = []
-    counted = same_peak = same_draw = 0
-    total = 0.0
+    counted = measure.Counted()
     for at in range(steps):
         e, classes, chain_draws = next_step(e)
         # THE HISTORY IS THE TWIN'S, and the float pass reads it: the window the model saw
@@ -479,26 +397,28 @@ def drift(model, *, context, steps, seed):
         history.append(classes[0])
         if not chain_draws or not window:
             continue
+        # ONE shape for the whole run, as `infer.walk` holds one: the history is
+        # right-padded to [context] and read at its last real position.
         low = max(0, at - context)
-        rows = jnp.asarray(np.stack(window[low:])[None])
-        phases = jnp.asarray((np.arange(low, at) % nn.PHASE_BUCKETS)[None])
-        h = np.asarray(model.hidden(rows, phases))[:, -1:, :]
-        floated = np.asarray(
-            model.head.logits(jnp.asarray(h), jnp.asarray(classes[None]))
-        )[0, 0].astype(np.float64)
-        for taken in chain_draws:
-            row = floated[taken.seat]
-            mine = taken.logits[0]
-            uniform = np.array([float(taken.word[0]) * 2.0**-prng.UNIFORM_BITS])
-            weights = nn.temper(row[None], ELECTED_TEMPERATURE, ELECTED_MIN_P)
-            counted += 1
-            same_peak += int(np.argmax(mine) == np.argmax(row))
-            same_draw += int(nn.pick_share(weights, uniform)[0] == taken.drawn[0])
-            total += cosine(mine, row)
+        length = at - low
+        rows = np.zeros((1, context, data.SEATS), dtype=np.int32)
+        rows[0, :length] = np.stack(window[low:])
+        phases = np.zeros((1, context), dtype=np.int32)
+        phases[0, :length] = np.arange(low, at) % nn.PHASE_BUCKETS
+        floated = np.asarray(float_row(model, rows, phases, classes, length - 1)).astype(
+            np.float64
+        )
+        counted = measure.count_draws(
+            counted,
+            floated,
+            chain_draws,
+            temperature=ELECTED_TEMPERATURE,
+            min_p=ELECTED_MIN_P,
+        )
     return Drift(
         steps=steps,
-        draws=counted,
-        same_peak=same_peak,
-        same_draw=same_draw,
-        mean_cosine=total / max(1, counted),
+        draws=counted.draws,
+        same_peak=counted.same_peak,
+        same_draw=counted.same_draw,
+        mean_cosine=counted.cosine / max(1, counted.draws),
     )

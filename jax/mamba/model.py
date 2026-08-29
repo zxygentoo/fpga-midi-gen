@@ -147,7 +147,22 @@ class Shape(NamedTuple):
 # removes three branches.
 
 
-class Block(nnx.Module):
+class NamedTensors:
+    """The float tensors of a layer, in the `LAYER_TENSORS` order of its own kind.
+
+    The order is the CHECKPOINT ORDER and the ROM order behind it, thus it is stated one
+    time for the three kinds and read through the layer's own `kind`. `ATTN` and `ZATTN`
+    name the same four, thus the widened attention reads its own property safely."""
+
+    def tensors(self):
+        return [getattr(self, name)[...] for name in LAYER_TENSORS[self.kind]]
+
+    def take(self, tensors):
+        for name, value in zip(LAYER_TENSORS[self.kind], tensors):
+            getattr(self, name)[...] = jnp.asarray(value)
+
+
+class Block(NamedTensors, nnx.Module):
     """One Mamba-2 block in its selective form: the projection, the depthwise causal
     convolution, the recurrence, the gated norm, and the output projection."""
 
@@ -298,15 +313,8 @@ class Block(nnx.Module):
         read = self.selective_window(shape, x, b, c, dt, a)
         return nn.rms_norm(read * jax.nn.silu(z)) @ self.w_out[...]
 
-    def tensors(self):
-        return [getattr(self, name)[...] for name in LAYER_TENSORS[MAMBA]]
 
-    def take(self, tensors):
-        for name, value in zip(LAYER_TENSORS[MAMBA], tensors):
-            getattr(self, name)[...] = jnp.asarray(value)
-
-
-class Attention(nnx.Module):
+class Attention(NamedTensors, nnx.Module):
     """Era four's attention sublayer, and the Zamba widening of it.
 
     [kind] is a property of the tensors and not a flag: the Zamba query and key read the
@@ -407,15 +415,8 @@ class Attention(nnx.Module):
         merged = read.transpose(0, 2, 1, 3).reshape(-1, shape.d)
         return (keys, values, filled), merged @ self.wo[...]
 
-    def tensors(self):
-        return [getattr(self, name)[...] for name in LAYER_TENSORS[ATTN]]
 
-    def take(self, tensors):
-        for name, value in zip(LAYER_TENSORS[ATTN], tensors):
-            getattr(self, name)[...] = jnp.asarray(value)
-
-
-class FeedForward(nnx.Module):
+class FeedForward(NamedTensors, nnx.Module):
     """Era four's feed-forward as a layer of its own, so that it can be ablated without
     touching the attention beside it.
 
@@ -438,13 +439,6 @@ class FeedForward(nnx.Module):
 
     def step(self, shape, carry, y, e, span):
         return carry, self.window(shape, y, e, span)
-
-    def tensors(self):
-        return [getattr(self, name)[...] for name in LAYER_TENSORS[MLP]]
-
-    def take(self, tensors):
-        for name, value in zip(LAYER_TENSORS[MLP], tensors):
-            getattr(self, name)[...] = jnp.asarray(value)
 
 
 def layer_of(kind, *, d, d_in, heads, state, taps, rngs):
@@ -478,7 +472,7 @@ def kind_of_group(shape, d):
 # ---------------------------------------------------------------------
 
 
-class Trunk(nnx.Module):
+class Trunk(nn.Trunk):
     """The skeleton both models of the era carry: the tied head, then the layers of the
     plan.
 
@@ -491,16 +485,6 @@ class Trunk(nnx.Module):
         """the kind of each layer, in order. No flag carries it on either side of the
         seam: a layer's own tensors say what it is."""
         return tuple(layer.kind for layer in self.layers)
-
-    def every_tensor(self):
-        """Every tensor of the model in THE ONE ORDER -- the two tables, then the group of
-        each layer.
-
-        That order is the checkpoint's, the contract file's and the ROM's at once, and
-        this is the one place either tree states it."""
-        return self.head.tensors() + [
-            tensor for layer in self.layers for tensor in layer.tensors()
-        ]
 
 
 class Mamba(Trunk):
@@ -591,21 +575,6 @@ class Mamba(Trunk):
         for layer in self.layers:
             h = h + drop(layer.window(shape, nn.rms_norm(h), e, self.span))
         return h
-
-    def seat_nll(self, classes, phases, *, dropout=0.0, key=None):
-        """The negative log likelihood of every voice of every step: classes
-        [batch, length + 1, SEATS] -> [batch, length, SEATS].
-
-        The caller reduces. The loss does not carry across the encoding and neither does a
-        per-prediction mean: report nats for each step, which is the sum over the seats.
-        Era four speaks this same unit on these same windows, thus the two eras compare.
-        """
-        labels = classes[:, 1:]
-        h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
-        return self.head.nll(h, labels)
-
-    def parameter_count(self):
-        return sum(int(t.size) for t in self.every_tensor())
 
     def describe(self):
         """the shape of this model in one phrase, for the head of a training log"""
