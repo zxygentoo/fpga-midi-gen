@@ -9,12 +9,13 @@ ALiBi for the position, and d_ff = 4 d. Matmul precision is pinned to true float
 TF32.
 
 THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS. `quantized.QuantizedTransformer`
-carries the same skeleton in integers under the same attribute names, thus a reader can put
-`model.layers[k]` beside `twin.layers[k]` and audit one layer against its own quantization.
+carries the same skeleton in integers under the same attribute names, thus a reader can
+put `model.layers[k]` beside `twin.layers[k]` and audit one layer against its own
+quantization.
 
-THE HEADS AND THE SPAN ARE NOT IN A CHECKPOINT and they stand on the module: the heads only
-split d at run time and ALiBi holds no position table, thus neither leaves a tensor behind.
-A player states them, and the contract file carries them to the elaboration.
+THE HEADS AND THE SPAN ARE NOT IN A CHECKPOINT and they stand on the module: the heads
+only split d at run time and ALiBi holds no position table, thus neither leaves a tensor
+behind. A player states them, and the contract file carries them to the elaboration.
 
 Checkpoints are safetensors: tensors "0".."N" in construction order -- seats [4, 48, d],
 phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d], w2 [4d, d].
@@ -80,16 +81,16 @@ class Layer(nnx.Module):
 class Trunk(nnx.Module):
     """The skeleton both models of the era carry: the tied head, then the layers.
 
-    [Transformer] fills it with the float tensors and `quantized.QuantizedTransformer` with
-    their integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus the two trees
-    are one tree and a reader can audit them layer for layer."""
+    [Transformer] fills it with the float tensors and `quantized.QuantizedTransformer`
+    with their integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus the two
+    trees are one tree and a reader can audit them layer for layer."""
 
     def every_tensor(self):
         """Every tensor of the model in THE ONE ORDER -- the two tables, then the six of
         each layer.
 
-        That order is the checkpoint's, the contract file's and the ROM's at once, and this
-        is the one place either tree states it."""
+        That order is the checkpoint's, the contract file's and the ROM's at once, and
+        this is the one place either tree states it."""
         return self.head.tensors() + [
             tensor for layer in self.layers for tensor in layer.tensors()
         ]
@@ -137,7 +138,8 @@ class Transformer(Trunk):
         [batch, length + 1, SEATS] -> [batch, length, SEATS].
 
         The caller reduces. The loss does not carry across the encoding and neither does a
-        per-prediction mean: report nats for each step, which is the sum over the seats."""
+        per-prediction mean: report nats for each step, which is the sum over the seats.
+        """
         labels = classes[:, 1:]
         h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
         return self.head.nll(h, labels)
@@ -189,8 +191,8 @@ class Transformer(Trunk):
         afford.
 
         THE DRAW IS THE MODULE'S AND NOT ITS INITIALIZER'S, one key for each tensor in the
-        construction order, because the measured numbers of `tests/test_drift.py` read this
-        draw and a framework that changed its key rule would move them."""
+        construction order, because the measured numbers of `tests/test_drift.py` read
+        this draw and a framework that changed its key rule would move them."""
         keys = iter(
             jax.random.split(jax.random.PRNGKey(seed), len(TABLES) + PER_LAYER * layers)
         )

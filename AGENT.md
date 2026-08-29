@@ -96,10 +96,12 @@ models, the integer twins and the oracle gates, all in `jax/`.
   plugin one release behind the runtime is refused, and the trainer falls
   back to the CPU with no message, ten times slower.
 - Every era is Flax NNX and optax. The rate curve and the update rule are
-  `nn.learning_rates` and `nn.update_rule`; each era's `train.py` keeps its
-  own loop.
-- `ruff` at line-length 90, the width of ocamlformat. E501 is not selected,
-  thus ruff does not check the width of a docstring.
+  `nn.learning_rates` and `nn.update_rule`. The two step-frame eras run one
+  loop, `frames.train`; era six keeps its own, because the sheet recipe is
+  not the frames recipe.
+- `ruff` at line-length 90, the width of ocamlformat. E501 is selected, thus
+  ruff holds every line — a docstring too. `ruff format` is NOT adopted: the
+  OCaml side formats and the Python side lints.
 
 ## Hardware
 
@@ -217,9 +219,12 @@ It is not 48000 Hz.
 - `board/` — the top level, the configuration and the scripts of each board,
   for example `board/nexys-4`. `board/_generated/` holds the Verilog and
   `board/_build/` the Vivado work; git ignores both.
-- `jax/` — the Python side: `data.py`, `nn.py`, `prng.py`, `midi.py` and
-  `measure.py` are common, each era has a directory, and `tests/` holds the
-  oracle gates. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
+- `jax/` — the Python side: `data.py`, `prng.py`, `midi.py` and `measure.py`
+  are common; `nn.py` holds what the float models share and `fixed.py` the
+  integer rules of the twins, as `lib/nn` parts them; `frames.py` is the
+  training recipe of eras four and five. Each era has a directory, and
+  `tests/` holds the oracle gates. Git ignores `jax/_data/`; `corpus_tool`
+  rebuilds it.
 - `corpus/` — the chorale corpus.
 - `_train/` — the training runs: the logs and the checkpoints. Git ignores
   it. Every run pipes to `_train/NAME.log` beside its checkpoint.

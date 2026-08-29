@@ -18,12 +18,12 @@ gate compares the residual stream after the embed and after every layer, thus a
 disagreement names the layer it began in.
 
 The shapes are the ones the frame and stream benches of `source.ml` ran until the all-era
-cut moved the gates here, and each was put there by a fault: the whole plan at one of each kind, where the region field of every memory is EMPTY
-and an address that strided by it would still pass; two blocks and two attention layers,
-where both fields appear; three blocks under a plan that interleaves them, where the tap
-ring's layer stride runs the top block off the end of its memory if the stride is wrong;
-and a wide state and kernel, where a stride written for one K and an address field written
-for one N both land.
+cut moved the gates here, and each was put there by a fault: the whole plan at one of each
+kind, where the region field of every memory is EMPTY and an address that strided by it
+would still pass; two blocks and two attention layers, where both fields appear; three
+blocks under a plan that interleaves them, where the tap ring's layer stride runs the top
+block off the end of its memory if the stride is wrong; and a wide state and kernel, where
+a stride written for one K and an address field written for one N both land.
 
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import nn
+import fixed
 from mamba import quantized
 from tests.test_mamba import plan_of
 
@@ -83,8 +83,8 @@ def contract(tmp_path, spelt, *, ring=8, **shape):
         # the whole plan at one layer of each kind, at a live seed and at the standing one
         ("MZF", 42, {}),
         ("MZF", 0, {}),
-        # two blocks and two attention layers: both region fields appear, and a memory that
-        # ignored one would read another layer's state or another layer's keys
+        # two blocks and two attention layers: both region fields appear, and a memory
+        # that ignored one would read another layer's state or another layer's keys
         ("MMZZ", 42, {}),
     ],
 )
@@ -95,7 +95,9 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(tmp_path, spelt, seed, 
     steps = 20
     path, twin = contract(tmp_path, spelt, **shape)
     lines = drive("walk", path, seed=seed, steps=steps)
-    circuit = np.array([[int(w) for w in line[3:]] for line in lines if line[0] == "step"])
+    circuit = np.array(
+        [[int(w) for w in line[3:]] for line in lines if line[0] == "step"]
+    )
     assert len(circuit) == steps, f"the driver stated {len(circuit)} steps"
     played, _ = quantized.walk(twin, [seed], steps)
     parted = np.flatnonzero(~(circuit == played[0]).all(axis=-1))
@@ -149,13 +151,13 @@ def test_the_stream_writes_of_the_circuit_are_the_twins(tmp_path, spelt, seed, s
 
 
 def test_the_lead_in_draws_nothing_and_moves_no_generator(tmp_path):
-    """One bar of silence opens the walk and the generator does not move through it. A twin
-    that spent a uniform there would draw a different piece from the same seed, and every
-    step of it would be legal music."""
+    """One bar of silence opens the walk and the generator does not move through it. A
+    twin that spent a uniform there would draw a different piece from the same seed, and
+    every step of it would be legal music."""
     _, twin = contract(tmp_path, "MZF")
-    played, draws = quantized.walk(twin, [1, 7], nn.LEAD + 2)
-    assert (played[:, : nn.LEAD] == 0).all(), "the lead-in is not silent"
-    assert all(not taken for taken in draws[: nn.LEAD]), "the lead-in drew"
+    played, draws = quantized.walk(twin, [1, 7], fixed.LEAD + 2)
+    assert (played[:, : fixed.LEAD] == 0).all(), "the lead-in is not silent"
+    assert all(not taken for taken in draws[: fixed.LEAD]), "the lead-in drew"
     # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], nn.LEAD + 2)
+    alone, _ = quantized.walk(twin, [7], fixed.LEAD + 2)
     assert np.array_equal(alone[0], played[1])

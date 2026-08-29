@@ -12,9 +12,9 @@ IT CARRIES THE FLOAT MODEL'S SKELETON, `model.Trunk`, under the same attribute n
 every level: `twin.layers[k].wq` is the quantization of `float.layers[k].wq` and nothing
 has to be aligned by hand.
 
-The rules that are not this era's come from `nn.py`: the exponent rule, the rounding, the
-int16 rails, the temper, the min-p floor, the shared exp2 table and the integer pick stand
-there, where every twin reads them.
+The rules that are not this era's come from `fixed.py`: the exponent rule, the rounding,
+the int16 rails, the temper, the min-p floor, the shared exp2 table and the integer pick
+stand there, where every twin reads them.
 
 THE CONTRACT FILE is what crosses the seam to the elaboration. `save` writes it and
 `Model.of_int8_checkpoint` reads it; `load` reads it back and a round trip is exact. It
@@ -57,6 +57,7 @@ from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
 import data
+import fixed
 import nn
 import prng
 from nn import TABLES
@@ -79,8 +80,8 @@ ELECTED_MIN_P = 0.05
 
 class QuantizedLayer(nnx.Module):
     """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
-    tensor and under the same names. Each of the six takes its OWN exponent; nothing forces
-    them together."""
+    tensor and under the same names. Each of the six takes its OWN exponent; nothing
+    forces them together."""
 
     def __init__(self, weights):
         for name, weight in zip(step.LAYER_TENSORS, weights):
@@ -89,7 +90,7 @@ class QuantizedLayer(nnx.Module):
     @classmethod
     def of(cls, layer):
         """one float [model.Layer] under the exponent rule"""
-        return cls([nn.Weight.of(tensor) for tensor in layer.tensors()])
+        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in step.LAYER_TENSORS]
@@ -131,13 +132,13 @@ class QuantizedTransformer(step.Trunk):
         elaboration all take their model here, thus the pair under comparison cannot slip.
         The heads and the span come off the model, which is where a player set them."""
         return cls(
-            head=nn.QuantizedHead.of(model.head),
+            head=fixed.QuantizedHead.of(model.head),
             layers=[QuantizedLayer.of(layer) for layer in model.layers],
             heads=model.heads,
             context=context,
             slope_span=model.span,
-            temper=nn.Temper.of(temperature),
-            min_weight=nn.min_weight_of(min_p),
+            temper=fixed.Temper.of(temperature),
+            min_weight=fixed.min_weight_of(min_p),
         )
 
 
@@ -165,7 +166,8 @@ def check_shape(twin):
 
 
 def save(path, twin):
-    """the contract file of `twin`: the module docstring holds the layout and the reasons"""
+    """the contract file of `twin`: the module docstring holds the layout and the
+    reasons"""
     check_shape(twin)
     image = twin.every_tensor()
     tensors = {
@@ -207,10 +209,10 @@ def load(path):
     q_value, q = (int(value) for value in tensors[TEMPER])
 
     def weight_at(at):
-        return nn.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
+        return fixed.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
 
     twin = QuantizedTransformer(
-        head=nn.QuantizedHead(
+        head=fixed.QuantizedHead(
             seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
         ),
         layers=[
@@ -225,7 +227,7 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=nn.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
+        temper=fixed.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -238,8 +240,12 @@ def load(path):
 
 # THE FORMAT THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
 # the hidden vector, the epsilon, log2(e), the lead-in, and the shifts and roots that read
-# them -- stands in `nn.py`, where `Nn_quantized.Constants` has its twin.
-KV_Q = 12  # the query, the keys, the values and the context: the rings store these
+# them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin.
+# the query, the keys, the values and the context: the rings store these rows. Era five
+# states a 12 of its own -- `V_Q`, which names a BLOCK's value rows as well as an
+# attention ring's and carries its gate at 2 * V_Q -- thus the two are one number and
+# not one format; `Model.Constants` keeps them apart on the OCaml side for that reason.
+KV_Q = 12
 
 
 def exp2_q(value):
@@ -247,16 +253,16 @@ def exp2_q(value):
 
     Era four exponentiates a nonpositive score, thus the negation stands here and the
     shared table takes the magnitude."""
-    return nn.exp2_of_magnitude(-np.asarray(value, np.int64))
+    return fixed.exp2_of_magnitude(-np.asarray(value, np.int64))
 
 
 class Engine(NamedTuple):
     """One running inference over a batch of walks. Everything is frozen: a step gives the
-    engine after it, as `Quantized.Engine` does.
+    engine after it, thus a walk is a fold and no state hides in a mutable field.
 
-    THE RINGS ARE THE CONTEXT. `kc` and `vc` hold the coarsened key and value rows of every
-    layer, one slot for each step of the window, and a walk never reads an unwritten slot:
-    `n` counts the filled slots and the wall is the walk itself."""
+    THE RINGS ARE THE CONTEXT. `kc` and `vc` hold the coarsened key and value rows of
+    every layer, one slot for each step of the window, and a walk never reads an unwritten
+    slot: `n` counts the filled slots and the wall is the walk itself."""
 
     twin: QuantizedTransformer
     h: np.ndarray  # [walks, d], Q16 in int32
@@ -271,8 +277,8 @@ class Engine(NamedTuple):
 
 
 def engine(twin, seeds):
-    """the origin of a batch of walks: an empty ring, no residual, and the generator at the
-    SEED AS IT STANDS, which is the board's SEED cell rule.
+    """the origin of a batch of walks: an empty ring, no residual, and the generator at
+    the SEED AS IT STANDS, which is the board's SEED cell rule.
 
     The lead-in is not here. It is the first steps of the walk itself, thus a caller that
     counts steps counts the steps the float sampler counts."""
@@ -285,7 +291,7 @@ def engine(twin, seeds):
         kc=np.zeros(rings, np.int64),
         vc=np.zeros(rings, np.int64),
         position=0,
-        states=nn.engine_states(seeds),
+        states=fixed.engine_states(seeds),
     )
 
 
@@ -293,8 +299,8 @@ def attend(twin, kc, vc, *, layer, cur, filled, query):
     """Attention of one layer over the newest [filled] steps of the rings: the merged
     context of [query], head by head.
 
-    Age a reads slot (cur - a) & (slots - 1), thus the ALiBi distance is the age itself and
-    the causal wall is the walk."""
+    Age a reads slot (cur - a) & (slots - 1), thus the ALiBi distance is the age itself
+    and the causal wall is the walk."""
     d, heads, slots = twin.d, twin.heads, twin.context
     head_d = d // heads
     ages = np.arange(filled)
@@ -302,17 +308,19 @@ def attend(twin, kc, vc, *, layer, cur, filled, query):
     keys = kc[:, layer, rows, :]  # [walks, filled, d]
     values = vc[:, layer, rows, :]
     context = np.zeros((len(query), d), np.int64)
-    shift = nn.score_shift(row_q=KV_Q, head_d=head_d)
+    shift = fixed.score_shift(row_q=KV_Q, head_d=head_d)
     for head in range(heads):
         band = slice(head * head_d, (head + 1) * head_d)
-        slope = nn.slope_exponent(span=twin.slope_span, heads=heads, head=head)
+        slope = fixed.slope_exponent(span=twin.slope_span, heads=heads, head=head)
         raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (nn.Y_Q - slope))
+        scores = (raw >> shift) - (ages << (fixed.Y_Q - slope))
         peak = scores.max(axis=-1, keepdims=True)
-        weights = exp2_q(nn.apply_scale(nn.LOG2E.q_value, nn.LOG2E.q, scores - peak))
+        weights = exp2_q(
+            fixed.apply_scale(fixed.LOG2E.q_value, fixed.LOG2E.q, scores - peak)
+        )
         total = weights.sum(axis=-1, keepdims=True)
         merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = nn.clamp16(nn.truncated(merged, total))
+        context[:, band] = fixed.clamp16(fixed.truncated(merged, total))
     return context
 
 
@@ -325,7 +333,7 @@ def forward(e, classes, phase):
     kc, vc = e.kc.copy(), e.vc.copy()
     h = twin.head.embed(classes, phase)
     for at, layer in enumerate(twin.layers):
-        y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
+        y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
 
         query, key, value = (
             projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
@@ -336,28 +344,26 @@ def forward(e, classes, phase):
         kc[:, at, cur, :] = (key >> 8) << 8
         vc[:, at, cur, :] = (value >> 8) << 8
         context = attend(twin, kc, vc, layer=at, cur=cur, filled=filled, query=query)
-        h = join(h, layer.wo, values=context, at=KV_Q)
-        y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
-        hidden = nn.clamp16(
+        h = fixed.join(h, layer.wo, values=context, at=KV_Q)
+        y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
+        hidden = fixed.clamp16(
             np.maximum(
-                nn.rescale(y @ layer.w1.values, at=nn.Y_Q + layer.w1.e, to=nn.HID_Q), 0
+                fixed.rescale(
+                    y @ layer.w1.values, at=fixed.Y_Q + layer.w1.e, to=fixed.HID_Q
+                ),
+                0,
             )
         )
-        h = join(h, layer.w2, values=hidden, at=nn.HID_Q)
+        h = fixed.join(h, layer.w2, values=hidden, at=fixed.HID_Q)
     return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
 
 
 def projection(y, weight):
-    """one of the three projections of a step: one matvec column, Q12 in int16. The circuit
-    runs the three separately, on one MAC path."""
-    return nn.clamp16(nn.rescale(y @ weight.values, at=nn.Y_Q + weight.e, to=KV_Q))
-
-
-def join(h, weight, *, values, at):
-    """a residual join: [values] times the weight lands on the stream; the exponent of the
-    weight folds into the shift with [at], the format of [values]"""
-    accumulated = values @ weight.values
-    return h + nn.rescale(accumulated, at=at + weight.e, to=nn.H_Q)
+    """one of the three projections of a step: one matvec column, Q12 in int16. The
+    circuit runs the three separately, on one MAC path."""
+    return fixed.clamp16(
+        fixed.rescale(y @ weight.values, at=fixed.Y_Q + weight.e, to=KV_Q)
+    )
 
 
 def tempered_weights(twin, logits):
@@ -367,7 +373,7 @@ def tempered_weights(twin, logits):
     weighs nothing and the pick cannot land on it."""
     peak = logits.max(axis=-1, keepdims=True)
     weights = exp2_q(
-        nn.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
+        fixed.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
     )
     return np.where(weights >= twin.min_weight, weights, 0)
 
@@ -390,7 +396,7 @@ def chain(e):
     for seat in reversed(range(data.SEATS)):
         logits = twin.head.logits(stream, seat)
         states, word = prng.uniform_word(states, everyone)
-        drawn = nn.pick(tempered_weights(twin, logits), word)
+        drawn = fixed.pick(tempered_weights(twin, logits), word)
         if seat:
             stream = twin.head.add_row(stream, seat, drawn)
         draws.append(Draw(seat, logits, word, drawn))
@@ -404,7 +410,7 @@ def next_step(e):
     from the generator. The model opens the music itself after it, thus the walk needs no
     pitch and no table to begin."""
     phase = e.position % data.BAR_STEPS
-    if e.position < nn.LEAD:
+    if e.position < fixed.LEAD:
         classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
         draws = []
     else:
@@ -453,9 +459,9 @@ def drift(model, *, context, steps, seed):
 
     ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
     cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
-    quantized chain -- it reads the classes the engine drew and conditions each seat on the
-    classes the engine chose -- thus what the report measures is the quantization and never
-    a walk that parted for another reason.
+    quantized chain -- it reads the classes the engine drew and conditions each seat on
+    the classes the engine chose -- thus what the report measures is the quantization and
+    never a walk that parted for another reason.
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""

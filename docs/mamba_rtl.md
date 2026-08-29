@@ -23,7 +23,7 @@ The modules of the era:
 | `Mamba` (`lib/mamba/mamba.ml`) | the float reference: the plan, the block, the head, the loss, the sampler |
 | `Mamba.Quantized` (`lib/mamba/quantized.ml`) | the quantization of the checkpoint, and the integer twin: the recurrence, the chain and the sampler |
 | `Mamba.Source` (`lib/mamba/source.ml`) | the same integers as a circuit: the schedule, the datapath and the socket machine |
-| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/nn.py` |
+| from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/fixed.py` |
 
 **The units live in `lib/nn`, and the unification round put them there.**
 The prototype imported era four's units as they stood and copied the two

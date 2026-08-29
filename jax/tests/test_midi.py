@@ -2,8 +2,8 @@
 
 Neither one changes a note. A sheet is a crop and it stops where the corpus was cut; the
 rest and the fade say that an ending is happening, and the tests here pin what they do and
-what they must never do -- a fade that reached zero would write a note-on of velocity zero,
-which is a note-off on the wire, and the note it silenced would ring for ever.
+what they must never do -- a fade that reached zero would write a note-on of velocity
+zero, which is a note-off on the wire, and the note it silenced would ring for ever.
 """
 
 import itertools

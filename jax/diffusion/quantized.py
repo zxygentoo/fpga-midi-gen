@@ -15,8 +15,8 @@ THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal a
 differently ordered is a different machine: the gates of `tests/test_rtl.py` hold the
 circuit to these integers write for write.
 
-THE RULES THAT ARE NOT THIS ERA'S COME FROM `nn.py`: the exponent rule, the rounding, the
-int16 rails, the temper, the shared exp2 table, the counted write and the integer pick
+THE RULES THAT ARE NOT THIS ERA'S COME FROM `fixed.py`: the exponent rule, the rounding,
+the int16 rails, the temper, the shared exp2 table, the counted write and the integer pick
 stand there, where every twin reads them. What stands here is era six's alone -- the
 activation format, the norm fold, the module tree, the contract file and the walk.
 
@@ -25,8 +25,9 @@ The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
 - Weights are int8 under the exponent rule of the eras, `quantize`.
 - Activations are Q`ACTIVATION_Q` in int16, clamped and counted. Q6 IS MEASURED, not
   chosen: the trunk is a residual stack with no norm on the stream, thus activations grow
-  with depth, and the golden candidate peaks at 313 on the openings the walk really visits.
-  Q6 holds 512 with a 1.6 margin. The input planes enter exact -- a cell is 0 or one.
+  with depth, and the golden candidate peaks at 313 on the openings the walk really
+  visits. Q6 holds 512 with a 1.6 margin. The input planes enter exact -- a cell is 0
+  or one.
 - The accumulator is int32 and is exact up to `WIDEST_INPUTS` input channels, thus the sum
   is exact and the order of the taps cannot matter. `check_shape` refuses a wider layer.
 - The norm folds at quantization: `gain = scale * rsqrt(variance + eps)` becomes a
@@ -34,8 +35,8 @@ The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
   `bias = shift - mean * gain` becomes Q`ACTIVATION_Q` in int16. Then ReLU; the head keeps
   no ReLU, thus the logits carry the activation format.
 - The draw is era four's pipeline: the logit differences shift up to the Q12 the exp2 unit
-  reads -- exact, a left shift -- then temper against the peak under `log2e / T`, exp2 over
-  the shared table gives Q15 weights, and the pick takes a 24-bit uniform.
+  reads -- exact, a left shift -- then temper against the peak under `log2e / T`, exp2
+  over the shared table gives Q15 weights, and the pick takes a 24-bit uniform.
 - The masks and the opening are integer rules already and stand in `diffusion/model.py`,
   where both walks read them; the twin consumes the same uniforms in the same places as
   `infer.gibbs`.
@@ -77,7 +78,7 @@ from safetensors.numpy import load_file, save_file
 
 import prng
 from diffusion import model as sheet
-from nn import (
+from fixed import (
     EXP2_IN_Q,
     INT16_HIGH,
     INT16_LOW,
@@ -126,15 +127,16 @@ def gain_scale(value, weight_exponent):
 
 @jax.jit
 def accumulate(x, kernel):
-    """The nine taps of one 3 by 3 convolution over (step, row), zero at both edges, summed
-    into the accumulator.
+    """The nine taps of one 3 by 3 convolution over (step, row), zero at both edges,
+    summed into the accumulator.
 
     THE ACCUMULATOR IS INT32 AND IT WRAPS: no sum reaches 2^31 below `WIDEST_INPUTS` input
     channels and `check_shape` refuses a wider layer, thus a wrap here is the finding it
     would be on the board and not an artefact of the host.
 
-    Tap (dy, dx) reads the source at (step + dy - 1, row + dx - 1). The accumulator is exact
-    below the bound, thus the tap order cannot matter and the circuit may take its own."""
+    Tap (dy, dx) reads the source at (step + dy - 1, row + dx - 1). The accumulator is
+    exact below the bound, thus the tap order cannot matter and the circuit may take its
+    own."""
     _, steps, rows, _ = x.shape
     padded = jnp.pad(x, ((0, 0), (1, 1), (1, 1), (0, 0)))
 
@@ -153,15 +155,15 @@ def accumulate(x, kernel):
 class QuantizedNormedConv(nnx.Module):
     """One layer as the machine holds it -- the twin of `model.NormedConv`.
 
-    Five float tensors become three facts: the kernel, and the two per-channel rows the norm
-    folded into. A gain's shift retires the weight exponent, thus the accumulator reaches the
-    activation format in one multiply; the biases are int16 in that format."""
+    Five float tensors become three facts: the kernel, and the two per-channel rows the
+    norm folded into. A gain's shift retires the weight exponent, thus the accumulator
+    reaches the activation format in one multiply; the biases are int16 in that format."""
 
     def __init__(self, *, kernel, e, gain_q_value, gain_q, bias):
-        # THE KERNEL LIVES ON THE DEVICE and the rest of the layer on the host. A walk runs
-        # [accumulate] hundreds of times over one model, thus a host kernel would cross to
-        # the device at every call; the gains, the bias and the clamp are numpy int64
-        # arithmetic and belong beside the tally.
+        # THE KERNEL LIVES ON THE DEVICE and the rest of the layer on the host. A walk
+        # runs [accumulate] hundreds of times over one model, thus a host kernel would
+        # cross to the device at every call; the gains, the bias and the clamp are numpy
+        # int64 arithmetic and belong beside the tally.
         self.kernel = nnx.Variable(jnp.asarray(kernel, jnp.int32))
         self.e = int(e)
         self.gain_q_value = nnx.Variable(np.asarray(gain_q_value, np.int32))
@@ -180,10 +182,10 @@ class QuantizedNormedConv(nnx.Module):
     def of(cls, layer):
         """one float [model.NormedConv] under the exponent rule, its norm folded.
 
-        At inference batch normalization is the affine `a * gain + bias`, and the fold is that
-        same affine — its rounding is part of what `drift` measures. It runs in float64 over
-        the float32 tensors, IN THE ORDER WRITTEN HERE. A bias outside the activation format
-        clamps, which the drift report would shout about."""
+        At inference batch normalization is the affine `a * gain + bias`, and the fold is
+        that same affine — its rounding is part of what `drift` measures. It runs in
+        float64 over the float32 tensors, IN THE ORDER WRITTEN HERE. A bias outside the
+        activation format clamps, which the drift report would shout about."""
         q, e = quantize(layer.conv.kernel[...])
         scale = np.asarray(layer.norm.scale[...], np.float64)
         shift = np.asarray(layer.norm.shift[...], np.float64)
@@ -203,11 +205,11 @@ class QuantizedNormedConv(nnx.Module):
         )
 
     def __call__(self, x, relu, tally):
-        """the convolution into the int32 accumulator, the folded norm, the optional ReLU, and
-        the counted clamp of every write.
+        """the convolution into the int32 accumulator, the folded norm, the optional ReLU,
+        and the counted clamp of every write.
 
-        The gain multiply rides int64 — an int32 accumulator by an int16 gain wants 47 bits.
-        The shift is arithmetic, toward minus infinity, as the circuit's is."""
+        The gain multiply rides int64 — an int32 accumulator by an int16 gain wants 47
+        bits. The shift is arithmetic, toward minus infinity, as the circuit's is."""
         accumulated = np.asarray(accumulate(jnp.asarray(x), self.kernel[...]))
         gain, shift = self.gain_q_value[...], self.gain_q[...]
         value = ((accumulated.astype(np.int64) * gain) >> shift) + self.bias[...]
@@ -227,11 +229,11 @@ class QuantizedNormedConv(nnx.Module):
 class QuantizedResidualPair(nnx.Module):
     """Two layers and the skip past both -- the twin of `model.ResidualPair`.
 
-    THE RELU STANDS IN A DIFFERENT PLACE HERE, and that is the contract and not a slip. The
-    float pair activates the first layer's output before the second convolution reads it; the
-    twin folds that ReLU into the first layer's own counted write, because the machine writes
-    what it will read back. The arithmetic is the same and the WRITE STREAM is not, and the
-    write stream is what `tests/test_rtl.py` holds the circuit to."""
+    THE RELU STANDS IN A DIFFERENT PLACE HERE, and that is the contract and not a slip.
+    The float pair activates the first layer's output before the second convolution reads
+    it; the twin folds that ReLU into the first layer's own counted write, because the
+    machine writes what it will read back. The arithmetic is the same and the WRITE STREAM
+    is not, and the write stream is what `tests/test_rtl.py` holds the circuit to."""
 
     def __init__(self, first, second):
         self.first = first
@@ -244,16 +246,17 @@ class QuantizedResidualPair(nnx.Module):
         )
 
     def __call__(self, x, tally):
-        """the tensor the opening wrote and the JOINED tensor the close wrote. The residual add
-        rides the same counted clamp, thus a reader of the write stream takes the closing
-        tensor from here and never from the second layer alone."""
+        """the tensor the opening wrote and the JOINED tensor the close wrote. The
+        residual add rides the same counted clamp, thus a reader of the write stream takes
+        the closing tensor from here and never from the second layer alone."""
         first = self.first(x, True, tally)
         second = self.second(first, False, tally)
         return first, tallied_write(tally, np.maximum(x + second, 0))
 
 
 class QuantizedCoconet(sheet.Trunk):
-    """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for layer.
+    """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for
+    layer.
 
     The temper stands beside the layers because the bitstream carries it: one quantization
     serves every seed of a batch, as one bitstream serves every seed of the board."""
@@ -269,7 +272,8 @@ class QuantizedCoconet(sheet.Trunk):
         """the float model in the arithmetic the board holds.
 
         This is the one quantization of the era -- the drift walk, the audition and the
-        elaboration all take their model here, thus the pair under comparison cannot slip."""
+        elaboration all take their model here, thus the pair under comparison cannot slip.
+        """
         return cls(
             stem=QuantizedNormedConv.of(coconet.stem),
             pairs=[QuantizedResidualPair.of(pair) for pair in coconet.pairs],
@@ -280,12 +284,12 @@ class QuantizedCoconet(sheet.Trunk):
     def _writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
         """the destination tensor of EVERY layer as written, in the layer order.
 
-        IT IS A GENERATOR AND THE TRUNK IS NOT WALKED TWICE: `__call__` keeps the last of it
-        and `layer_writes` keeps them all, thus a forward pass holds one destination tensor
-        and never the trunk's 48.
+        IT IS A GENERATOR AND THE TRUNK IS NOT WALKED TWICE: `__call__` keeps the last of
+        it and `layer_writes` keeps them all, thus a forward pass holds one destination
+        tensor and never the trunk's 48.
 
-        `rows` is P; it reaches the stem's decode alone, because every layer after it takes
-        the shape it is handed."""
+        `rows` is P; it reaches the stem's decode alone, because every layer after it
+        takes the shape it is handed."""
         x = self.stem(plane_activations(classes, hidden, rows=rows), True, tally)
         yield x
         for pair in self.pairs:
@@ -302,18 +306,20 @@ class QuantizedCoconet(sheet.Trunk):
         return deque(self._writes(classes, hidden, tally, rows=rows), maxlen=1)[0]
 
     def layer_writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
-        """the destination tensor of every layer AS WRITTEN, in the layer order — the stem's,
-        then for each pair its opening's tensor and its close's JOINED tensor, and the head's
-        logits last.
+        """the destination tensor of every layer AS WRITTEN, in the layer order — the
+        stem's, then for each pair its opening's tensor and its close's JOINED tensor, and
+        the head's logits last.
 
-        IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `__call__` is the last of
-        this list, thus the list is the arithmetic itself and never a second reading of it."""
+        IT IS FOR THE CIRCUIT'S STREAM GATE AND FOR NOTHING ELSE. `__call__` is the last
+        of this list, thus the list is the arithmetic itself and never a second reading of
+        it."""
         return list(self._writes(classes, hidden, tally, rows=rows))
 
 
 def paired(layers):
-    """The trunk's layers two at a time. The contract file is a FLAT list and the module is a
-    tree; this and `model.Trunk.every_layer` are the two directions of that one seam."""
+    """The trunk's layers two at a time. The contract file is a FLAT list and the module
+    is a tree; this and `model.Trunk.every_layer` are the two directions of that one seam.
+    """
     return [
         QuantizedResidualPair(first, second)
         for first, second in zip(layers[::2], layers[1::2])
@@ -321,13 +327,13 @@ def paired(layers):
 
 
 def check_shape(twin):
-    """`Model.check_shape`: it raises when the model breaks a rule its consumers assume — the
-    layers chain input to output, no layer reads more channels than the int32 accumulator is
-    exact for, the stem reads the planes and the head states the voices, and every constant
-    row covers its output channels.
+    """`Model.check_shape`: it raises when the model breaks a rule its consumers assume —
+    the layers chain input to output, no layer reads more channels than the int32
+    accumulator is exact for, the stem reads the planes and the head states the voices,
+    and every constant row covers its output channels.
 
-    A LAYER COUNT THAT IS ODD OR TOO SHORT IS NOT CHECKED HERE, because the tree cannot hold
-    one. `load` is where a FILE of the wrong tensor count is refused."""
+    A LAYER COUNT THAT IS ODD OR TOO SHORT IS NOT CHECKED HERE, because the tree cannot
+    hold one. `load` is where a FILE of the wrong tensor count is refused."""
     layers = twin.every_layer()
     if layers[0].inputs != PLANES:
         raise ValueError(f"the stem reads {layers[0].inputs} planes, not {PLANES}")
@@ -367,7 +373,8 @@ BESIDE_THE_LAYERS = (TEMPER, ACTIVATION)
 
 
 def save(path, twin):
-    """the contract file of `twin`: the module docstring holds the layout and the reasons"""
+    """the contract file of `twin`: the module docstring holds the layout and the
+    reasons"""
     check_shape(twin)
     tensors = {}
     for at, layer in enumerate(twin.every_layer()):
@@ -391,8 +398,8 @@ def save(path, twin):
 def load(path):
     """the model of one contract file; a round trip through `save` is exact.
 
-    The temperature is provenance and not arithmetic -- the temper is already folded -- thus
-    it travels in the metadata alone and only a reader with a Python tool sees it."""
+    The temperature is provenance and not arithmetic -- the temper is already folded --
+    thus it travels in the metadata alone and only a reader with a Python tool sees it."""
     tensors = load_file(str(path))
     with safe_open(str(path), framework="numpy") as opened:
         metadata = opened.metadata() or {}
@@ -434,15 +441,17 @@ def load(path):
 
 
 def plane_activations(classes, hidden, rows=sheet.ROWS):
-    """the stem's input tensor, `[sheets, steps, rows, 2 * VOICES]` in the activation format.
+    """the stem's input tensor, `[sheets, steps, rows, 2 * VOICES]` in the activation
+    format.
 
-    A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its class
-    row of plane `voice`, and a hidden cell writes it in EVERY row of plane `VOICES + voice`.
-    It is `model.planes` in integers, plane for plane.
+    A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its
+    class row of plane `voice`, and a hidden cell writes it in EVERY row of plane `VOICES
+    + voice`. It is `model.planes` in integers, plane for plane.
 
-    `rows` IS P, THE CIRCUIT'S PARAMETER, and a walk never passes it: the seat registers of
-    `model.opening_sheet` reach class 46 and fit no sheet narrower than `ROWS`. What passes a
-    narrow P is the stream gate, whose input is data — see `tests/test_rtl.py`."""
+    `rows` IS P, THE CIRCUIT'S PARAMETER, and a walk never passes it: the seat registers
+    of `model.opening_sheet` reach class 46 and fit no sheet narrower than `ROWS`. What
+    passes a narrow P is the stream gate, whose input is data — see `tests/test_rtl.py`.
+    """
     if int(classes.max()) >= rows:
         raise ValueError(f"a class of {int(classes.max())} in a column of {rows} rows")
     rows = np.arange(rows)[None, None, :, None]
@@ -462,9 +471,10 @@ def plane_activations(classes, hidden, rows=sheet.ROWS):
 def tempered_weights(twin, raw):
     """the Q15 weight of every class of one cell, over the batch.
 
-    The logits carry Q`ACTIVATION_Q` and the exp2 unit reads Q12, thus the difference shifts
-    up by the gap FIRST. A difference read at the wrong Q is silently wrong music: unshifted,
-    every weight stands within a fraction of a nat of the peak and the draw is uniform."""
+    The logits carry Q`ACTIVATION_Q` and the exp2 unit reads Q12, thus the difference
+    shifts up by the gap FIRST. A difference read at the wrong Q is silently wrong music:
+    unshifted, every weight stands within a fraction of a nat of the peak and the draw is
+    uniform."""
     raw = np.asarray(raw, np.int64)
     peak = raw.max(axis=-1, keepdims=True)
     shifted = (raw - peak) << (EXP2_IN_Q - ACTIVATION_Q)
@@ -479,9 +489,9 @@ def tempered_weights(twin, raw):
 class Draw(NamedTuple):
     """One redraw of a pass, over the batch.
 
-    `hidden` holds the walks the mask hid this cell for. THE OTHER WALKS STATE NOTHING HERE:
-    they consumed no uniform, thus `word` and `drawn` carry whatever the batched arithmetic
-    happened to compute for them, and no reader may look."""
+    `hidden` holds the walks the mask hid this cell for. THE OTHER WALKS STATE NOTHING
+    HERE: they consumed no uniform, thus `word` and `drawn` carry whatever the batched
+    arithmetic happened to compute for them, and no reader may look."""
 
     step: int
     voice: int
@@ -494,8 +504,8 @@ class Pass(NamedTuple):
     """What one pass states.
 
     `before` is the sheet the forward pass saw, which the drift report teacher-forces the
-    float model on. `after` is the sheet its redraws left and `states` the generator behind
-    them, thus a caller that wants only the walk reads the last pass."""
+    float model on. `after` is the sheet its redraws left and `states` the generator
+    behind them, thus a caller that wants only the walk reads the last pass."""
 
     before: np.ndarray  # [sheets, steps, VOICES]
     hidden: np.ndarray  # [sheets, steps, VOICES]
@@ -508,14 +518,14 @@ class Pass(NamedTuple):
 def passes(twin, states, given, *, walk, tally):
     """One pass at a time: the masks, one integer forward, the redraws in the cell order.
 
-    `given` is the opening, handed over rather than drawn here so that one walk cannot open
-    on a sheet the other could not. `states` holds one generator for each sheet, thus the
-    walk of seed 7 is the walk of seed 7 in any company, here and on the board.
+    `given` is the opening, handed over rather than drawn here so that one walk cannot
+    open on a sheet the other could not. `states` holds one generator for each sheet, thus
+    the walk of seed 7 is the walk of seed 7 in any company, here and on the board.
 
-    A CELL THE MASK LEFT STANDING TAKES NO UNIFORM: a walk that spends one on a standing cell
-    states a different piece and no gate below says so. Over a batch that rule is
+    A CELL THE MASK LEFT STANDING TAKES NO UNIFORM: a walk that spends one on a standing
+    cell states a different piece and no gate below says so. Over a batch that rule is
     `prng.uniform_word`'s `active`."""
-    sheets, steps, voices = given.shape
+    sheets, steps, _ = given.shape
     idle = np.zeros(sheets, np.int64)
     classes = given
     for at in range(walk):
@@ -523,18 +533,17 @@ def passes(twin, states, given, *, walk, tally):
         states, hidden = sheet.hidden_cells(states, steps, threshold)
         said = twin(classes, hidden, tally)
         before, classes, draws = classes, classes.copy(), []
-        for step in range(steps):
-            for voice in range(voices):
-                active = hidden[:, step, voice]
-                # A CELL NO SHEET HID TAKES NO UNIFORM: an inactive [uniform_word] would
-                # leave every generator where it stood anyway. The record stands all the
-                # same, because the cell order is what a reader of [draws] walks.
-                word = drawn = idle
-                if active.any():
-                    states, word = prng.uniform_word(states, active)
-                    drawn = pick(tempered_weights(twin, said[:, step, :, voice]), word)
-                    classes[active, step, voice] = drawn[active]
-                draws.append(Draw(step, voice, active, word, drawn))
+        for step, voice in sheet.cell_order(steps):
+            active = hidden[:, step, voice]
+            # A CELL NO SHEET HID TAKES NO UNIFORM: an inactive [uniform_word] would
+            # leave every generator where it stood anyway. The record stands all the
+            # same, because the cell order is what a reader of [draws] walks.
+            word = drawn = idle
+            if active.any():
+                states, word = prng.uniform_word(states, active)
+                drawn = pick(tempered_weights(twin, said[:, step, :, voice]), word)
+                classes[active, step, voice] = drawn[active]
+            draws.append(Draw(step, voice, active, word, drawn))
         yield Pass(before, hidden, said, draws, classes, states)
 
 
@@ -570,9 +579,9 @@ class Drift(NamedTuple):
 def drift(coconet, states, given, *, walk, temperature=1.0):
     """the quantized walk, scored against the float model cell for cell.
 
-    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S sheet
-    and the ENGINE'S mask, thus what stands between them is the arithmetic alone. The
-    same-draw share reads the float draw ON THE VERY UNIFORM THE ENGINE TOOK, thus a
+    The engine walks; at every pass the float model is teacher-forced on the ENGINE'S
+    sheet and the ENGINE'S mask, thus what stands between them is the arithmetic alone.
+    The same-draw share reads the float draw ON THE VERY UNIFORM THE ENGINE TOOK, thus a
     difference there is never the generator's.
 
     The quantization happens here, from the float model handed in, thus the pair under

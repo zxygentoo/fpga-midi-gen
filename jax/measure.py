@@ -30,13 +30,13 @@ import data
 # The intervals a chorale treats as a dissonance, in semitones and modulo the octave: the
 # two seconds, the tritone and the two sevenths. The perfect fourth is left out -- it is a
 # dissonance against the bass and a consonance between the upper voices, and a measurement
-# that cannot tell them apart should not name it. This set puts the corpus at 10.3 percent,
-# which is the number the proto round recorded.
+# that cannot tell them apart should not name it. This set puts the corpus at 10.3
+# percent, which is the number the proto round recorded.
 DISSONANT = (1, 2, 6, 10, 11)
 # The triad qualities the battery counts: major and minor, which puts the corpus at 63.9
-# percent of the steps that carry three voices. Diminished is left out on the proto round's
-# method; adding it moves the corpus row to 67.9, thus it is a labelling choice and not a
-# finding either way.
+# percent of the steps that carry three voices. Diminished is left out on the proto
+# round's method; adding it moves the corpus row to 67.9, thus it is a labelling choice
+# and not a finding either way.
 TRIADS = ((0, 4, 7), (0, 3, 7))
 # THE TAIL OF THE HARMONY. A frame holding three dissonant pairs or more is rare in the
 # corpus -- 3.2 percent of its frames -- where TWO is 20.6 percent and merely a seventh
@@ -50,8 +50,8 @@ VOICE_NAMES = ("bass", "tenor", "alto", "soprano")
 # THE REGISTER OF EACH SEAT: the lowest and the highest pitch it sings anywhere in this
 # corpus. Measured 2026-08-25 over every step of every piece, and the three splits agree
 # EXACTLY -- thus this is a fact of the genre and not of a draw. The roll holds 36 to 81,
-# which is the union of the four, thus no seat can leave the vocabulary and every violation
-# this finds is a voice standing in another voice's register.
+# which is the union of the four, thus no seat can leave the vocabulary and every
+# violation this finds is a voice standing in another voice's register.
 RANGES = ((36, 66), (46, 69), (52, 74), (60, 81))
 # The pairs of voices, in the order of the seats between them: the three neighbours, then
 # the two that skip a voice, then the outer pair. That order is nearly the order of their
@@ -67,15 +67,15 @@ def triad_table():
     """A row for each of the 4096 sets of pitch classes: does this set fit inside some
     triad?
 
-    A step holds at most four voices and therefore at most four pitch classes, thus its set
-    is one 12-bit word and the whole question is a table lookup. The table is built one time
-    and it makes the battery a vector operation instead of a loop over steps."""
+    A step holds at most four voices and therefore at most four pitch classes, thus its
+    set is one 12-bit word and the whole question is a table lookup. The table is built
+    one time and it makes the battery a vector operation instead of a loop over steps."""
     fits = np.zeros(1 << 12, dtype=bool)
     for quality in TRIADS:
         for root in range(12):
             chord = sum(1 << ((step + root) % 12) for step in quality)
-            # every subset of a triad fits inside it, and a set of one or two pitch classes
-            # is exactly the case the denominator of [structure] excludes
+            # every subset of a triad fits inside it, and a set of one or two pitch
+            # classes is exactly the case the denominator of [structure] excludes
             fits[[at for at in range(1 << 12) if at & ~chord == 0]] = True
     return fits
 
@@ -103,11 +103,11 @@ def voice_pairs(spans, intervals, pairs_sound):
     Measured 2026-08-24 over the three board rungs, the excess dissonance of a pair is a
     function of its span and of nothing else. At L 16 every pair inside 16 semitones reads
     the corpus, and the bass against the soprano, which spans 19.6, reads 16 points over
-    it; L 24 takes that pair from 24.6 percent to 16.6. Depth is the reach and width is the
-    resolution.
+    it; L 24 takes that pair from 24.6 percent to 16.6. Depth is the reach and width is
+    the resolution.
 
-    Read it against the corpus row, as everything here is read. A pair can be too consonant
-    as well as too dissonant, and the narrow rungs are both."""
+    Read it against the corpus row, as everything here is read. A pair can be too
+    consonant as well as too dissonant, and the narrow rungs are both."""
     rows = []
     for at, (low, high) in enumerate(PAIRS):
         sounds = pairs_sound[..., at]
@@ -129,32 +129,34 @@ def parallel_motion(classes, pitches, sounding):
 
     THE FAULT THAT LIVES BETWEEN FRAMES, and the only instrument here that reads across
     time at all. Two voices a fifth or an octave apart, both moving, landing on the same
-    interval. It is the most audible error in four-part writing, because an octave collapses
-    two voices into one and the texture thins where nothing else changed.
+    interval. It is the most audible error in four-part writing, because an octave
+    collapses two voices into one and the texture thins where nothing else changed.
 
-    Measured 2026-08-25, it is what separates this era's models from the corpus where every
-    vertical instrument says they have arrived. Bach writes 0.26 fifths and 0.10 octaves for
-    each thousand; the board rung writes 2.0 and 1.9, and the paper's own size 0.8 and 1.3.
-    More Gibbs passes take it down two or three times and then stop -- both sizes saturate,
-    one by N 256 and one by N 512 -- and sixty-two times the parameters halves it and stops.
-    NEITHER REACHES THE CORPUS.
+    Measured 2026-08-25, it is what separates this era's models from the corpus where
+    every vertical instrument says they have arrived. Bach writes 0.26 fifths and 0.10
+    octaves for each thousand; the board rung writes 2.0 and 1.9, and the paper's own size
+    0.8 and 1.3. More Gibbs passes take it down two or three times and then stop -- both
+    sizes saturate, one by N 256 and one by N 512 -- and sixty-two times the parameters
+    halves it and stops. NEITHER REACHES THE CORPUS.
 
     The reason is structural, and it is the finding of the round. The loss scores the
     MARGINAL of each cell under its context, and the walk draws those marginals
     INDEPENDENTLY; a joint configuration of two voices across two steps is therefore
     evaluated by neither. A term that stands in no objective cannot be sampled away.
 
-    TWO CORRECTIONS OF 2026-08-25, both found by reading the corpus row and not the models.
+    TWO CORRECTIONS OF 2026-08-25, both found by reading the corpus row and not the
+    models.
 
-    THE MOTION MUST BE SIMILAR. A parallel is two voices moving THE SAME WAY from a perfect
-    interval to the same perfect interval. The first version asked only that the interval
-    class stand before and after, thus contrary motion onto a fifth -- which is how a fifth
-    is correctly approached -- counted as a fault. It read 53 percent of the corpus's own
-    fifths that way, 10 events of 19. The octaves were untouched, 4 of 4 already similar.
+    THE MOTION MUST BE SIMILAR. A parallel is two voices moving THE SAME WAY from a
+    perfect interval to the same perfect interval. The first version asked only that the
+    interval class stand before and after, thus contrary motion onto a fifth -- which is
+    how a fifth is correctly approached -- counted as a fault. It read 53 percent of the
+    corpus's own fifths that way, 10 events of 19. The octaves were untouched, 4 of 4
+    already similar.
 
     THE PAIR MUST KEEP ITS ORDER. The gap was an absolute value, thus a pair that crossed
-    could hold its interval class while its interval turned upside down. 3.7 percent of the
-    corpus's moving pairs swap order across a step.
+    could hold its interval class while its interval turned upside down. 3.7 percent of
+    the corpus's moving pairs swap order across a step.
 
     THE DIVISOR IS THE PAIRS THAT MOVE, and it was the pairs that merely SOUND until
     2026-08-25. A parallel needs both voices to move, thus a model that holds its notes
@@ -176,9 +178,9 @@ def parallel_motion(classes, pitches, sounding):
         both = moved[..., low] & moved[..., high] & held
         gap_before = pitches[:, :-1, high] - pitches[:, :-1, low]
         gap_after = pitches[:, 1:, high] - pitches[:, 1:, low]
-        # SIMILAR MOTION is what makes a parallel a parallel. Contrary motion that lands on
-        # a fifth is how a fifth is correctly approached, and counting it read 53 percent of
-        # the corpus's own fifths as faults.
+        # SIMILAR MOTION is what makes a parallel a parallel. Contrary motion that lands
+        # on a fifth is how a fifth is correctly approached, and counting it read 53
+        # percent of the corpus's own fifths as faults.
         together = np.sign(pitches[:, 1:, low] - pitches[:, :-1, low]) == np.sign(
             pitches[:, 1:, high] - pitches[:, :-1, high]
         )
@@ -215,10 +217,10 @@ def tessitura(pitches, sounding):
     reads 97 to 99 percent everywhere: a voice can stand in good order and still sing in
     the wrong part of its range.
 
-    The mean says a voice has DRIFTED and the spread says it RANGES too widely; the two are
-    different faults and a single number would confuse them. [outside] is the tail -- the
-    share of sounding cells beyond their own seat's [RANGES] -- and the corpus reads zero
-    on it by construction, as the spare row does."""
+    The mean says a voice has DRIFTED and the spread says it RANGES too widely; the two
+    are different faults and a single number would confuse them. [outside] is the tail --
+    the share of sounding cells beyond their own seat's [RANGES] -- and the corpus reads
+    zero on it by construction, as the spare row does."""
     seats = []
     outside = alive = 0
     for seat, (low, high) in enumerate(RANGES):
@@ -245,17 +247,17 @@ def structure(classes):
     here what it means on the wire.
 
     VOICES is the share of steps carrying 0, 1, 2, 3 and 4 sounding voices. The corpus
-    sings all four at 99.8 percent of its steps, thus this row alone catches the thin sheet
-    that was the open defect of the proto round.
+    sings all four at 99.8 percent of its steps, thus this row alone catches the thin
+    sheet that was the open defect of the proto round.
 
-    TRIADS is the share of steps that fit inside a major or minor triad, over the steps that
-    carry THREE VOICES OR MORE. DISSONANT is the share of sounding pairs at a dissonant
-    interval. ORDER is the share of steps whose sounding voices stand in register order,
-    the bass lowest.
+    TRIADS is the share of steps that fit inside a major or minor triad, over the steps
+    that carry THREE VOICES OR MORE. DISSONANT is the share of sounding pairs at a
+    dissonant interval. ORDER is the share of steps whose sounding voices stand in
+    register order, the bass lowest.
 
     SPARE is the share of cells drawn on the spare row of the vocabulary, which the corpus
-    never sings. It is a smoke number: anything above zero says the model puts mass where no
-    music is."""
+    never sings. It is a smoke number: anything above zero says the model puts mass where
+    no music is."""
     sounding = classes != data.SILENCE
     voices = sounding.sum(axis=-1)
     words = pitch_class_words(classes)

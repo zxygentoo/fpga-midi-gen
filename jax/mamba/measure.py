@@ -35,8 +35,7 @@ import data
 import measure
 from mamba import model
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-CORPUS = str(JAX_ROOT / "_data" / "frames.safetensors")
+CORPUS = str(data.FRAMES)
 CONTEXT = 256  # the training window, thus the window the referee's eval rows cut at
 # seat 0 is the bass and seat 3 the soprano, as the chained head reads them
 VOICES = measure.VOICE_NAMES
@@ -131,7 +130,8 @@ def over_seeds(rows):
 
     THE ERROR IS NOT DECORATION. A single-seed reading did not survive a second seed once
     in this era: a texture gap of 3.7 steps at one seed read 0.3 at the next, and a
-    conclusion was withdrawn for it. Two walks are the floor and sixteen is comfortable."""
+    conclusion was withdrawn for it. Two walks are the floor and sixteen is comfortable.
+    """
     return {
         name: (
             st.mean([row[name] for row in rows]),

@@ -13,24 +13,24 @@ THE SCHEDULE IS INSIDE THE OPTIMIZER now and no loop can overwrite its peak, thu
 above has no home left; the curve is held here all the same, because the rate the loop
 applies is still the thing that decides whether a run trains.
 
-Era five runs the same loop over the same rule. It is not run twice: `test_mamba.py` holds
-that era's model and this holds the shape of a training run, which is one shape.
+Era four and era five run ONE loop now -- `frames.train` -- thus this file holds the shape
+of a training run and not of a trainer: each era's own CLI, its own draw, and the loop
+they share.
 """
 
 import re
-from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from click.testing import CliRunner
 
+import data
 import nn
 from mamba import train as mamba_train
 from transformer import train as transformer_train
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
+CORPUS = data.FRAMES
 
 
 SHORT_RUN = [
@@ -70,8 +70,8 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
     it. A trainer that cannot learn still prints a correct step-1 loss -- the loss at step
     1 is measured before the first update -- so only a run of several steps can tell.
 
-    Sixty steps at d 8 costs seconds, and it is the only thing that reads a trainer's whole
-    path: the flags, the draw, the optimizer, the loop and the log."""
+    Sixty steps at d 8 costs seconds, and it is the only thing that reads a trainer's
+    whole path: the flags, the draw, the optimizer, the loop and the log."""
     losses, output = losses_of(command, flags)
     assert len(losses) >= 3, output
     assert losses[-1] < losses[0] - 0.2, f"era {era}: the loss did not fall: {losses}"
@@ -85,7 +85,8 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
 # them went with them: they had done their work, which was to prove that a checkpoint
 # trained under the old rule is a checkpoint of the new one. What is left is the CURVE,
 # against the closed form written here -- because `nn.learning_rates` is now the only
-# statement of it in the code and a test that read it back from itself would state nothing.
+# statement of it in the code and a test that read it back from itself would state
+# nothing.
 
 
 def curve_at(step, peak, warmup, total):
@@ -113,7 +114,9 @@ def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
     rule that dropped it would apply a rate of 0 to the first update and every later rate
     one step behind -- which trains a slightly different model and says nothing."""
     peak = 3e-3
-    theirs = np.array([curve_at(step, peak, warmup, total) for step in range(1, total + 1)])
+    theirs = np.array(
+        [curve_at(step, peak, warmup, total) for step in range(1, total + 1)]
+    )
     # a constant schedule states one scalar whatever it is handed, thus it broadcasts
     ours = np.broadcast_to(
         np.asarray(nn.learning_rates(peak, warmup, total)(jnp.arange(total))),

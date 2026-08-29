@@ -20,8 +20,17 @@ music:
 There are no masks. No frame is illegal, thus nothing guards a draw.
 """
 
+from pathlib import Path
+
 import numpy as np
 from safetensors.numpy import load_file
+
+# where the two exports stand. `corpus_tool` writes them and git ignores the directory,
+# thus a path is a fact of this repository and not of a run; every default, every skip
+# guard of a test and every measure reads them from here.
+JAX_ROOT = Path(__file__).resolve().parent
+FRAMES = JAX_ROOT / "_data" / "frames.safetensors"
+PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
 
 BAR_STEPS = 16
 SEATS = 4
@@ -59,7 +68,8 @@ def classes_of_codes(codes):
         # the WINDOW and not the corpus range: a walk that drew the spare class comes
         # back through here as pitch 82, and that is music, not a fault
         raise ValueError(
-            f"pitches outside the vocabulary's {PITCH_LOW} to {PITCH_LOW + CLASSES - 2}: {bad}"
+            f"pitches outside the vocabulary's {PITCH_LOW} to "
+            f"{PITCH_LOW + CLASSES - 2}: {bad}"
         )
     return np.where(sounds, pitches - PITCH_LOW + 1, SILENCE).astype(np.int32)
 
@@ -88,9 +98,9 @@ def pitches_of_classes(classes):
 
 def decode(frames):
     """The decode of docs/transformer.md: the sequencer holds the set of pitches that
-    sound, and a frame states the set that must sound. The releases are the first set minus
-    the second, the strikes are the second minus the first, and every release goes before
-    every strike.
+    sound, and a frame states the set that must sound. The releases are the first set
+    minus the second, the strikes are the second minus the first, and every release goes
+    before every strike.
 
     The rule is over sets and not over seats. Two voices that exchange pitches would send
     the Note On of a pitch before its Note Off, and the synth would stop the new note,
@@ -140,16 +150,12 @@ def load_corpus(path):
     return {name: Split(tensors, name) for name in SPLITS}
 
 
-def train_pool(corpus, train_on):
-    """the (split, stream) pool of the -train-on flag"""
-    names = {
-        "train": ("train",),
-        "train+test": ("train", "test"),
-        "all": ("train", "test", "valid"),
-    }[train_on]
-    return [
-        (corpus[name], row) for name in names for row in range(len(corpus[name].index))
-    ]
+def train_pool(corpus):
+    """the (split, stream) pool a training run draws from: every stream of the train
+    split, and no other split -- the valid split is the referee's and the test split is
+    held out."""
+    train = corpus["train"]
+    return [(train, row) for row in range(len(train.index))]
 
 
 def train_row(rng, pool, context):
@@ -195,16 +201,16 @@ class Pieces:
     step count of each piece and [shifts] the two ends of its legal transposition range,
     both inclusive.
 
-    The padding is a fact of the file and never a fact of the music. It exists only because
-    a rectangular tensor is one shape and the chorales are not; [Crops] reads inside the
-    true length and no model ever sees it. That is the whole difference from the proto
-    round of feat/diffusion-proto, where the tail WAS the training signal and owned 53.2
-    percent of the columns of a sheet.
+    The padding is a fact of the file and never a fact of the music. It exists only
+    because a rectangular tensor is one shape and the chorales are not; [Crops] reads
+    inside the true length and no model ever sees it. That is the whole difference from
+    the proto round of feat/diffusion-proto, where the tail WAS the training signal and
+    owned 53.2 percent of the columns of a sheet.
 
-    [shifts] is unread this round -- the paper of docs/diffusion.md states no transposition
-    augmentation and the pitch axis of the trunk carries the equivariance instead. It stays
-    because it is the third tensor of the export, and a reader that dropped it would make
-    the file and its reader disagree."""
+    [shifts] is unread this round -- the paper of docs/diffusion.md states no
+    transposition augmentation and the pitch axis of the trunk carries the equivariance
+    instead. It stays because it is the third tensor of the export, and a reader that
+    dropped it would make the file and its reader disagree."""
 
     def __init__(self, tensors, name):
         self.classes = classes_of_cells(tensors[f"{name}/cells"])

@@ -17,8 +17,8 @@ Between G0 and G1 a change to a model has nowhere to hide.
 THE WELDS ARE GONE. Gate A and gate C held a JAX trainer to the OCaml float model beside
 it, and each frozen era had a pair; both pairs went with the twins that replaced them. G0
 holds a forward to a measured number, `test_rtl_<era>.py` holds a draw to the circuit
-itself, and `test_drift.py` holds a twin to the float model it quantizes -- thus nothing is
-left for a weld to say, and no gate of this file reads an OCaml float model any more.
+itself, and `test_drift.py` holds a twin to the float model it quantizes -- thus nothing
+is left for a weld to say, and no gate of this file reads an OCaml float model any more.
 
 Every gate needs a checkpoint that git ignores and binaries that dune builds. They SKIP
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
@@ -30,7 +30,6 @@ disagree. From the repository root:
 
 import hashlib
 import subprocess
-from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
@@ -39,10 +38,9 @@ import pytest
 import data
 from transformer import model
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-ROOT = JAX_ROOT.parent
+ROOT = data.JAX_ROOT.parent
 CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
-CORPUS = JAX_ROOT / "_data" / "frames.safetensors"
+CORPUS = data.FRAMES
 BUILT = ROOT / "_build" / "default" / "bin"
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
@@ -175,9 +173,9 @@ MAMBA_CHECKPOINT = (
 
 # The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28, the
 # day before the all-era cut deleted that tool. Only two numbers stand here: every width,
-# the plan and the span come out of the file, and the context is a choice of the REFEREE --
-# a window of the recurrence opens on a zero state and the model has no context length at
-# all.
+# the plan and the span come out of the file, and the context is a choice of the REFEREE
+# -- a window of the recurrence opens on a zero state and the model has no context length
+# at all.
 MAMBA_SHAPE = {"windows": 75, "context": 256}
 
 # The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
@@ -233,11 +231,12 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
 # ==================================================================== #
 
 # TWO GATES STAND HERE AND NEITHER OF THEM IS OCAML'S ANY MORE. The two temporary gates
-# that welded the two integer twins -- the walk and the drift report -- went with the OCaml
-# twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is what stays.
+# that welded the two integer twins -- the walk and the drift report -- went with the
+# OCaml twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is what
+# stays.
 
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
-PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
+PIECES = data.PIECES
 GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.exe"
 
 # The masked loss of the golden checkpoint over the sheets below, MEASURED 2026-08-28
@@ -262,19 +261,18 @@ def diffusion_gate_masks(sheets, crop):
     states = prng.states(np.arange(1, sheets + 1))
     hidden = np.zeros((sheets, crop, sheet_model.VOICES), dtype=bool)
     everyone = np.ones(sheets, dtype=bool)
-    for step in range(crop):
-        for voice in range(sheet_model.VOICES):
-            states, u = prng.uniform(states, everyone)
-            hidden[:, step, voice] = u * 2.0**24 < float(1 << 23)
+    for step, voice in sheet_model.cell_order(crop):
+        states, u = prng.uniform(states, everyone)
+        hidden[:, step, voice] = u * 2.0**24 < float(1 << 23)
     return hidden
 
 
 def test_g0_the_float_model_reads_its_measured_loss():
-    """THE FLOAT MODEL DOES NOT MOVE. The sheets are deterministic -- the first 128 steps of
-    every valid piece that holds them, in corpus order -- and the masks come from the shared
-    generator, thus no draw of either framework enters and the number reads the FORWARD
-    alone: every kernel, every fold of the norm, every plane, and the reader that loaded
-    them.
+    """THE FLOAT MODEL DOES NOT MOVE. The sheets are deterministic -- the first 128 steps
+    of every valid piece that holds them, in corpus order -- and the masks come from the
+    shared generator, thus no draw of either framework enters and the number reads the
+    FORWARD alone: every kernel, every fold of the norm, every plane, and the reader that
+    loaded them.
 
     It was measured on the functional model this era's `model.py` used to be, and it is
     what said that the Flax module tree moved no number. The tolerance is Gate A's: a mean
@@ -307,13 +305,14 @@ def test_g0_the_float_model_reads_its_measured_loss():
 
 
 def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
-    """THE CIRCUIT DOES NOT MOVE. The elaboration reads the contract file the JAX quantizer
-    writes, and the Verilog it states must be the golden's byte for byte: one rounding, one
-    exponent or one fold out of place moves a weight, and a moved weight moves the netlist.
+    """THE CIRCUIT DOES NOT MOVE. The elaboration reads the contract file the JAX
+    quantizer writes, and the Verilog it states must be the golden's byte for byte: one
+    rounding, one exponent or one fold out of place moves a weight, and a moved weight
+    moves the netlist.
 
     It is the gate of the quantizer and it costs one second. A different md5 says the
-    quantization parted; diff the norm ROM first -- the gains and the biases -- and then the
-    weight ROM."""
+    quantization parted; diff the norm ROM first -- the gains and the biases -- and then
+    the weight ROM."""
     need(DIFFUSION_CHECKPOINT, GEN_VERILOG)
     said = netlist_md5(
         [

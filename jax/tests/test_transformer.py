@@ -9,12 +9,13 @@ spread.
 The rest of the era is held elsewhere, and deliberately. `test_parity.py` holds the
 forward to its measured loss and the QUANTIZER through the netlist the elaboration states;
 `test_draw.py` holds the arithmetic of the draw; `test_quantized.py` holds the integer
-rules the quantizer stands on; `test_train.py` holds the loop. What is left is the one rule
-no referee outside this repository can see, because a chain drawn upward is still a model
-that trains and still a model that plays -- and the CONTRACT FILE, whose round trip is the
-seam itself.
+rules the quantizer stands on; `test_train.py` holds the loop. What is left is the one
+rule no referee outside this repository can see, because a chain drawn upward is still a
+model that trains and still a model that plays -- and the CONTRACT FILE, whose round trip
+is the seam itself.
 
-The head itself lives in jax/nn.py, where era five reads it too; it is read here through
+The head itself lives in jax/nn.py, where era five reads it too (its twin is
+`fixed.QuantizedHead`); it is read here through
 this era's own module, as the era's trainer and sampler read it.
 """
 
@@ -23,7 +24,7 @@ import pytest
 from safetensors.numpy import load_file, save_file
 
 import data
-import nn
+import fixed
 from transformer import model, quantized
 
 
@@ -34,7 +35,9 @@ def drawn(seed=5, d=8, layers=2, heads=2):
 
 def tiny(seed=5, d=8, layers=2, heads=2, context=16):
     """the twin of a drawn model of the era's shape"""
-    return quantized.QuantizedTransformer.of(drawn(seed, d, layers, heads), context=context)
+    return quantized.QuantizedTransformer.of(
+        drawn(seed, d, layers, heads), context=context
+    )
 
 
 def test_the_chain_conditions_downward():
@@ -67,9 +70,9 @@ def test_the_chain_conditions_downward():
 
 
 def test_the_twin_carries_the_float_models_skeleton():
-    """THE TWO TREES ARE ONE TREE, and that is what makes the twin auditable: a reader puts
-    `held.layers[k].wq` beside `twin.layers[k].wq` and reads one tensor against its own
-    quantization, with nothing to align by hand."""
+    """THE TWO TREES ARE ONE TREE, and that is what makes the twin auditable: a reader
+    puts `held.layers[k].wq` beside `twin.layers[k].wq` and reads one tensor against its
+    own quantization, with nothing to align by hand."""
     held = drawn()
     twin = quantized.QuantizedTransformer.of(held, context=16)
     assert len(twin.layers) == len(held.layers)
@@ -83,15 +86,15 @@ def test_the_twin_carries_the_float_models_skeleton():
 def test_the_two_tables_take_the_larger_peaks_exponent():
     """The seat rows and the phase row ADD, row for row -- the embedding sums them and the
     Embed op of the circuit walks them as one tensor -- thus ONE exponent covers both. The
-    module holds one field, so no caller can break the rule; what is still a choice is that
-    the exponent comes from the LARGER peak, and a table quantized at another tensor's
-    exponent clamps."""
+    module holds one field, so no caller can break the rule; what is still a choice is
+    that the exponent comes from the LARGER peak, and a table quantized at another
+    tensor's exponent clamps."""
     held = drawn()
     # the phase table is lifted far past the seats, thus the shared exponent is its own
     held.head.take([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
-    twin = nn.QuantizedHead.of(held.head)
+    twin = fixed.QuantizedHead.of(held.head)
     peak = float(np.abs(np.asarray(held.head.phase[...])).max())
-    assert twin.e == nn.max_exponent(peak)
+    assert twin.e == fixed.max_exponent(peak)
     assert np.abs(twin.seats).max() < 127, "the smaller table does not reach the rail"
 
 
@@ -146,8 +149,9 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
 
 
 def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
-    """`QuantizedHead` holds ONE exponent, thus this side cannot state two; a FILE can, and
-    a reader that took the first and dropped the second would sum two formats in silence."""
+    """`QuantizedHead` holds ONE exponent, thus this side cannot state two; a FILE can,
+    and a reader that took the first and dropped the second would sum two formats in
+    silence."""
     path = tmp_path / "tiny.int8"
     quantized.save(path, tiny())
     tensors = load_file(str(path))

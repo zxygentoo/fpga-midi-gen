@@ -939,3 +939,50 @@ the frozen eras' adoption of the shared clamp and placement, the alpha
 ROM as `Signal.rom`, the frames as interfaces, one safetensors reader,
 the Exp2 fork's backport, and the walk under `lax.scan`. The branch
 merged into develop with this entry.
+
+## 2026-08-29 — the all-era cut (feat/all-era-cut)
+
+**Eras four and five took era six's shape.** The OCaml float models and
+the OCaml int8 twins of the two frozen eras are gone with their tools
+and their drift gates — 7,431 lines out over 54 files — and each era
+keeps ONE `Model`, the module the circuit reads. The twins are
+`jax/transformer/quantized.py` and `jax/mamba/quantized.py`, the
+quantizers write the contract files, and the RTL gates run under
+`uv run pytest` through `bin/gate_<era>.exe`, as era six's do. `Top`
+takes its source as a parameter, thus one pytest gate elaborates each
+era's netlist and the three md5 pins are checked by machine and not by
+hand.
+
+**Nothing moved that must not move.** The three netlist md5s stand at
+`4e367cef` (six), `a648db22` (five) and `4ab6e292` (four) — every pin
+re-measured at the head of the round and unmoved at its end. Both
+frozen G0 losses are bit-identical through the Flax rewrite: 1.628177
+for era four and 1.640810 for era five, the same six decimals the
+deleted OCaml reference read. The two drift tables were RE-MEASURED on
+a JAX draw rather than copied, because the parameter draw order is not
+the OCaml one; at the old gates' own shapes the cosine holds between
+0.9962 and 0.9981 against the old 0.9960 to 0.9987, and era five's long
+walk reads 0.927 top-1 at 1024 steps with every clamp share zero.
+
+**Then the consolidation.** The step-frame eras are ONE RECIPE:
+`jax/frames.py` holds the loop, the evaluation, the checkpoint policy
+and the audition tail that `transformer/train.py` and `mamba/train.py`
+had carried as two copies differing in twelve lines; each trainer is
+now its CLI and its draw. `jax/fixed.py` takes the integer rules of the
+twins out of `nn.py` — the rails, the exponent rule, the sampling
+policy, the tables and the integer draw, 420 lines — so that the Python
+side is laid out as `lib/nn` is, where `quantized.ml` is its own
+module. Era six's cell order is one `model.cell_order(steps)` with
+seven readers where six loops had restated it. The two corpus export
+paths are `data.FRAMES` and `data.PIECES`, stated once where nine sites
+had spelt them. `midi.playback_options` is the six audition flags of
+all three eras.
+
+**The levers nothing named went**: `--train-on` and `--average-top`
+from both frozen trainers with the top-K sort and the `-avg` write;
+`Block.selective_window_chunked` with its twelve-case gate, whose 1.17×
+at T256 never cleared the 1.5× bar and whose reason expired with the
+freeze; and eight dead OCaml exports — `Prng.bernoullis` deleted
+outright, the rest un-exported. E501 is selected in `pyproject.toml`
+and the 343 lines over 90 columns are rewrapped: the Python side lints
+where the OCaml side formats, and `ruff format` stays unadopted.

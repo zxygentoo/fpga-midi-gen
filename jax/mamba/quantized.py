@@ -9,9 +9,9 @@ operation, not approximately.
 THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal and
 differently ordered is a different machine.
 
-The rules that are not this era's come from `nn.py`: the exponent rule, the rounding, the
-int16 rails, the temper, the min-p floor, the Q12 port clamp, the shared exp2 table and
-the integer pick stand there, where every twin reads them.
+The rules that are not this era's come from `fixed.py`: the exponent rule, the rounding,
+the int16 rails, the temper, the min-p floor, the Q12 port clamp, the shared exp2 table
+and the integer pick stand there, where every twin reads them.
 
 THREE THINGS OF A BLOCK ARE NOT TENSORS OF THE IMAGE. `a_log`, `dt_bias` and `d_skip` hold
 one value for each head, and an int8 tensor cannot carry them: the bias enters a softplus,
@@ -54,8 +54,8 @@ the layers, which is what indexes a memory of the circuit as well.
 
 W_in IS STORED TRANSPOSED, and the reason is the address. The circuit reaches a weight by
 CONCATENATING the two walk counters, which costs nothing and is the row-major address only
-when the dimension under the outer counter is a power of two. `d` is one; the projection --
-2 d_in + 2 N + H, 292 at the baseline -- is not. Storing the tensor the other way round
+when the dimension under the outer counter is a power of two. `d` is one; the projection
+-- 2 d_in + 2 N + H, 292 at the baseline -- is not. Storing the tensor the other way round
 puts `d` under the outer counter and the concatenation is right again.
 
 THE PLAN IS IN THE SHAPES and no tensor states it: the first tensor of a group names its
@@ -80,6 +80,7 @@ from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
 import data
+import fixed
 import nn
 import prng
 from mamba import model as recurrence
@@ -142,10 +143,10 @@ ELECTED_RING = recurrence.ATTN_CONTEXT
 def decay_scale(a_log):
     """`Constants.decay_scale`: a * log2(e) as the constant the Decay op carries.
 
-    It takes the exponential through `math.exp` in float64 -- the C library's own, which is
-    what the OCaml quantizer read -- because one ulp here moves a ROM byte."""
+    It takes the exponential through `math.exp` in float64 -- the C library's own, which
+    is what the OCaml quantizer read -- because one ulp here moves a ROM byte."""
     a = math.exp(float(a_log))
-    q_value = int(nn.round_half_up(math.ldexp(a / math.log(2.0), DECAY_Q_BITS)))
+    q_value = int(fixed.round_half_up(math.ldexp(a / math.log(2.0), DECAY_Q_BITS)))
     return min(max(q_value, 0), DECAY_HIGH)
 
 
@@ -173,12 +174,12 @@ class QuantizedBlock(nnx.Module):
         return cls(
             # THE IMAGE STORES W_IN TRANSPOSED, because the circuit walks the projection
             # as the outer axis; every other tensor stands as the checkpoint holds it.
-            w_in=nn.Weight.of(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
-            conv=nn.Weight.of(layer.conv[...]),
-            w_out=nn.Weight.of(layer.w_out[...]),
+            w_in=fixed.Weight.of(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
+            conv=fixed.Weight.of(layer.conv[...]),
+            w_out=fixed.Weight.of(layer.w_out[...]),
             decay=[decay_scale(a) for a in np.asarray(layer.a_log[...])],
-            dt_bias=nn.fixed_q12(layer.dt_bias[...], DT_BIAS_BOUND),
-            d_skip=nn.fixed_q12(layer.d_skip[...], D_SKIP_BOUND),
+            dt_bias=fixed.fixed_q12(layer.dt_bias[...], DT_BIAS_BOUND),
+            d_skip=fixed.fixed_q12(layer.d_skip[...], D_SKIP_BOUND),
         )
 
     @property
@@ -228,7 +229,7 @@ class QuantizedAttention(nnx.Module):
             raise ValueError(
                 "a square query is era four's attention and no layer of this model"
             )
-        return cls([nn.Weight.of(tensor) for tensor in layer.tensors()])
+        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in IMAGE_TENSORS[recurrence.ZATTN]]
@@ -245,7 +246,7 @@ class QuantizedFeedForward(nnx.Module):
 
     @classmethod
     def of(cls, layer):
-        return cls([nn.Weight.of(tensor) for tensor in layer.tensors()])
+        return cls([fixed.Weight.of(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in IMAGE_TENSORS[recurrence.MLP]]
@@ -262,8 +263,8 @@ TWIN_OF = {
 class QuantizedMamba(recurrence.Trunk):
     """The model as the bitstream carries it.
 
-    [every_tensor] walks it in THE ORDER OF THE ROM -- the two tables, then what each layer
-    puts in the image -- which is `Trunk`'s own walk over each layer's [tensors].
+    [every_tensor] walks it in THE ORDER OF THE ROM -- the two tables, then what each
+    layer puts in the image -- which is `Trunk`'s own walk over each layer's [tensors].
 
     The ring is an inference choice and not a fact of the training run, thus it travels in
     the file beside the span the file already carried."""
@@ -305,12 +306,12 @@ class QuantizedMamba(recurrence.Trunk):
         """the float model under the exponent rule of the eras, and the per-head numbers
         folded into the constants the ops carry"""
         return cls(
-            head=nn.QuantizedHead.of(model.head),
+            head=fixed.QuantizedHead.of(model.head),
             layers=[TWIN_OF[layer.kind].of(layer) for layer in model.layers],
             span=model.span,
             ring=ring,
-            temper=nn.Temper.of(temperature),
-            min_weight=nn.min_weight_of(min_p),
+            temper=fixed.Temper.of(temperature),
+            min_weight=fixed.min_weight_of(min_p),
         )
 
     def ordinals(self):
@@ -327,10 +328,10 @@ class QuantizedMamba(recurrence.Trunk):
 def check_shape(twin):
     """the rules the consumers assume, refused loudly here rather than inside a walk.
 
-    The arithmetic of the circuit is shifts and address concatenations, thus every field of
-    an address is a power of two: the two widths, the heads, the head widths, the state,
-    the taps and the ring. The ring is the one of them that is not a fact of the training
-    run, and a player that asks for a depth the mask cannot wrap refuses here.
+    The arithmetic of the circuit is shifts and address concatenations, thus every field
+    of an address is a power of two: the two widths, the heads, the head widths, the
+    state, the taps and the ring. The ring is the one of them that is not a fact of the
+    training run, and a player that asks for a depth the mask cannot wrap refuses here.
 
     A PLAN OF ATTENTION ALONE cannot be held by the tree either, because the widths come
     out of a block; it is refused first so that the message says so."""
@@ -358,7 +359,8 @@ def check_shape(twin):
 
 
 def save(path, twin):
-    """the contract file of `twin`: the module docstring holds the layout and the reasons"""
+    """the contract file of `twin`: the module docstring holds the layout and the
+    reasons"""
     check_shape(twin)
     image = twin.every_tensor()
     tensors = {
@@ -409,7 +411,7 @@ def load(path):
     d = tensors["0"].size // (data.SEATS * data.CLASSES)
 
     def weight_at(at):
-        return nn.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
+        return fixed.Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
 
     plan, groups, at = [], [], len(nn.TABLES)
     while at < count:
@@ -440,13 +442,13 @@ def load(path):
         )
 
     twin = QuantizedMamba(
-        head=nn.QuantizedHead(
+        head=fixed.QuantizedHead(
             seats=tensors["0"], phase=tensors["1"], e=int(exponents[0])
         ),
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
-        temper=nn.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
+        temper=fixed.Temper(q_value, q, float(metadata.get("temperature", np.nan))),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -479,9 +481,13 @@ def kind_of_image(shape, d, path):
 # ---------------------------------------------------------------------
 
 # THE FORMATS THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
-# the hidden vector, the epsilon, log2(e), the lead-in, and the shifts, roots and norms that
-# read them -- stands in `nn.py`, where `Nn_quantized.Constants` has its twin.
-V_Q = 12  # the value rows of a block and of the attention rings
+# the hidden vector, the epsilon, log2(e), the lead-in, and the shifts, roots and norms
+# that read them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin. the
+# value rows of a block and of the attention rings. Era four states a 12 of its own --
+# `KV_Q`, which names an attention ring's four tensors and nothing else -- thus the two
+# are one number and not one format; `Model.Constants` keeps them apart on the OCaml side
+# for that reason.
+V_Q = 12
 S_Q = 12  # the state of the recurrence
 ALPHA_Q = 15  # the decay of one step
 BETA_Q = 15  # the input coefficient
@@ -496,13 +502,7 @@ def matvec(y, weight, *, transposed, at, to):
     [transposed] states that the image holds the tensor with its OUTER axis first, as it
     does for W_in, and the circuit reads that same order."""
     matrix = weight.values.T if transposed else weight.values
-    return nn.clamp16(nn.rescale(y @ matrix, at=at + weight.e, to=to))
-
-
-def join(h, weight, *, values, at):
-    """a residual join: [values] times the weight lands on the stream; the exponent of the
-    weight folds into the shift with [at], the format of [values]"""
-    return h + nn.rescale(values @ weight.values, at=at + weight.e, to=nn.H_Q)
+    return fixed.clamp16(fixed.rescale(y @ matrix, at=at + weight.e, to=to))
 
 
 class Clamps(NamedTuple):
@@ -523,7 +523,7 @@ class Clamps(NamedTuple):
 
 class Engine(NamedTuple):
     """One running inference over a batch of walks. Everything is frozen: a step gives the
-    engine after it, as `Quantized.Engine` does.
+    engine after it, thus a walk is a fold and no state hides in a mutable field.
 
     THE STATE AND THE TAPS ARE THE MEMORY OF THE WALK and the only things that survive a
     step; the key and value rings are era four's, and they die with their window."""
@@ -554,7 +554,7 @@ def engine(twin, seeds):
         vc=np.zeros((walks, max(1, rings), twin.ring, shape.d), np.int64),
         h=np.zeros((walks, shape.d), np.int64),
         position=0,
-        states=nn.engine_states(seeds),
+        states=fixed.engine_states(seeds),
         clamps=Clamps(),
     )
 
@@ -569,8 +569,8 @@ def block(e, layer, ordinal, h, state, taps):
     d, d_in, heads, n = shape.d, shape.d_in, shape.heads, shape.state
     width, channels, head = shape.taps, shape.channels, shape.head
     position = e.position
-    y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
-    zxbcdt = matvec(y, layer.w_in, transposed=True, at=nn.Y_Q, to=V_Q)
+    y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
+    zxbcdt = matvec(y, layer.w_in, transposed=True, at=fixed.Y_Q, to=V_Q)
     # the convolution: the step's input enters the ring, then a row of [width] terms for
     # each channel, then the SiLU chain over the sums
     tap_base = ordinal * channels * width
@@ -585,18 +585,18 @@ def block(e, layer, ordinal, h, state, taps):
             continue
         back = tap_base + (np.arange(channels) * width) + ((position - k) & (width - 1))
         accumulated = accumulated + (taps[:, back] * kernel[:, k])
-    xbc = nn.silu(nn.clamp16(nn.rescale(accumulated, at=V_Q + kernel_e, to=V_Q)))
+    xbc = fixed.silu(fixed.clamp16(fixed.rescale(accumulated, at=V_Q + kernel_e, to=V_Q)))
     x = xbc[:, :d_in]
     b = xbc[:, d_in : d_in + n]
     c = xbc[:, d_in + n :]
     # the decay of each head: softplus of the biased draw, then one exp2
     raw = zxbcdt[:, d_in + channels :]
-    dt = nn.softplus(raw + layer.dt_bias)
+    dt = fixed.softplus(raw + layer.dt_bias)
     tally = e.clamps._replace(
-        dt=e.clamps.dt + int(((dt == nn.INT16_HIGH) | (dt == nn.INT16_LOW)).sum()),
+        dt=e.clamps.dt + int(((dt == fixed.INT16_HIGH) | (dt == fixed.INT16_LOW)).sum()),
         dt_seen=e.clamps.dt_seen + dt.size,
     )
-    alpha = nn.exp2_of_magnitude(nn.apply_scale(layer.decay, DECAY_Q_BITS, dt))
+    alpha = fixed.exp2_of_magnitude(fixed.apply_scale(layer.decay, DECAY_Q_BITS, dt))
     # the state update and the readout, head by head. [beta] is the inject operand of the
     # head: [state] products of [dt] against B, written before the walk.
     base = ordinal * d_in * n
@@ -604,10 +604,10 @@ def block(e, layer, ordinal, h, state, taps):
     for hd in range(heads):
         wide = (dt[:, hd, None] * b) >> (V_Q + V_Q - BETA_Q)
         tally = tally._replace(
-            beta=tally.beta + int(nn.clamps16(wide).sum()),
+            beta=tally.beta + int(fixed.clamps16(wide).sum()),
             beta_seen=tally.beta_seen + wide.size,
         )
-        beta = nn.clamp16(wide)
+        beta = fixed.clamp16(wide)
         lanes = np.arange(hd * head, (hd + 1) * head)
         rows = base + (lanes[:, None] * n) + np.arange(n)
         updated = (
@@ -615,13 +615,13 @@ def block(e, layer, ordinal, h, state, taps):
             + (x[:, lanes, None] * beta[:, None, :])
         ) >> ALPHA_Q
         tally = tally._replace(
-            state=tally.state + int(nn.clamps16(updated).sum()),
+            state=tally.state + int(fixed.clamps16(updated).sum()),
             state_seen=tally.state_seen + updated.size,
         )
-        state[:, rows] = nn.clamp16(updated)
+        state[:, rows] = fixed.clamp16(updated)
         # the readout reads the state the update just wrote, and the skip folds into the
         # row as its last term
-        read[:, lanes] = nn.clamp16(
+        read[:, lanes] = fixed.clamp16(
             (
                 (state[:, rows] * c[:, None, :]).sum(axis=-1)
                 + (x[:, lanes] * layer.d_skip[hd])
@@ -629,13 +629,13 @@ def block(e, layer, ordinal, h, state, taps):
             >> S_Q
         )
     # THE GATE PRODUCT STAYS WIDE. Both operands are Q12 values well under one -- the
-    # readout of a small state and the SiLU of a gate -- thus a truncation back to Q12 here
-    # would keep about five bits of a product that holds seventeen, and it would throw them
-    # away immediately before the one operation that would have used them: the norm divides
-    # by the size of the vector and does not care what scale it arrives in.
-    gated = read * nn.silu(zxbcdt[:, :d_in])
-    g = nn.rms_norm_q(gated, at=GATE_Q, width=d_in)
-    return join(h, layer.w_out, values=g, at=V_Q), tally
+    # readout of a small state and the SiLU of a gate -- thus a truncation back to Q12
+    # here would keep about five bits of a product that holds seventeen, and it would
+    # throw them away immediately before the one operation that would have used them: the
+    # norm divides by the size of the vector and does not care what scale it arrives in.
+    gated = read * fixed.silu(zxbcdt[:, :d_in])
+    g = fixed.rms_norm_q(gated, at=GATE_Q, width=d_in)
+    return fixed.join(h, layer.w_out, values=g, at=V_Q), tally
 
 
 def attend(twin, kc, vc, *, ring, cur, filled, query):
@@ -648,23 +648,23 @@ def attend(twin, kc, vc, *, ring, cur, filled, query):
     rows = (cur - ages) & (slots - 1)
     keys, values = kc[:, ring, rows, :], vc[:, ring, rows, :]
     context = np.zeros((len(query), d), np.int64)
-    shift = nn.score_shift(row_q=V_Q, head_d=head_d)
+    shift = fixed.score_shift(row_q=V_Q, head_d=head_d)
     for head in range(heads):
         band = slice(head * head_d, (head + 1) * head_d)
-        slope = nn.slope_exponent(span=twin.span, heads=heads, head=head)
+        slope = fixed.slope_exponent(span=twin.span, heads=heads, head=head)
         raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (nn.Y_Q - slope))
+        scores = (raw >> shift) - (ages << (fixed.Y_Q - slope))
         peak = scores.max(axis=-1, keepdims=True)
         # THE NEGATION STANDS OUTSIDE THE SCALE, as it stands outside the temper of the
         # draw: the circuit scales the score's distance BELOW the peak and negates the
         # shifted product, thus a scale that did not divide exactly would round the other
         # way if this side negated first.
-        weight = nn.exp2_of_magnitude(
-            -nn.apply_scale(nn.LOG2E.q_value, nn.LOG2E.q, scores - peak)
+        weight = fixed.exp2_of_magnitude(
+            -fixed.apply_scale(fixed.LOG2E.q_value, fixed.LOG2E.q, scores - peak)
         )
         total = weight.sum(axis=-1, keepdims=True)
         merged = (weight[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = nn.clamp16(nn.truncated(merged, total))
+        context[:, band] = fixed.clamp16(fixed.truncated(merged, total))
     return context
 
 
@@ -676,11 +676,13 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
     d, slots = twin.d, twin.ring
     cur = e.position & (slots - 1)
     filled = min(e.position + 1, slots)
-    y = nn.rms_norm_q(h, at=nn.H_Q, width=d)
+    y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
     joined = np.concatenate([y, embedding], axis=-1)
 
     def project(name, source):
-        return matvec(source, getattr(layer, name), transposed=False, at=nn.Y_Q, to=V_Q)
+        return matvec(
+            source, getattr(layer, name), transposed=False, at=fixed.Y_Q, to=V_Q
+        )
 
     # THE RING KEEPS THE TOP BYTE of a Q12 row: the circuit stores eight bits and restores
     # eight zero low bits at the read. The query does not pass here.
@@ -689,26 +691,26 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
     context = attend(
         twin, kc, vc, ring=ordinal, cur=cur, filled=filled, query=project("wq", joined)
     )
-    return join(h, layer.wo, values=context, at=V_Q)
+    return fixed.join(h, layer.wo, values=context, at=V_Q)
 
 
 def feed_forward(twin, layer, h):
     """Era four's feed-forward as a layer of its own: one matvec and a ReLU, Q10.
 
-    The ReLU stands after the clamp of the matvec and the circuit takes it before, which is
-    the same integer: a value the clamp raised was negative and the ReLU makes it zero
+    The ReLU stands after the clamp of the matvec and the circuit takes it before, which
+    is the same integer: a value the clamp raised was negative and the ReLU makes it zero
     either way, and a value it lowered was above the ceiling and stays there."""
-    y = nn.rms_norm_q(h, at=nn.H_Q, width=twin.d)
+    y = fixed.rms_norm_q(h, at=fixed.H_Q, width=twin.d)
     hidden = np.maximum(
-        matvec(y, layer.w1, transposed=False, at=nn.Y_Q, to=nn.HID_Q), 0
+        matvec(y, layer.w1, transposed=False, at=fixed.Y_Q, to=fixed.HID_Q), 0
     )
-    return join(h, layer.w2, values=hidden, at=nn.HID_Q)
+    return fixed.join(h, layer.w2, values=hidden, at=fixed.HID_Q)
 
 
 def layer_streams(e, classes, phase):
-    """the residual stream after the embed and then after each layer of the step the engine
-    would take next -- one entry for each time the circuit writes the whole stream, in the
-    order it writes them.
+    """the residual stream after the embed and then after each layer of the step the
+    engine would take next -- one entry for each time the circuit writes the whole stream,
+    in the order it writes them.
 
     A frame gate that fails says only THAT the circuit and the twin parted; this says
     where, and it is the instrument that found era five's four address faults."""
@@ -716,7 +718,7 @@ def layer_streams(e, classes, phase):
     state, taps = e.state.copy(), e.taps.copy()
     kc, vc = e.kc.copy(), e.vc.copy()
     h = twin.head.embed(classes, phase)
-    embedding = nn.rms_norm_q(h, at=nn.H_Q, width=twin.d)
+    embedding = fixed.rms_norm_q(h, at=fixed.H_Q, width=twin.d)
     written = [h]
     tally = e.clamps
     for layer, ordinal in zip(twin.layers, twin.ordinals()):
@@ -747,8 +749,8 @@ def forward(e, classes, phase):
 def tempered_weights(twin, logits):
     """the Q15 weight of every class of one seat, and the min-p floor over it"""
     peak = logits.max(axis=-1, keepdims=True)
-    weights = nn.exp2_of_magnitude(
-        -nn.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
+    weights = fixed.exp2_of_magnitude(
+        -fixed.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak)
     )
     return np.where(weights >= twin.min_weight, weights, 0)
 
@@ -771,7 +773,7 @@ def chain(e):
     for seat in reversed(range(data.SEATS)):
         logits = twin.head.logits(stream, seat)
         states, word = prng.uniform_word(states, everyone)
-        drawn = nn.pick(tempered_weights(twin, logits), word)
+        drawn = fixed.pick(tempered_weights(twin, logits), word)
         if seat:
             stream = twin.head.add_row(stream, seat, drawn)
         draws.append(Draw(seat, logits, word, drawn))
@@ -784,7 +786,7 @@ def next_step(e):
     THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
     from the generator."""
     phase = e.position % data.BAR_STEPS
-    if e.position < nn.LEAD:
+    if e.position < fixed.LEAD:
         classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
         draws = []
     else:
@@ -814,7 +816,7 @@ def streams(twin, seeds, steps):
     written = []
     for _ in range(steps):
         phase = e.position % data.BAR_STEPS
-        if e.position < nn.LEAD:
+        if e.position < fixed.LEAD:
             classes = np.full((len(e.h), data.SEATS), data.SILENCE, np.int64)
         else:
             e, draws = chain(e)
@@ -857,8 +859,8 @@ class Counted(NamedTuple):
 
 
 def count_draws(counted, floated, chain_draws):
-    """one step's chain against the float logits of the same step, seat by seat, on the very
-    uniform the engine took"""
+    """one step's chain against the float logits of the same step, seat by seat, on the
+    very uniform the engine took"""
     for taken in chain_draws:
         row = floated[taken.seat]
         mine = taken.logits[0]
@@ -879,9 +881,9 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
 
     ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
     cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
-    quantized chain -- it reads the classes the engine drew and conditions each seat on the
-    classes the engine chose -- thus what the report measures is the quantization and never
-    a walk that parted for another reason.
+    quantized chain -- it reads the classes the engine drew and conditions each seat on
+    the classes the engine chose -- thus what the report measures is the quantization and
+    never a walk that parted for another reason.
 
     BOTH MODELS TAKE ONE STEP FOR ONE STEP. Era four had to re-run a whole window at every
     step, which made a long comparison quadratic; here each carries its own memory, thus

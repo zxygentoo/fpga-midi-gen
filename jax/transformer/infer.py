@@ -23,6 +23,7 @@ import numpy as np
 from flax import nnx
 
 import data
+import frames
 import midi
 import nn
 import prng
@@ -34,16 +35,16 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. It is
     measured and settled -- over 12 seeds the model opened the music itself inside one bar
-    of the end of the lead-in, always on a multiple of four steps -- thus the boot needs no
-    pitch, no range and no table. The lead-in counts inside [steps] and stands at the head
-    of the music, because it is silence the walk really plays.
+    of the end of the lead-in, always on a multiple of four steps -- thus the boot needs
+    no pitch, no range and no table. The lead-in counts inside [steps] and stands at the
+    head of the music, because it is silence the walk really plays.
 
     [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
     -- and the temperature and the floor bake into it as the bitstream carries them. The
     two walks open on different generators: the float walk folds its seed and the twin
     takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
-    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION, where
-    the twin stands still while the float walk runs from the folded state."""
+    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION,
+    where the twin stands still while the float walk runs from the folded state."""
     if twin:
         engine = quantized.QuantizedTransformer.of(
             held, context=context, temperature=temperature, min_p=min_p
@@ -88,7 +89,9 @@ def main():
 
 @main.command(help=draw.__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
+@click.option(
+    "--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH"
+)
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 @click.option("--context", default=256, help="must match the training run")
 @click.option("--heads", default=4, help="must match the training run")
@@ -110,12 +113,7 @@ def main():
     is_flag=True,
     help="draw the integer twin of the circuit: the piece the board plays at this seed",
 )
-@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
-@click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
-@click.option("--device", default=midi.DEVICE)
-@click.option("--step-ms", default=200)
-@click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
-@click.option("--velocity", default=100)
+@midi.playback_options
 def sample(
     ckpt,
     seeds,
@@ -144,25 +142,16 @@ def sample(
     )
     music = [data.decode(walk) for walk in walks]
 
-    if to_synth or to_file:
-        if len(seeds) > 1:
-            raise click.UsageError("--play and --save take one seed")
-        if to_file:
-            midi.save(music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity)
-            click.echo(f"wrote {to_file}")
-        if to_synth:
-            midi.play(
-                music[0],
-                device=device,
-                step_ms=step_ms,
-                channel=channel,
-                velocity=velocity,
-            )
-        return
-    for seed, walk in zip(seeds, music):
-        if len(seeds) > 1:
-            click.echo(f"# seed {seed}")
-        click.echo("\n".join(midi.step_line(step, events) for step, events in enumerate(walk)))
+    frames.audition(
+        music,
+        seeds,
+        to_synth=to_synth,
+        to_file=to_file,
+        device=device,
+        step_ms=step_ms,
+        channel=channel,
+        velocity=velocity,
+    )
 
 
 @main.command()

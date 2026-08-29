@@ -14,8 +14,8 @@ after a measurement:
 - [Block.window] is the same recurrence over a whole window from a zero state, written as
   the quadratic form of Mamba-2 -- one decay matrix for each head instead of a walk. The
   trainer runs it. Measured on the baseline shape: 203 ms for each step under a scan of
-  the step form, against era four's 61, which would put the training round of the prototype
-  past thirteen hours. The window form answers in a small fraction of that.
+  the step form, against era four's 61, which would put the training round of the
+  prototype past thirteen hours. The window form answers in a small fraction of that.
 
   Two forms of one recurrence is a second thing to keep true, and the price is paid in the
   gate: jax/tests/test_mamba.py holds them to each other, step for step, and a break there
@@ -43,10 +43,10 @@ is the condition the model trains on.
 A LAYER IS ONE OF THREE KINDS, and the plan of the model is the sequence of them. Six
 blocks is the trunk of docs/mamba.md. A plan with one attention layer in it is the hybrid
 probe of 2026-08-20: era four's attention SUBLAYER -- 4 heads, ALiBi at the elected span,
-the causal wall, no feed-forward under it -- swapped in where a block stood. The swap takes
-16,384 parameters where the block took 27,532, thus the probe cannot win by capacity, and
-the compute hypothesis stays open. The attention is era four's arithmetic over `nn`'s own
-bias and is not written again.
+the causal wall, no feed-forward under it -- swapped in where a block stood. The swap
+takes 16,384 parameters where the block took 27,532, thus the probe cannot win by
+capacity, and the compute hypothesis stays open. The attention is era four's arithmetic
+over `nn`'s own bias and is not written again.
 
 The attention layer is the one part of this model with a context. A block carries a state
 of fixed size and knows nothing of how long the walk has run; the attention layer carries
@@ -72,9 +72,10 @@ from nn import SLOPE_SPAN, TABLES
 
 # The three kinds of layer. A trunk of blocks alone is the model of docs/mamba.md; a plan
 # with an attention layer in it is the hybrid probe, and the attention is ERA FOUR'S -- 4
-# heads, ALiBi at the elected span, the causal wall, and nothing else. It is a SUBLAYER and
-# not era four's whole layer: no feed-forward follows it, thus the swap takes 16,384
-# parameters where the block it replaces took 27,532 and a win cannot be a win of capacity.
+# heads, ALiBi at the elected span, the causal wall, and nothing else. It is a SUBLAYER
+# and not era four's whole layer: no feed-forward follows it, thus the swap takes 16,384
+# parameters where the block it replaces took 27,532 and a win cannot be a win of
+# capacity.
 MAMBA, ATTN, ZATTN, MLP = "mamba", "attn", "zattn", "mlp"
 LAYER_TENSORS = {
     MAMBA: ("w_in", "conv", "dt_bias", "a_log", "d_skip", "w_out"),
@@ -198,10 +199,10 @@ class Block(nnx.Module):
         """One step of the depthwise causal convolution: the sum, and the taps of the step
         after it.
 
-        Tap k reads the input k steps back and tap 0 is the step itself, thus a window that
-        has not run K steps yet reads zeros for the taps it does not have. The origin needs
-        no clearing walk under this rule, which is why the tap ring of the circuit holds
-        it."""
+        Tap k reads the input k steps back and tap 0 is the step itself, thus a window
+        that has not run K steps yet reads zeros for the taps it does not have. The origin
+        needs no clearing walk under this rule, which is why the tap ring of the circuit
+        holds it."""
         history = jnp.concatenate([u[:, None, :], taps], axis=1)
         return jnp.einsum("bkc,ck->bc", history, self.conv[...]), history[:, :-1, :]
 
@@ -223,9 +224,9 @@ class Block(nnx.Module):
     def selective_state(self, shape, state, x, b, c, dt, a):
         """The state update and the readout of one step.
 
-        The decay is one scalar for each head -- the Mamba-2 form -- and that is what makes
-        the block affordable here: six exponentials a step for each layer where Mamba-1
-        would want two thousand.
+        The decay is one scalar for each head -- the Mamba-2 form -- and that is what
+        makes the block affordable here: six exponentials a step for each layer where
+        Mamba-1 would want two thousand.
 
             S[p, n] <- alpha * S[p, n] + x[p] * (dt * B[n])
             y[p]     = sum_n S[p, n] * C[n] + D * x[p]
@@ -258,9 +259,9 @@ class Block(nnx.Module):
 
         The exponent is a difference of two cumulative sums and it is 0 or less over the
         half the mask keeps, thus the exponential cannot overflow. The mask stands on both
-        sides of it: once so that no weight survives above the diagonal, and once inside so
-        that the gradient of the exponential never reads the values that were going to be
-        thrown away."""
+        sides of it: once so that no weight survives above the diagonal, and once inside
+        so that the gradient of the exponential never reads the values that were going to
+        be thrown away."""
         batch, length = dt.shape[0], dt.shape[1]
         x = x.reshape(batch, length, shape.heads, shape.head)
         cum = jnp.cumsum(dt * a, axis=1)
@@ -287,9 +288,9 @@ class Block(nnx.Module):
         return (state, taps), gated @ self.w_out[...]
 
     def window(self, shape, y, e, span):
-        """The same branch over a whole window from a zero state. It is [step] with the two
-        walks replaced by their window forms; every other line is the same arithmetic on
-        one more axis."""
+        """The same branch over a whole window from a zero state. It is [step] with the
+        two walks replaced by their window forms; every other line is the same arithmetic
+        on one more axis."""
         del e, span
         z, u, dt_raw = self.split_projection(shape, y @ self.w_in[...])
         x, b, c = self.split_channels(shape, jax.nn.silu(self.convolve_window(u)))
@@ -309,8 +310,8 @@ class Attention(nnx.Module):
     """Era four's attention sublayer, and the Zamba widening of it.
 
     [kind] is a property of the tensors and not a flag: the Zamba query and key read the
-    stream BESIDE the original embedding, thus their wq is [2d, d] and nothing else can be.
-    One class serves both, because the widening is the whole of the difference."""
+    stream BESIDE the original embedding, thus their wq is [2d, d] and nothing else can
+    be. One class serves both, because the widening is the whole of the difference."""
 
     def __init__(self, *, d, wide, rngs):
         source = (2 * d, d) if wide else (d, d)
@@ -326,8 +327,9 @@ class Attention(nnx.Module):
     def initial_carry(self, shape, batch, context):
         """an empty ring of keys and values, and a count of the steps really taken.
 
-        The unwritten slots are masked by that count, thus the first step of a walk attends
-        to itself alone -- which is the first position of a training window exactly."""
+        The unwritten slots are masked by that count, thus the first step of a walk
+        attends to itself alone -- which is the first position of a training window
+        exactly."""
         return (
             jnp.zeros((batch, context, shape.d), jnp.float32),
             jnp.zeros((batch, context, shape.d), jnp.float32),
@@ -494,8 +496,8 @@ class Trunk(nnx.Module):
         """Every tensor of the model in THE ONE ORDER -- the two tables, then the group of
         each layer.
 
-        That order is the checkpoint's, the contract file's and the ROM's at once, and this
-        is the one place either tree states it."""
+        That order is the checkpoint's, the contract file's and the ROM's at once, and
+        this is the one place either tree states it."""
         return self.head.tensors() + [
             tensor for layer in self.layers for tensor in layer.tensors()
         ]
@@ -570,8 +572,8 @@ class Mamba(Trunk):
         the last layer and before any readout.
 
         The window opens on a zero state. There is no context parameter and no wall: the
-        recurrence cannot see forward, thus causality is the shape of the machine and not a
-        mask over it.
+        recurrence cannot see forward, thus causality is the shape of the machine and not
+        a mask over it.
 
         dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual
         branch."""
@@ -596,7 +598,8 @@ class Mamba(Trunk):
 
         The caller reduces. The loss does not carry across the encoding and neither does a
         per-prediction mean: report nats for each step, which is the sum over the seats.
-        Era four speaks this same unit on these same windows, thus the two eras compare."""
+        Era four speaks this same unit on these same windows, thus the two eras compare.
+        """
         labels = classes[:, 1:]
         h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
         return self.head.nll(h, labels)
@@ -675,8 +678,8 @@ class Mamba(Trunk):
 
         [a_log] is the log of a uniform decay rate in [1, 16] and [dt_bias] the inverse
         softplus of a uniform step in [0.001, 0.1], which is the initialization the Mamba
-        papers state. [d_skip] opens at one, thus a layer starts as the skip and learns its
-        state from there.
+        papers state. [d_skip] opens at one, thus a layer starts as the skip and learns
+        its state from there.
 
         [half_lives] replaces the uniform draw of dt with the ladder of
         [half_life_ladder], and it is the one lever this initialization holds.
@@ -733,7 +736,8 @@ class Mamba(Trunk):
                     [nn.normal_at(next(keys), s) for s in ((d, 4 * d), (4 * d, d))]
                 )
             else:
-                # the Zamba query and key read the stream beside the embedding, thus [2d,d]
+                # the Zamba query and key read the stream beside the embedding, thus
+                # [2d,d]
                 wide = (2 * d, d) if kind == ZATTN else (d, d)
                 layer.take(
                     [
@@ -753,9 +757,9 @@ def half_life_ladder(heads, span):
     decay rate the head already drew. One head sits at each rung, log-spaced.
 
     It exists because a measurement asked for it: over the elected prototype the trained
-    half-lives collapse -- no head above layer 2 holds a median of more than 7 steps -- and
-    a state that never learns a phrase-scale memory may simply have opened too far from
-    one."""
+    half-lives collapse -- no head above layer 2 holds a median of more than 7 steps --
+    and a state that never learns a phrase-scale memory may simply have opened too far
+    from one."""
     low, high = span
     rungs = low * (high / low) ** (
         jnp.arange(heads, dtype=jnp.float32) / max(heads - 1, 1)

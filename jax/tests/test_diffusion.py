@@ -5,8 +5,9 @@ play -- it would play the wrong piece, or read a number that means nothing:
 
 - the roll. A map wrong by one semitone or one seat round trips nothing, thus every class
   and the corpus itself are pinned.
-- the mask. The masked count decides the whole objective; a mask that never hid everything,
-  or that hid the pitch rows of a cell unevenly, would train a different model.
+- the mask. The masked count decides the whole objective; a mask that never hid
+  everything, or that hid the pitch rows of a cell unevenly, would train a different
+  model.
 - the loss reweighting. One over the masked count is per SHEET, and a batch-wide divisor
   reads the same at every step and is wrong at all of them.
 - Algorithm 1. A referee that computes a different number than the paper's reads nothing,
@@ -17,7 +18,6 @@ import itertools
 import math
 import re
 from functools import partial
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -33,8 +33,7 @@ import prng
 from diffusion import infer, model, quantized, train
 from diffusion import measure as sheet
 
-JAX_ROOT = Path(__file__).resolve().parent.parent
-PIECES = JAX_ROOT / "_data" / "pieces.safetensors"
+PIECES = data.PIECES
 needs_corpus = pytest.mark.skipif(not PIECES.exists(), reason="needs corpus_tool pieces")
 
 
@@ -65,8 +64,8 @@ def test_a_neighbour_pitch_is_a_neighbour_row():
     """The reason the pitch is an axis and not a set of channels: a semitone is one row,
     thus a convolution over the rows sees an interval as one shape wherever it stands.
 
-    This is the paper's inductive bias -- the near-invariance of counterpoint to translation
-    in pitch -- and the sheets of the proto round had none of it."""
+    This is the paper's inductive bias -- the near-invariance of counterpoint to
+    translation in pitch -- and the sheets of the proto round had none of it."""
     classes = np.array([[[10, 11, 20, 21]]], dtype=np.int32)
     sheet = np.asarray(model.planes(classes, np.zeros(classes.shape, dtype=bool)))
     rows = [int(np.argmax(sheet[0, 0, :, seat])) for seat in range(model.VOICES)]
@@ -91,8 +90,8 @@ def test_the_orderless_draw_masks_from_one_cell_to_all_of_them():
     is uniform on 1 to D.
 
     Both ends earn a test. A draw that never masked every cell would never teach the model
-    the prior it must state at the opening of a Gibbs walk, and a draw that could mask none
-    would divide the loss by zero."""
+    the prior it must state at the opening of a Gibbs walk, and a draw that could mask
+    none would divide the loss by zero."""
     steps = 8
     width = model.cells(steps)
     hidden = np.asarray(model.orderless_masks(jax.random.PRNGKey(0), 4096, steps))
@@ -197,8 +196,8 @@ def test_the_tree_holds_no_half_pair():
 
 def test_the_population_warms_before_it_settles():
     """The population opens at the prior, thus a flat decay makes the first hundreds of
-    valid numbers read log(ROWS) whatever the model has learned. The warmed decay must move
-    fast at the opening and settle onto the release's rate."""
+    valid numbers read log(ROWS) whatever the model has learned. The warmed decay must
+    move fast at the opening and settle onto the release's rate."""
     assert float(train.population_decay(1.0)) < 0.2
     assert float(train.population_decay(100.0)) < train.POP_DECAY
     assert float(train.population_decay(890.0)) == pytest.approx(train.POP_DECAY)
@@ -228,8 +227,8 @@ def test_the_population_statistics_decide_the_answer():
 
 
 def test_the_loss_reads_the_masked_cells_and_no_others():
-    """the paper's equation 9 sums over the complement of the context; a loss that read the
-    context too would be the code release's default and not the paper's"""
+    """the paper's equation 9 sums over the complement of the context; a loss that read
+    the context too would be the code release's default and not the paper's"""
     coconet = tiny()
     classes = np.zeros((1, 8, model.VOICES), dtype=np.int32)
     hidden = np.zeros((1, 8, model.VOICES), dtype=bool)
@@ -244,8 +243,8 @@ def test_the_loss_reads_the_masked_cells_and_no_others():
 
 def test_the_loss_divides_by_the_count_of_each_sheet():
     """One over the masked count is PER SHEET. A sheet with one cell hidden and one with
-    sixteen must weigh the same, thus a batch-wide divisor is wrong -- and it is wrong in a
-    way that reads plausible at every step.
+    sixteen must weigh the same, thus a batch-wide divisor is wrong -- and it is wrong in
+    a way that reads plausible at every step.
 
     Sheet 0 states nothing and costs log(ROWS) at its single masked cell; sheet 1 is
     certain and costs nothing at all sixteen of its own. The per-sheet divisor reads half
@@ -265,8 +264,8 @@ def test_the_loss_divides_by_the_count_of_each_sheet():
 
 
 def test_an_untrained_model_reads_the_uniform_prior():
-    """a model that has learned nothing must state log(ROWS) nats for each masked cell, and
-    a loss that reads far from it at step zero has a scale fault"""
+    """a model that has learned nothing must state log(ROWS) nats for each masked cell,
+    and a loss that reads far from it at step zero has a scale fault"""
     coconet = tiny(layers=8, width=16)
     classes = np.zeros((4, 16, model.VOICES), dtype=np.int32)
     hidden = model.orderless_masks(jax.random.PRNGKey(5), 4, 16)
@@ -346,8 +345,8 @@ def test_a_rest_leaves_its_pairs_out_of_the_span():
 
 def test_the_clash_counts_the_frame_and_not_the_pair():
     """The tail instrument. A seventh chord holds two dissonant pairs and is ordinary; a
-    frame is a clash when three of its six pairs or more are dissonant. The mean dissonance
-    cannot tell those apart, which is the whole reason this number exists."""
+    frame is a clash when three of its six pairs or more are dissonant. The mean
+    dissonance cannot tell those apart, which is the whole reason this number exists."""
     # G B D F, a dominant seventh: G-F is a tone and B-F a tritone, thus two pairs
     seventh = measure.structure(held([55, 59, 62, 65]))
     assert seventh["dissonant"] > 0.0 and seventh["clash"] == pytest.approx(0.0)
@@ -391,10 +390,10 @@ def test_the_parallel_rate_is_per_moving_pair_and_not_per_sounding_one():
 
 
 def test_contrary_motion_onto_a_fifth_is_not_a_parallel():
-    """The correction of 2026-08-25. The bass falls a tritone and the tenor rises one, thus
-    the pair stands a fifth apart before and a twelfth after -- the same interval class, by
-    CONTRARY motion. That is how a fifth is correctly approached, and counting it read 53
-    percent of the corpus's own fifths as faults."""
+    """The correction of 2026-08-25. The bass falls a tritone and the tenor rises one,
+    thus the pair stands a fifth apart before and a twelfth after -- the same interval
+    class, by CONTRARY motion. That is how a fifth is correctly approached, and counting
+    it read 53 percent of the corpus's own fifths as faults."""
     read = measure.structure(moving([60, 67, 74, 79], [54, 73, 74, 79]))["parallels"]
     assert read["fifths"] == pytest.approx(0.0)
 
@@ -408,9 +407,9 @@ def test_a_pair_that_crosses_holds_no_interval():
 
 
 def test_a_voice_that_holds_makes_no_parallel():
-    """Two voices that keep a fifth while ONE of them stands still is oblique motion, which
-    counterpoint permits and the ear does not object to. Only a pair that moves together
-    can be parallel."""
+    """Two voices that keep a fifth while ONE of them stands still is oblique motion,
+    which counterpoint permits and the ear does not object to. Only a pair that moves
+    together can be parallel."""
     read = measure.structure(moving([48, 55, 64, 72], [48, 55, 65, 72]))["parallels"]
     assert read["fifths"] == pytest.approx(0.0)
 
@@ -452,8 +451,8 @@ def test_the_tail_reads_the_percentiles_and_the_loud_frames():
 
 def test_the_tail_error_resamples_the_pieces_and_not_the_frames():
     """The frames of one chorale are one draw of a composer and not 128 of them. An error
-    that resampled frames would read half of the truth, and every model would then separate
-    from every other."""
+    that resampled frames would read half of the truth, and every model would then
+    separate from every other."""
     frames = np.full((20, 5), 0.2)
     frames[0] = 40.0  # one WHOLE piece is the disaster, thus the piece is the unit
     read = sheet.tail_shape(frames)
@@ -464,13 +463,13 @@ def test_the_tail_error_resamples_the_pieces_and_not_the_frames():
 
 def test_the_register_sees_a_texture_that_slid_where_nothing_else_does():
     """A texture in good order, correctly spaced, and sitting a whole octave too low. The
-    order instrument and the voice pairs both read it CLEAN -- the stacking holds and every
-    span is unchanged -- thus the register mean is the only thing that can see it.
+    order instrument and the voice pairs both read it CLEAN -- the stacking holds and
+    every span is unchanged -- thus the register mean is the only thing that can see it.
 
     And the tail is coarse on purpose. The seats overlap by 14 to 18 semitones, so a drop
-    of an octave puts only the SOPRANO under its own floor of 60; the other three are still
-    inside ranges their neighbours share. [outside] is a backstop for a gross departure and
-    the mean is the sensitive instrument."""
+    of an octave puts only the SOPRANO under its own floor of 60; the other three are
+    still inside ranges their neighbours share. [outside] is a backstop for a gross
+    departure and the mean is the sensitive instrument."""
     right = measure.structure(held([50, 59, 65, 71]))["register"]
     low = measure.structure(held([38, 47, 53, 59]))["register"]
     assert right["outside"] == pytest.approx(0.0)
@@ -492,8 +491,8 @@ def test_the_register_tells_drift_from_over_ranging():
 
 
 def test_a_rest_leaves_its_seat_out_of_the_register():
-    """a seat that does not sing states no pitch, thus it must not pull the mean toward the
-    silence row"""
+    """a seat that does not sing states no pitch, thus it must not pull the mean toward
+    the silence row"""
     read = measure.structure(held([50, None, 65, 71]))["register"]
     assert read["seats"][1]["mean"] == pytest.approx(0.0)
     assert read["outside"] == pytest.approx(0.0)
@@ -513,8 +512,8 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     assert row["clash"] == pytest.approx(2.9, abs=0.3)
     # the horizontal referee: Bach essentially never writes them, thus any rate far above
     # this is a fault of the model and not a taste of the corpus. The divisor is the pairs
-    # that MOVE, thus a rung cannot buy the number by holding its notes, and the share that
-    # moves stands beside it to catch a rung whose motion has left the corpus.
+    # that MOVE, thus a rung cannot buy the number by holding its notes, and the share
+    # that moves stands beside it to catch a rung whose motion has left the corpus.
     parallels = row["parallels"]
     # the fifths halved on 2026-08-25 when similar motion became a condition of the count
     assert parallels["fifths"] < 1.5 and parallels["octaves"] < 1.5
@@ -541,8 +540,8 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
 
 
 def test_the_ordering_covers_every_frame_and_every_voice():
-    """Algorithm 1 walks a permutation of the frames and a permutation of the voices inside
-    each. A repeat would score one cell two times and never score another."""
+    """Algorithm 1 walks a permutation of the frames and a permutation of the voices
+    inside each. A repeat would score one cell two times and never score another."""
     frames, voices = sheet.frame_ordering(np.random.default_rng(0), 32)
     assert sorted(frames.tolist()) == list(range(32))
     assert all(sorted(row.tolist()) == list(range(model.VOICES)) for row in voices)
@@ -564,7 +563,8 @@ def test_algorithm_one_reads_the_true_frames_before_it_and_nothing_after():
 
 
 def test_algorithm_one_scores_every_frame_one_time():
-    """the return is nats for each frame, thus every frame must be reached and none twice"""
+    """the return is nats for each frame, thus every frame must be reached and none
+    twice"""
     coconet = tiny()
     classes = np.zeros((16, model.VOICES), dtype=np.int32)
     forward = partial(sheet.log_probabilities, coconet)
@@ -577,8 +577,8 @@ def test_algorithm_one_scores_every_frame_one_time():
 
 
 def certain_forward(row):
-    """a stub in the shape of a trained model, sure of one pitch row everywhere: it pins the
-    accounting of Algorithm 1 against an answer known by hand"""
+    """a stub in the shape of a trained model, sure of one pitch row everywhere: it pins
+    the accounting of Algorithm 1 against an answer known by hand"""
 
     def forward(classes, hidden):
         del hidden
@@ -594,11 +594,12 @@ def certain_forward(row):
 
 
 def test_algorithm_one_adds_the_four_voices_of_a_frame():
-    """The frame is the unit of the measurement, thus its four voices add and the return is
-    nats for each frame and not for each cell.
+    """The frame is the unit of the measurement, thus its four voices add and the return
+    is nats for each frame and not for each cell.
 
     A sheet of the row the stub is sure of costs nearly nothing. A sheet of any other row
-    costs four times the log probability the stub leaves that row -- one for each voice."""
+    costs four times the log probability the stub leaves that row -- one for each voice.
+    """
     ordering = sheet.frame_ordering(np.random.default_rng(0), 8)
     forward = certain_forward(7)
     agrees = np.full((8, model.VOICES), 7, dtype=np.int32)
@@ -666,10 +667,10 @@ def test_several_sheets_take_a_file_each():
 
 
 def test_the_seeded_opening_puts_every_voice_in_its_own_register():
-    """The opening that needs no special step. A bass at 81 and a soprano at 36 are further
-    from this corpus than a rest is, thus the draw is over each seat's own range and not
-    over the whole roll -- and a cell the Bernoulli leaves standing then states a NOTE,
-    which is what 99.8 percent of the corpus's cells state."""
+    """The opening that needs no special step. A bass at 81 and a soprano at 36 are
+    further from this corpus than a rest is, thus the draw is over each seat's own range
+    and not over the whole roll -- and a cell the Bernoulli leaves standing then states a
+    NOTE, which is what 99.8 percent of the corpus's cells state."""
     _, drawn = model.opening_sheet(prng.states([7, 8, 9, 10]), 32)
     assert drawn.shape == (4, 32, model.VOICES)
     assert not (drawn == data.SILENCE).any()
@@ -705,9 +706,9 @@ def test_the_crops_drop_the_piece_that_is_too_short():
 
 @needs_corpus
 def test_a_crop_never_reads_the_padded_tail():
-    """The padding is a fact of the file and never a fact of the music. A crop that ran into
-    it would teach the model the tail prior that owned 53 percent of the proto round's
-    sheet."""
+    """The padding is a fact of the file and never a fact of the music. A crop that ran
+    into it would teach the model the tail prior that owned 53 percent of the proto
+    round's sheet."""
     pieces = data.load_pieces(str(PIECES))
     crops = data.Crops(pieces["train"], model.CROP)
     rng = np.random.default_rng(0)
@@ -721,8 +722,8 @@ def test_a_crop_never_reads_the_padded_tail():
 
 @needs_corpus
 def test_the_loss_falls_over_a_short_run():
-    """the guard test_train.py states for the other eras: a trainer that cannot learn still
-    prints a correct step-1 loss, thus only a run of several steps can tell"""
+    """the guard test_train.py states for the other eras: a trainer that cannot learn
+    still prints a correct step-1 loss, thus only a run of several steps can tell"""
     done = CliRunner().invoke(
         train.main,
         [

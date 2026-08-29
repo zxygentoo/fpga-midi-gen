@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 
 import data
+import fixed
 import nn
 from mamba import model, quantized, train
 
@@ -72,9 +73,9 @@ def walk_by_steps(held, classes, phases):
 
 @pytest.mark.parametrize("taps", [4, 16])
 def test_the_step_form_and_the_window_form_give_one_stream(taps):
-    """K is a field of the checkpoint and not a constant, thus the gate runs at two widths:
-    the tap ring of the step form and the pad of the window form both read it, and a width
-    written into one of them alone lands here."""
+    """K is a field of the checkpoint and not a constant, thus the gate runs at two
+    widths: the tap ring of the step form and the pad of the window form both read it, and
+    a width written into one of them alone lands here."""
     held = drawn(taps=taps)
     classes, phases = drawn_window(rows=2, length=64)
     stepped = walk_by_steps(held, classes, phases)
@@ -82,7 +83,9 @@ def test_the_step_form_and_the_window_form_give_one_stream(taps):
     assert stepped.shape == windowed.shape
     gap = float(jnp.max(jnp.abs(stepped - windowed)))
     scale = float(jnp.max(jnp.abs(windowed)))
-    assert gap / scale < TOLERANCE, f"the two forms part by {gap:.3e} on a scale of {scale:.3e}"
+    assert gap / scale < TOLERANCE, (
+        f"the two forms part by {gap:.3e} on a scale of {scale:.3e}"
+    )
 
 
 def test_the_window_opens_on_a_zero_state():
@@ -205,9 +208,10 @@ def test_the_span_rides_in_the_file_and_not_in_a_flag(span):
     span played back wrong is silently wrong music -- the walk still sounds like music, it
     is just not the model's. This era writes it after the last layer and reads it back.
 
-    The gate is a round trip and a consequence: the file gives the span back, and a forward
-    that reads it from the file equals a forward told the span outright. It also holds the
-    older files, which carry no span at all and must still read at era four's elected 4."""
+    The gate is a round trip and a consequence: the file gives the span back, and a
+    forward that reads it from the file equals a forward told the span outright. It also
+    holds the older files, which carry no span at all and must still read at era four's
+    elected 4."""
     import tempfile
 
     held = plan_of("MMZF", span=span)
@@ -256,9 +260,9 @@ def quantized_plan(spelt="MZF", ring=8):
 
 def test_the_image_is_not_the_checkpoint_order():
     """A BLOCK HOLDS SIX TENSORS IN A CHECKPOINT AND THREE OF THEM NEVER REACH THE ROM.
-    `a_log`, `dt_bias` and `d_skip` hold one value for each head, and an int8 tensor cannot
-    carry them: they fold into the constants the ops carry instead. The two orders are two
-    structures and neither is implied by the other."""
+    `a_log`, `dt_bias` and `d_skip` hold one value for each head, and an int8 tensor
+    cannot carry them: they fold into the constants the ops carry instead. The two orders
+    are two structures and neither is implied by the other."""
     twin = quantized_plan("MZF")
     # two tables, then three, four and two
     assert len(twin.every_tensor()) == len(nn.TABLES) + 3 + 4 + 2
@@ -287,7 +291,7 @@ def test_the_decay_reads_the_libms_exponential():
     arithmetic, and `test_parity.py`'s G1 states it through the netlist."""
     for a_log in (-1.5, 0.0, 0.5, 2.7):
         a = math.exp(a_log)
-        want = int(nn.round_half_up(math.ldexp(a / math.log(2.0), 12)))
+        want = int(fixed.round_half_up(math.ldexp(a / math.log(2.0), 12)))
         assert quantized.decay_scale(a_log) == want
     # a decay rate the port cannot hold saturates and never wraps
     assert quantized.decay_scale(20.0) == quantized.DECAY_HIGH
@@ -321,7 +325,7 @@ def test_era_fours_attention_is_no_layer_of_this_model():
 
 def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():
     """The ring is the one number that is no fact of the training run: it is the depth at
-    INFERENCE and a choice of the player. The circuit wraps it by a mask, thus a depth that
-    is not a power of two has no circuit at all."""
+    INFERENCE and a choice of the player. The circuit wraps it by a mask, thus a depth
+    that is not a power of two has no circuit at all."""
     with pytest.raises(ValueError, match="ring"):
         quantized.check_shape(quantized_plan("MZF", ring=12))

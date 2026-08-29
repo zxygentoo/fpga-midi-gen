@@ -26,6 +26,7 @@ import numpy as np
 from flax import nnx
 
 import data
+import frames
 import midi
 import nn
 import prng
@@ -36,11 +37,11 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     [ring] is the depth of the attention layer's keys and values, and it exists only where
-    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size and
-    has no window at all. Training attends over the WHOLE window, thus a ring shorter than
-    the training window is a truncation, and whether the truncation costs anything depends
-    on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and a ring of
-    256 reads the same as one of 512, measured. At a longer span it would not.
+    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size
+    and has no window at all. Training attends over the WHOLE window, thus a ring shorter
+    than the training window is a truncation, and whether the truncation costs anything
+    depends on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and
+    a ring of 256 reads the same as one of 512, measured. At a longer span it would not.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
     opens at zero, which is where a training window opens, thus the model meets the
@@ -51,8 +52,8 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     -- and the temperature and the floor bake into it as the bitstream carries them. The
     two walks open on different generators: the float walk folds its seed and the twin
     takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
-    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION, where
-    the twin stands still while the float walk runs from the folded state."""
+    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION,
+    where the twin stands still while the float walk runs from the folded state."""
     if twin:
         engine = quantized.QuantizedMamba.of(
             held, ring=ring, temperature=temperature, min_p=min_p
@@ -89,7 +90,9 @@ def main():
 
 @main.command(help=draw.__doc__)
 @click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH")
+@click.option(
+    "--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH"
+)
 @click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
 # The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
 # it does the two eras are auditioned on one policy. `quantized.ELECTED_*` is the one home
@@ -109,12 +112,7 @@ def main():
     is_flag=True,
     help="draw the integer twin of the circuit: the piece the board plays at this seed",
 )
-@click.option("--play", "to_synth", is_flag=True, help=f"send to the synth on {midi.DEVICE}")
-@click.option("--save", "to_file", type=click.Path(dir_okay=False), help="write a .mid")
-@click.option("--device", default=midi.DEVICE)
-@click.option("--step-ms", default=200)
-@click.option("--channel", default=2, help="the S-1 factory default, MIDI channel 3")
-@click.option("--velocity", default=100)
+@midi.playback_options
 def sample(
     ckpt,
     seeds,
@@ -141,25 +139,16 @@ def sample(
     )
     music = [data.decode(walk) for walk in walks]
 
-    if to_synth or to_file:
-        if len(seeds) > 1:
-            raise click.UsageError("--play and --save take one seed")
-        if to_file:
-            midi.save(music[0], to_file, step_ms=step_ms, channel=channel, velocity=velocity)
-            click.echo(f"wrote {to_file}")
-        if to_synth:
-            midi.play(
-                music[0],
-                device=device,
-                step_ms=step_ms,
-                channel=channel,
-                velocity=velocity,
-            )
-        return
-    for seed, walk in zip(seeds, music):
-        if len(seeds) > 1:
-            click.echo(f"# seed {seed}")
-        click.echo("\n".join(midi.step_line(step, events) for step, events in enumerate(walk)))
+    frames.audition(
+        music,
+        seeds,
+        to_synth=to_synth,
+        to_file=to_file,
+        device=device,
+        step_ms=step_ms,
+        channel=channel,
+        velocity=velocity,
+    )
 
 
 @main.command()

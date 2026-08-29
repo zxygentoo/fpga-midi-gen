@@ -13,14 +13,14 @@ both parts are deterministic.
 THE FEEDBACK AXIS OF THIS ERA IS THE WALK, and it is what parts this gate from era five's.
 That model held a state that carried an error forward in time; this one holds a sheet --
 every cell a pass redraws stands in the context of every later pass, thus an arithmetic
-error compounds through the music rather than through a register. The fixed sweep therefore
-runs the walk out to 128 passes beside the short ones, which is a quarter of the board's
-full budget at a quarter of its sheet.
+error compounds through the music rather than through a register. The fixed sweep
+therefore runs the walk out to 128 passes beside the short ones, which is a quarter of the
+board's full budget at a quarter of its sheet.
 
-THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `Coconet.drawn`'s own default and
-its docstring's argument: at the trainer's opening tenth an untrained trunk decays tenfold
-at every layer, and by the third the report reads the resolution floor of the format and
-not the arithmetic.
+THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `Coconet.drawn`'s own default
+and its docstring's argument: at the trainer's opening tenth an untrained trunk decays
+tenfold at every layer, and by the third the report reads the resolution floor of the
+format and not the arithmetic.
 
 Two parts, the rule of the sibling gates. The fixed sweep pins MEASURED NUMBERS AND NOT
 THRESHOLDS: a diff says the integers moved -- judge whether it is a re-measurement or a
@@ -31,7 +31,7 @@ printed minima keep the calibration honest.
 import numpy as np
 import pytest
 
-import nn
+import fixed
 from diffusion import model, quantized
 from mamba import quantized as mamba_twin
 from tests.test_mamba import plan_of
@@ -51,7 +51,7 @@ WALK_SEEDS = (42, 43, 44, 45)
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
-    states, given = model.opening_sheet(nn.engine_states([walk_seed]), STEPS)
+    states, given = model.opening_sheet(fixed.engine_states([walk_seed]), STEPS)
     return quantized.drift(coconet, states, given, walk=passes)
 
 
@@ -99,8 +99,8 @@ def test_the_long_walk_does_not_compound(passes):
     A redrawn cell enters the context of every later pass, thus a quantization error can
     compound over the walk in a way one pass never shows. The same model runs at 8, 32 and
     128 passes; a cumulative error would show as numbers that FALL with the length. The
-    clamps stand beside them because the formats were chosen with margin and not metered on
-    a trained checkpoint: a zero here is the finding that the margin holds."""
+    clamps stand beside them because the formats were chosen with margin and not metered
+    on a trained checkpoint: a zero here is the finding that the margin holds."""
     said = drift(11, 42, passes)
     peak, cells, cosine, clamped, hottest = LONG_WALK[passes]
     assert (said.same_peak, said.cells) == (peak, cells)
@@ -110,8 +110,8 @@ def test_the_long_walk_does_not_compound(passes):
 
 
 # The floors, calibrated on this model's own first measured minima over the CLEAN trials,
-# the rule the sibling gates were set by: a fail is a break of the scheme and not a re-draw
-# of the set. The first measurement read 0.869, 0.806 and 0.9907.
+# the rule the sibling gates were set by: a fail is a break of the scheme and not a
+# re-draw of the set. The first measurement read 0.869, 0.806 and 0.9907.
 TOP1_FLOOR = 0.80
 SAME_DRAW_FLOOR = 0.70
 COSINE_FLOOR = 0.985
@@ -124,9 +124,9 @@ def test_the_floors_hold_on_drawn_seed_pairs(capsys):
 
     A drawn trunk can outgrow any fixed format, thus a trial whose clamps fired is counted
     and released from the floors, and a trial that does not clamp has no excuse -- the
-    floors still hold the arithmetic. At Q6 no drawn trial of this sweep clamps; the release
-    guarded three at the retired Q12, where one pair clamped 5.5 percent of its writes and
-    read a cosine of 0.87."""
+    floors still hold the arithmetic. At Q6 no drawn trial of this sweep clamps; the
+    release guarded three at the retired Q12, where one pair clamped 5.5 percent of its
+    writes and read a cosine of 0.87."""
     rng = np.random.default_rng(0xD21F8)
     low_top1 = low_draw = low_cosine = 1.0
     released = 0
@@ -263,8 +263,8 @@ def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
 
 # The whole plan of the era at a shape a test can afford: two blocks, the Zamba head and
 # the feed-forward. The head brings a SECOND source of drift that the trunk does not have
-# -- a coarse ring, a softmax and a division -- thus the report answers for the whole model
-# and not for the recurrence alone.
+# -- a coarse ring, a softmax and a division -- thus the report answers for the whole
+# model and not for the recurrence alone.
 MAMBA_SPELT = "MMZF"
 MAMBA_SHAPE = {"d": 16, "heads": 2, "state": 8, "taps": 4}
 MAMBA_RING = 16
@@ -296,8 +296,8 @@ def test_the_mamba_sweep_states_its_measured_numbers(weight_seed):
     """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved.
 
     They were measured on this side and NOT carried over from the OCaml gate that stood
-    before it: the drawn weights come from a JAX draw now. The old table read 721, 718, 711
-    and 739 top-1 out of the same 768 draws."""
+    before it: the drawn weights come from a JAX draw now. The old table read 721, 718,
+    711 and 739 top-1 out of the same 768 draws."""
     draws = same_peak = same_draw = 0
     low_cosine = 1.0
     for walk_seed in WALK_SEEDS:
@@ -326,12 +326,12 @@ def test_the_mamba_long_walk_does_not_compound(steps):
 
     The state of a block carries forward for ever, thus a quantization error can compound
     over a walk in a way one step never shows. The same model runs at 64, 256 and 1024
-    steps; a cumulative error would show as numbers that FALL with the length. They do not:
-    the top-1 share reads 0.927, 0.923 and 0.927 and the cosine stands flat.
+    steps; a cumulative error would show as numbers that FALL with the length. They do
+    not: the top-1 share reads 0.927, 0.923 and 0.927 and the cosine stands flat.
 
-    The clamps stand beside them because the formats of this era are chosen with margin and
-    not metered on a trained checkpoint: a zero here is the finding that the margin holds,
-    and it is the finding the OCaml gate made before it."""
+    The clamps stand beside them because the formats of this era are chosen with margin
+    and not metered on a trained checkpoint: a zero here is the finding that the margin
+    holds, and it is the finding the OCaml gate made before it."""
     said = mamba_drift(11, 42, steps=steps)
     peak, draws, cosine = MAMBA_LONG_WALK[steps]
     assert (said.same_peak, said.draws) == (peak, draws)
@@ -342,11 +342,11 @@ def test_the_mamba_long_walk_does_not_compound(steps):
 
 
 # THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
-# 2026-08-20 against this model's own first measured minima, and they are much tighter than
-# era four's 0.55, 0.8 and 0.98 for a reason that is a format and not a virtue: this
+# 2026-08-20 against this model's own first measured minima, and they are much tighter
+# than era four's 0.55, 0.8 and 0.98 for a reason that is a format and not a virtue: this
 # datapath keeps the gate product whole into the norm that reads it, where a truncation
-# back to the working class cost 0.10 of the cosine on its own. A scheme that measures this
-# well must be held to it.
+# back to the working class cost 0.10 of the cosine on its own. A scheme that measures
+# this well must be held to it.
 MAMBA_TOP1_FLOOR = 0.80
 MAMBA_SAME_DRAW_FLOOR = 0.90
 MAMBA_COSINE_FLOOR = 0.99
