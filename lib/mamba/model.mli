@@ -43,12 +43,6 @@ module Constants : sig
       before the norm that reads them *)
   val gate_q : int
 
-  (** the Q the Decay op's constant carries. The constant rides the 25-bit port and [dt]
-      the 18-bit one, which is the way round that costs nothing — [dt] is int16 — and it
-      leaves the constant three million units of room where the other order would clamp a
-      decay rate above 22. *)
-  val decay_q : int
-
   (** [score_shift ~head_d] carries a score walk's sum from Q(2 [v_q]) to Q[y_q] and
       applies the 1/sqrt([head_d]) of the model in the same shift, thus [head_d] is a
       power of four. *)
@@ -69,10 +63,6 @@ module Kind : sig
     | Attention
     | Feed_forward
   [@@deriving equal, sexp_of]
-
-  (** the tensors a layer of this kind carries into the ROM image: three for a block, four
-      for an attention layer, two for the feed-forward *)
-  val tensors : t -> int
 
   (** [spell plan] is one letter for each layer — M a block, Z the Zamba head, F the
       feed-forward — which is how [docs/mamba.md], the checkpoint names and the [--plan]

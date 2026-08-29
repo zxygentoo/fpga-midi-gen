@@ -3,6 +3,7 @@
 
 open Core
 module Nn_quantized = Mgen_nn.Quantized
+module Contract_file = Mgen_nn.Contract_file
 
 (* ==================================================================== *)
 (* The roll *)
@@ -111,28 +112,13 @@ let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
 ;;
 
 (* THE CONTRACT FILE, READ. [jax/diffusion/quantized.py] writes it and its docstring holds
-   the layout.
-
-   EVERY TENSOR IS INT32, INCLUDING THE KERNEL, because [Nx_io.load_safetensors] SKIPS
-   every dtype it does not hold — an int8 kernel would arrive as a hole and the model
-   would refuse for the wrong reason. The values are the int8 image all the same. *)
+   the layout; [Mgen_nn.Contract_file] holds the two facts of the archive itself, the
+   int32 kernel included. *)
 let of_int8_checkpoint path =
-  let archive = Nx_io.load_safetensors path in
-  let packed name =
-    match Stdlib.Hashtbl.find_opt archive name with
-    | None -> invalid_argf "%s has no tensor %s" path name ()
-    | Some packed -> packed
-  in
-  let values name =
-    Array.map (Nx.to_array (Nx_io.to_typed Nx.int32 (packed name))) ~f:Int32.to_int_exn
-  in
-  let only name =
-    match values name with
-    | [| value |] -> value
-    | row ->
-      invalid_argf "%s: %s holds %d values, not one" path name (Array.length row) ()
-  in
-  let count = Stdlib.Hashtbl.length archive in
+  let file = Contract_file.open_ path in
+  let values = Contract_file.values file in
+  let only = Contract_file.only file in
+  let count = Contract_file.tensor_count file ~beside:0 in
   let layers, spare = (count - 2) / layer_tensors, (count - 2) % layer_tensors in
   if spare <> 0 || layers < 1
   then invalid_argf "%s: %d tensors is no quantized sheet model" path count ();
@@ -149,7 +135,7 @@ let of_int8_checkpoint path =
     let name index = Int.to_string ((layer_tensors * at) + index) in
     (* the reach of one convolution is three by three over time and pitch *)
     let inputs, outputs =
-      match Nx_io.packed_shape (packed (name 0)) with
+      match Contract_file.shape file (name 0) with
       | [| 3; 3; inputs; outputs |] -> inputs, outputs
       | shape ->
         invalid_argf
@@ -170,12 +156,7 @@ let of_int8_checkpoint path =
     ; outputs
     }
   in
-  let temper =
-    match values temper_tensor with
-    | [| q_value; q |] -> { Nn_quantized.Constants.q_value; q }
-    | row ->
-      invalid_argf "%s: the temper holds %d values, not two" path (Array.length row) ()
-  in
+  let temper = Contract_file.scale file temper_tensor in
   let model = { layers = Array.init layers ~f:layer; temper } in
   check_shape model;
   model
@@ -306,7 +287,7 @@ module For_test = struct
   ;;
 
   let clamp16 = Nn_quantized.clamp16
-  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
+  let clamp_byte = Nn_quantized.For_test.clamp_byte
 
   let drawn ~layers ~width ~seed =
     (* the stem widens the planes, the trunk holds the width, the head narrows to the

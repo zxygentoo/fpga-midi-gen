@@ -103,9 +103,9 @@ val check_shape : t -> unit
     nothing: it takes the tensors, the exponents, the shape numbers, the temper and the
     min-p share as they stand, and [check_shape] holds every rule the consumers assume.
 
-    The layout is that module's docstring, and two of its facts are facts of THIS reader:
-    every tensor is int32, because [Nx_io] skips every dtype it does not hold; and every
-    scalar travels as a named tensor, because [Nx_io] gives no access to [__metadata__].
+    The layout is that module's docstring; the two facts of the archive itself — every
+    tensor int32, every scalar a named tensor — stand in [Mgen_nn.Contract_file], which
+    reads it.
 
     It raises [Invalid_argument] when the tensor count does not divide into layers, when a
     tensor is missing, or when a shape or a rule does not hold. *)
@@ -119,12 +119,6 @@ val rom_bits : t -> Hardcaml.Bits.t array
     the circuit adds its own offsets to. The four seat tables stand inside one tensor,
     thus seat [s] begins at [seats + s * classes * d], which is a shift and an add. *)
 val rom_bases : t -> int Params_data.t
-
-(** [coarse_to_ring row] is what the KV ring keeps of a Q12 row: the top byte, with eight
-    zero low bits restored at the read. The circuit stores eight bits, thus the
-    granularity is 2^-4 and the format stays Q12. The query does not pass here — only the
-    stored rows coarsen. *)
-val coarse_to_ring : int array -> int array
 
 module For_test : sig
   (** the shape numbers of a drawn model, without the tensors that carry them *)

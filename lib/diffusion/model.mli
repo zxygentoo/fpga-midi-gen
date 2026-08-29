@@ -110,10 +110,9 @@ val check_shape : t -> unit
     nothing: it takes the kernels, the two per-channel rows and the temper as they stand,
     and [check_shape] holds every rule the consumers assume.
 
-    The layout is that module's docstring, and two of its facts are facts of THIS reader:
-    every tensor is int32, because [Nx_io] skips every dtype it does not hold; and the
-    temper and the Q travel as named tensors, because [Nx_io] gives no access to
-    [__metadata__]. A file quantized at another Q refuses here and not inside a walk.
+    The layout is that module's docstring; the two facts of the archive itself — every
+    tensor int32, every scalar a named tensor — stand in [Mgen_nn.Contract_file], which
+    reads it. A file quantized at another Q refuses here and not inside a walk.
 
     It raises [Invalid_argument] when the tensor count does not divide into layers, when a
     tensor is missing, or when a shape or a rule does not hold; the message names the

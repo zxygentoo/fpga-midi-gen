@@ -186,8 +186,8 @@ module Bench (Shape : Shape) = struct
     in
     Array.init rows ~f:(fun at ->
       Array.init lanes ~f:(fun lane ->
-        Nn_quantized.sum inputs (fun cin ->
-          Nn_quantized.sum 9 (fun tap -> term ~at ~lane ~cin ~tap))))
+        Nn_quantized.For_test.sum inputs (fun cin ->
+          Nn_quantized.For_test.sum 9 (fun tap -> term ~at ~lane ~cin ~tap))))
   ;;
 
   (* the dwells BACK TO BACK — the next opens on the cycle behind the [term_last] of the

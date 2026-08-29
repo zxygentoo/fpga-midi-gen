@@ -464,9 +464,9 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
   (* The banking rules are in [docs/transformer_rtl.md]; the measurements behind them are
      here. The tools demoted deep write-portless arrays to slice logic under two different
      select shapes — the six-layer image in slice logic is 69 percent of the device — thus
-     a bank is an initialized memory with a gated-off write port, and RAM_STYLE pins it.
-     The address registers once before the tree, and each bank registers its data once
-     behind it: two cycles from address to data, as one ROM, because
+     a bank is a [Placement.rom] under [block_rom]: an image, one read, and no write logic
+     at all. The address registers once before the tree, and each bank registers its data
+     once behind it: two cycles from address to data, as one ROM, because
      [reg (reg rom.(addr))] equals [reg (rom.(reg addr))] when the contents never change.
      The address register is load-bearing, not style: with a combinational address, the
      tools retime the data register onto the address pins of every block RAM primitive and
@@ -509,7 +509,7 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
        ~write_ports:[| write_port waddr wen wdata |]
        ~read_addresses:[| raddr |]).(0)
   in
-  (* The read of a ring restores the eight zero low bits that [Model.coarse_to_ring]
+  (* The read of a ring restores the eight zero low bits that the twin's [coarse_to_ring]
      dropped at the write. Every memory the walk reads stands two registers deep, and
      [nohold] freezes each stage with the walk's tags; the small RAMs keep the
      one-register tap for the bespoke chains.

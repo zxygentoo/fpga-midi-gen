@@ -226,7 +226,7 @@ let draw_cell ~(temper : Nn_quantized.Constants.scale) raw prng =
       (* the difference shifts up to the table's Q FIRST. Unshifted, every weight stands
          within a fraction of a nat of the peak and the draw is uniform — the fault the
          drift report caught at 3.4 percent same-draw. *)
-      Nn_quantized.exp2_q
+      Nn_quantized.For_test.exp2_q
         (Nn_quantized.Constants.apply
            temper
            ((logit - peak) lsl (exp2_q - Model.activation_q))))

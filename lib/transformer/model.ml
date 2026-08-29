@@ -1,5 +1,6 @@
 open Core
 module Nn_quantized = Mgen_nn.Quantized
+module Contract_file = Mgen_nn.Contract_file
 
 module Constants = struct
   (* the scores and the logits are Q12 as well, and stay wide; no constant names them *)
@@ -95,21 +96,36 @@ let sizes ~d ~layers = List.map (shapes ~d ~layers) ~f:(Array.fold ~init:1 ~f:( 
    be silently wrong. *)
 let check_shape t =
   let { Params_data.seats; phase; layers = tensors } = t.params in
-  assert (Int.is_pow2 t.d);
-  assert (Int.is_pow2 t.context);
-  assert (t.heads > 0 && t.d % t.heads = 0);
-  assert (Int.floor_log2 (t.d / t.heads) % 2 = 0);
-  assert (Array.length tensors > 0);
+  let refuse rule wrong = if wrong then invalid_argf "%s" rule () in
+  refuse "d is not a power of two" (not (Int.is_pow2 t.d));
+  refuse "the context is not a power of two" (not (Int.is_pow2 t.context));
+  if t.heads <= 0 || t.d % t.heads <> 0
+  then invalid_argf "%d heads do not divide d %d" t.heads t.d ();
+  refuse
+    "the head width is not a power of four, thus no shift is its square root"
+    (Int.floor_log2 (t.d / t.heads) % 2 <> 0);
+  refuse "a model with no layer" (Array.length tensors = 0);
   (* the seat rows and the phase row add row for row — the Embed op of the circuit walks
      them as one tensor — thus one exponent covers both. The four seat tables share it for
      the same reason: they stand in one tensor. *)
-  assert (phase.e = seats.e);
-  assert (Array.length seats.q = Frame.voices * Vocab.classes * t.d);
-  assert (Array.length phase.q = Jsb.bar_steps * t.d);
+  if phase.e <> seats.e
+  then
+    invalid_argf
+      "the phase table reads exponent %d and the seat tables %d"
+      phase.e
+      seats.e
+      ();
+  let holds name tensor size =
+    if Array.length tensor <> size
+    then invalid_argf "%s holds %d weights, not %d" name (Array.length tensor) size ()
+  in
+  holds "the seat tables" seats.q (Frame.voices * Vocab.classes * t.d);
+  holds "the phase table" phase.q (Jsb.bar_steps * t.d);
   List.iter2_exn
-    (Params_data.to_list t.params)
+    (List.mapi (Params_data.to_list t.params) ~f:(fun at tensor ->
+       Printf.sprintf "tensor %d" at, tensor))
     (sizes ~d:t.d ~layers:(layers t))
-    ~f:(fun tensor size -> assert (Array.length tensor.q = size))
+    ~f:(fun (name, tensor) size -> holds name tensor.q size)
 ;;
 
 let rom_bits t = Nn_quantized.rom_bits (Params_data.to_list t.params)
@@ -124,12 +140,6 @@ let rom_bases t =
   |> Params_data.of_list ~layers:(layers t)
 ;;
 
-(* The ring keeps the top byte of a Q12 row: the circuit stores eight bits and restores
-   eight zero low bits at the read, thus the granularity is 2^-4 and the format stays Q12.
-   The query does not pass here — only the stored rows coarsen. *)
-(* [asr] and [lsl] associate to the right; the parentheses are the expression *)
-let coarse_to_ring (row : int array) = Array.map row ~f:(fun v -> (v asr 8) lsl 8)
-
 (* the tensors the file carries beside its numbered weights *)
 let exponents_tensor = "exponents"
 let temper_tensor = "temper"
@@ -140,20 +150,10 @@ let slope_span_tensor = "slope_span"
 let beside_the_weights = 6
 
 let of_int8_checkpoint path =
-  let archive = Nx_io.load_safetensors path in
-  let values name =
-    match Stdlib.Hashtbl.find_opt archive name with
-    | None -> invalid_argf "%s has no tensor %s" path name ()
-    | Some packed ->
-      Array.map (Nx.to_array (Nx_io.to_typed Nx.int32 packed)) ~f:Int32.to_int_exn
-  in
-  let only name =
-    match values name with
-    | [| value |] -> value
-    | row ->
-      invalid_argf "%s: %s holds %d values, not one" path name (Array.length row) ()
-  in
-  let count = Stdlib.Hashtbl.length archive - beside_the_weights in
+  let file = Contract_file.open_ path in
+  let values = Contract_file.values file in
+  let only = Contract_file.only file in
+  let count = Contract_file.tensor_count file ~beside:beside_the_weights in
   let layers, spare =
     (count - 2) / Params_data.per_layer, (count - 2) % Params_data.per_layer
   in
@@ -163,12 +163,7 @@ let of_int8_checkpoint path =
   if Array.length exponents <> count
   then
     invalid_argf "%s: %d exponents for %d tensors" path (Array.length exponents) count ();
-  let temper =
-    match values temper_tensor with
-    | [| q_value; q |] -> { Constants.q_value; q }
-    | row ->
-      invalid_argf "%s: the temper holds %d values, not two" path (Array.length row) ()
-  in
+  let temper = Contract_file.scale file temper_tensor in
   let params =
     List.init count ~f:(fun at -> { q = values (Int.to_string at); e = exponents.(at) })
     |> Params_data.of_list ~layers
@@ -203,35 +198,11 @@ module For_test = struct
      it: the cost model of a real step is read at this shape and at no other *)
   let elected = { d = 64; layers = 6; heads = 4; context = 256; slope_span = 4 }
 
-  (* THE DRAWN MODEL STATES ITS EXPONENT AND QUANTIZES NOTHING, as era six's does.
-
-     A quantizer picks an exponent from a tensor's own peak; that is a rule of a
-     CHECKPOINT, and it lives above the seam with the quantizer that reads one. A drawn
-     model has no checkpoint behind it and needs no such rule: one stated exponent covers
-     every tensor, and the seat and phase tables then share it, which is what
-     [check_shape] holds.
-
-     THE STATED 10 IS THE EXPONENT THE OLD RULE GAVE, and the clamp stays rare under it. A
-     normal at scale 0.02 has a byte spread of 0.02 * 2^10, which is 20.5, thus 127 stands
-     6.2 sigma out and a clamp is one draw in two thousand million. The peak of a real
-     tensor of these shapes is about four sigma — 76 for a square matrix, 86 for the seat
-     tables — thus every draw fits the byte with room, as it did when each tensor chose
-     its own exponent from its own peak. A stated exponent one step higher would saturate
-     an eighth of every tensor and give the walk another character for nothing this
-     library gates.
-
-     It is a TEST model: the walk it makes is what the cycle benches and the socket
-     simulation record, thus the seeds and the scale may not move. *)
+  (* the stated exponent of the frozen eras; [Nn_quantized.For_test.drawn_tensor] carries
+     the measurement behind it, and the seat and phase tables share it, which is what
+     [check_shape] holds *)
   let drawn_exponent = 10
-  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
-
-  let tensor values =
-    { q =
-        Array.map values ~f:(fun v ->
-          clamp_byte (Float.iround_nearest_exn (Float.ldexp v drawn_exponent)))
-    ; e = drawn_exponent
-    }
-  ;;
+  let tensor = Nn_quantized.For_test.drawn_tensor ~e:drawn_exponent
 
   let drawn { d; layers; heads; context; slope_span } ~seed =
     let (_ : Prng.state), tensors =
@@ -240,33 +211,19 @@ module For_test = struct
            (List.map (sizes ~d ~layers) ~f:(fun count -> Prng.normals ~count ~scale:0.02)))
         (Prng.create_folded ~seed)
     in
-    let { Params_data.seats; phase; layers = drawn_layers } =
-      Params_data.of_list ~layers tensors
-    in
+    (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the floor
+       is the elected min-p 0.05 as a share of the peak weight 2^15, which is
+       [jax/fixed.py]'s [min_weight_of] and what [test_fixed.py] pins. The elected numbers
+       themselves live above the seam now, in [ELECTED_TEMPERATURE] and [ELECTED_MIN_P] of
+       [jax/fixed.py]. *)
+    (* [Params_data.of_list] owns the order of the parameters; the draw states it nowhere. *)
     { d
     ; heads
     ; context
     ; slope_span
-      (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the floor
-         is the elected min-p 0.05 as a share of the peak weight 2^15, which is
-         [jax/nn.py]'s [min_weight_of] and what [test_quantized.py] pins. The elected
-         numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
-         [ELECTED_MIN_P] of [jax/transformer/quantized.py]. *)
     ; temper = Constants.temper_at_one
     ; min_weight = 1638
-    ; params =
-        { Params_data.seats = tensor seats
-        ; phase = tensor phase
-        ; layers =
-            Array.map drawn_layers ~f:(fun l ->
-              { Params_data.wq = tensor l.wq
-              ; wk = tensor l.wk
-              ; wv = tensor l.wv
-              ; wo = tensor l.wo
-              ; w1 = tensor l.w1
-              ; w2 = tensor l.w2
-              })
-        }
+    ; params = Params_data.of_list ~layers (List.map tensors ~f:tensor)
     }
   ;;
 end

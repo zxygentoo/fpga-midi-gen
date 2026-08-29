@@ -61,9 +61,9 @@ val create : model:Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
 
 module For_test : sig
   (** The walk, driven. [bin/gate_mamba.exe] runs it and prints what the circuit did, and
-      [jax/tests/test_rtl_mamba.py] states what it must have done; the frame and stream
-      benches of this module run the same harness against the OCaml engine while that
-      engine stands. *)
+      [jax/tests/test_rtl_mamba.py] states what it must have done against the twin. The
+      two sides cannot agree with each other by accident: the driver knows nothing of the
+      twin, and the twin runs no circuit. *)
   module Bench : sig
     type t =
       { rewind : unit -> unit (** load the generator and return the walk to its origin *)

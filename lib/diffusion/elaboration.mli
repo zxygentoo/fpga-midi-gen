@@ -116,9 +116,6 @@ type t =
 (** the taps of one 3 by 3 kernel: 9. A dwell counts them. *)
 val taps : int
 
-(** the bits of one [alpha_rom] entry: the grid of the generator, [Prng.uniform_bits] *)
-val alpha_bits : int
-
 (** The widths of a norm word above its bias field, and the width of the whole.
 
     THE SHIFT FIELD SIZES ON THE RULE AND NOT ON THE CHECKPOINT: the two exponent rules

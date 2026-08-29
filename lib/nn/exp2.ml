@@ -56,7 +56,7 @@ let harness () =
 ;;
 
 (* the unit takes the magnitude of the power, thus the reference's rule reads [-nn] *)
-let oracle nn = Quantized.exp2_q (-nn)
+let oracle nn = Quantized.For_test.exp2_q (-nn)
 
 let%expect_test "the exp2 unit is the table and the shift" =
   let e = harness () in

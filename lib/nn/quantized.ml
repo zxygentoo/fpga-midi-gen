@@ -36,8 +36,8 @@ module Constants = struct
      The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
      circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
      would overflow that port under a temperature of about 0.36, and this Q holds down to
-     about 0.18. [jax/nn.py]'s [temper_of] states the rule for every temperature and
-     [jax/tests/test_quantized.py] pins this reading of it.
+     about 0.18. [jax/fixed.py]'s [temper_of] states the rule for every temperature and
+     [jax/tests/test_fixed.py] pins this reading of it.
 
      A model of a CONTRACT FILE reads its temper from the file. A DRAWN model has no
      training run behind it, thus it states this one. *)
@@ -110,11 +110,11 @@ end
 (* The scalar rules of the engines *)
 (* ==================================================================== *)
 
-(* THE RAILS OF INT16, NAMED ONE TIME. The two scalar clamps here, the circuit below and
-   era six's clamps read them from these two values, thus a unit that wrote a rail of its
-   own could not part from the twin in silence. The frozen eras still write 32767 out at
-   [transformer/source.ml] and [mamba/source.ml]; adoption there moves their netlists, and
-   it belongs to their own round. *)
+(* THE RAILS OF INT16, NAMED ONE TIME. The scalar clamp here, the circuit below and every
+   clamp of the three eras read them from these two values, thus a unit that wrote a rail
+   of its own could not part from the twin in silence. The frozen eras aliased
+   [Rtl.clamp16] in the all-era cut; the expect test below measures what that adoption
+   fixed. *)
 let int16_high = 32767
 let int16_low = -32768
 let clamp16 v = Int.clamp_exn v ~min:int16_low ~max:int16_high
@@ -150,10 +150,8 @@ let exp2_of_magnitude m =
 
 let exp2_q u = exp2_of_magnitude (-u)
 
-(* the sigmoid of a Q12 value in Q15, and SiLU over it: one table read, one multiply and
-   one shift by the Q of the sigmoid *)
+(* the sigmoid of a Q12 value in Q15: one table read *)
 let sigmoid_q v = Constants.sigmoid_table.(Constants.sigmoid_index v)
-let silu v = clamp16 ((v * sigmoid_q v) asr 15)
 
 (* softplus as the ramp and the correction the table holds. The sum rides an int16, thus
    the input clamps before the table reads it and the result clamps after. *)
@@ -457,3 +455,42 @@ let%expect_test "the softplus is the ramp and its correction" =
   [%expect
     {| over every int16 input the table stands within 0.00784 of the float softplus, worst at 0.0000 |}]
 ;;
+
+(* The scalar oracles, gathered where the gates that read them can find them. The twins
+   moved above the seam in the all-era cut, thus no elaboration calls these any more: each
+   states in one line what a unit circuit must give, and the expect test beside that
+   circuit drives it at the rails and against this. *)
+module For_test = struct
+  let sum = sum
+  let isqrt = isqrt
+  let sigmoid_q = sigmoid_q
+  let exp2_q = exp2_q
+
+  (* THE DRAWN MODEL STATES ITS EXPONENT AND QUANTIZES NOTHING.
+
+     A quantizer picks an exponent from a tensor's own peak; that is a rule of a
+     CHECKPOINT, and it lives above the seam with the quantizer that reads one. A drawn
+     model has no checkpoint behind it and needs no such rule: one stated exponent covers
+     every tensor of it, and the tables that must share an exponent then do.
+
+     THE STATED 10 OF THE FROZEN ERAS IS THE EXPONENT THE OLD RULE GAVE, and the clamp
+     stays rare under it. A normal at scale 0.02 has a byte spread of 0.02 * 2^10, which
+     is 20.5, thus 127 stands 6.2 sigma out and a clamp is one draw in two thousand
+     million. The peak of a real tensor of those shapes is about four sigma — 76 for a
+     square matrix, 86 for the seat tables — thus every draw fits the byte with room, as
+     it did when each tensor chose its own exponent from its own peak. A stated exponent
+     one step higher would saturate an eighth of every tensor and give the walk another
+     character for nothing the libraries gate.
+
+     These are TEST models: the walks they make are what the cycle benches and the socket
+     simulations record, thus the seeds, the scales and the exponents may not move. *)
+  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
+
+  let drawn_tensor ~e values =
+    { q =
+        Array.map values ~f:(fun v ->
+          clamp_byte (Float.iround_nearest_exn (Float.ldexp v e)))
+    ; e
+    }
+  ;;
+end

@@ -1,5 +1,6 @@
 open Core
 module Nn_quantized = Mgen_nn.Quantized
+module Contract_file = Mgen_nn.Contract_file
 
 module Constants = struct
   (* the shared rules of [Mgen_nn.Quantized] — the exp2, sigmoid and softplus tables stand
@@ -214,31 +215,71 @@ let projection t = (2 * t.d_in) + (2 * t.state) + t.heads
    one — thus a model that no constructor here made can break a rule, and the elaboration
    calls this where a bad shape must fail loudly. *)
 let check_shape t =
+  let power_of_two name v =
+    if not (Int.is_pow2 v) then invalid_argf "%s is %d, not a power of two" name v ()
+  in
   (* the rms_norm of the stream divides by [d] and the gated norm by [d_in]: a shift *)
-  assert (Int.is_pow2 t.d);
-  assert (Int.is_pow2 t.d_in);
+  power_of_two "d" t.d;
+  power_of_two "d_in" t.d_in;
   (* the state address is (head, lane, n) concatenated, and the tap address (channel,
      tap), thus every field of them is a power of two *)
-  assert (Int.is_pow2 t.heads);
-  assert (Int.is_pow2 (head t));
-  assert (Int.is_pow2 t.state);
-  assert (Int.is_pow2 t.taps);
+  power_of_two "the head count" t.heads;
+  power_of_two "the head width" (head t);
+  power_of_two "the state width" t.state;
+  power_of_two "the tap count" t.taps;
   (* the ring wraps by a mask, and the head splits [d] as it splits [d_in] *)
-  assert (Int.is_pow2 t.ring);
-  assert (Int.is_pow2 (head_d t));
-  assert (Array.length t.plan = Array.length t.layers);
+  power_of_two "the ring" t.ring;
+  power_of_two "the attention head width" (head_d t);
+  if Array.length t.plan <> Array.length t.layers
+  then
+    invalid_argf
+      "the plan spells %d layers and the model holds %d"
+      (Array.length t.plan)
+      (Array.length t.layers)
+      ();
   Array.iteri t.layers ~f:(fun index l ->
-    assert (Kind.equal t.plan.(index) (kind_of_layer l));
+    if not (Kind.equal t.plan.(index) (kind_of_layer l))
+    then
+      invalid_argf
+        "layer %d is a %s and the plan spells a %s"
+        index
+        (Kind.spell [| kind_of_layer l |])
+        (Kind.spell [| t.plan.(index) |])
+        ();
     match l with
     | Block l ->
-      assert (Array.length l.decay = t.heads);
-      assert (Array.length l.dt_bias = t.heads);
-      assert (Array.length l.d_skip = t.heads)
+      let rows name row =
+        if Array.length row <> t.heads
+        then
+          invalid_argf
+            "the %s of block %d holds %d rows, not the %d heads"
+            name
+            index
+            (Array.length row)
+            t.heads
+            ()
+      in
+      rows "decay" l.decay;
+      rows "dt bias" l.dt_bias;
+      rows "skip" l.d_skip
     | Attention (_ : attention) | Feed_forward (_ : feed_forward) -> ());
   (* the seat rows and the phase row add row for row — the Embed op of the circuit walks
      them as one tensor — thus one exponent covers both *)
-  assert (t.phase.e = t.seats.e);
-  assert (Array.length t.seats.q = Frame.voices * Vocab.classes * t.d)
+  if t.phase.e <> t.seats.e
+  then
+    invalid_argf
+      "the phase table reads exponent %d and the seat tables %d"
+      t.phase.e
+      t.seats.e
+      ();
+  let seats = Frame.voices * Vocab.classes * t.d in
+  if Array.length t.seats.q <> seats
+  then
+    invalid_argf
+      "the seat tables hold %d weights, not %d"
+      (Array.length t.seats.q)
+      seats
+      ()
 ;;
 
 (* the element counts of the ROM tensors in the order of the image *)
@@ -303,23 +344,11 @@ let d_skip_tensor = "d_skip"
 let beside_the_weights = 9
 
 let of_int8_checkpoint path =
-  let archive = Nx_io.load_safetensors path in
-  let packed name =
-    match Stdlib.Hashtbl.find_opt archive name with
-    | None -> invalid_argf "%s has no tensor %s" path name ()
-    | Some packed -> packed
-  in
-  let values name =
-    Array.map (Nx.to_array (Nx_io.to_typed Nx.int32 (packed name))) ~f:Int32.to_int_exn
-  in
-  let only name =
-    match values name with
-    | [| value |] -> value
-    | row ->
-      invalid_argf "%s: %s holds %d values, not one" path name (Array.length row) ()
-  in
-  let shape_at at = Nx_io.packed_shape (packed (Int.to_string at)) in
-  let count = Stdlib.Hashtbl.length archive - beside_the_weights in
+  let file = Contract_file.open_ path in
+  let values = Contract_file.values file in
+  let only = Contract_file.only file in
+  let shape_at at = Contract_file.shape file (Int.to_string at) in
+  let count = Contract_file.tensor_count file ~beside:beside_the_weights in
   if count < 3
   then invalid_argf "%s: %d tensors is no quantized state model" path count ();
   let d =
@@ -400,12 +429,7 @@ let of_int8_checkpoint path =
     List.init count ~f:(fun at -> { q = values (Int.to_string at); e = exponents.(at) })
     |> Rom_data.of_list ~plan
   in
-  let temper =
-    match values temper_tensor with
-    | [| q_value; q |] -> { Constants.q_value; q }
-    | row ->
-      invalid_argf "%s: the temper holds %d values, not two" path (Array.length row) ()
-  in
+  let temper = Contract_file.scale file temper_tensor in
   (* the four per-head rows stand one row for each BLOCK, indexed by the ordinal of the
      block among the blocks — which is what indexes a memory of the circuit as well *)
   let per_block name =
@@ -518,22 +542,9 @@ module For_test = struct
     }
   ;;
 
-  (* THE DRAWN MODEL STATES ITS EXPONENT AND QUANTIZES NOTHING, as era six's does.
-
-     A quantizer picks an exponent from a tensor's own peak; that is a rule of a
-     CHECKPOINT, and it lives above the seam with the quantizer that reads one. A drawn
-     model has no checkpoint behind it and needs no such rule: one stated exponent covers
-     every tensor, and the seat and phase tables then share it, which is what
+  (* The stated exponent of the frozen eras; [Nn_quantized.For_test.drawn_tensor] carries
+     the measurement behind it, and the seat and phase tables share it, which is what
      [check_shape] holds.
-
-     THE STATED 10 IS THE EXPONENT THE OLD RULE GAVE, and the clamp stays rare under it. A
-     normal at scale 0.02 has a byte spread of 0.02 * 2^10, which is 20.5, thus 127 stands
-     6.2 sigma out and a clamp is one draw in two thousand million. The peak of a real
-     tensor of these shapes is about four sigma — 76 for a square matrix, 86 for the seat
-     tables — thus every draw fits the byte with room, as it did when each tensor chose
-     its own exponent from its own peak. A stated exponent one step higher would saturate
-     an eighth of every tensor and give the walk another character for nothing this
-     library gates.
 
      The per-head numbers draw STRAIGHT INTO THE FORMS the circuit reads, and no float32
      round trip stands between: a test model is not a checkpoint, thus nothing here has to
@@ -546,15 +557,7 @@ module For_test = struct
      It is a TEST model: the walk it makes is what the cycle benches record, thus the
      seeds, the scale and these rules may not move. *)
   let drawn_exponent = 10
-  let clamp_byte v = Int.clamp_exn v ~min:(-127) ~max:127
-
-  let tensor values =
-    { q =
-        Array.map values ~f:(fun v ->
-          clamp_byte (Float.iround_nearest_exn (Float.ldexp v drawn_exponent)))
-    ; e = drawn_exponent
-    }
-  ;;
+  let tensor = Nn_quantized.For_test.drawn_tensor ~e:drawn_exponent
 
   (* a per-head number in Q12, on the port that carries it: the bias joins an int16 sum
      and the skip rides the 18-bit operand port *)
@@ -639,9 +642,9 @@ module For_test = struct
           Array.of_list layers
           (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the
              floor is the elected min-p 0.05 as a share of the peak weight 2^15, which is
-             [jax/nn.py]'s [min_weight_of] and what [test_quantized.py] pins. The elected
+             [jax/fixed.py]'s [min_weight_of] and what [test_fixed.py] pins. The elected
              numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
-             [ELECTED_MIN_P] of [jax/mamba/quantized.py]. *)
+             [ELECTED_MIN_P] of [jax/fixed.py]. *)
       ; temper = Constants.temper_at_one
       ; min_weight = 1638
       }

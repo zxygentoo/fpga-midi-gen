@@ -2,15 +2,22 @@
 
     Every value here is a rule about placement and none of them is about arithmetic: they
     say which primitive holds a product, how many copies a broadcast stands as, and which
-    memory a store maps to. They are facts of the device and of an era's budget for it,
-    thus they stand one time for the whole repository and not once in each unit that obeys
-    them. The design is [docs/diffusion_rtl.md]. *)
+    memory a store maps to. They stand one time here and not once in each unit that obeys
+    them.
+
+    THEY ARE OF TWO KINDS, and a reader should not take the second for the first. [rom],
+    [block_rom], [block_ram] and [slice_rows] are FACTS OF THE DEVICE: any era that stores
+    a weight reads them, and all three do. [no_dsp], [replica] and [slices_for] are ERA
+    SIX'S BUDGET for that device as it stands today — the column array took the DSPs, thus
+    era six pins its other products away from them — and the frozen eras, whose [Mac]
+    deliberately takes a DSP, read none of the three. The design is
+    [docs/diffusion_rtl.md]. *)
 
 open Hardcaml
 
-(** [no_dsp product] pins a product into LUTs. THE COLUMN ARRAY OWNS THE DSPS — the fused
-    rung is 48 by 5, the device's whole 240 — thus every other unit pins its products away
-    from them. *)
+(** [no_dsp product] pins a product into LUTs. THE COLUMN ARRAY OWNS THE DSPS OF ERA SIX —
+    the fused rung is 48 by 5, the device's whole 240 — thus every other unit OF THAT ERA
+    pins its products away from them. *)
 val no_dsp : Signal.t -> Signal.t
 
 (** [replica copy] states one copy of a broadcast and keeps it apart from its siblings. No

@@ -1,14 +1,14 @@
 (** The integer rules the eras share: the fixed-point formats, the tables, the scalar
     rules of the arithmetic, the ROM image of a model and the integer draw.
 
-    THE INTEGER TWINS LIVE ABOVE THE SEAM, in [jax/nn.py] and each era's
+    THE INTEGER TWINS LIVE ABOVE THE SEAM, in [jax/fixed.py] and each era's
     [jax/<era>/quantized.py], and they are what the circuits must equal operation for
     operation. NOTHING HERE QUANTIZES: what stands here is the half of that arithmetic the
     CIRCUITS read — the formats, the tables and the scalar oracles that [Rtl] and each
     era's [Source] elaborate and that the unit gates hold their circuits against, the ROM
     image of a model that is already int8, and the integer draw. A rule written here is
     read by three circuits, thus a change of it changes all three at one time, and
-    [jax/nn.py] states the same rule for the twins with a gate on each shared table. *)
+    [jax/fixed.py] states the same rule for the twins with a gate on each shared table. *)
 
 (** The shared fixed-point formats, the tables and the constants that cross between the
     twins and the circuits. A Q number holds [value * 2^-q]. *)
@@ -45,7 +45,7 @@ module Constants : sig
       The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
       circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
       would overflow that port under a temperature of about 0.36, and this Q holds down to
-      about 0.18. [jax/nn.py]'s [temper_of] states the rule for every temperature.
+      about 0.18. [jax/fixed.py]'s [temper_of] states the rule for every temperature.
 
       A model of a CONTRACT FILE reads its own temper from the file. A DRAWN model has no
       training run behind it, thus it states this one. *)
@@ -83,22 +83,16 @@ end
 (** A vector of a model as this side reads it: the integers a quantizer above the seam
     already stated. The float form and every measure that compares the two — the
     quantization itself, the top-1 agreement, the cosine of the drift reports — stand with
-    the twins, in [jax/nn.py] and [jax/<era>/quantized.py]. *)
+    the twins, in [jax/fixed.py] and [jax/<era>/quantized.py]. *)
 module Tensor : sig
   type t = int array
 end
 
-(** the rails of int16: a value that passes them saturates and never wraps. The scalar
-    clamps below, [Rtl.clamp16] and every clamp of era six read them here, thus none of
-    them can write a rail of its own and part from the twin in silence. The frozen eras
-    still write 32767 out in their own sources; they adopt these in their own round,
-    because adoption moves a netlist. *)
-val int16_high : int
-
-val int16_low : int
-
-(** [clamp16 v] clamps to int16 and never wraps. The detector that COUNTS a clamp lives
-    above the seam with the twins that tally them. *)
+(** [clamp16 v] clamps to the rails of int16 and never wraps. All three eras clamp through
+    this rule and through [Rtl.clamp16], thus none of them writes a rail of its own and
+    parts from the twin in silence. The rails themselves are not exported: a caller that
+    wants them wants one of the two clamps. The detector that COUNTS a clamp lives above
+    the seam with the twins that tally them. *)
 val clamp16 : int -> int
 
 (** The rules of this module as circuits, where a circuit needs the same rule.
@@ -115,36 +109,10 @@ module Rtl : sig
       THE COMPARE STANDS AT [wide]'S OWN WIDTH, whatever that is: an [sresize ~width:32]
       before the compare truncates a 48-bit product and hands the clamp a value that has
       already wrapped, so there is nothing left for it to catch. Era six's epilogue clamps
-      a 48-bit gain product, thus this is the form era six takes; the frozen eras still
-      resize to 32 in their own sources. *)
+      a 48-bit gain product, and the frozen eras alias this one rather than resize to 32
+      first; the expect test beside it measures what that adoption fixed. *)
   val clamp16 : Hardcaml.Signal.t -> Hardcaml.Signal.t
 end
-
-(** the MAC as a reduction: the sum of [f i] over [0 .. n - 1] *)
-val sum : int -> (int -> int) -> int
-
-(** floor of the square root: the one answer the [Isqrt] unit must also give *)
-val isqrt : int -> int
-
-(** [exp2_of_magnitude m] is 2^-m of a nonnegative Q12 magnitude, in Q15: the integer part
-    shifts, the top eight bits of the fraction index the table, and the peak — a magnitude
-    of 0 — is 2^15. [exp2_q u] is the same rule over a Q12 value that is 0 or less: era
-    four exponentiates a nonpositive score and era five a decay that is a magnitude by
-    construction, thus the negation stands at the caller there and not at all here. One
-    definition holds the two readings to one table, and to the [Exp2] unit. *)
-val exp2_of_magnitude : int -> int
-
-val exp2_q : int -> int
-
-(** [sigmoid_q v] is the sigmoid of a Q12 value in Q15 — the rule of the [Sigmoid] unit;
-    [silu v] is [v] times it, shifted back to Q12 and clamped *)
-val sigmoid_q : int -> int
-
-val silu : int -> int
-
-(** [softplus v] is the ramp plus the correction the table holds, clamped to int16 on both
-    sides — the rule of the [Softplus] unit *)
-val softplus : int -> int
 
 (** one quantized weight tensor: the int8 values, flat in the row-major order of the float
     checkpoint, and the exponent [e] that reads them — the value of an element is
@@ -169,3 +137,40 @@ val bases_of : int array -> int array
     on a class that holds weight. It gives the uniform back as a float, thus a caller can
     hand the very same number to a float draw. *)
 val draw : weights:Tensor.t -> Prng.state -> Prng.state * float * int
+
+(** The scalar rules no engine reads any more. The twins moved above the seam this round,
+    thus what is left of this arithmetic in OCaml is an ORACLE: each value states in one
+    line what a unit circuit must give, and the expect test beside that circuit drives it
+    at the rails and against this. Nothing in the elaboration calls them. *)
+module For_test : sig
+  (** the MAC as a reduction: the sum of [f i] over [0 .. n - 1] *)
+  val sum : int -> (int -> int) -> int
+
+  (** floor of the square root: the one answer the [Isqrt] unit must also give *)
+  val isqrt : int -> int
+
+  (** the sigmoid of a Q12 value in Q15 — the rule of the [Sigmoid] unit *)
+  val sigmoid_q : int -> int
+
+  (** [exp2_q u] is 2^u of a Q12 value that is 0 or less, in Q15 — the rule of the [Exp2]
+      unit: the integer part shifts, the top eight bits of the fraction index the table,
+      and the peak — a [u] of 0 — is 2^15. Era four exponentiates a nonpositive score and
+      era five a decay that is a magnitude by construction, thus the negation stands at
+      the caller there, and one definition holds both readings to one table. *)
+  val exp2_q : int -> int
+
+  (** [v] held inside the int8 the ROM carries: a value past a rail saturates. Era six
+      draws straight into byte units and reads this alone. *)
+  val clamp_byte : int -> int
+
+  (** [drawn_tensor ~e values] is a DRAWN tensor at a STATED exponent — the floats scaled
+      by 2^[e], rounded, and clamped into the byte.
+
+      A quantizer picks an exponent from a tensor's own peak; that is a rule of a
+      CHECKPOINT and it lives above the seam. A drawn model has no checkpoint behind it,
+      thus one stated exponent covers every tensor and the tables that must share an
+      exponent then do. The implementation carries the measurement behind the frozen eras'
+      10 and behind era six's 14. These make TEST models: the walks they make are what the
+      cycle benches record, thus the seeds, the scales and the exponents may not move. *)
+  val drawn_tensor : e:int -> float array -> quantized
+end

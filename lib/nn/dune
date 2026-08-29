@@ -9,7 +9,7 @@
  ; the eras — the op vocabularies, the schedules, the parameter structures — stays in the
  ; era libraries, and the op and schedule abstraction is an open question by standing
  ; rule.
- (libraries base stdio hardcaml hardcaml_waveterm mgen_core)
+ (libraries base core stdio hardcaml hardcaml_waveterm nx nx.io mgen_core)
  (flags
   (:standard -open Mgen_core))
  (inline_tests

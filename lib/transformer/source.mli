@@ -51,8 +51,8 @@ val create : model:Model.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
 module For_test : sig
   (** The walk, driven. [bin/gate_transformer.exe walk] runs it and prints what the
       circuit answered, and [jax/tests/test_rtl_transformer.py] states what it must have
-      answered; the frame bench of this module runs the same harness against the OCaml
-      engine while that engine stands. *)
+      answered against the twin. The two sides cannot agree with each other by accident:
+      the driver knows nothing of the twin, and the twin runs no circuit. *)
   module Bench : sig
     type t =
       { rewind : unit -> unit (** load the generator and return the walk to its origin *)

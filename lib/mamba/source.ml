@@ -48,8 +48,8 @@
    The timing rules of era four are inherited as rules and not re-derived: every read two
    cycles from address to data, the ROM's first cycle on the address side (the register is
    load-bearing — the retiming trap is measured and recorded in era four), the DSP a
-   two-register multiply with the fabric accumulator behind it, the banked ROM under
-   RAM_STYLE with a gated-off write port.
+   two-register multiply with the fabric accumulator behind it, the banked ROM a
+   [Placement.rom] under [block_rom].
 
    Two debts, both inherited:
 
@@ -645,14 +645,14 @@ let create ~(model : Model.t) ~seed (i : _ I.t) : _ O.t =
   let bram_waddr = Variable.wire ~default:(zero (head_bits + nbits)) () in
   let bram_wdata = Variable.wire ~default:(zero 16) () in
   (* The banking rules are in [docs/mamba_rtl.md]; the measurements behind them are era
-     four's and they are inherited as rules. A bank is an initialized memory with a
-     gated-off write port, and RAM_STYLE pins it. The address registers once before the
-     tree, and each bank registers its data once behind it: two cycles from address to
-     data, as one ROM, because [reg (reg rom.(addr))] equals [reg (rom.(reg addr))] when
-     the contents never change. The address register is load-bearing, not style: with a
-     combinational address the tools retime the data register onto the address pins of
-     every block RAM primitive and rebuild the whole op-dispatch address cone inside each
-     one. *)
+     four's and they are inherited as rules. A bank is a [Placement.rom] under
+     [block_rom]: an image, one read, and no write logic at all. The address registers
+     once before the tree, and each bank registers its data once behind it: two cycles
+     from address to data, as one ROM, because [reg (reg rom.(addr))] equals
+     [reg (rom.(reg addr))] when the contents never change. The address register is
+     load-bearing, not style: with a combinational address the tools retime the data
+     register onto the address pins of every block RAM primitive and rebuild the whole
+     op-dispatch address cone inside each one. *)
   let rec rom_banked bits addr =
     let count = Array.length bits in
     if Int.is_pow2 count && count <= 1 lsl 15
@@ -1817,32 +1817,33 @@ module For_test = struct
        each time the circuit wrote the whole stream — the embed, then the join of each
        layer — which is what the twin's own [layer_streams] states. It probes the write
        port of the h RAM, thus the trace configuration is on and the gate reads what the
-       machine did and not what its output says. *)
+       machine did and not what its output says. A walk here is millions of cycles, thus
+       it takes [Harness.long_bench] — the three probed nodes are named, so [`All_named]
+       reaches them, and the deduplication is what makes a walk of that length affordable. *)
     let harness ~model ~seed () =
       let module Sim = Cyclesim.With_interface (I) (O) in
       let sim =
         Sim.create
-          ~config:Cyclesim.Config.trace_all
+          ~config:Harness.long_bench
           (create ~model ~seed:(of_unsigned_int ~width:32 seed))
       in
       let inp = Cyclesim.inputs sim in
       let out = Cyclesim.outputs ~clock_edge:Before sim in
-      let node name = Option.value_exn (Cyclesim.lookup_node_by_name sim name) in
-      let wen = node "hram_wen" in
-      let waddr = node "hram_waddr" in
-      let wdata = node "hram_wdata" in
+      let wen = Harness.node sim "hram_wen" in
+      let waddr = Harness.node sim "hram_waddr" in
+      let wdata = Harness.node sim "hram_wdata" in
       let h = Array.create ~len:model.Model.d 0 in
       let writes = ref 0 in
       let snapshots = ref [] in
       let budget = ref 20_000_000 in
-      let signed v = if v >= 1 lsl 31 then v - (1 lsl 32) else v in
       let cycle () =
         Cyclesim.cycle sim;
         Int.decr budget;
         if !budget <= 0 then failwith "the walk did not finish inside its budget";
         if Cyclesim.Node.to_int wen = 1
         then (
-          h.(Cyclesim.Node.to_int waddr) <- signed (Cyclesim.Node.to_int wdata);
+          h.(Cyclesim.Node.to_int waddr)
+          <- Bits.to_signed_int (Cyclesim.Node.to_bits wdata);
           Int.incr writes;
           if !writes % model.Model.d = 0 then snapshots := Array.copy h :: !snapshots)
       in
