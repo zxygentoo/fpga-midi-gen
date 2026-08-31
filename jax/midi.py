@@ -1,13 +1,15 @@
 """The wire side of an audition: one drawn walk to the synthesizer or to a MIDI file.
 
 Both eras' audition tools speak through this module. The music is a list of steps, each a
-list of (kind, pitch) events as data.decode gives them.
+list of (kind, pitch) events as corpus.decode gives them.
 """
 
 import time
 
 import click
 import mido
+
+import cli
 
 NOTE_ON, NOTE_OFF = 0x90, 0x80
 RELEASE_VELOCITY = 0x40  # lib/core/midi.ml
@@ -130,7 +132,7 @@ def save(music, path, *, step_ms, channel, velocity, fade=0):
                 ringing.discard(pitch)
             waited = 0
         waited += 1
-    # the drain, as [play] does it and in the same sorted order: `data.decode` writes an
+    # the drain, as [play] does it and in the same sorted order: `corpus.decode` writes an
     # "off" only where the NEXT frame drops the pitch, thus with no drain the file ends
     # with its last chord still sounding and the fade closes nothing.
     for pitch in sorted(ringing):
@@ -147,15 +149,14 @@ def save(music, path, *, step_ms, channel, velocity, fade=0):
     midi.save(path)
 
 
-def playback_options(command):
-    """The six flags every `sample` command takes: where the music goes and how it is
-    struck.
-
-    They are one set because the wire is one wire -- an era changes the music and never
-    the sending of it -- and a flag added here is added to every audition at once. The
-    shaping of a piece is NOT here: --gap and --fade are era six's, which parts a batch
-    into pieces and closes each one."""
-    options = [
+# The six flags every `sample` command takes: where the music goes and how it is struck.
+#
+# They are one set because the wire is one wire -- an era changes the music and never the
+# sending of it -- and a flag added here is added to every audition at once. The shaping
+# of a piece is NOT here: --gap and --fade are era six's, which parts a batch into pieces
+# and closes each one.
+playback_options = cli.add_options(
+    [
         click.option(
             "--play", "to_synth", is_flag=True, help=f"send to the synth on {DEVICE}"
         ),
@@ -169,20 +170,7 @@ def playback_options(command):
         ),
         click.option("--velocity", default=100),
     ]
-    # click reads a stack of decorators from the bottom up, thus the reverse keeps --help
-    # in the order written above
-    for option in reversed(options):
-        command = option(command)
-    return command
-
-
-def parse_seeds(ctx, param, value):
-    """a list, or LOW-HIGH"""
-    del ctx, param
-    if "-" in value:
-        low, high = value.split("-")
-        return list(range(int(low), int(high) + 1))
-    return [int(seed) for seed in value.split(",")]
+)
 
 
 def audition(music, seeds, *, to_synth, to_file, device, step_ms, channel, velocity):

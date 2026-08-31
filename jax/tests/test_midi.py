@@ -1,10 +1,11 @@
-"""The wire side of an audition: the two gestures that shape the end of a sheet.
+"""The wire side of an audition: the FADE, and what it must never do.
 
-Neither one changes a note. A sheet is a crop and it stops where the corpus was cut; the
-rest and the fade say that an ending is happening, and the tests here pin what they do and
-what they must never do -- a fade that reached zero would write a note-on of velocity
-zero, which is a note-off on the wire, and the note it silenced would ring for ever.
-"""
+It changes no note. A sheet is a crop and it stops where the corpus was cut; the fade says
+that an ending is happening, and every test here reads `midi.fading`. What it must never
+do is reach zero -- a note-on of velocity zero is a NOTE-OFF on the wire, and the note it
+silenced would ring for ever.
+
+The other gesture of the pair, `midi.rest`, is a `time.sleep` and has nothing to pin."""
 
 import itertools
 

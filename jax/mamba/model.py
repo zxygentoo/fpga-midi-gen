@@ -2,7 +2,8 @@
 
 One step of music is one step of the recurrence. Four voice classes enter through four
 tables that sum, and they leave through the same four tables in a chain from the soprano
-down -- the head is `nn.Head`, era four's, unchanged. What changed is the trunk: a Mamba-2
+down -- the head is `ar_model.Head`, era four's, unchanged. What changed is the trunk: a
+Mamba-2
 block in its recurrent form, with a fixed state where era four held a window of keys and
 values.
 
@@ -46,7 +47,7 @@ probe of 2026-08-20: era four's attention SUBLAYER -- 4 heads, ALiBi at the elec
 the causal wall, no feed-forward under it -- swapped in where a block stood. The swap
 takes 16,384 parameters where the block took 27,532, thus the probe cannot win by
 capacity, and the compute hypothesis stays open. The attention is era four's arithmetic
-over `nn`'s own bias and is not written again.
+over `ar_model`'s own bias and is not written again.
 
 The attention layer is the one part of this model with a context. A block carries a state
 of fixed size and knows nothing of how long the walk has run; the attention layer carries
@@ -67,8 +68,9 @@ import jax.numpy as jnp
 from flax import nnx
 from safetensors.numpy import load_file
 
-import nn
-from nn import SLOPE_SPAN, TABLES
+import ar_model
+from ar_model import SLOPE_SPAN, TABLES
+from train import save_checkpoint
 
 # The three kinds of layer. A trunk of blocks alone is the model of docs/mamba.md; a plan
 # with an attention layer in it is the hybrid probe, and the attention is ERA FOUR'S -- 4
@@ -97,8 +99,8 @@ LAYER_TENSORS = {
 
 # The window the attention layer of a hybrid reads at inference. A block has no context
 # and this one does, thus the walk of a hybrid carries a ring where the walk of a trunk
-# carried nothing. It is era four's training window and era four's ring.
-ATTN_CONTEXT = 256
+# carried nothing. It IS the training window, stated once in `ar_model`.
+ATTN_CONTEXT = ar_model.TRAINING_WINDOW
 
 # The Mamba defaults. K is the DRAW of the trainer and no longer a constant of the model:
 # the convolution width is a lever of the sweep, thus a checkpoint states its own K and
@@ -171,13 +173,13 @@ class Block(NamedTensors, nnx.Module):
     def __init__(self, *, d, d_in, heads, state, taps, rngs):
         channels = d_in + 2 * state
         self.w_in = nnx.Param(
-            nn.normal_at(rngs.params(), (d, 2 * d_in + 2 * state + heads))
+            ar_model.normal_at(rngs.params(), (d, 2 * d_in + 2 * state + heads))
         )
-        self.conv = nnx.Param(nn.normal_at(rngs.params(), (channels, taps)))
+        self.conv = nnx.Param(ar_model.normal_at(rngs.params(), (channels, taps)))
         self.dt_bias = nnx.Param(jnp.zeros((heads,), jnp.float32))
         self.a_log = nnx.Param(jnp.zeros((heads,), jnp.float32))
         self.d_skip = nnx.Param(jnp.ones((heads,), jnp.float32))
-        self.w_out = nnx.Param(nn.normal_at(rngs.params(), (d_in, d)))
+        self.w_out = nnx.Param(ar_model.normal_at(rngs.params(), (d_in, d)))
 
     def initial_carry(self, shape, batch, context):
         """the origin of this layer's memory: a zero state and empty taps.
@@ -299,7 +301,7 @@ class Block(NamedTensors, nnx.Module):
         x, b, c = self.split_channels(shape, jax.nn.silu(conv_out))
         dt, a = self.step_size(dt_raw)
         state, read = self.selective_state(shape, state, x, b, c, dt, a)
-        gated = nn.rms_norm(read * jax.nn.silu(z))
+        gated = ar_model.rms_norm(read * jax.nn.silu(z))
         return (state, taps), gated @ self.w_out[...]
 
     def window(self, shape, y, e, span):
@@ -311,7 +313,7 @@ class Block(NamedTensors, nnx.Module):
         x, b, c = self.split_channels(shape, jax.nn.silu(self.convolve_window(u)))
         dt, a = self.step_size(dt_raw)
         read = self.selective_window(shape, x, b, c, dt, a)
-        return nn.rms_norm(read * jax.nn.silu(z)) @ self.w_out[...]
+        return ar_model.rms_norm(read * jax.nn.silu(z)) @ self.w_out[...]
 
 
 class Attention(NamedTensors, nnx.Module):
@@ -323,10 +325,10 @@ class Attention(NamedTensors, nnx.Module):
 
     def __init__(self, *, d, wide, rngs):
         source = (2 * d, d) if wide else (d, d)
-        self.wq = nnx.Param(nn.normal_at(rngs.params(), source))
-        self.wk = nnx.Param(nn.normal_at(rngs.params(), source))
-        self.wv = nnx.Param(nn.normal_at(rngs.params(), (d, d)))
-        self.wo = nnx.Param(nn.normal_at(rngs.params(), (d, d)))
+        self.wq = nnx.Param(ar_model.normal_at(rngs.params(), source))
+        self.wk = nnx.Param(ar_model.normal_at(rngs.params(), source))
+        self.wv = nnx.Param(ar_model.normal_at(rngs.params(), (d, d)))
+        self.wo = nnx.Param(ar_model.normal_at(rngs.params(), (d, d)))
 
     @property
     def kind(self):
@@ -352,7 +354,7 @@ class Attention(NamedTensors, nnx.Module):
 
     def window(self, shape, y, e, span):
         """Era four's attention over a whole window, and it is era four's arithmetic: the
-        bias comes from `nn.attention_bias` and is not written a second time here.
+        bias comes from `ar_model.attention_bias` and is not written a second time here.
 
         It gives the branch after `wo`, where the block form gives the branch after
         `w_out`, thus the caller adds one thing in either case."""
@@ -368,7 +370,7 @@ class Attention(NamedTensors, nnx.Module):
         k = split_heads(source @ self.wk[...])
         v = split_heads(y @ self.wv[...])
         scale = 1.0 / jnp.sqrt(float(shape.head_d))
-        scores = (q @ k.transpose(0, 1, 3, 2)) * scale + nn.attention_bias(
+        scores = (q @ k.transpose(0, 1, 3, 2)) * scale + ar_model.attention_bias(
             shape.heads, length, span
         )
         read = jax.nn.softmax(scores, axis=-1) @ v
@@ -402,10 +404,7 @@ class Attention(NamedTensors, nnx.Module):
 
         q = split_heads((source @ self.wq[...])[:, None, :])
         distance = jnp.arange(context - 1, -1, -1, dtype=jnp.float32)
-        slopes = -(
-            2.0
-            ** (-span * (jnp.arange(shape.heads, dtype=jnp.float32) + 1.0) / shape.heads)
-        )
+        slopes = ar_model.alibi_slopes(shape.heads, span)
         bias = jnp.where(distance < filled, slopes[:, None] * distance[None, :], -1e9)
         scale = 1.0 / jnp.sqrt(float(shape.head_d))
         scores = (
@@ -426,8 +425,8 @@ class FeedForward(NamedTensors, nnx.Module):
     kind = MLP
 
     def __init__(self, *, d, rngs):
-        self.w1 = nnx.Param(nn.normal_at(rngs.params(), (d, 4 * d)))
-        self.w2 = nnx.Param(nn.normal_at(rngs.params(), (4 * d, d)))
+        self.w1 = nnx.Param(ar_model.normal_at(rngs.params(), (d, 4 * d)))
+        self.w2 = nnx.Param(ar_model.normal_at(rngs.params(), (4 * d, d)))
 
     def initial_carry(self, shape, batch, context):
         """no memory at all: a position-wise layer carries nothing between steps"""
@@ -472,7 +471,7 @@ def kind_of_group(shape, d):
 # ---------------------------------------------------------------------
 
 
-class Trunk(nn.Trunk):
+class Trunk(ar_model.Trunk):
     """The skeleton both models of the era carry: the tied head, then the layers of the
     plan.
 
@@ -493,7 +492,7 @@ class Mamba(Trunk):
     def __init__(self, plan, *, d, heads, state, taps=CONV_TAPS, expand=EXPAND,
                  span=SLOPE_SPAN, rngs):
         d_in = expand * d
-        self.head = nn.Head(d, rngs=rngs)
+        self.head = ar_model.Head(d, rngs=rngs)
         self.layers = nnx.List(
             [
                 layer_of(kind, d=d, d_in=d_in, heads=heads, state=state, taps=taps,
@@ -543,10 +542,10 @@ class Mamba(Trunk):
         h = self.head.embed(classes, phases)
         # the embedding the Zamba block reads, normalised once: it is the input of layer 0
         # and it does not change as the stream is written
-        e = nn.rms_norm(h)
+        e = ar_model.rms_norm(h)
         out = []
         for layer, before in zip(self.layers, carry):
-            after, branch = layer.step(shape, before, nn.rms_norm(h), e, self.span)
+            after, branch = layer.step(shape, before, ar_model.rms_norm(h), e, self.span)
             h = h + branch
             out.append(after)
         return out, h
@@ -562,18 +561,12 @@ class Mamba(Trunk):
         dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual
         branch."""
         shape = self.shape
-        h = self.head.embed(classes, phases)
-        keys = iter(jax.random.split(key, shape.layers + 1) if dropout > 0.0 else ())
-
-        def drop(x):
-            if dropout <= 0.0:
-                return x
-            return x * nn.dropout_masks(next(keys), dropout, x.shape)
-
-        h = drop(h)
-        e = nn.rms_norm(h)
+        # the embedding sum, then the one residual branch of each layer
+        drop = ar_model.dropout(key, dropout, shape.layers + 1)
+        h = drop(self.head.embed(classes, phases))
+        e = ar_model.rms_norm(h)
         for layer in self.layers:
-            h = h + drop(layer.window(shape, nn.rms_norm(h), e, self.span))
+            h = h + drop(layer.window(shape, ar_model.rms_norm(h), e, self.span))
         return h
 
     def describe(self):
@@ -586,7 +579,7 @@ class Mamba(Trunk):
         The span goes LAST, thus an older file that does not carry it still reads: [load]
         takes whole layer groups and then one scalar if one is there. It is written even
         where no layer attends, which costs four bytes and keeps one rule."""
-        nn.save_checkpoint(path, self.every_tensor(), span=self.span)
+        save_checkpoint(path, self.every_tensor(), span=self.span)
 
     @classmethod
     def load(cls, path):
@@ -640,7 +633,8 @@ class Mamba(Trunk):
 
     @classmethod
     def drawn(cls, seed, *, d, layers=None, heads, state, taps=CONV_TAPS, expand=EXPAND,
-              conv_scale=nn.DRAW_SCALE, half_lives=None, attention_at=(), spelt=None,
+              conv_scale=ar_model.DRAW_SCALE, half_lives=None, attention_at=(),
+              spelt=None,
               span=SLOPE_SPAN):
         """A model of DRAWN weights: the trainer's opening, and the shape a gate can
         afford.
@@ -673,14 +667,16 @@ class Mamba(Trunk):
             ATTN if at in attention_at else MAMBA for at in range(layers)
         ]
         count = len(TABLES) + sum(len(LAYER_TENSORS[kind]) for kind in plan)
-        keys = iter(jax.random.split(jax.random.PRNGKey(seed), count))
+        keys = iter(jax.random.split(jax.random.key(seed), count))
         held = cls(plan, d=d, heads=heads, state=state, taps=taps, expand=expand,
                    span=span, rngs=nnx.Rngs(0))
-        held.head.take([nn.normal_at(next(keys), s) for s in nn.Head.shapes(d)])
+        held.head.take(
+            [ar_model.normal_at(next(keys), s) for s in ar_model.Head.shapes(d)]
+        )
 
         def block_tensors():
-            w_in = nn.normal_at(next(keys), (d, 2 * d_in + 2 * state + heads))
-            conv = nn.normal_at(next(keys), (channels, taps), conv_scale)
+            w_in = ar_model.normal_at(next(keys), (d, 2 * d_in + 2 * state + heads))
+            conv = ar_model.normal_at(next(keys), (channels, taps), conv_scale)
             step = jax.random.uniform(next(keys), (heads,), minval=0.001, maxval=0.1)
             decay = jax.random.uniform(next(keys), (heads,), minval=1.0, maxval=16.0)
             # the draw above still runs and its key is still spent, thus a ladder run and
@@ -694,7 +690,7 @@ class Mamba(Trunk):
                 jnp.log(jnp.expm1(step)),
                 jnp.log(decay),
                 jnp.ones((heads,), jnp.float32),
-                nn.normal_at(next(keys), (d_in, d)),
+                ar_model.normal_at(next(keys), (d_in, d)),
             ]
 
         for kind, layer in zip(plan, held.layers):
@@ -702,7 +698,7 @@ class Mamba(Trunk):
                 layer.take(block_tensors())
             elif kind == MLP:
                 layer.take(
-                    [nn.normal_at(next(keys), s) for s in ((d, 4 * d), (4 * d, d))]
+                    [ar_model.normal_at(next(keys), s) for s in ((d, 4 * d), (4 * d, d))]
                 )
             else:
                 # the Zamba query and key read the stream beside the embedding, thus
@@ -710,7 +706,7 @@ class Mamba(Trunk):
                 wide = (2 * d, d) if kind == ZATTN else (d, d)
                 layer.take(
                     [
-                        nn.normal_at(next(keys), s)
+                        ar_model.normal_at(next(keys), s)
                         for s in (wide, wide, (d, d), (d, d))
                     ]
                 )

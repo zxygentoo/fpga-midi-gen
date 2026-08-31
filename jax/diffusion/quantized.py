@@ -12,13 +12,16 @@ same attribute names at every level, thus a reader can put `coconet.pairs[7].fir
 `twin.pairs[7].first` and audit one layer against its twin.
 
 THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal and
-differently ordered is a different machine: the gates of `tests/test_rtl.py` hold the
+differently ordered is a different machine: the gates of `tests/test_rtl_diffusion.py`
+hold the
 circuit to these integers write for write.
 
-THE RULES THAT ARE NOT THIS ERA'S COME FROM `fixed.py`: the exponent rule, the rounding,
-the int16 rails, the temper, the shared exp2 table, the counted write and the integer pick
-stand there, where every twin reads them. What stands here is era six's alone -- the
-activation format, the norm fold, the module tree, the contract file and the walk.
+THE RULES THAT ARE NOT THIS ERA'S COME FROM `quantized.py`: the exponent rule, the
+rounding, the int16 rails, the temper, the shared exp2 table, the counted write, the
+integer pick and the ARCHIVE stand there, where every twin reads them.
+`ar_quantized.py` is the step-frame half and this era reads none of it. What stands here
+is era six's alone -- the activation format, the norm fold, the module tree, the layout of
+the file and the walk.
 
 The formats, and where each rule comes from, are `docs/diffusion_rtl.md`:
 
@@ -59,7 +62,7 @@ float scales, because the fold happens here, one time, and the file carries the 
     "activation_q"    int32   []                       the Q of the activation format
 
 EVERY TENSOR IS INT32 AND TWO OF THEM ARE NOT LAYERS. The first is a fact of the OCaml
-reader, which `fixed.py`'s "the contract file" section states once for the three eras;
+reader, which `quantized.py` states once for the three eras;
 the second is this era's layout, above. The metadata is written as well, for a reader
 that has a Python tool in hand.
 """
@@ -72,12 +75,15 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
+import measure
 import prng
-from diffusion import model as sheet
-from fixed import (
+from diffusion import model
+from quantized import (
     EXP2_IN_Q,
     INT16_HIGH,
     INT16_LOW,
+    TEMPER,
+    Tally,
     Temper,
     apply_scale,
     exp2_q,
@@ -89,7 +95,6 @@ from fixed import (
     scalar_tensor,
     tallied_write,
     write_contract,
-    write_tally,
 )
 
 # ---------------------------------------------------------------------
@@ -101,14 +106,28 @@ from fixed import (
 # point of the biases.
 ACTIVATION_Q = 6
 ACTIVATION_ONE = 1 << ACTIVATION_Q
+# What the format reaches in real units: the int16 rail read at Q`ACTIVATION_Q`, which is
+# 2^(15 - ACTIVATION_Q). It is DERIVED and never a literal, because `ACTIVATION_Q` is
+# measured -- the module docstring holds the measurement -- and a written 512.0 beside a
+# moved Q is a number that says nothing and looks like a fact.
+ACTIVATION_CEILING = (INT16_HIGH + 1) / ACTIVATION_ONE
 
 # THE WIDEST LAYER THE INT32 ACCUMULATOR IS EXACT FOR: 9 C products of int8 by int16 reach
 # 9 * 57 * 127 * 32767, which stands under 2^31, and one channel more can pass it. The
 # elected shapes stand far under; the rule stands so the prose cannot rot.
 WIDEST_INPUTS = 57
 
-# the planes the stem reads: one class plane and one mask plane for each seat
-PLANES = 2 * sheet.VOICES
+# THE DRAW OF THIS ERA, WHICH RE-ELECTS `quantized.ELECTED_*` AND SAYS SO HERE. The
+# paper's
+# sampler is the plain softmax and this era keeps it: no min-p floor at all, where the
+# step-frame eras hold one at 0.05. The code release's sampler defaults to 0.99, which is
+# not a measurable difference from 1.0; the flag exists because the ear may want one.
+#
+# A FLOOR HERE WOULD NOT MEAN WHAT IT MEANS THERE. A step-frame draw picks one class of
+# one seat with the whole frame behind it; a Gibbs redraw picks one cell against a sheet
+# that is still wrong around it, and a floor that trimmed its tail would harden the sheet
+# it opened on.
+ELECTED_TEMPERATURE = 1.0
 
 # ---------------------------------------------------------------------
 # the quantization of a checkpoint
@@ -191,7 +210,7 @@ class QuantizedNormedConv(nnx.Module):
         shift = np.asarray(layer.norm.shift[...], np.float64)
         mean = np.asarray(layer.norm.mean[...], np.float64)
         variance = np.asarray(layer.norm.variance[...], np.float64)
-        gain = scale / np.sqrt(variance + sheet.NORM_EPSILON)
+        gain = scale / np.sqrt(variance + model.NORM_EPSILON)
         scales = [gain_scale(float(value), e) for value in gain]
         bias = np.clip(
             round_half_up((shift - mean * gain) * ACTIVATION_ONE), INT16_LOW, INT16_HIGH
@@ -219,7 +238,7 @@ class QuantizedNormedConv(nnx.Module):
         """the five tensors of this layer in the order of the contract file"""
         return [
             np.asarray(self.kernel[...], np.int32),
-            np.array(self.e, np.int32),
+            scalar_tensor(self.e),
             self.gain_q_value[...],
             self.gain_q[...],
             self.bias[...],
@@ -233,7 +252,8 @@ class QuantizedResidualPair(nnx.Module):
     The float pair activates the first layer's output before the second convolution reads
     it; the twin folds that ReLU into the first layer's own counted write, because the
     machine writes what it will read back. The arithmetic is the same and the WRITE STREAM
-    is not, and the write stream is what `tests/test_rtl.py` holds the circuit to."""
+    is not, and the write stream is what `tests/test_rtl_diffusion.py` holds the circuit
+    to."""
 
     def __init__(self, first, second):
         self.first = first
@@ -254,7 +274,7 @@ class QuantizedResidualPair(nnx.Module):
         return first, tallied_write(tally, np.maximum(x + second, 0))
 
 
-class QuantizedCoconet(sheet.Trunk):
+class QuantizedCoconet(model.Trunk):
     """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for
     layer.
 
@@ -268,7 +288,7 @@ class QuantizedCoconet(sheet.Trunk):
         self.temper = temper
 
     @classmethod
-    def of(cls, coconet, temperature=1.0):
+    def of(cls, coconet, temperature=ELECTED_TEMPERATURE):
         """the float model in the arithmetic the board holds.
 
         This is the one quantization of the era -- the drift walk, the audition and the
@@ -281,7 +301,7 @@ class QuantizedCoconet(sheet.Trunk):
             temper=Temper.of(temperature),
         )
 
-    def _writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
+    def _writes(self, classes, hidden, tally, *, rows=model.ROWS):
         """the destination tensor of EVERY layer as written, in the layer order.
 
         IT IS A GENERATOR AND THE TRUNK IS NOT WALKED TWICE: `__call__` keeps the last of
@@ -298,14 +318,14 @@ class QuantizedCoconet(sheet.Trunk):
             yield x
         yield self.head(x, False, tally)
 
-    def __call__(self, classes, hidden, tally, *, rows=sheet.ROWS):
+    def __call__(self, classes, hidden, tally, *, rows=model.ROWS):
         """the logits of one pass over the batch: `[sheets, steps, rows, VOICES]` in the
         activation format, because the head takes no ReLU and keeps it"""
         # the head's write is the last of them, and the deque holds one tensor where a
         # list would hold the trunk's 48
         return deque(self._writes(classes, hidden, tally, rows=rows), maxlen=1)[0]
 
-    def layer_writes(self, classes, hidden, tally, *, rows=sheet.ROWS):
+    def layer_writes(self, classes, hidden, tally, *, rows=model.ROWS):
         """the destination tensor of every layer AS WRITTEN, in the layer order — the
         stem's, then for each pair its opening's tensor and its close's JOINED tensor, and
         the head's logits last.
@@ -335,12 +355,14 @@ def check_shape(twin):
     A LAYER COUNT THAT IS ODD OR TOO SHORT IS NOT CHECKED HERE, because the tree cannot
     hold one. `load` is where a FILE of the wrong tensor count is refused."""
     layers = twin.every_layer()
-    if layers[0].inputs != PLANES:
-        raise ValueError(f"the stem reads {layers[0].inputs} planes, not {PLANES}")
-    if layers[-1].outputs != sheet.VOICES:
+    if layers[0].inputs != model.PLANES:
+        raise ValueError(
+            f"the stem reads {layers[0].inputs} planes, not {model.PLANES}"
+        )
+    if layers[-1].outputs != model.VOICES:
         raise ValueError(
             f"the head states {layers[-1].outputs} channels, "
-            f"not the {sheet.VOICES} voices"
+            f"not the {model.VOICES} voices"
         )
     for at, layer in enumerate(layers):
         if at and layer.inputs != layers[at - 1].outputs:
@@ -348,8 +370,8 @@ def check_shape(twin):
                 f"layer {at} reads {layer.inputs} channels and the layer before it "
                 f"wrote {layers[at - 1].outputs}"
             )
-        if layer.kernel.shape[:2] != (sheet.KERNEL, sheet.KERNEL):
-            raise ValueError(f"the kernel of layer {at} is not {sheet.KERNEL} by 3")
+        if layer.kernel.shape[:2] != (model.KERNEL, model.KERNEL):
+            raise ValueError(f"the kernel of layer {at} is not {model.KERNEL} by 3")
         if layer.inputs > WIDEST_INPUTS:
             raise ValueError(
                 f"layer {at} reads {layer.inputs} channels and the int32 accumulator "
@@ -366,7 +388,7 @@ def check_shape(twin):
 
 # the tensors one layer holds, in the order of the file
 LAYER_TENSORS = 5
-TEMPER = "temper"
+# `TEMPER` is `contract`'s; this era's own scalar name is the activation Q
 ACTIVATION = "activation_q"
 # the tensors the file carries beside its numbered layers
 BESIDE_THE_LAYERS = (TEMPER, ACTIVATION)
@@ -437,8 +459,8 @@ def load(path):
 # ---------------------------------------------------------------------
 
 
-def plane_activations(classes, hidden, rows=sheet.ROWS):
-    """the stem's input tensor, `[sheets, steps, rows, 2 * VOICES]` in the activation
+def plane_activations(classes, hidden, rows=model.ROWS):
+    """the stem's input tensor, `[sheets, steps, rows, model.PLANES]` in the activation
     format.
 
     A cell of the masked roll is 0 or one, exact: a standing cell writes the one in its
@@ -447,12 +469,13 @@ def plane_activations(classes, hidden, rows=sheet.ROWS):
 
     `rows` IS P, THE CIRCUIT'S PARAMETER, and a walk never passes it: the seat registers
     of `model.opening_sheet` reach class 46 and fit no sheet narrower than `ROWS`. What
-    passes a narrow P is the stream gate, whose input is data — see `tests/test_rtl.py`.
+    passes a narrow P is the stream gate, whose input is data — see
+    `tests/test_rtl_diffusion.py`.
     """
     if int(classes.max()) >= rows:
         raise ValueError(f"a class of {int(classes.max())} in a column of {rows} rows")
-    rows = np.arange(rows)[None, None, :, None]
-    roll = rows == classes[:, :, None, :]
+    row_index = np.arange(rows)[None, None, :, None]
+    roll = row_index == classes[:, :, None, :]
     masked = hidden[:, :, None, :]
     planes = np.concatenate(
         [np.where(masked, False, roll), np.broadcast_to(masked, roll.shape)], axis=-1
@@ -465,13 +488,17 @@ def plane_activations(classes, hidden, rows=sheet.ROWS):
 # ---------------------------------------------------------------------
 
 
-def tempered_weights(twin, raw):
+def class_weights(twin, raw):
     """the Q15 weight of every class of one cell, over the batch.
 
     The logits carry Q`ACTIVATION_Q` and the exp2 unit reads Q12, thus the difference
     shifts up by the gap FIRST. A difference read at the wrong Q is silently wrong music:
     unshifted, every weight stands within a fraction of a nat of the peak and the draw is
-    uniform."""
+    uniform.
+
+    IT IS NOT `ar_quantized.tempered_weights`, and the name says so: that rule is the
+    step-frame twins', which read Q12 logits already and hold a MIN-P FLOOR over the
+    weights. This era shifts Q6 up to Q12 first and has no floor."""
     raw = np.asarray(raw, np.int64)
     peak = raw.max(axis=-1, keepdims=True)
     shifted = (raw - peak) << (EXP2_IN_Q - ACTIVATION_Q)
@@ -513,43 +540,53 @@ class Pass(NamedTuple):
 
 
 def passes(twin, states, given, *, walk, tally):
-    """One pass at a time: the masks, one integer forward, the redraws in the cell order.
+    """The INTEGER walk of the era, one pass at a time: `model.gibbs_passes` in the
+    arithmetic of the board, with the record the drift report reads.
+
+    The loop, the schedule and the order of the draws are `gibbs_passes`'s and stand there
+    once for both walks -- a cell no sheet hid takes no uniform included. What is here is
+    this walk's arithmetic, an integer forward and a 24-bit word, and the `Draw` of every
+    cell of the ORDER: a cell nothing hid states an idle record, because the cell order is
+    what a reader of [draws] walks.
 
     `given` is the opening, handed over rather than drawn here so that one walk cannot
-    open on a sheet the other could not. `states` holds one generator for each sheet, thus
-    the walk of seed 7 is the walk of seed 7 in any company, here and on the board.
+    open on a sheet the other could not.
 
-    A CELL THE MASK LEFT STANDING TAKES NO UNIFORM: a walk that spends one on a standing
-    cell states a different piece and no gate below says so. Over a batch that rule is
-    `prng.uniform_word`'s `active`.
-
-    THE TWO LOOPS HERE ARE NOT THE COST OF A WALK, and a round that scans them will find
-    that out late. Profiled 2026-08-29 at T128 N512 on the golden shape: the walk is 60.3
-    s for one sheet, of which the forward above is 81.6 percent and these loops are 18.4 —
-    and they are batched numpy that barely grows with the batch, thus they fall to 1.7
-    percent at sixteen sheets, which is how a sweep runs. The forward is a jitted int32
-    convolution and not overhead. The build-log entry of that day holds the whole
-    profile."""
+    THE CELL LOOPS ARE NOT THE COST OF A WALK, and a round that scans them will find that
+    out late. Profiled 2026-08-29 at T128 N512 on the golden shape: the walk is 60.3 s for
+    one sheet, of which the forward is 81.6 percent and the loops are 18.4 — and they are
+    batched numpy that barely grows with the batch, thus they fall to 1.7 percent at
+    sixteen sheets, which is how a sweep runs. The forward is a jitted int32 convolution
+    and not overhead. The build-log entry of that day holds the whole profile."""
     sheets, steps, _ = given.shape
     idle = np.zeros(sheets, np.int64)
-    classes = given
-    for at in range(walk):
-        threshold = sheet.anneal_threshold(at, walk)
-        states, hidden = sheet.hidden_cells(states, steps, threshold)
-        said = twin(classes, hidden, tally)
-        before, classes, draws = classes, classes.copy(), []
-        for step, voice in sheet.cell_order(steps):
-            active = hidden[:, step, voice]
-            # A CELL NO SHEET HID TAKES NO UNIFORM: an inactive [uniform_word] would
-            # leave every generator where it stood anyway. The record stands all the
-            # same, because the cell order is what a reader of [draws] walks.
-            word = drawn = idle
-            if active.any():
-                states, word = prng.uniform_word(states, active)
-                drawn = pick(tempered_weights(twin, said[:, step, :, voice]), word)
-                classes[active, step, voice] = drawn[active]
-            draws.append(Draw(step, voice, active, word, drawn))
-        yield Pass(before, hidden, said, draws, classes, states)
+    spent = {}
+
+    def forward(classes, hidden):
+        return twin(classes, hidden, tally)
+
+    def redraw(states, said, step, voice, active):
+        states, word = prng.uniform_word(states, active)
+        drawn = pick(class_weights(twin, said[:, step, :, voice]), word)
+        spent[step, voice] = (word, drawn)
+        return states, drawn
+
+    for taken in model.gibbs_passes(
+        states, given, walk=walk, forward=forward, redraw=redraw
+    ):
+        draws = [
+            Draw(
+                step,
+                voice,
+                taken.hidden[:, step, voice],
+                *spent.get((step, voice), (idle, idle)),
+            )
+            for step, voice in model.cell_order(steps)
+        ]
+        spent.clear()
+        yield Pass(
+            taken.before, taken.hidden, taken.said, draws, taken.after, taken.states
+        )
 
 
 def gibbs(twin, states, given, *, walk, tally=None):
@@ -557,7 +594,7 @@ def gibbs(twin, states, given, *, walk, tally=None):
 
     It gives the sheets and the generator behind them, as `infer.gibbs` does, thus a
     caller can hold the two walks side by side. A walk of no passes is the opening."""
-    tally = write_tally() if tally is None else tally
+    tally = Tally() if tally is None else tally
     classes = given
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         classes, states = taken.after, taken.states
@@ -578,10 +615,10 @@ class Drift(NamedTuple):
     same_draw: int  # the cells where both models pick the same class
     mean_cosine: float
     activations_clamped: float  # the share of activation writes that rode the clamp
-    activation_peak: float  # the hottest write in real units; the format holds 512.0
+    activation_peak: float  # the hottest write in real units, against ACTIVATION_CEILING
 
 
-def drift(coconet, states, given, *, walk, temperature=1.0):
+def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
     """the quantized walk, scored against the float model cell for cell.
 
     The engine walks; at every pass the float model is teacher-forced on the ENGINE'S
@@ -592,43 +629,37 @@ def drift(coconet, states, given, *, walk, temperature=1.0):
     The quantization happens here, from the float model handed in, thus the pair under
     comparison cannot slip."""
     twin = QuantizedCoconet.of(coconet, temperature)
-    tally = write_tally()
-    cells = same_peak = same_draw = 0
-    cosine = 0.0
+    tally = Tally()
+    counted = measure.Counted()
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         said = np.asarray(
-            sheet.logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
+            model.logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
             dtype=np.float64,
         )
         for drawn in taken.draws:
             active = drawn.hidden
+            # a cell no sheet hid took no uniform and is no comparison
             if not active.any():
                 continue
-            here = taken.said[active, drawn.step, :, drawn.voice].astype(np.float64)
-            there = said[active, drawn.step, :, drawn.voice]
-            uniform = drawn.word[active] * 2.0**-prng.UNIFORM_BITS
-            cells += int(active.sum())
-            same_peak += int((here.argmax(axis=-1) == there.argmax(axis=-1)).sum())
-            same_draw += int(
-                (
-                    sheet.tempered_pick(there, temperature, uniform)
-                    == drawn.drawn[active]
-                ).sum()
-            )
-            cosine += float(
-                (
-                    (here * there).sum(axis=-1)
-                    / np.sqrt((here * here).sum(axis=-1) * (there * there).sum(axis=-1))
-                ).sum()
+            # THE THREE NUMBERS ARE THE COMMON BATTERY'S, `measure.count_draws`: this era
+            # sends the cell's whole batch of sheets where a step-frame chain sends its
+            # four seats. MIN-P IS ZERO because this era draws with no floor, which is
+            # `model.tempered_pick`'s rule and the one thing that parts the two calls.
+            counted = measure.count_draws(
+                counted,
+                taken.said[active, drawn.step, :, drawn.voice],
+                said[active, drawn.step, :, drawn.voice],
+                drawn=drawn.drawn[active],
+                uniform=drawn.word[active] * 2.0**-prng.UNIFORM_BITS,
+                temperature=temperature,
+                min_p=0.0,
             )
     return Drift(
         passes=walk,
-        cells=cells,
-        same_peak=same_peak,
-        same_draw=same_draw,
-        mean_cosine=1.0 if cells == 0 else cosine / cells,
-        activations_clamped=(
-            0.0 if tally["seen"] == 0 else tally["clamped"] / tally["seen"]
-        ),
-        activation_peak=tally["peak"] / ACTIVATION_ONE,
+        cells=counted.draws,
+        same_peak=counted.same_peak,
+        same_draw=counted.same_draw,
+        mean_cosine=1.0 if counted.draws == 0 else counted.cosine / counted.draws,
+        activations_clamped=tally.clamped_share,
+        activation_peak=tally.peak / ACTIVATION_ONE,
     )

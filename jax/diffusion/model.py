@@ -2,7 +2,7 @@
 
 This is Coconet (Huang et al., arXiv 1903.07227) at the paper's size, on this corpus. One
 sheet is a crop of 128 sixteenth steps -- eight measures, the excerpt length the paper's
-raters heard -- as a PIANO ROLL of `data.CLASSES` rows by four voice channels. The model
+raters heard -- as a PIANO ROLL of `corpus.CLASSES` rows by four voice channels. The model
 is handed the roll with some cells hidden and states a categorical distribution over the
 pitch rows for every cell, hidden or not. Nothing here is causal and nothing here draws:
 the whole sheet is one input, and a piece is written knowing its own ending.
@@ -62,10 +62,10 @@ import numpy as np
 from flax import nnx
 from safetensors.numpy import load_file
 
-import data
-import measure
-import nn
+import corpus
 import prng
+import sample
+from train import save_checkpoint
 
 # ---------------------------------------------------------------------
 # the sheet: the classes of a crop as the paper's input planes
@@ -74,8 +74,12 @@ import prng
 # The paper has no silence row because its data always sings; this corpus rests in 0.35
 # percent of its cells, thus silence is one more class and the paper's constraint -- one
 # row for each voice at each step -- still holds.
-ROWS = data.CLASSES
-VOICES = data.SEATS
+ROWS = corpus.CLASSES
+VOICES = corpus.SEATS
+# the planes the stem reads: one class plane and one mask plane for each seat. It is a
+# fact of the SHEET and not of the twin, thus the stem and the integer twin both read it
+# here rather than each writing `2 * VOICES` again.
+PLANES = 2 * VOICES
 
 # The paper's shape. These are the defaults of the trainer, not a limit of the code: the
 # board ladder of a later round subtracts from them and measures each cut.
@@ -124,7 +128,7 @@ def cell_order(steps):
 
 
 def planes(classes, hidden):
-    """The paper's input: [batch, steps, ROWS, 2 * VOICES], the masked roll beside the
+    """The paper's input: [batch, steps, ROWS, PLANES], the masked roll beside the
     mask.
 
     A masked cell shows zero in every row of its roll column and one in every row of its
@@ -164,18 +168,22 @@ ANNEAL_HIGH = 0.9
 ANNEAL_SPAN = 0.7
 
 
-def anneal(step, total):
-    """The masking probability at step [step] of [total] Gibbs steps:
+def anneal(n, total):
+    """The masking probability at pass [n] of [total] Gibbs passes:
 
         alpha_n = max(LOW, HIGH - n (HIGH - LOW) / (SPAN * total))
 
     High at the opening, where the chain mixes fast and independent resampling is a poor
     approximation, and settled on [ANNEAL_LOW] after an [ANNEAL_SPAN] share of the walk,
     where blocked Gibbs has become nearly the one-variable-at-a-time chain it
-    approximates."""
+    approximates.
+
+    [n] IS THE PASS AND [step] IS THE SIXTEENTH, everywhere in this era: the two loops of
+    a walk -- `infer.gibbs` and `quantized.passes` -- must agree cell for cell, and one
+    name that means the pass in one and the grid in the other is how they part."""
     return max(
         ANNEAL_LOW,
-        ANNEAL_HIGH - (ANNEAL_HIGH - ANNEAL_LOW) * step / (ANNEAL_SPAN * total),
+        ANNEAL_HIGH - (ANNEAL_HIGH - ANNEAL_LOW) * n / (ANNEAL_SPAN * total),
     )
 
 
@@ -187,7 +195,7 @@ def anneal(step, total):
 def opening_sheet(states, steps):
     """`Model.opening_sheet`: a sheet of random notes for each walk of the batch, each
     voice inside the register of its own seat -- one uniform for each cell in the cell
-    order, and the class [low + floor(u * width)] over [measure.RANGES].
+    order, and the class [low + floor(u * width)] over [corpus.VOICE_RANGES].
 
     WHY THE WALK DOES NOT OPEN ON SILENCE, which is the paper's own opening. The paper's
     roll has no silence row, thus an empty cell there states nothing; THIS roll holds
@@ -202,8 +210,8 @@ def opening_sheet(states, steps):
     sheets = len(states)
     classes = np.zeros((sheets, steps, VOICES), np.int32)
     everyone = np.ones(sheets, bool)
-    lows = np.array([low - data.PITCH_LOW + 1 for low, _ in measure.RANGES])
-    widths = np.array([high - low + 1 for low, high in measure.RANGES])
+    lows = np.array([low - corpus.PITCH_LOW + 1 for low, _ in corpus.VOICE_RANGES])
+    widths = np.array([high - low + 1 for low, high in corpus.VOICE_RANGES])
     for step, voice in cell_order(steps):
         states, u = prng.uniform(states, everyone)
         classes[:, step, voice] = lows[voice] + np.floor(u * widths[voice]).astype(
@@ -212,10 +220,66 @@ def opening_sheet(states, steps):
     return states, classes
 
 
-def anneal_threshold(step, total):
-    """`Model.anneal_threshold`: the masking threshold of pass [step] of [total], on the
+def anneal_threshold(n, total):
+    """`Model.anneal_threshold`: the masking threshold of pass [n] of [total], on the
     24-bit grid of the generator. A cell hides exactly when its word falls under it."""
-    return math.floor(anneal(step, total) * 2.0**prng.UNIFORM_BITS)
+    return math.floor(anneal(n, total) * 2.0**prng.UNIFORM_BITS)
+
+
+class Swept(NamedTuple):
+    """One pass of a Gibbs walk: the sheet it opened on, the mask it drew, the logits it
+    read, the sheet its redraws left and the generator behind them.
+
+    A caller that only plays reads the last pass's [after] and [states]; a caller that
+    reports drift reads [before], [hidden] and [said] as well."""
+
+    before: np.ndarray  # [sheets, steps, VOICES]
+    hidden: np.ndarray  # [sheets, steps, VOICES]
+    said: np.ndarray  # [sheets, steps, ROWS, VOICES]
+    after: np.ndarray  # [sheets, steps, VOICES]
+    states: np.ndarray  # [sheets]
+
+
+def gibbs_passes(states, given, *, walk, forward, redraw):
+    """The skeleton of an independent blocked Gibbs walk with the annealed schedule of
+    Yao et al. -- the one loop BOTH walks of this era take, `infer.gibbs` and
+    `quantized.passes`.
+
+    At pass [n] of [walk] every cell draws one uniform in the cell order and hides under
+    the threshold [anneal_threshold] states; ONE forward runs over the whole sheet; then
+    the cell order is walked again and each hidden cell is redrawn. The cells are not
+    conditionally independent, which is exactly why the schedule anneals: a high masking
+    probability mixes fast and resamples badly, and as it falls the block shrinks toward
+    the one-variable-at-a-time chain it approximates.
+
+    THE TWO WALKS MUST AGREE CELL FOR CELL, and that is why the order of the draws stands
+    here and not twice. What is not here is the arithmetic: [forward] takes
+    (classes, hidden) and gives the logits over the whole sheet, and [redraw] takes
+    (states, said, step, voice, active) and gives (states, drawn) -- the float walk draws
+    a float uniform and the twin a 24-bit word, and that is the whole of the difference.
+
+    A CELL NO SHEET HID TAKES NO UNIFORM, and [redraw] is never called for one: an
+    inactive draw would leave every generator where it stood anyway, and a walk that spent
+    one there would state a different piece with no gate to say so.
+
+    EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era; [given] is
+    the opening and conditioning returns with the whole-piece round.
+
+    [states] holds one generator for each sheet, thus the walk of seed 7 is the walk of
+    seed 7 in any company, here and on the board."""
+    _, steps, _ = given.shape
+    classes = given
+    for n in range(walk):
+        threshold = anneal_threshold(n, walk)
+        states, hidden = hidden_cells(states, steps, threshold)
+        said = forward(classes, hidden)
+        before, classes = classes, classes.copy()
+        for step, voice in cell_order(steps):
+            active = hidden[:, step, voice]
+            if active.any():
+                states, drawn = redraw(states, said, step, voice, active)
+                classes[active, step, voice] = drawn[active]
+        yield Swept(before, hidden, said, classes, states)
 
 
 def hidden_cells(states, steps, threshold):
@@ -382,7 +446,7 @@ class Coconet(Trunk):
     def __init__(self, layers, width, *, norm_scale=NORM_SCALE, rngs):
         if layers < 4 or layers % 2:
             raise ValueError(f"{layers} layers is no sheet model")
-        self.stem = NormedConv(2 * VOICES, width, norm_scale=norm_scale, rngs=rngs)
+        self.stem = NormedConv(PLANES, width, norm_scale=norm_scale, rngs=rngs)
         self.pairs = nnx.List(
             [
                 ResidualPair(width, norm_scale=norm_scale, rngs=rngs)
@@ -431,7 +495,7 @@ class Coconet(Trunk):
         find them in a second file would sooner or later pair them with weights they never
         saw."""
         flat = [tensor for layer in self.every_layer() for tensor in layer.tensors()]
-        nn.save_checkpoint(path, flat)
+        save_checkpoint(path, flat)
 
     @classmethod
     def load(cls, path):
@@ -466,7 +530,7 @@ class Coconet(Trunk):
         held = cls(layers, width, norm_scale=norm_scale, rngs=nnx.Rngs(0))
         rng = np.random.default_rng(seed)
         for at, layer in enumerate(held.every_layer()):
-            inputs = 2 * VOICES if at == 0 else width
+            inputs = PLANES if at == 0 else width
             outputs = VOICES if at == layers - 1 else width
             deviation = math.sqrt(2.0 / (KERNEL * KERNEL * inputs))
             layer.take(
@@ -506,5 +570,5 @@ def tempered_pick(raw, temperature, uniform):
     [raw] is [sheets, ROWS] float64.
 
     The era draws with no min-p floor, thus the temper is the peak alone.
-    `nn.pick_share`'s own docstring holds the argument that no fallback is needed."""
-    return nn.pick_share(nn.temper(raw, temperature, 0.0), uniform)
+    `sample.pick_share`'s own docstring holds the argument that no fallback is needed."""
+    return sample.pick_share(sample.temper(raw, temperature, 0.0), uniform)

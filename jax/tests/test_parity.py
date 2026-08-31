@@ -34,15 +34,17 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import data
+import corpus
+import prng
+from diffusion import model as sheet_model
+from mamba import model as mamba_model
 from tests import gate
 from tests.gate import need, run
 from transformer import model
 
 ROOT = gate.ROOT
 CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
-CORPUS = data.FRAMES
-BUILT = gate.BUILT
+CORPUS = corpus.FRAMES
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
 # sides reduce in different orders. A disagreement that matters -- a different mask, a
@@ -64,6 +66,7 @@ def contract_file(era, checkpoint, tmp_path):
         str(checkpoint),
         "--out",
         str(path),
+        cwd=corpus.JAX_ROOT,
     )
     return path
 
@@ -74,11 +77,11 @@ def netlist_md5(argv, tmp_path):
     return hashlib.md5((tmp_path / "top.v").read_bytes()).hexdigest()
 
 
-def windows_of(corpus, shape):
+def windows_of(splits, shape):
     """the canonical valid windows of an era, as classes and phases"""
-    rows = data.eval_rows(corpus["valid"], shape["context"], shape["windows"])
+    rows = corpus.eval_rows(splits["valid"], shape["context"], shape["windows"])
     assert len(rows) == shape["windows"], "the corpus cut a different count of windows"
-    classes, phases = data.stack_rows(rows)
+    classes, phases = corpus.stack_rows(rows)
     return jnp.asarray(classes), jnp.asarray(phases)
 
 
@@ -111,14 +114,14 @@ TRANSFORMER_LOSS = 1.628177
 # IT OWES A VIVADO BUILD before it merges.
 TRANSFORMER_NETLIST_MD5 = "a106ff1a991ed756f4c78af99b8d5b35"
 
-GATE_TRANSFORMER = BUILT / "gate_transformer.exe"
+GATE_TRANSFORMER = gate.driver("gate_transformer.exe")
 
 
 def test_g0_the_transformer_reads_its_measured_loss():
     """THE FLOAT MODEL DOES NOT MOVE. The windows are deterministic and no draw enters,
     thus the number reads the forward alone."""
     need(CHECKPOINT, CORPUS)
-    classes, phases = windows_of(data.load_corpus(CORPUS), TRANSFORMER_SHAPE)
+    classes, phases = windows_of(corpus.load_corpus(CORPUS), TRANSFORMER_SHAPE)
     held = model.Transformer.load(
         str(CHECKPOINT),
         heads=TRANSFORMER_SHAPE["heads"],
@@ -181,16 +184,14 @@ MAMBA_LOSS = 1.640810
 # IT OWES A VIVADO BUILD before it merges.
 MAMBA_NETLIST_MD5 = "e6abe8c20c983a930b99a626c18a9b13"
 
-GATE_MAMBA = BUILT / "gate_mamba.exe"
+GATE_MAMBA = gate.driver("gate_mamba.exe")
 
 
 def test_g0_the_mamba_reads_its_measured_loss():
     """THE FLOAT MODEL DOES NOT MOVE. The recurrence states no shape of its own: every
     width comes out of the file, thus the number reads the forward alone."""
     need(MAMBA_CHECKPOINT, CORPUS)
-    from mamba import model as mamba_model
-
-    classes, phases = windows_of(data.load_corpus(CORPUS), MAMBA_SHAPE)
+    classes, phases = windows_of(corpus.load_corpus(CORPUS), MAMBA_SHAPE)
     held = mamba_model.Mamba.load(str(MAMBA_CHECKPOINT))
     here = seat_loss(held.seat_nll(classes, phases))
     assert here == pytest.approx(MAMBA_LOSS, abs=TOLERANCE), (
@@ -224,11 +225,12 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
 
 # TWO GATES STAND HERE AND NEITHER OF THEM IS OCAML'S ANY MORE. The two temporary gates
 # that welded the two integer twins -- the walk and the drift report -- went with the
-# OCaml twin; `tests/test_rtl.py` holds the CIRCUIT against the JAX twin and is what
+# OCaml twin; `tests/test_rtl_diffusion.py` holds the CIRCUIT against the JAX twin and is
+# what
 # stays.
 
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
-PIECES = data.PIECES
+PIECES = corpus.PIECES
 GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.exe"
 
 # The masked loss of the golden checkpoint over the sheets below, MEASURED 2026-08-28
@@ -253,9 +255,6 @@ def diffusion_gate_masks(sheets, crop):
 
     They come from the shared generator and not from either framework's own draw, thus the
     mask is a fact of this repository and no change of a key rule can move it."""
-    import prng
-    from diffusion import model as sheet_model
-
     states = prng.states(np.arange(1, sheets + 1))
     hidden = np.zeros((sheets, crop, sheet_model.VOICES), dtype=bool)
     everyone = np.ones(sheets, dtype=bool)
@@ -279,7 +278,7 @@ def test_g0_the_float_model_reads_its_measured_loss():
     need(DIFFUSION_CHECKPOINT, PIECES)
     from diffusion import model as sheet_model
 
-    pieces = data.load_pieces(str(PIECES))["valid"]
+    pieces = corpus.load_pieces(str(PIECES))["valid"]
     keep = [
         at for at in range(len(pieces.lengths)) if pieces.lengths[at] >= DIFFUSION_CROP
     ]

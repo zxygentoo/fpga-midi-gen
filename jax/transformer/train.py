@@ -13,8 +13,8 @@ retrain is planned.
 
 import click
 
+import ar_model
 import ar_train
-import nn
 from transformer import model
 
 
@@ -25,7 +25,7 @@ from transformer import model
 @click.option(
     "--alibi-span",
     "span",
-    default=nn.SLOPE_SPAN,
+    default=ar_model.SLOPE_SPAN,
     help="the ALiBi exponent span: the slope of head k is 2^-(span (k+1) / heads). The "
     "draw must state the same.",
 )

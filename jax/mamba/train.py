@@ -15,8 +15,8 @@ retrain is planned. THE DRAW IS THE MODEL'S -- `Mamba.drawn` -- because the gate
 
 import click
 
+import ar_model
 import ar_train
-import nn
 from mamba import model
 
 PLAN_LETTERS = {
@@ -67,8 +67,7 @@ def parse_half_lives(ctx, param, value):
 @click.option(
     "--alibi-span",
     "alibi_span",
-    default=nn.SLOPE_SPAN,
-    type=float,
+    default=ar_model.SLOPE_SPAN,
     help="the ALiBi exponent span of the attention layers: the slope of head k is "
     "2^-(span (k+1) / heads), thus a LARGER span reaches further. Era four elected 4 on "
     "a pure transformer; the file records whichever this run used.",
@@ -101,7 +100,7 @@ def parse_half_lives(ctx, param, value):
 @click.option(
     "--conv-scale",
     type=float,
-    default=nn.DRAW_SCALE,
+    default=ar_model.DRAW_SCALE,
     help="the draw of the convolution kernel; measured against 1/sqrt(K), see "
     "Mamba.drawn",
 )

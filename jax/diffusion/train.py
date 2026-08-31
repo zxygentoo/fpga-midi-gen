@@ -28,11 +28,11 @@ release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no L
 anywhere, thus batch norm and the best-by-valid checkpoint are the whole of its
 regularisation.
 
-THE UPDATE RULE AND THE RATE CURVE ARE `nn.update_rule` AND `nn.learning_rates`, which
+THE UPDATE RULE AND THE RATE CURVE ARE `update_rule` AND `learning_rates`, which
 every era reads; `test_train.py` holds the curve against its closed form.
 
 THE RATE MOVES WITH THE RUNG, and the release carries no flag for it. Measured 2026-08-24
-under the warmup and cosine decay of `nn.learning_rates`, the board rung wants 1.6e-2 and
+under the warmup and cosine decay of `learning_rates`, the board rung wants 1.6e-2 and
 the ceiling 3e-3. The default is the ceiling's, because every other default states the
 paper's shape; a rung passes its own, as docs/diffusion.md records them.
 """
@@ -45,9 +45,9 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-import data
-import nn
+import corpus
 from diffusion import model
+from train import update_rule
 
 # The batch norm of the code release: `popmean -= 0.01 * (popmean - batchmean)`, thus the
 # population keeps 0.99 of itself at every step.
@@ -134,7 +134,7 @@ def probe_batches(crops, batch):
     The probe mean and the training mean do not compare WITH EACH OTHER."""
     classes = crops.every_piece(PROBE_SEED)
     hidden = model.orderless_masks(
-        jax.random.PRNGKey(PROBE_SEED), len(classes), crops.length
+        jax.random.key(PROBE_SEED), len(classes), crops.length
     )
     return [
         (jnp.asarray(classes[at : at + batch]), hidden[at : at + batch])
@@ -175,15 +175,15 @@ def train(
     """The loop of the round: the crop draw, the step, the fixed valid probes and the
     best-by-valid checkpoint. THE SCHEDULE IS INSIDE THE OPTIMIZER and not in this loop.
     """
-    pieces = data.load_pieces(corpus_path)
-    crops = data.Crops(pieces["train"], crop)
-    probe = probe_batches(data.Crops(pieces["valid"], crop), batch)
+    pieces = corpus.load_pieces(corpus_path)
+    crops = corpus.Crops(pieces["train"], crop)
+    probe = probe_batches(corpus.Crops(pieces["valid"], crop), batch)
     rng = np.random.default_rng(seed)
-    key = jax.random.PRNGKey(seed)
+    key = jax.random.key(seed)
     coconet = model.Coconet(layers, width, rngs=nnx.Rngs(seed))
     optimizer = nnx.Optimizer(
         coconet,
-        nn.update_rule(
+        update_rule(
             peak=lr, warmup=warmup, total=steps, clip=clip, weight_decay=weight_decay
         ),
         wrt=nnx.Param,
@@ -242,7 +242,7 @@ def train(
 
 
 @click.command(help=__doc__)
-@click.option("--corpus", "corpus_path", default=str(data.PIECES))
+@click.option("--corpus", "corpus_path", default=str(corpus.PIECES))
 @click.option("--crop", default=model.CROP, help="T, the steps of one sheet")
 @click.option("--layers", default=model.LAYERS, help="L, the paper's 64")
 @click.option("--width", default=model.WIDTH, help="H, the paper's 128 channels")

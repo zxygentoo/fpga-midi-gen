@@ -1,7 +1,13 @@
-"""The corpus, and the ways to draw from it.
+"""The corpus and the vocabulary: the music, and what a class means.
 
 This sits beside the models and not inside one: the corpus is the corpus of the project,
-and every era reads it here.
+and every era reads it here. `lib/corpus` is the same pair below the seam -- `Jsb` for the
+chorales and `Vocab` for the vocabulary -- and `bin/corpus_tool` is what writes the two
+exports this module reads.
+
+THE VOCABULARY IS HERE AND NOT WITH A MODEL, for the same reason: class 0 is silence and
+class 1 + i is the pitch `PITCH_LOW + i` under every era, thus `decode` means one thing on
+the wire whichever model drew the frame.
 
 There are two exports of it, because the eras ask two different questions of the same
 music:
@@ -47,6 +53,17 @@ PITCH_LOW = 36
 # piano roll of the sheet era holds one row for each of them
 PITCH_HIGH = 81
 SILENCE = 0
+
+# THE REGISTER OF EACH SEAT: the lowest and the highest pitch it sings anywhere in this
+# corpus. Measured 2026-08-25 over every step of every piece, and the three splits agree
+# EXACTLY -- thus this is a fact of the genre and not of a draw. It stands here with the
+# vocabulary and not with the battery that first measured it, because era six's opening
+# draws from it: a fact of the CORPUS is read by more than the referee. `Jsb.voice_ranges`
+# is the OCaml side of it, in the corpus module for the same reason.
+#
+# PITCH_LOW to PITCH_HIGH is the union of the four, thus no seat can leave the vocabulary
+# and a violation the battery finds is a voice standing in another voice's register.
+VOICE_RANGES = ((36, 66), (46, 69), (52, 74), (60, 81))
 
 
 def classes_of_codes(codes):

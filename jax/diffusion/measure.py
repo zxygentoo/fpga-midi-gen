@@ -4,7 +4,7 @@ Algorithm 1, and the tail of it.
     uv run python -m diffusion.measure nll     --ckpt ../_train/diffusion/NAME.ckpt
     uv run python -m diffusion.measure corpus
 
-The structure battery is NOT here: it knows nothing of a sheet or a mask, thus it stands
+The common battery is NOT here: it knows nothing of a sheet or a mask, thus it stands
 in the common home, jax/measure.py. What stands here needs the model itself and the mask
 planes.
 
@@ -29,24 +29,23 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-import data
+import cli
+import corpus
 import measure
 from diffusion import model
-
-CORPUS = str(data.PIECES)
 
 
 def corpus_sheets(corpus_path, split, crop, seed):
     """one crop of every piece of a split that holds one, at a fixed seed: the rows the
     corpus row and the likelihood referee both read"""
-    return data.Crops(data.load_pieces(corpus_path)[split], crop).every_piece(seed)
+    return corpus.Crops(corpus.load_pieces(corpus_path)[split], crop).every_piece(seed)
 
 
-def echo_structure(label, sheets):
+def echo_battery(label, sheets):
     """one row of the battery of jax/measure.py, printed under [label]. Every command of
     this round prints rows and each prints the corpus row first, thus this stands here
     once."""
-    for line in measure.structure_lines(label, measure.structure(sheets)):
+    for line in measure.battery_lines(label, measure.battery_row(sheets)):
         click.echo(line)
 
 
@@ -183,7 +182,7 @@ RESAMPLES = 1000
 MARKS = (50, 90, 99)
 
 
-def tail_shape(frames, seed=0):
+def tail_row(frames, seed=0):
     """The tail of the framewise nats: the percentiles of [MARKS], the share of frames
     over [LOUD], and a bootstrap error for each of them.
 
@@ -212,9 +211,9 @@ def tail_line(frames, seed=0):
 
     READ IT AGAINST WHAT IT MEASURES. These are corpus sheets, thus a frame of high nats
     is one where BACH surprised the model, and not one where the model wrote something
-    strange. The second question is [structure]'s clash, which reads the model's own
+    strange. The second question is [battery_row]'s clash, which reads the model's own
     draws."""
-    read = tail_shape(frames, seed)
+    read = tail_row(frames, seed)
     marks = "   ".join(
         f"{name} {value:5.3f} +- {error:.3f}"
         for name, value, error in zip(
@@ -237,19 +236,19 @@ def main():
     pass
 
 
-@main.command(help=measure.structure.__doc__)
-@click.option("--corpus", "corpus_path", default=CORPUS)
-@click.option("--split", default="train", type=click.Choice(data.SPLITS))
+@main.command("corpus", help=measure.battery_row.__doc__)
+@click.option("--corpus", "corpus_path", default=str(corpus.PIECES))
+@click.option("--split", default="train", type=click.Choice(corpus.SPLITS))
 @click.option("--crop", default=model.CROP)
 @click.option("--seed", default=0, help="the crop draw; fixed, thus the row is fixed")
-def corpus(corpus_path, split, crop, seed):
-    echo_structure(f"the corpus, {split}", corpus_sheets(corpus_path, split, crop, seed))
+def corpus_battery(corpus_path, split, crop, seed):
+    echo_battery(f"the corpus, {split}", corpus_sheets(corpus_path, split, crop, seed))
 
 
 @main.command(help=framewise_nll.__doc__)
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--corpus", "corpus_path", default=CORPUS)
-@click.option("--split", default="test", type=click.Choice(data.SPLITS))
+@cli.ckpt_option
+@click.option("--corpus", "corpus_path", default=str(corpus.PIECES))
+@click.option("--split", default="test", type=click.Choice(corpus.SPLITS))
 @click.option("--crop", default=model.CROP)
 @click.option("--orderings", default=ORDERINGS, help="the paper's M")
 @click.option(

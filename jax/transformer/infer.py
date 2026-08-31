@@ -8,7 +8,7 @@ CPU only, and deliberately: every step needs the drawn frame back on the host be
 next forward, so the loop is latency-bound and a GPU would take the device from the
 trainer.
 
-The decode is a rule of the frame and lives in data.py; the player sends what it makes:
+The decode is a rule of the frame and lives in corpus.py; the player sends what it makes:
 raw channel voice bytes on the rawmidi device, with no backend library in the way —
 the wire side itself is midi.py, shared by both eras.
 """
@@ -22,11 +22,23 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-import data
+import ar_model
+import cli
+import corpus
 import midi
-import nn
 import prng
 from transformer import model, quantized
+
+
+@nnx.jit
+def float_window(held, classes, phases):
+    """the float stream over one window, jitted.
+
+    IT TAKES THE MODEL AS AN ARGUMENT AND STANDS AT THE MODULE LEVEL, thus its compiled
+    form is keyed on the shapes and every step of every walk of the process reuses the
+    first compile. A `nnx.jit` built inside `draw` is a new callable at every call, which
+    is the rule `quantized.float_row` states and this is the audition's half of it."""
+    return held.hidden(classes, phases)
 
 
 def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
@@ -50,10 +62,9 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
         )
         return quantized.walk(engine, seeds, steps)[0]
     batch = len(seeds)
-    forward = nnx.jit(lambda held, classes, phases: held.hidden(classes, phases))
     state = prng.states(seeds)
-    lead = data.BAR_STEPS
-    classes = np.zeros((batch, lead, data.SEATS), dtype=np.int32)
+    lead = corpus.BAR_STEPS
+    classes = np.zeros((batch, lead, corpus.SEATS), dtype=np.int32)
 
     # [classes] carries one column for each step drawn so far and the loop starts at
     # [lead], thus the width is [step] at the head of every pass.
@@ -63,13 +74,13 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
         # position. The causal wall keeps a real position from seeing the padding.
         low = max(0, step - context)
         length = step - low
-        window = np.zeros((batch, context, data.SEATS), dtype=np.int32)
+        window = np.zeros((batch, context, corpus.SEATS), dtype=np.int32)
         window[:, :length] = classes[:, low:step]
         # the phase of a position is the position folded into the bar, which is the rule
         # the corpus export states; nothing has to be carried beside the frames
         table = np.zeros((batch, context), dtype=np.int32)
-        table[:, :length] = np.arange(low, step) % nn.PHASE_BUCKETS
-        h = np.asarray(forward(held, jnp.asarray(window), jnp.asarray(table)))[
+        table[:, :length] = np.arange(low, step) % ar_model.PHASE_BUCKETS
+        h = np.asarray(float_window(held, jnp.asarray(window), jnp.asarray(table)))[
             :, length - 1, :
         ].astype(np.float64)
 
@@ -87,78 +98,40 @@ def main():
 
 
 @main.command(help=draw.__doc__)
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@cli.sampler_options
 @click.option(
-    "--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH"
+    "--context", default=ar_model.TRAINING_WINDOW, help="must match the training run"
 )
-@click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
-@click.option("--context", default=256, help="must match the training run")
 @click.option("--heads", default=4, help="must match the training run")
-@click.option("--alibi-span", default=nn.SLOPE_SPAN, help="must match the training run")
-# Elected by ear 2026-08-17 over a sweep of temperature 0.7 to 1.3 against min_p 0.0039
-# to 0.15, and the numbers agree with the ear at both edges, which is rare here. Hotter
-# draws more from the tail: at 1.2 the onset rate passes the corpus and the chords go
-# strange. A higher floor smooths the arrivals and costs the music: min_p 0.15 leaves
-# about one and a half classes standing at a draw, and it reads as dull and MORE silent --
-# silence 5.83 percent against 4.22, gaps 13.4 steps against 9.8, where the corpus gives
-# 4.19 and 9.9.
-# `quantized.ELECTED_*` is the one home of these two numbers since the all-era cut took
-# the OCaml `Policy` away, thus the audition and the contract file temper alike.
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=quantized.ELECTED_MIN_P)
 @click.option(
-    "--quantized",
-    "twin",
-    is_flag=True,
-    help="draw the integer twin of the circuit: the piece the board plays at this seed",
+    "--alibi-span", default=ar_model.SLOPE_SPAN, help="must match the training run"
 )
 @midi.playback_options
-def sample(
-    ckpt,
-    seeds,
-    steps,
-    context,
-    heads,
-    alibi_span,
-    temperature,
-    min_p,
-    twin,
-    to_synth,
-    to_file,
-    device,
-    step_ms,
-    channel,
-    velocity,
-):
+def sample(ckpt, seeds, context, heads, alibi_span, **flags):
     walks = draw(
         model.Transformer.load(ckpt, heads=heads, span=alibi_span),
         seeds=seeds,
-        steps=steps,
         context=context,
-        temperature=temperature,
-        min_p=min_p,
-        twin=twin,
+        steps=flags.pop("steps"),
+        temperature=flags.pop("temperature"),
+        min_p=flags.pop("min_p"),
+        twin=flags.pop("twin"),
     )
-    music = [data.decode(walk) for walk in walks]
-
-    midi.audition(
-        music,
-        seeds,
-        to_synth=to_synth,
-        to_file=to_file,
-        device=device,
-        step_ms=step_ms,
-        channel=channel,
-        velocity=velocity,
-    )
+    midi.audition([corpus.decode(walk) for walk in walks], seeds, **flags)
 
 
 @main.command()
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
 @click.option("--heads", default=4, help="must match the training run")
-@click.option("--context", default=256, help="the attention window of the circuit")
-@click.option("--alibi-span", default=nn.SLOPE_SPAN, help="must match the training run")
+@click.option(
+    "--context",
+    default=ar_model.TRAINING_WINDOW,
+    help="the attention window of the circuit",
+)
+@click.option(
+    "--alibi-span", default=ar_model.SLOPE_SPAN, help="must match the training run"
+)
 @click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
 @click.option("--min-p", default=quantized.ELECTED_MIN_P)
 def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):

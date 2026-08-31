@@ -11,7 +11,7 @@ CPU only, and deliberately: every step needs the drawn frame back on the host be
 next forward, so the loop is latency-bound and a GPU would take the device from the
 trainer.
 
-The decode is a rule of the frame and lives in data.py; the player sends what it makes:
+The decode is a rule of the frame and lives in corpus.py; the player sends what it makes:
 raw channel voice bytes on the rawmidi device, with no backend library in the way —
 the wire side itself is midi.py, shared by both eras.
 """
@@ -25,11 +25,23 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-import data
+import ar_model
+import cli
+import corpus
 import midi
-import nn
 import prng
 from mamba import model, quantized
+
+
+@nnx.jit
+def float_step(held, carry, classes, phases):
+    """one float step of the walk, jitted.
+
+    IT TAKES THE MODEL AS AN ARGUMENT AND STANDS AT THE MODULE LEVEL, thus its compiled
+    form is keyed on the shapes and every step of every walk of the process reuses the
+    first compile. A `nnx.jit` built inside `draw` is a new callable at every call, which
+    is the rule `quantized.float_step` states and this is the audition's half of it."""
+    return held.forward_step(carry, classes, phases)
 
 
 def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twin=False):
@@ -59,13 +71,10 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
         )
         return quantized.walk(engine, seeds, steps)[0]
     batch = len(seeds)
-    forward = nnx.jit(
-        lambda held, carry, classes, phases: held.forward_step(carry, classes, phases)
-    )
     rng = prng.states(seeds)
     carry = held.initial_carry(batch, context=ring)
-    lead = data.BAR_STEPS
-    silence = np.zeros((batch, data.SEATS), dtype=np.int32)
+    lead = corpus.BAR_STEPS
+    silence = np.zeros((batch, corpus.SEATS), dtype=np.int32)
     played = []
     h = None
     for step in range(steps):
@@ -76,8 +85,10 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
         else:
             rng, frame = held.head.draw_frame(h, rng, temperature, min_p)
         played.append(frame)
-        phases = np.full(batch, step % nn.PHASE_BUCKETS, dtype=np.int32)
-        carry, stream = forward(held, carry, jnp.asarray(frame), jnp.asarray(phases))
+        phases = np.full(batch, step % ar_model.PHASE_BUCKETS, dtype=np.int32)
+        carry, stream = float_step(
+            held, carry, jnp.asarray(frame), jnp.asarray(phases)
+        )
         h = np.asarray(stream).astype(np.float64)
     return np.stack(played, axis=1)
 
@@ -88,70 +99,29 @@ def main():
 
 
 @main.command(help=draw.__doc__)
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option(
-    "--seeds", default="1", callback=midi.parse_seeds, help="a list, or LOW-HIGH"
-)
-@click.option("--steps", default=256, help="steps to draw, the silent lead-in inside")
-# The draw of era four, carried over unmeasured: this era re-elects it by ear, and until
-# it does the two eras are auditioned on one policy. `quantized.ELECTED_*` is the one home
-# of these two numbers since the all-era cut took the OCaml `Policy` away, thus the
-# audition and the contract file temper alike.
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=quantized.ELECTED_MIN_P)
+@cli.sampler_options
 @click.option(
     "--ring",
     default=model.ATTN_CONTEXT,
     help="the depth of the attention layer's key and value ring, in steps. It is the "
     "one context this model has, and only where the plan attends at all.",
 )
-@click.option(
-    "--quantized",
-    "twin",
-    is_flag=True,
-    help="draw the integer twin of the circuit: the piece the board plays at this seed",
-)
 @midi.playback_options
-def sample(
-    ckpt,
-    seeds,
-    steps,
-    temperature,
-    min_p,
-    ring,
-    twin,
-    to_synth,
-    to_file,
-    device,
-    step_ms,
-    channel,
-    velocity,
-):
+def sample(ckpt, seeds, ring, **flags):
     walks = draw(
         model.Mamba.load(ckpt),
         seeds=seeds,
-        steps=steps,
-        temperature=temperature,
-        min_p=min_p,
         ring=ring,
-        twin=twin,
+        steps=flags.pop("steps"),
+        temperature=flags.pop("temperature"),
+        min_p=flags.pop("min_p"),
+        twin=flags.pop("twin"),
     )
-    music = [data.decode(walk) for walk in walks]
-
-    midi.audition(
-        music,
-        seeds,
-        to_synth=to_synth,
-        to_file=to_file,
-        device=device,
-        step_ms=step_ms,
-        channel=channel,
-        velocity=velocity,
-    )
+    midi.audition([corpus.decode(walk) for walk in walks], seeds, **flags)
 
 
 @main.command()
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
 @click.option(
     "--ring",

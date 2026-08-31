@@ -220,12 +220,26 @@ It is not 48000 Hz.
 - `board/` — the top level, the configuration and the scripts of each board,
   for example `board/nexys-4`. `board/_generated/` holds the Verilog and
   `board/_build/` the Vivado work; git ignores both.
-- `jax/` — the Python side: `data.py`, `prng.py`, `midi.py` and `measure.py`
-  are common; `nn.py` holds what the float models share and `fixed.py` the
-  integer rules of the twins, as `lib/nn` parts them; `ar_train.py` is the
-  training recipe of eras four and five. Each era has a directory, and
-  `tests/` holds the oracle gates. Git ignores `jax/_data/`; `corpus_tool`
-  rebuilds it.
+- `jax/` — the Python side, parted in two by SCOPE. What all three eras read:
+  `corpus.py` (the chorales and the vocabulary, as `lib/corpus` holds `Jsb`
+  and `Vocab`), `prng.py`, `midi.py`, `cli.py`, `measure.py`, `sample.py` (the
+  host-side draw, whose integer twin is in `quantized.py`), `train.py` (the
+  rate curve, the update rule and the checkpoint a run writes — NOT a loop)
+  and `quantized.py` (the integer rules of every twin AND the contract file;
+  the OCaml side parts those two because `Contract_file` owns a type, which
+  this side has no need of). What only eras four and five read carries the
+  `ar_` prefix: `ar_model.py` (the tied head, the trunk skeleton, the position
+  rule), `ar_quantized.py` (their stream formats, the attention over a ring,
+  the chain and the walk), `ar_train.py` (the recipe) and `ar_measure.py` (the
+  forced pass and the free walk). Every cut runs ONE WAY: an `ar_` module
+  imports the shared one and never the reverse, thus era six cannot read a
+  format it has no stream for. A top-level module and an era's module may
+  share a name (`quantized.py`, `measure.py`, `train.py`); an era file that
+  needs both imports the shared names directly, never the module. Each era
+  has a directory, and `tests/` holds the oracle gates — `tests/gate.py` and
+  `tests/models.py` do not begin with `test_`, because a
+  `from tests.test_x import y` makes a SECOND module of a file pytest already
+  collected. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
 - `corpus/` — the chorale corpus.
 - `_train/` — the training runs: the logs and the checkpoints. Git ignores
   it. Every run pipes to `_train/NAME.log` beside its checkpoint.

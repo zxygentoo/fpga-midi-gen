@@ -41,8 +41,8 @@ root:
 import numpy as np
 import pytest
 
-import fixed
 from diffusion import model, quantized
+from quantized import Tally, engine_states
 from tests import gate
 
 DRIVER = gate.driver("gate_diffusion.exe")
@@ -50,9 +50,16 @@ DRIVER = gate.driver("gate_diffusion.exe")
 VOICES = model.VOICES
 
 
+@pytest.fixture(scope="module", autouse=True)
+def built():
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
+    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
+    for every case of this file before skipping on each. Module scope asks once."""
+    gate.need(DRIVER)
+
+
 def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
     """the driver's report, one line as a list of its words"""
-    gate.need(DRIVER)
     stdout = gate.run(
         DRIVER,
         subcommand,
@@ -84,12 +91,12 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = model.opening_sheet(fixed.engine_states([seed]), steps)
+    states, given = model.opening_sheet(engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in model.cell_order(steps)
     ]
-    tally = fixed.write_tally()
+    tally = Tally()
     for at, taken in enumerate(
         quantized.passes(twin, states, given, walk=walk, tally=tally)
     ):
@@ -219,7 +226,7 @@ def test_the_store_writes_are_the_twins(
         "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
     )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, fixed.write_tally(), rows=rows)
+    want = twin.layer_writes(classes, hidden, Tally(), rows=rows)
     checked = 0
     for word in lines:
         if word[0] == "write":

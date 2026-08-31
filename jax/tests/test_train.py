@@ -18,19 +18,18 @@ shape of a training run and not of a trainer: each era's own CLI, its own draw, 
 loop they share.
 """
 
-import re
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from click.testing import CliRunner
 
-import data
-import nn
+import corpus
+import train
 from mamba import train as mamba_train
+from tests import gate
 from transformer import train as transformer_train
 
-CORPUS = data.FRAMES
+CORPUS = corpus.FRAMES
 
 
 SHORT_RUN = [
@@ -47,13 +46,7 @@ SHORT_RUN = [
 ]
 
 
-def losses_of(command, flags):
-    """the losses one short run printed, or the failure that stopped it"""
-    done = CliRunner().invoke(command, SHORT_RUN + flags)
-    assert done.exit_code == 0, done.output
-    return [float(m) for m in re.findall(r"loss (\d+\.\d+)", done.output)], done.output
-
-
+@pytest.mark.slow
 @pytest.mark.skipif(not CORPUS.exists(), reason="needs corpus_tool export")
 @pytest.mark.parametrize(
     "era,command,flags",
@@ -72,7 +65,7 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
 
     Sixty steps at d 8 costs seconds, and it is the only thing that reads a trainer's
     whole path: the flags, the draw, the optimizer, the loop and the log."""
-    losses, output = losses_of(command, flags)
+    losses, output = gate.losses_of(command, SHORT_RUN + flags)
     assert len(losses) >= 3, output
     assert losses[-1] < losses[0] - 0.2, f"era {era}: the loss did not fall: {losses}"
 
@@ -81,12 +74,12 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
 # The rate curve: optax says what this project's schedule says          #
 # ==================================================================== #
 
-# THE HAND-ROLLED `nn.adamw` AND `nn.schedule` ARE GONE, and the gates that held optax to
-# them went with them: they had done their work, which was to prove that a checkpoint
-# trained under the old rule is a checkpoint of the new one. What is left is the CURVE,
-# against the closed form written here -- because `nn.learning_rates` is now the only
-# statement of it in the code and a test that read it back from itself would state
-# nothing.
+# THE HAND-ROLLED `adamw` AND `schedule` OF THE FIRST ERAS ARE GONE, and the gates that
+# held optax to them went with them: they had done their work, which was to prove that a
+# checkpoint trained under the old rule is a checkpoint of the new one. What is left is
+# the CURVE, against the closed form written here -- because `train.learning_rates` is
+# now the only statement of it in the code and a test that read it back from itself
+# would state nothing.
 
 
 def curve_at(step, peak, warmup, total):
@@ -107,7 +100,7 @@ def curve_at(step, peak, warmup, total):
 
 @pytest.mark.parametrize("warmup,total", [(1000, 30000), (0, 30000), (1000, 200)])
 def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
-    """`nn.learning_rates` at every step of the run, and THE STEP IS ONE BASED.
+    """`train.learning_rates` at every step of the run, and THE STEP IS ONE BASED.
 
     optax hands a schedule its own update count, which is 0 at the first update; the
     correction inside `learning_rates` is what puts the curve on the loop's step, and a
@@ -119,7 +112,7 @@ def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
     )
     # a constant schedule states one scalar whatever it is handed, thus it broadcasts
     ours = np.broadcast_to(
-        np.asarray(nn.learning_rates(peak, warmup, total)(jnp.arange(total))),
+        np.asarray(train.learning_rates(peak, warmup, total)(jnp.arange(total))),
         theirs.shape,
     )
     assert np.max(np.abs(ours - theirs)) < 1e-9
@@ -139,11 +132,14 @@ def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
         assert np.allclose(ours, peak, rtol=1e-5)
 
 
-@pytest.mark.parametrize("clip", [0.0, 1.0])
-def test_a_clip_of_zero_or_less_is_no_clip(clip):
+def test_a_clip_of_zero_is_no_clip():
     """It is not a clip AT zero, which would zero every gradient of the run. The chain
-    leaves the node out entirely."""
-    rule = nn.update_rule(peak=1e-3, warmup=0, total=10, clip=clip, weight_decay=0.0)
+    leaves the node out entirely.
+
+    ONLY the zero case is a property this can hold: Adam is scale-invariant, thus a
+    global-norm clip is unobservable through one update and a positive clip would pass
+    this assertion whatever the chain did."""
+    rule = train.update_rule(peak=1e-3, warmup=0, total=10, clip=0.0, weight_decay=0.0)
     tree = [jnp.full((3,), 1e3, jnp.float32)]
     state = rule.init(tree)
     updates, _ = rule.update(tree, state, tree)

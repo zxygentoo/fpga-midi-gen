@@ -28,15 +28,22 @@ bug. The property part draws seed pairs at a fixed generator and holds the floor
 printed minima keep the calibration honest.
 """
 
+from typing import NamedTuple
+
 import numpy as np
 import pytest
 
-import fixed
 from diffusion import model, quantized
 from mamba import quantized as mamba_twin
-from tests.test_mamba import plan_of
-from tests.test_transformer import drawn as transformer_model
+from quantized import engine_states
+from tests.models import drawn_transformer, plan_of
 from transformer import quantized as transformer_twin
+
+# EVERY GATE IN THIS FILE IS SLOW, and each is slow for the same reason: it MEASURES.
+# 112 drift runs stand here, each a whole walk of a drawn model against its twin, and
+# what they gate is the arithmetic and not a rule of the code. `-m "not slow"` is the
+# inner loop; the whole suite is what a commit passes.
+pytestmark = pytest.mark.slow
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
 # the head, over a quarter of the board's sheet -- two measures
@@ -51,12 +58,13 @@ WALK_SEEDS = (42, 43, 44, 45)
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
-    states, given = model.opening_sheet(fixed.engine_states([walk_seed]), STEPS)
+    states, given = model.opening_sheet(engine_states([walk_seed]), STEPS)
     return quantized.drift(coconet, states, given, walk=passes)
 
 
-# for each weight seed, summed over the four walks: the top-1 count, the same-draw count,
-# the cells they were counted over, and the lowest mean cosine of the four. The sharpest
+# The row `test_a_sweep_states_its_measured_numbers` reads, at the foot of this file: for
+# each weight seed, summed over the four walks, the top-1 count, the same-draw count, the
+# cells they were counted over, and the lowest mean cosine of the four. The sharpest
 # cosine signal is the lowest walk.
 SWEPT = {
     11: (3029, 3040, 3299, 0.9984),
@@ -66,21 +74,10 @@ SWEPT = {
 }
 
 
-@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
-def test_the_sweep_states_its_measured_numbers(weight_seed):
-    """MEASURED NUMBERS AND NOT THRESHOLDS, the rule of the drift gates: a diff here says
-    the integers moved."""
-    cells = same_peak = same_draw = 0
-    low_cosine = 1.0
-    for walk_seed in WALK_SEEDS:
-        said = drift(weight_seed, walk_seed, 16)
-        cells += said.cells
-        same_peak += said.same_peak
-        same_draw += said.same_draw
-        low_cosine = min(low_cosine, said.mean_cosine)
-    wanted_peak, wanted_draw, wanted_cells, wanted_cosine = SWEPT[weight_seed]
-    assert (same_peak, same_draw, cells) == (wanted_peak, wanted_draw, wanted_cells)
-    assert low_cosine == pytest.approx(wanted_cosine, abs=5e-5)
+def sweep_drift(weight_seed, walk_seed):
+    """era six's row of the shared sweep at the foot of this file: 16 passes, where the
+    cosine signal is sharpest"""
+    return drift(weight_seed, walk_seed, 16)
 
 
 # at 8, 32 and 128 passes of one model: the top-1 count, the cells, the mean cosine, the
@@ -136,24 +133,20 @@ def test_the_floors_hold_on_drawn_seed_pairs(capsys):
         if said.activations_clamped > 0.001:
             released += 1
             continue
-        top1, draw = said.same_peak / said.cells, said.same_draw / said.cells
-        low_top1, low_draw = min(low_top1, top1), min(low_draw, draw)
+        low_top1 = min(low_top1, said.same_peak / said.cells)
+        low_draw = min(low_draw, said.same_draw / said.cells)
         low_cosine = min(low_cosine, said.mean_cosine)
-        assert top1 > TOP1_FLOOR and draw > SAME_DRAW_FLOOR, (
-            f"weights {weight_seed}, walk {walk_seed}: top-1 {top1:.3f}, "
-            f"same draw {draw:.3f}"
-        )
-        assert said.mean_cosine > COSINE_FLOOR, (
-            f"weights {weight_seed}, walk {walk_seed}: cosine {said.mean_cosine:.4f}"
-        )
-    # the minima print so that the calibration stays honest: a floor that no trial comes
-    # near is a floor that gates nothing
+    # the minima print BEFORE the floors, as the sibling gates do: they are what the
+    # reader needs at the moment a floor breaks, and an assert inside the loop loses them
     with capsys.disabled():
         print(
             f"\n{TRIALS} drawn seed pairs, {released} released by their clamps: "
             f"low top-1 {low_top1:.3f}  low same draw {low_draw:.3f}  "
             f"low cosine {low_cosine:.4f}"
         )
+    assert low_top1 > TOP1_FLOOR
+    assert low_draw > SAME_DRAW_FLOOR
+    assert low_cosine > COSINE_FLOOR
 
 
 # ==================================================================== #
@@ -174,42 +167,20 @@ TRANSFORMER_STEPS = 40
 def transformer_drift(weight_seed, walk_seed):
     """the drift of one drawn model on one walk"""
     return transformer_twin.drift(
-        transformer_model(weight_seed, heads=TRANSFORMER_HEADS, **TRANSFORMER_SHAPE),
+        drawn_transformer(weight_seed, heads=TRANSFORMER_HEADS, **TRANSFORMER_SHAPE),
         context=TRANSFORMER_CONTEXT,
         steps=TRANSFORMER_STEPS,
         seed=walk_seed,
     )
 
 
-# for each weight seed, summed over the four walks: the top-1 count, the same-draw count,
-# the draws they were counted over, and the lowest mean cosine of the four
+# the sweep row of this era, as `SWEPT` above states the columns
 TRANSFORMER_SWEPT = {
     11: (358, 379, 384, 0.9975),
     23: (370, 380, 384, 0.9981),
     37: (356, 383, 384, 0.9968),
     41: (352, 382, 384, 0.9972),
 }
-
-
-@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
-def test_the_transformer_sweep_states_its_measured_numbers(weight_seed):
-    """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved.
-
-    They were measured on this side and NOT carried over from the OCaml gate that stood
-    before it: the drawn weights come from a JAX draw now, thus the numbers are a
-    re-measurement of the same scheme on a different draw. The old table read 363, 355,
-    361 and 358 top-1 out of the same 384 draws."""
-    draws = same_peak = same_draw = 0
-    low_cosine = 1.0
-    for walk_seed in WALK_SEEDS:
-        said = transformer_drift(weight_seed, walk_seed)
-        draws += said.draws
-        same_peak += said.same_peak
-        same_draw += said.same_draw
-        low_cosine = min(low_cosine, said.mean_cosine)
-    wanted_peak, wanted_draw, wanted_draws, wanted_cosine = TRANSFORMER_SWEPT[weight_seed]
-    assert (same_peak, same_draw, draws) == (wanted_peak, wanted_draw, wanted_draws)
-    assert low_cosine == pytest.approx(wanted_cosine, abs=5e-5)
 
 
 # THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
@@ -266,7 +237,13 @@ def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
 # -- a coarse ring, a softmax and a division -- thus the report answers for the whole
 # model and not for the recurrence alone.
 MAMBA_SPELT = "MMZF"
-MAMBA_SHAPE = {"d": 16, "heads": 2, "state": 8, "taps": 4}
+# d 32 over 2 heads and not 16: the attention head width is a power of FOUR, which is
+# what `ar_quantized.score_shift` needs to divide by its square root in one shift. The
+# table
+# below was re-measured on 2026-08-31 when `check_shape` gained that rule; the numbers it
+# read before were taken at head width 8, where the twin scaled by 1/2 and the float
+# model by 1/sqrt(8).
+MAMBA_SHAPE = {"d": 32, "heads": 2, "state": 8, "taps": 4}
 MAMBA_RING = 16
 MAMBA_STEPS = 64
 
@@ -281,42 +258,22 @@ def mamba_drift(weight_seed, walk_seed, steps=MAMBA_STEPS):
     )
 
 
-# for each weight seed, summed over the four walks: the top-1 count, the same-draw count,
-# the draws they were counted over, and the lowest mean cosine of the four
+# the sweep row of this era, as `SWEPT` above states the columns
 MAMBA_SWEPT = {
-    11: (723, 765, 768, 0.9976),
-    23: (704, 761, 768, 0.9962),
-    37: (709, 751, 768, 0.9962),
-    41: (706, 762, 768, 0.9967),
+    11: (714, 753, 768, 0.9980),
+    23: (712, 760, 768, 0.9980),
+    37: (714, 754, 768, 0.9981),
+    41: (713, 759, 768, 0.9980),
 }
 
 
-@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
-def test_the_mamba_sweep_states_its_measured_numbers(weight_seed):
-    """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved.
-
-    They were measured on this side and NOT carried over from the OCaml gate that stood
-    before it: the drawn weights come from a JAX draw now. The old table read 721, 718,
-    711 and 739 top-1 out of the same 768 draws."""
-    draws = same_peak = same_draw = 0
-    low_cosine = 1.0
-    for walk_seed in WALK_SEEDS:
-        said = mamba_drift(weight_seed, walk_seed)
-        draws += said.draws
-        same_peak += said.same_peak
-        same_draw += said.same_draw
-        low_cosine = min(low_cosine, said.mean_cosine)
-    wanted_peak, wanted_draw, wanted_draws, wanted_cosine = MAMBA_SWEPT[weight_seed]
-    assert (same_peak, same_draw, draws) == (wanted_peak, wanted_draw, wanted_draws)
-    assert low_cosine == pytest.approx(wanted_cosine, abs=5e-5)
-
-
-# at 64, 256 and 1024 steps of one model: the top-1 count, the draws, the mean cosine, and
-# the share of each clamp that fired
+# at 64, 256 and 1024 steps of one model: the top-1 count, the draws and the mean cosine.
+# The clamps are NOT a column: the test asserts all three of them at zero outright, which
+# is the finding, and a table entry would only restate it three times.
 MAMBA_LONG_WALK = {
-    64: (178, 192, 0.9976),
-    256: (886, 960, 0.9979),
-    1024: (3736, 4032, 0.9977),
+    64: (183, 192, 0.9980),
+    256: (893, 960, 0.9982),
+    1024: (3735, 4032, 0.9982),
 }
 
 
@@ -327,7 +284,7 @@ def test_the_mamba_long_walk_does_not_compound(steps):
     The state of a block carries forward for ever, thus a quantization error can compound
     over a walk in a way one step never shows. The same model runs at 64, 256 and 1024
     steps; a cumulative error would show as numbers that FALL with the length. They do
-    not: the top-1 share reads 0.927, 0.923 and 0.927 and the cosine stands flat.
+    not: the top-1 share reads 0.953, 0.930 and 0.926 and the cosine stands flat.
 
     The clamps stand beside them because the formats of this era are chosen with margin
     and not metered on a trained checkpoint: a zero here is the finding that the margin
@@ -359,7 +316,8 @@ def test_the_mamba_floors_hold_on_drawn_seed_pairs(capsys):
     break of the scheme and not a re-draw of the set; the printed minima keep the
     calibration honest.
 
-    The old OCaml gate read 0.875, 0.979 and 0.9972 over 60 pairs of its own draw."""
+    The old OCaml gate read 0.875, 0.979 and 0.9972 over 60 pairs of its own draw. This
+    side reads 0.875, 0.969 and 0.9980 over 12 of its own."""
     generator = np.random.default_rng(7)
     low_peak = low_draw = low_cosine = 1.0
     for _ in range(MAMBA_TRIALS):
@@ -376,3 +334,58 @@ def test_the_mamba_floors_hold_on_drawn_seed_pairs(capsys):
     assert low_peak >= MAMBA_TOP1_FLOOR
     assert low_draw >= MAMBA_SAME_DRAW_FLOOR
     assert low_cosine >= MAMBA_COSINE_FLOOR
+
+
+# ==================================================================== #
+# The fixed sweep of the three eras: one body                          #
+# ==================================================================== #
+
+
+class Sweep(NamedTuple):
+    """One era's fixed sweep, as the gate below runs it.
+
+    [drift] takes a weight seed and a walk seed and gives that era's report. [counted]
+    names the report field that says what the comparison ran over -- `cells` where the
+    era redraws a sheet, `draws` where a chain redraws four seats -- and it is the ONE
+    thing that parts the three bodies. [table] holds, for each weight seed and summed over
+    the four walks, the top-1 count, the same-draw count, the count they were taken over,
+    and the lowest mean cosine of the four."""
+
+    era: str
+    drift: object
+    counted: str
+    table: dict
+
+
+SWEEPS = (
+    Sweep("six", sweep_drift, "cells", SWEPT),
+    # Eras four and five were measured on THIS side and NOT carried over from the OCaml
+    # gates that stood before them: the drawn weights come from a JAX draw now, thus the
+    # numbers are a re-measurement of the same scheme on a different draw. The old gates
+    # read 363, 355, 361, 358 top-1 of 384 draws for era four, and 721, 718, 711, 739 of
+    # 768 for era five.
+    Sweep("four", transformer_drift, "draws", TRANSFORMER_SWEPT),
+    Sweep("five", mamba_drift, "draws", MAMBA_SWEPT),
+)
+
+
+@pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
+@pytest.mark.parametrize("sweep", SWEEPS, ids=[sweep.era for sweep in SWEEPS])
+def test_a_sweep_states_its_measured_numbers(sweep, weight_seed):
+    """MEASURED NUMBERS AND NOT THRESHOLDS, the rule of every drift gate: a diff here says
+    the integers moved, and the reader judges whether it is a re-measurement or a bug.
+
+    The three eras run ONE body because the sweep is one gate: four weight seeds over four
+    walk seeds, summed, against a pinned row. What is each era's own is its drift and its
+    table, above."""
+    counted = same_peak = same_draw = 0
+    low_cosine = 1.0
+    for walk_seed in WALK_SEEDS:
+        said = sweep.drift(weight_seed, walk_seed)
+        counted += getattr(said, sweep.counted)
+        same_peak += said.same_peak
+        same_draw += said.same_draw
+        low_cosine = min(low_cosine, said.mean_cosine)
+    peak, draw, over, cosine = sweep.table[weight_seed]
+    assert (same_peak, same_draw, counted) == (peak, draw, over)
+    assert low_cosine == pytest.approx(cosine, abs=5e-5)

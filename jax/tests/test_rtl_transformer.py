@@ -31,29 +31,32 @@ root:
 """
 
 
-import numpy as np
 import pytest
 
-import fixed
 from tests import gate
-from tests.test_transformer import tiny
+from tests.models import transformer_twin
 from transformer import quantized
 
 DRIVER = gate.driver("gate_transformer.exe")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def built():
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
+    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
+    for every case of this file before skipping on each. Module scope asks once."""
+    gate.need(DRIVER)
+
+
 def drive(path, *, seed, steps):
     """the classes the circuit drew at each step, as the driver states them"""
-    gate.need(DRIVER)
     stdout = gate.run(DRIVER, "walk", "-int8", path, "-seed", seed, "-steps", steps)
-    lines = [line.split() for line in stdout.splitlines() if line.startswith("step")]
-    assert len(lines) == steps, f"the driver stated {len(lines)} steps, wanted {steps}"
-    return np.array([[int(word) for word in line[3:]] for line in lines])
+    return gate.classes_of_walk(stdout, steps)
 
 
 def contract(tmp_path, **shape):
     """a tiny model, drawn here and quantized here, as the file the driver reads"""
-    twin = tiny(**shape)
+    twin = transformer_twin(**shape)
     path = tmp_path / "tiny.int8"
     quantized.save(path, twin)
     return path, quantized.load(path)
@@ -90,22 +93,4 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(
     path, twin = contract(tmp_path, seed=5, d=d, layers=layers, heads=heads)
     circuit = drive(path, seed=seed, steps=steps)
     played, _ = quantized.walk(twin, [seed], steps)
-    parted = np.flatnonzero(~(circuit == played[0]).all(axis=-1))
-    assert not len(parted), (
-        f"the walks part at step {parted[0]}: the circuit drew "
-        f"{list(circuit[parted[0]])} and the twin wants {list(played[0][parted[0]])}"
-    )
-
-
-def test_the_lead_in_draws_nothing_and_moves_no_generator(tmp_path):
-    """One bar of silence opens the walk and the generator does not move through it. A
-    twin that spent a uniform there would draw a different piece from the same seed, and
-    every step of it would be legal music."""
-    _, twin = contract(tmp_path, seed=5, d=8, layers=1, heads=2)
-    played, draws = quantized.walk(twin, [1, 7], fixed.LEAD + 2)
-    assert (played[:, : fixed.LEAD] == 0).all(), "the lead-in is not silent"
-    assert all(not taken for taken in draws[: fixed.LEAD]), "the lead-in drew"
-    assert all(len(taken) == 4 for taken in draws[fixed.LEAD :])
-    # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], fixed.LEAD + 2)
-    assert np.array_equal(alone[0], played[1])
+    gate.assert_one_walk(circuit, played[0])

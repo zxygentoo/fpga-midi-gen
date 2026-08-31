@@ -35,19 +35,24 @@ root:
 import numpy as np
 import pytest
 
-import fixed
 from mamba import quantized
 from tests import gate
-from tests.test_mamba import plan_of
+from tests.models import plan_of
 
 DRIVER = gate.driver("gate_mamba.exe")
 
 
-def drive(subcommand, path, *, seed, steps):
-    """the lines the driver states, each as a list of its words"""
+@pytest.fixture(scope="module", autouse=True)
+def built():
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
+    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
+    for every case of this file before skipping on each. Module scope asks once."""
     gate.need(DRIVER)
-    stdout = gate.run(DRIVER, subcommand, "-int8", path, "-seed", seed, "-steps", steps)
-    return [line.split() for line in stdout.splitlines()]
+
+
+def drive(subcommand, path, *, seed, steps):
+    """the driver's report, whole; each gate below reads the half it states"""
+    return gate.run(DRIVER, subcommand, "-int8", path, "-seed", seed, "-steps", steps)
 
 
 def contract(tmp_path, spelt, *, ring=8, **shape):
@@ -76,17 +81,9 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(tmp_path, spelt, seed, 
     for the whole walk and not for one ring's depth."""
     steps = 20
     path, twin = contract(tmp_path, spelt, **shape)
-    lines = drive("walk", path, seed=seed, steps=steps)
-    circuit = np.array(
-        [[int(w) for w in line[3:]] for line in lines if line[0] == "step"]
-    )
-    assert len(circuit) == steps, f"the driver stated {len(circuit)} steps"
+    circuit = gate.classes_of_walk(drive("walk", path, seed=seed, steps=steps), steps)
     played, _ = quantized.walk(twin, [seed], steps)
-    parted = np.flatnonzero(~(circuit == played[0]).all(axis=-1))
-    assert not len(parted), (
-        f"the walks part at step {parted[0]}: the circuit drew "
-        f"{list(circuit[parted[0]])} and the twin wants {list(played[0][parted[0]])}"
-    )
+    gate.assert_one_walk(circuit, played[0])
 
 
 @pytest.mark.parametrize(
@@ -96,8 +93,11 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(tmp_path, spelt, seed, 
         ("MZF", 42, {}),
         # three blocks the plan interleaves: at one block the tap ring's layer field is
         # absent, at two the top block still fits its memory by an accident of rounding,
-        # and at three it runs off the end if the stride is wrong
-        ("MMZMZF", 7, {"d": 32, "heads": 4, "state": 16}),
+        # and at three it runs off the end if the stride is wrong. TWO heads and not four:
+        # the state memory is the same size either way (heads * head * state), and two
+        # keeps the attention head width a power of four, which `ar_quantized.score_shift`
+        # needs.
+        ("MMZMZF", 7, {"d": 32, "heads": 2, "state": 16}),
         # a wide state and a wide kernel: a stride written for one K and an address field
         # written for one N both land here
         ("MMM", 9, {"state": 32, "taps": 16}),
@@ -110,9 +110,9 @@ def test_the_stream_writes_of_the_circuit_are_the_twins(tmp_path, spelt, seed, s
     where."""
     steps = 6
     path, twin = contract(tmp_path, spelt, **shape)
-    lines = drive("stream", path, seed=seed, steps=steps)
+    stdout = drive("stream", path, seed=seed, steps=steps)
     got = {}
-    for word in lines:
+    for word in (line.split() for line in stdout.splitlines() if line):
         if word[0] == "write":
             got.setdefault(int(word[1]), []).append([int(v) for v in word[3:]])
     want = quantized.streams(twin, [seed], steps)
@@ -130,16 +130,3 @@ def test_the_stream_writes_of_the_circuit_are_the_twins(tmp_path, spelt, seed, s
             )
             checked += 1
     assert checked == steps * (len(twin.plan) + 1)
-
-
-def test_the_lead_in_draws_nothing_and_moves_no_generator(tmp_path):
-    """One bar of silence opens the walk and the generator does not move through it. A
-    twin that spent a uniform there would draw a different piece from the same seed, and
-    every step of it would be legal music."""
-    _, twin = contract(tmp_path, "MZF")
-    played, draws = quantized.walk(twin, [1, 7], fixed.LEAD + 2)
-    assert (played[:, : fixed.LEAD] == 0).all(), "the lead-in is not silent"
-    assert all(not taken for taken in draws[: fixed.LEAD]), "the lead-in drew"
-    # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], fixed.LEAD + 2)
-    assert np.array_equal(alone[0], played[1])

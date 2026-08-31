@@ -30,47 +30,40 @@ import click
 import jax.numpy as jnp
 import numpy as np
 
-import data
-import fixed
+import cli
+import corpus
 import midi
 import prng
-from diffusion import measure as sheet
+from diffusion import measure as referee
 from diffusion import model, quantized
+from quantized import engine_states
 
 
 def gibbs(coconet, given, states, *, walk, temperature):
-    """Independent blocked Gibbs with the annealed schedule of Yao et al.
+    """The FLOAT walk of the era: `model.gibbs_passes`, in float64 over the trained model.
 
-    At pass n of [walk] each cell draws one uniform in the cell order and hides under the
-    threshold [model.anneal_threshold] states. One forward pass runs, and each hidden cell
-    draws one uniform and redraws through [model.tempered_pick]. The cells are not
-    conditionally independent, which is exactly why the schedule anneals: a high masking
-    probability mixes fast and resamples badly, and as it falls the block shrinks toward
-    the one-variable-at-a-time chain it approximates.
+    The loop, the schedule and the order of the draws are `gibbs_passes`'s and stand
+    there once for both walks; what is here is this walk's arithmetic alone -- a float
+    forward, a float uniform and `model.tempered_pick`.
 
-    EVERY CELL OF THE SHEET IS FREE. Nothing is given to a walk of this era; conditioning
-    returns with the whole-piece round.
+    It gives the sheets and the generator behind them, as `quantized.gibbs` does, thus a
+    caller can hold the two walks side by side."""
 
-    [states] holds one generator for each sheet, thus the walk of seed 7 is the walk of
-    seed 7 in any company, here and on the board."""
-    _, steps, _ = given.shape
-    classes = given.copy()
-    for step in range(walk):
-        threshold = model.anneal_threshold(step, walk)
-        states, hidden = model.hidden_cells(states, steps, threshold)
-        said = np.asarray(
+    def forward(classes, hidden):
+        return np.asarray(
             model.logits(coconet, jnp.asarray(classes), jnp.asarray(hidden)),
             dtype=np.float64,
         )
-        for at, voice in model.cell_order(steps):
-            active = hidden[:, at, voice]
-            # A CELL NO SHEET HID TAKES NO UNIFORM, and the draw is skipped whole: an
-            # inactive [uniform] leaves every generator where it stood, thus the walk
-            # is the same walk and only the arithmetic behind it is spared.
-            if active.any():
-                states, u = prng.uniform(states, active)
-                picked = model.tempered_pick(said[:, at, :, voice], temperature, u)
-                classes[active, at, voice] = picked[active]
+
+    def redraw(states, said, step, voice, active):
+        states, u = prng.uniform(states, active)
+        return states, model.tempered_pick(said[:, step, :, voice], temperature, u)
+
+    classes = given
+    for taken in model.gibbs_passes(
+        states, given, walk=walk, forward=forward, redraw=redraw
+    ):
+        classes, states = taken.after, taken.states
     return classes, states
 
 
@@ -94,7 +87,7 @@ def draw(coconet, *, crop, seeds, walk, temperature, twin):
     stands still while the float walk runs from the top state."""
     if twin:
         engine = quantized.QuantizedCoconet.of(coconet, temperature)
-        states, given = model.opening_sheet(fixed.engine_states(seeds), crop)
+        states, given = model.opening_sheet(engine_states(seeds), crop)
 
         def walked():
             return quantized.gibbs(engine, states, given, walk=walk)[0]
@@ -114,19 +107,18 @@ def main():
 
 
 @main.command(help=gibbs.__doc__)
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--corpus", "corpus_path", default=sheet.CORPUS)
-@click.option("--split", default="valid", type=click.Choice(data.SPLITS))
+@cli.ckpt_option
+@click.option("--corpus", "corpus_path", default=str(corpus.PIECES))
+@click.option("--split", default="valid", type=click.Choice(corpus.SPLITS))
 @click.option("--crop", default=model.CROP, help="T; the training crop")
 @click.option(
     "--seeds",
     default="1",
-    callback=midi.parse_seeds,
+    callback=cli.parse_seeds,
     help="a list, or LOW-HIGH; each seed is one sheet, one whole piece",
 )
-# the code release's sampler defaults to 0.99, which is not a measurable difference from
-# 1.0; the flag is here because the ear may want one
-@click.option("--temperature", default=1.0)
+# `quantized.ELECTED_TEMPERATURE` is the one home of this era's draw and states why
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
 @click.option(
     "--quantized",
     "twin",
@@ -162,18 +154,28 @@ def sample(
     corpus_path,
     split,
     corpus_seed,
-    **flags,
+    crop,
+    seeds,
+    temperature,
+    twin,
 ):
     coconet = model.Coconet.load(ckpt)
-    corpus = sheet.corpus_sheets(corpus_path, split, flags["crop"], corpus_seed)
-    classes, seconds = draw(coconet, walk=walk, **flags)
-    sheet.echo_structure("the corpus", corpus)
-    sheet.echo_structure(f"N {walk}, {len(classes)} sheets", classes)
+    reference = referee.corpus_sheets(corpus_path, split, crop, corpus_seed)
+    classes, seconds = draw(
+        coconet,
+        crop=crop,
+        seeds=seeds,
+        walk=walk,
+        temperature=temperature,
+        twin=twin,
+    )
+    referee.echo_battery("the corpus", reference)
+    referee.echo_battery(f"N {walk}, {len(classes)} sheets", classes)
     click.echo(f"# {seconds:.1f} s, {walk} passes of {len(classes)} sheets")
 
     # a sheet is a whole piece, thus several of them are several pieces: the synth hears
     # them in turn and the disk takes one file for each
-    music = [data.decode(drawn) for drawn in classes]
+    music = [corpus.decode(drawn) for drawn in classes]
     for at, piece in enumerate(music):
         if len(music) > 1:
             click.echo(f"# sheet {at}")
@@ -208,17 +210,17 @@ def sample(
 
 
 @main.command()
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@cli.ckpt_option
 @click.option("--crop", default=model.CROP, help="T; the steps of the sheet")
 @click.option("--seed", default=42, help="N, the seed of the walk")
 @click.option("--walk", default=32, help="N, the Gibbs passes to compare")
-@click.option("--temperature", default=1.0)
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
 def drift(ckpt, crop, seed, walk, temperature):
     """What the quantization costs, measured on the walk the board takes: at every pass
     the float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands
     between the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
-    states, given = model.opening_sheet(fixed.engine_states([seed]), crop)
+    states, given = model.opening_sheet(engine_states([seed]), crop)
     said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 
@@ -233,14 +235,15 @@ def drift(ckpt, crop, seed, walk, temperature):
     )
     click.echo(
         f"activations on the clamp: {100.0 * said.activations_clamped:.4f}%  "
-        f"the hottest write: {said.activation_peak:.1f} of the format's 512.0"
+        f"the hottest write: {said.activation_peak:.1f} of the format's "
+        f"{quantized.ACTIVATION_CEILING:.1f}"
     )
 
 
 @main.command()
-@click.option("--ckpt", required=True, type=click.Path(exists=True, dir_okay=False))
+@cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
-@click.option("--temperature", default=1.0)
+@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
 def quantize(ckpt, out, temperature):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 

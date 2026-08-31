@@ -12,9 +12,11 @@ IT CARRIES THE FLOAT MODEL'S SKELETON, `model.Trunk`, under the same attribute n
 every level: `twin.layers[k].wq` is the quantization of `float.layers[k].wq` and nothing
 has to be aligned by hand.
 
-The rules that are not this era's come from `fixed.py`: the exponent rule, the rounding,
-the int16 rails, the temper, the min-p floor, the shared exp2 table and the integer pick
-stand there, where every twin reads them.
+The rules that are not this era's come from two files. `quantized.py` holds what all
+three eras read -- the exponent rule, the rounding, the int16 rails, the temper, the
+min-p floor, the shared exp2 table, the integer pick and the CONTRACT FILE -- and
+`ar_quantized.py` what this era and era five share: the stream formats, the norm, the
+attention over a ring, the chain and the walk.
 
 THE CONTRACT FILE is what crosses the seam to the elaboration. `save` writes it and
 `Model.of_int8_checkpoint` reads it; `load` reads it back and a round trip is exact. It
@@ -42,10 +44,10 @@ it. `d` and the layer count are NOT in the file: the seat tensor sizes d and the
 count states the layers, as the float reader derives them.
 
 EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS -- both facts of the OCaml reader, and
-`fixed.py`'s "the contract file" section states them once for the three eras and writes
-the archive. The metadata is written as well, for a reader that has a Python tool in
-hand: the temperature, the min-p and the checkpoint are PROVENANCE, because the temper
-and the floor are already folded.
+`quantized.py` states them once for the three eras and writes the archive. The metadata
+is written as well, for a reader that has a Python tool in hand: the temperature, the
+min-p and the checkpoint are PROVENANCE, because the temper and the floor are already
+folded.
 """
 
 from typing import NamedTuple
@@ -53,44 +55,73 @@ from typing import NamedTuple
 import numpy as np
 from flax import nnx
 
-import data
-import fixed
+import ar_model
+import ar_quantized
+import corpus
 import measure
-import nn
-from nn import TABLES
+from ar_model import TABLES
+from quantized import (
+    ELECTED_MIN_P,
+    ELECTED_TEMPERATURE,
+    EXPONENTS,
+    MIN_WEIGHT,
+    TEMPER,
+    Temper,
+    clamp16,
+    engine_states,
+    image_from_tensors,
+    image_tensors,
+    min_weight_of,
+    read_contract,
+    scalar_tensor,
+    write_contract,
+)
 from transformer import model as step
 
-TEMPER = "temper"
-MIN_WEIGHT = "min_weight"
+# the names of this era's own scalars; the shared ones are `contract`'s
 HEADS = "heads"
 CONTEXT = "context"
 SLOPE_SPAN = "slope_span"
 # the tensors the file carries beside its numbered weights
-BESIDE_THE_WEIGHTS = (fixed.EXPONENTS, TEMPER, MIN_WEIGHT, HEADS, CONTEXT, SLOPE_SPAN)
+BESIDE_THE_WEIGHTS = (
+    EXPONENTS,
+    TEMPER,
+    MIN_WEIGHT,
+    HEADS,
+    CONTEXT,
+    SLOPE_SPAN,
+)
 
-# the policy the ear elected, stated once in `fixed`; era four takes it as it stands
-ELECTED_TEMPERATURE = fixed.ELECTED_TEMPERATURE
-ELECTED_MIN_P = fixed.ELECTED_MIN_P
+# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above and stand as
+# attributes of this module for era four's player to read: the policy has one home,
+# `quantized.py`, and this era does not re-elect it.
 
 
-class QuantizedLayer(fixed.QuantizedImage):
+class QuantizedLayer(ar_quantized.QuantizedImage):
     """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
     tensor and under the same names."""
 
     names = step.LAYER_TENSORS
 
 
-class QuantizedTransformer(step.Trunk):
+class QuantizedTransformer:
     """The model as the bitstream carries it.
 
     The draw stands beside the layers because the bitstream carries it: one quantization
     serves every seed of a batch, as one bitstream serves every seed of the board. The
     heads, the context and the span are in no tensor, and the elaboration reads a file and
-    no flag, thus they stand here too."""
+    no flag, thus they stand here too.
+
+    IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
+    era is a Flax module -- thus [every_tensor] is restated below. THE ATTRIBUTE NAMES
+    ARE THE PARITY and not the base class: `held.layers[2].wq` and
+    `twin.layers[2].wq` are the same layer under the two arithmetics, which is what a
+    reader auditing them needs.
+    The rest of `ar_model.Trunk` reads a float forward and no twin ever wanted it."""
 
     def __init__(self, *, head, layers, heads, context, slope_span, temper, min_weight):
         self.head = head
-        self.layers = nnx.List(list(layers))
+        self.layers = list(layers)
         self.heads = int(heads)
         self.context = int(context)
         self.slope_span = int(slope_span)
@@ -100,6 +131,13 @@ class QuantizedTransformer(step.Trunk):
     @property
     def d(self):
         return self.head.d
+
+    def every_tensor(self):
+        """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
+        tensors of each layer, which is `ar_model.Trunk`'s order and the ROM's."""
+        return self.head.tensors() + [
+            tensor for layer in self.layers for tensor in layer.tensors()
+        ]
 
     @classmethod
     def of(
@@ -116,13 +154,13 @@ class QuantizedTransformer(step.Trunk):
         elaboration all take their model here, thus the pair under comparison cannot slip.
         The heads and the span come off the model, which is where a player set them."""
         return cls(
-            head=fixed.QuantizedHead.of(model.head),
+            head=ar_quantized.QuantizedHead.of(model.head),
             layers=[QuantizedLayer.of(layer) for layer in model.layers],
             heads=model.heads,
             context=context,
             slope_span=model.span,
-            temper=fixed.Temper.of(temperature),
-            min_weight=fixed.min_weight_of(min_p),
+            temper=Temper.of(temperature),
+            min_weight=min_weight_of(min_p),
         )
 
 
@@ -143,23 +181,22 @@ def check_shape(twin):
     if d % twin.heads:
         raise ValueError(f"{twin.heads} heads do not divide d {d}")
     head_d = d // twin.heads
-    if head_d & (head_d - 1) or (head_d.bit_length() - 1) % 2:
+    if not ar_quantized.is_power_of_four(head_d):
         raise ValueError(f"the head width {head_d} must be a power of four")
-    if twin.head.seats.size != data.SEATS * data.CLASSES * d:
-        raise ValueError("the seat table holds no row for each seat and class")
+    twin.head.check_tables(d)
 
 
 def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    tensors = fixed.image_tensors(twin.every_tensor())
-    tensors[HEADS] = fixed.scalar_tensor(twin.heads)
-    tensors[CONTEXT] = fixed.scalar_tensor(twin.context)
-    tensors[SLOPE_SPAN] = fixed.scalar_tensor(twin.slope_span)
+    tensors = image_tensors(twin.every_tensor())
+    tensors[HEADS] = scalar_tensor(twin.heads)
+    tensors[CONTEXT] = scalar_tensor(twin.context)
+    tensors[SLOPE_SPAN] = scalar_tensor(twin.slope_span)
     tensors[TEMPER] = twin.temper.tensor()
-    tensors[MIN_WEIGHT] = fixed.scalar_tensor(twin.min_weight)
-    fixed.write_contract(
+    tensors[MIN_WEIGHT] = scalar_tensor(twin.min_weight)
+    write_contract(
         path,
         tensors,
         {
@@ -176,17 +213,17 @@ def load(path):
 
     The temperature is provenance and not arithmetic -- the temper is already folded --
     thus it travels in the metadata alone and only a reader with a Python tool sees it."""
-    tensors, metadata = fixed.read_contract(path)
+    tensors, metadata = read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
     if count < len(TABLES) + step.PER_LAYER or spare:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized step model")
-    exponents = tensors[fixed.EXPONENTS]
+    exponents = tensors[EXPONENTS]
     twin = QuantizedTransformer(
-        head=fixed.QuantizedHead.of_file(tensors, exponents),
+        head=ar_quantized.QuantizedHead.of_file(tensors, exponents),
         layers=[
             QuantizedLayer(
-                fixed.image_of(
+                image_from_tensors(
                     tensors,
                     exponents,
                     first=len(TABLES) + step.PER_LAYER * at,
@@ -198,7 +235,7 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=fixed.Temper.of_file(tensors, metadata, key=TEMPER),
+        temper=Temper.of_file(tensors, metadata, key=TEMPER),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -211,7 +248,7 @@ def load(path):
 
 # THE FORMAT THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
 # the hidden vector, the epsilon, log2(e), the lead-in, and the shifts and roots that read
-# them -- stands in `fixed.py`, where `Nn_quantized.Constants` has its twin.
+# them -- stands in `ar_quantized.py`, where `Nn_quantized.Constants` has its twin.
 #
 # `KV_Q` is the query, the keys, the values and the context: the rings store these rows,
 # Q12 in int16. Era five states a 12 of its own -- `V_Q`, which names a BLOCK's value rows
@@ -236,10 +273,6 @@ class Engine(NamedTuple):
     position: int  # one forward for each step, thus this counts the steps as well
     states: np.ndarray  # [walks], the generator of each walk
 
-    @property
-    def d(self):
-        return self.twin.d
-
 
 def engine(twin, seeds):
     """the origin of a batch of walks: an empty ring, no residual, and the generator at
@@ -256,7 +289,7 @@ def engine(twin, seeds):
         kc=np.zeros(rings, np.int64),
         vc=np.zeros(rings, np.int64),
         position=0,
-        states=fixed.engine_states(seeds),
+        states=engine_states(seeds),
     )
 
 
@@ -269,16 +302,16 @@ def forward(e, classes, phase):
     kc, vc = e.kc.copy(), e.vc.copy()
     h = twin.head.embed(classes, phase)
     for at, layer in enumerate(twin.layers):
-        y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
+        y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
 
         query, key, value = (
             projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
         )
-        kc[:, at, cur, :] = fixed.coarse_to_ring(key)
-        vc[:, at, cur, :] = fixed.coarse_to_ring(value)
+        kc[:, at, cur, :] = ar_quantized.coarse_to_ring(key)
+        vc[:, at, cur, :] = ar_quantized.coarse_to_ring(value)
         # the rings of ONE layer: era four's second axis is the layer, and slicing it here
         # is what lets the shared `attend` name no era's axis
-        context = fixed.attend(
+        context = ar_quantized.attend(
             kc[:, at],
             vc[:, at],
             query=query,
@@ -288,36 +321,38 @@ def forward(e, classes, phase):
             span=twin.slope_span,
             row_q=KV_Q,
         )
-        h = fixed.join(h, layer.wo, values=context, at=KV_Q)
-        y = fixed.rms_norm_q(h, at=fixed.H_Q, width=d)
-        hidden = fixed.clamp16(
+        h = ar_quantized.join(h, layer.wo, values=context, at=KV_Q)
+        y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
+        hidden = clamp16(
             np.maximum(
-                fixed.rescale(
-                    y @ layer.w1.values, at=fixed.Y_Q + layer.w1.e, to=fixed.HID_Q
+                ar_quantized.rescale(
+                    y @ layer.w1.values,
+                    at=ar_quantized.Y_Q + layer.w1.e,
+                    to=ar_quantized.HID_Q,
                 ),
                 0,
             )
         )
-        h = fixed.join(h, layer.w2, values=hidden, at=fixed.HID_Q)
+        h = ar_quantized.join(h, layer.w2, values=hidden, at=ar_quantized.HID_Q)
     return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
 
 
 def projection(y, weight):
     """one of the three projections of a step: one matvec column, Q12 in int16. The
     circuit runs the three separately, on one MAC path."""
-    return fixed.clamp16(
-        fixed.rescale(y @ weight.values, at=fixed.Y_Q + weight.e, to=KV_Q)
+    return clamp16(
+        ar_quantized.rescale(y @ weight.values, at=ar_quantized.Y_Q + weight.e, to=KV_Q)
     )
 
 
 def next_step(e):
-    """one step of the walk -- `fixed.next_step` over era four's own trunk"""
-    return fixed.next_step(e, forward)
+    """one step of the walk -- `ar_quantized.next_step` over era four's own trunk"""
+    return ar_quantized.next_step(e, forward)
 
 
 def walk(twin, seeds, steps):
     """the classes of each step of the walk, and the draws behind them"""
-    return fixed.walk(engine(twin, seeds), steps, forward)
+    return ar_quantized.walk(engine(twin, seeds), steps, forward)
 
 
 # ---------------------------------------------------------------------
@@ -374,14 +409,14 @@ def drift(model, *, context, steps, seed):
         # right-padded to [context] and read at its last real position.
         low = max(0, at - context)
         length = at - low
-        rows = np.zeros((1, context, data.SEATS), dtype=np.int32)
+        rows = np.zeros((1, context, corpus.SEATS), dtype=np.int32)
         rows[0, :length] = np.stack(window[low:])
         phases = np.zeros((1, context), dtype=np.int32)
-        phases[0, :length] = np.arange(low, at) % nn.PHASE_BUCKETS
+        phases[0, :length] = np.arange(low, at) % ar_model.PHASE_BUCKETS
         floated = np.asarray(float_row(model, rows, phases, classes, length - 1)).astype(
             np.float64
         )
-        counted = measure.count_draws(
+        counted = measure.count_chain_draws(
             counted,
             floated,
             chain_draws,

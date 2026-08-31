@@ -2,7 +2,7 @@
 
 One step of music is one position. Four voice classes enter through four tables that sum,
 and they leave through the same four tables in a chain from the soprano down -- the head
-is `nn.Head`, which era five reads too.
+is `ar_model.Head`, which era five reads too.
 
 The network under the head is a decoder with no bias terms, RMSNorm before each sublayer,
 ALiBi for the position, and d_ff = 4 d. Matmul precision is pinned to true float32, no
@@ -26,8 +26,9 @@ import jax.numpy as jnp
 from flax import nnx
 from safetensors.numpy import load_file
 
-import nn
-from nn import SLOPE_SPAN, TABLES
+import ar_model
+from ar_model import SLOPE_SPAN, TABLES
+from train import save_checkpoint
 
 LAYER_TENSORS = ("wq", "wk", "wv", "wo", "w1", "w2")
 PER_LAYER = len(LAYER_TENSORS)
@@ -41,7 +42,7 @@ class Layer(nnx.Module):
 
     def __init__(self, d, *, rngs):
         for name, shape in zip(LAYER_TENSORS, self.shapes(d)):
-            setattr(self, name, nnx.Param(nn.normal_at(rngs.params(), shape)))
+            setattr(self, name, nnx.Param(ar_model.normal_at(rngs.params(), shape)))
 
     @staticmethod
     def shapes(d):
@@ -57,7 +58,7 @@ class Layer(nnx.Module):
         def split_heads(x):
             return x.reshape(batch, length, heads, head_d).transpose(0, 2, 1, 3)
 
-        normed = nn.rms_norm(h)
+        normed = ar_model.rms_norm(h)
         q = split_heads(normed @ self.wq[...])
         k = split_heads(normed @ self.wk[...])
         v = split_heads(normed @ self.wv[...])
@@ -65,7 +66,8 @@ class Layer(nnx.Module):
         context = jax.nn.softmax(scores, axis=-1) @ v
         merged = context.transpose(0, 2, 1, 3).reshape(batch, length, d)
         h = h + drop(merged @ self.wo[...])
-        return h + drop(jnp.maximum(nn.rms_norm(h) @ self.w1[...], 0.0) @ self.w2[...])
+        hidden = jnp.maximum(ar_model.rms_norm(h) @ self.w1[...], 0.0)
+        return h + drop(hidden @ self.w2[...])
 
     def tensors(self):
         """the six tensors of this layer in the order of the checkpoint and of the ROM"""
@@ -78,7 +80,7 @@ class Layer(nnx.Module):
             getattr(self, name)[...] = jnp.asarray(value)
 
 
-class Trunk(nn.Trunk):
+class Trunk(ar_model.Trunk):
     """The skeleton both models of the era carry: the tied head, then the layers.
 
     [Transformer] fills it with the float tensors and `quantized.QuantizedTransformer`
@@ -92,7 +94,7 @@ class Transformer(Trunk):
     def __init__(self, d, layers, *, heads, span=SLOPE_SPAN, rngs):
         if d % heads:
             raise ValueError(f"{heads} heads do not divide d {d}")
-        self.head = nn.Head(d, rngs=rngs)
+        self.head = ar_model.Head(d, rngs=rngs)
         self.layers = nnx.List([Layer(d, rngs=rngs) for _ in range(layers)])
         # neither is a weight and neither is in a checkpoint: the heads split d at run
         # time and ALiBi holds no position table
@@ -109,15 +111,9 @@ class Transformer(Trunk):
 
         dropout > 0 needs a PRNG [key]; it drops the embedding sum and each residual
         branch."""
-        bias = nn.attention_bias(self.heads, classes.shape[1], self.span)
-
-        def drop(x):
-            nonlocal key
-            if dropout <= 0.0:
-                return x
-            key, sub = jax.random.split(key)
-            return x * nn.dropout_masks(sub, dropout, x.shape)
-
+        bias = ar_model.attention_bias(self.heads, classes.shape[1], self.span)
+        # the embedding sum, then the two residual branches of each layer
+        drop = ar_model.dropout(key, dropout, 1 + 2 * len(self.layers))
         h = drop(self.head.embed(classes, phases))
         for layer in self.layers:
             h = layer(h, bias, self.heads, drop)
@@ -132,7 +128,7 @@ class Transformer(Trunk):
 
     def save(self, path):
         """the whole model as one flat list, in the construction order"""
-        nn.save_checkpoint(path, self.every_tensor())
+        save_checkpoint(path, self.every_tensor())
 
     @classmethod
     def load(cls, path, *, heads, span=SLOPE_SPAN):
@@ -170,14 +166,14 @@ class Transformer(Trunk):
         construction order, because the measured numbers of `tests/test_drift.py` read
         this draw and a framework that changed its key rule would move them."""
         keys = iter(
-            jax.random.split(jax.random.PRNGKey(seed), len(TABLES) + PER_LAYER * layers)
+            jax.random.split(jax.random.key(seed), len(TABLES) + PER_LAYER * layers)
         )
 
         def drawn_tensors(shapes):
-            return [nn.normal_at(next(keys), shape) for shape in shapes]
+            return [ar_model.normal_at(next(keys), shape) for shape in shapes]
 
         held = cls(d, layers, heads=heads, span=span, rngs=nnx.Rngs(0))
-        held.head.take(drawn_tensors(nn.Head.shapes(d)))
+        held.head.take(drawn_tensors(ar_model.Head.shapes(d)))
         for layer in held.layers:
             layer.take(drawn_tensors(Layer.shapes(d)))
         return held

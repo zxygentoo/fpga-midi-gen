@@ -1,16 +1,22 @@
 """The instruments, over a stack of sheets of class indices.
 
-This is the COMMON HOME of the measurement, as jax/nn.py is of the network. Everything
+This is the COMMON HOME of the measurement, as jax/sample.py is of the draw. Everything
 here is arithmetic over a [sheets, steps, SEATS] array of class indices and nothing here
 knows which era drew it -- a Gibbs sheet, a walk of the packed stream and a corpus crop
-all read the same way, and a single walk is a stack of one. What an era measures with its
-OWN model lives beside that model: jax/diffusion/measure.py holds the paper's Algorithm 1,
-and jax/mamba/measure.py holds the forced pass and the walk of era five.
+all read the same way, and a single walk is a stack of one. What a RECIPE measures with a
+model lives beside that recipe: jax/ar_measure.py holds the forced pass and the walk of
+the two step-frame eras, and jax/diffusion/measure.py holds the paper's Algorithm 1.
 
 ONE INSTRUMENT HERE READS LOGITS AND NOT CLASSES: the drift count at the end scores a
 twin's draw against the float model's on the very uniform the twin took -- what the
 quantization costs, which both step-frame twins report. It reads two rows and a draw, and
 no model of its own.
+
+A ROW IS A DICT OF INSTRUMENTS AND A LINE IS WHAT PRINTS IT, and every measure module of
+this tree spells it the same way: `battery_row` and `battery_lines` here, `walk_row`,
+`loss_row`, `corpus_row`, `walk_line` and `loss_lines` in `ar_measure.py`, `tail_row` and
+`tail_line` in `diffusion/measure.py`. A function that computes one ends in `_row`; a
+function that renders one ends in `_line` or `_lines`.
 
 THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER. A triad share of 40 percent says nothing
 until the corpus row beside it says 64, and three faults of the parallel instrument were
@@ -31,9 +37,9 @@ from typing import NamedTuple
 
 import numpy as np
 
-import data
-import nn
+import corpus
 import prng
+import sample
 
 # The intervals a chorale treats as a dissonance, in semitones and modulo the octave: the
 # two seconds, the tritone and the two sevenths. The perfect fourth is left out -- it is a
@@ -55,18 +61,12 @@ CLASH = 3
 # seat 0 is the bass and seat 3 the soprano, as the packed stream and the chained head of
 # the earlier eras both read them
 VOICE_NAMES = ("bass", "tenor", "alto", "soprano")
-# THE REGISTER OF EACH SEAT: the lowest and the highest pitch it sings anywhere in this
-# corpus. Measured 2026-08-25 over every step of every piece, and the three splits agree
-# EXACTLY -- thus this is a fact of the genre and not of a draw. The roll holds 36 to 81,
-# which is the union of the four, thus no seat can leave the vocabulary and every
-# violation this finds is a voice standing in another voice's register.
-RANGES = ((36, 66), (46, 69), (52, 74), (60, 81))
 # The pairs of voices, in the order of the seats between them: the three neighbours, then
 # the two that skip a voice, then the outer pair. That order is nearly the order of their
 # span in the corpus, thus [voice_pairs] reads left to right as the pitch reach runs out.
 PAIRS = tuple(
     sorted(
-        itertools.combinations(range(data.SEATS), 2), key=lambda p: (p[1] - p[0], p[0])
+        itertools.combinations(range(corpus.SEATS), 2), key=lambda p: (p[1] - p[0], p[0])
     )
 )
 
@@ -83,7 +83,7 @@ def triad_table():
         for root in range(12):
             chord = sum(1 << ((step + root) % 12) for step in quality)
             # every subset of a triad fits inside it, and a set of one or two pitch
-            # classes is exactly the case the denominator of [structure] excludes
+            # classes is exactly the case the denominator of [battery_row] excludes
             fits[[at for at in range(1 << 12) if at & ~chord == 0]] = True
     return fits
 
@@ -94,9 +94,28 @@ FITS_A_TRIAD = triad_table()
 def pitch_class_words(classes):
     """[sheets, steps, VOICES] -> [sheets, steps] the sounding pitch classes of each
     step as one 12-bit word; a rest sets no bit and a unison sets one bit twice"""
-    pitches = data.pitches_of_classes(classes) % 12
-    bits = np.where(classes != data.SILENCE, 1 << pitches, 0)
+    pitches = corpus.pitches_of_classes(classes) % 12
+    bits = np.where(classes != corpus.SILENCE, 1 << pitches, 0)
     return np.bitwise_or.reduce(bits, axis=-1)
+
+
+def apply_or_zero(of, numbers):
+    """[of] applied to [numbers], or ZERO where nothing was heard.
+
+    EVERY INSTRUMENT OF THIS BATTERY IS CONDITIONAL and the condition is the same one: a
+    mean over the steps that carry three voices, a share over the pairs that sound, a
+    spread over the pitches one seat sang. A sheet that carries none of them has no
+    answer, and the battery reads 0.0 rather than nan -- a nan poisons a mean of several
+    sheets and prints as a hole, where a zero prints as the finding it is: nothing there.
+
+    THE CORPUS ROW IS WHAT SAYS WHICH ZERO IS WHICH. A zero triad share beside a corpus
+    row of 64 is a thin sheet, and no number here means anything without it."""
+    return float(of(numbers)) if len(numbers) else 0.0
+
+
+def dissonant_share(intervals):
+    """the share of [intervals] that this corpus treats as a dissonance"""
+    return np.isin(intervals, DISSONANT).mean()
 
 
 def voice_pairs(spans, intervals, pairs_sound):
@@ -122,11 +141,9 @@ def voice_pairs(spans, intervals, pairs_sound):
         rows.append(
             {
                 "name": f"{VOICE_NAMES[low][:2]}-{VOICE_NAMES[high][:2]}",
-                "span": float(np.mean(spans[..., at][sounds])) if sounds.any() else 0.0,
+                "span": apply_or_zero(np.mean, spans[..., at][sounds]),
                 "dissonant": 100.0
-                * float(np.mean(np.isin(intervals[..., at][sounds], DISSONANT)))
-                if sounds.any()
-                else 0.0,
+                * apply_or_zero(dissonant_share, intervals[..., at][sounds]),
             }
         )
     return rows
@@ -227,17 +244,17 @@ def tessitura(pitches, sounding):
 
     The mean says a voice has DRIFTED and the spread says it RANGES too widely; the two
     are different faults and a single number would confuse them. [outside] is the tail --
-    the share of sounding cells beyond their own seat's [RANGES] -- and the corpus reads
-    zero on it by construction, as the spare row does."""
+    the share of sounding cells beyond their own seat's [corpus.VOICE_RANGES] -- and the
+    corpus reads zero on it by construction, as the spare row does."""
     seats = []
     outside = alive = 0
-    for seat, (low, high) in enumerate(RANGES):
+    for seat, (low, high) in enumerate(corpus.VOICE_RANGES):
         heard = pitches[..., seat][sounding[..., seat]]
         seats.append(
             {
                 "name": VOICE_NAMES[seat],
-                "mean": float(heard.mean()) if len(heard) else 0.0,
-                "spread": float(heard.std()) if len(heard) else 0.0,
+                "mean": apply_or_zero(np.mean, heard),
+                "spread": apply_or_zero(np.std, heard),
             }
         )
         outside += int(((heard < low) | (heard > high)).sum())
@@ -245,14 +262,24 @@ def tessitura(pitches, sounding):
     return {"seats": seats, "outside": 100.0 * outside / max(alive, 1)}
 
 
-def structure(classes):
+def triad_share(words):
+    """the share of pitch-class [words] that fit inside a major or a minor triad"""
+    return FITS_A_TRIAD[words].mean()
+
+
+def clash_share(clashes):
+    """the share of steps carrying [CLASH] dissonant pairs or more"""
+    return (clashes >= CLASH).mean()
+
+
+def battery_row(classes):
     """The battery over a set of sheets: [sheets, steps, VOICES] of class indices.
 
     HOLD is the share of voice slots that repeat the step before. It reads both failures a
     sheet can have in one number: far above the corpus is a drone, far below is jitter.
 
-    ONSETS is the note-ons for each step under the decode of data.py, thus an onset means
-    here what it means on the wire.
+    ONSETS is the note-ons for each step under the decode of corpus.py, thus an onset
+    means here what it means on the wire.
 
     VOICES is the share of steps carrying 0, 1, 2, 3 and 4 sounding voices. The corpus
     sings all four at 99.8 percent of its steps, thus this row alone catches the thin
@@ -266,45 +293,39 @@ def structure(classes):
     SPARE is the share of cells drawn on the spare row of the vocabulary, which the corpus
     never sings. It is a smoke number: anything above zero says the model puts mass where
     no music is."""
-    sounding = classes != data.SILENCE
+    sounding = classes != corpus.SILENCE
     voices = sounding.sum(axis=-1)
     words = pitch_class_words(classes)
-    pitches = data.pitches_of_classes(classes)
+    pitches = corpus.pitches_of_classes(classes)
     thick = voices >= 3
     pairs_sound = np.stack([sounding[..., a] & sounding[..., b] for a, b in PAIRS], -1)
     spans = np.stack([np.abs(pitches[..., a] - pitches[..., b]) for a, b in PAIRS], -1)
     intervals = spans % 12
     ordered = np.stack([pitches[..., a] <= pitches[..., b] for a, b in PAIRS], -1)
     clashes = (np.isin(intervals, DISSONANT) & pairs_sound).sum(axis=-1)
-    music = [data.decode(sheet) for sheet in classes]
+    music = [corpus.decode(sheet) for sheet in classes]
     ons = sum(1 for piece in music for step in piece for kind, _ in step if kind == "on")
     return {
         "hold": 100.0 * float(np.mean(classes[:, 1:] == classes[:, :-1])),
         "onsets": ons / sum(len(piece) for piece in music),
         "voices": [100.0 * float(np.mean(voices == count)) for count in range(5)],
-        "triads": 100.0 * float(np.mean(FITS_A_TRIAD[words[thick]]))
-        if thick.any()
-        else 0.0,
+        "triads": 100.0 * apply_or_zero(triad_share, words[thick]),
         "dissonant": 100.0
         * float(
             np.sum(np.isin(intervals, DISSONANT) & pairs_sound)
             / max(pairs_sound.sum(), 1)
         ),
         "order": 100.0
-        * float(np.mean(np.all(ordered | ~pairs_sound, axis=-1)[voices >= 2]))
-        if (voices >= 2).any()
-        else 0.0,
-        "clash": 100.0 * float(np.mean(clashes[sounding.any(axis=-1)] >= CLASH))
-        if sounding.any()
-        else 0.0,
-        "spare": 100.0 * float(np.mean(classes == data.CLASSES - 1)),
+        * apply_or_zero(np.mean, np.all(ordered | ~pairs_sound, axis=-1)[voices >= 2]),
+        "clash": 100.0 * apply_or_zero(clash_share, clashes[sounding.any(axis=-1)]),
+        "spare": 100.0 * float(np.mean(classes == corpus.CLASSES - 1)),
         "parallels": parallel_motion(classes, pitches, sounding),
         "register": tessitura(pitches, sounding),
         "pairs": voice_pairs(spans, intervals, pairs_sound),
     }
 
 
-def structure_lines(label, row):
+def battery_lines(label, row):
     """one measurement as two lines; print the corpus row above every other row"""
     instruments = (
         f"{label:<22} hold {row['hold']:5.1f}%   onsets {row['onsets']:4.2f}   "
@@ -345,10 +366,13 @@ def structure_lines(label, row):
 # It is what the quantization costs, and both step-frame twins report it through these.
 
 
-def cosine(here, there):
-    """the cosine between an integer row and the float row of the same place"""
-    here = np.asarray(here, np.float64)
-    return float(np.dot(here, there) / np.sqrt(np.dot(here, here) * np.dot(there, there)))
+def cosines(here, there):
+    """the cosine of each integer row against the float row of the same place, over a
+    batch of [rows, classes]"""
+    here, there = np.asarray(here, np.float64), np.asarray(there, np.float64)
+    return (here * there).sum(axis=-1) / np.sqrt(
+        (here * here).sum(axis=-1) * (there * there).sum(axis=-1)
+    )
 
 
 class Counted(NamedTuple):
@@ -360,22 +384,44 @@ class Counted(NamedTuple):
     cosine: float = 0.0
 
 
-def count_draws(counted, floated, chain_draws, *, temperature, min_p):
-    """One step's chain against the float logits of the same step, seat by seat, on the
-    very uniform the engine took.
+def count_draws(counted, here, there, *, drawn, uniform, temperature, min_p):
+    """A BATCH of the twin's rows against the float rows of the same places, on the very
+    uniforms the twin took.
+
+    [here] and [there] are [rows, classes] -- the twin's integer logits and the float
+    model's, one row for each draw counted. [drawn] is the class the twin picked and
+    [uniform] the [0, 1) draw it picked on.
 
     The float draw runs at the policy the twin was quantized under -- the caller states
-    it, because the elected numbers are the twin's and not this instrument's."""
-    for taken in chain_draws:
-        row = floated[taken.seat]
-        mine = taken.logits[0]
-        uniform = np.array([float(taken.word[0]) * 2.0**-prng.UNIFORM_BITS])
-        weights = nn.temper(row[None], temperature, min_p)
-        counted = Counted(
-            draws=counted.draws + 1,
-            same_peak=counted.same_peak + int(np.argmax(mine) == np.argmax(row)),
-            same_draw=counted.same_draw
-            + int(nn.pick_share(weights, uniform)[0] == taken.drawn[0]),
-            cosine=counted.cosine + cosine(mine, row),
-        )
-    return counted
+    it, because the elected numbers are the twin's and not this instrument's.
+
+    IT IS BATCHED because era six redraws a whole sheet at a time and a step-frame chain
+    redraws four seats; the arithmetic is one arithmetic and the batch is what parts
+    them."""
+    here, there = np.asarray(here, np.float64), np.asarray(there, np.float64)
+    weights = sample.temper(there, temperature, min_p)
+    return Counted(
+        draws=counted.draws + len(here),
+        same_peak=counted.same_peak
+        + int((here.argmax(axis=-1) == there.argmax(axis=-1)).sum()),
+        same_draw=counted.same_draw
+        + int((sample.pick_share(weights, uniform) == drawn).sum()),
+        cosine=counted.cosine + float(cosines(here, there).sum()),
+    )
+
+
+def count_chain_draws(counted, floated, chain_draws, *, temperature, min_p):
+    """one step's CHAIN as a batch of four: the step-frame adapter over `count_draws`.
+
+    A `Draw` of the chain holds a walk axis the drift report does not use -- the report
+    runs one walk -- thus every row here is that walk's row."""
+    return count_draws(
+        counted,
+        np.stack([taken.logits[0] for taken in chain_draws]),
+        np.stack([floated[taken.seat] for taken in chain_draws]),
+        drawn=np.array([taken.drawn[0] for taken in chain_draws]),
+        uniform=np.array([float(taken.word[0]) for taken in chain_draws])
+        * 2.0**-prng.UNIFORM_BITS,
+        temperature=temperature,
+        min_p=min_p,
+    )

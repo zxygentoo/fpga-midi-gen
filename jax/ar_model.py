@@ -1,45 +1,47 @@
-"""The common parts of the eras, above the seam.
+"""The common parts of the STEP-FRAME eras, above the seam.
 
-Here stand the float models' shared parts: the step-frame transformer and the state-space
-model share `Head` -- the four tied voice tables, the bar-phase table and the chained
-readout over them -- one position rule and one sampling chain, and each model module keeps
-what is its own: the trunk, the layer layout and the checkpoint walk. Under them stands
-the trainer's rule -- the rate curve and the optax chain that every era updates under --
-and not its loop, which is each era's own.
+It stands to `sample.py` and `train.py` as `ar_train.py` stands to each era's trainer.
+Eras
+four and five share `Head` -- the four tied voice tables, the bar-phase table and the
+chained readout over them -- one position rule, one norm and one draw scale, and each
+model module keeps what is its own: the trunk, the layer layout and the checkpoint walk.
+What is one thing across ALL THREE eras is smaller and stands elsewhere: `sample.py` is
+the host-side draw and `train.py` the rate curve, the update rule and the checkpoint.
 
-BELOW THE SEAM IS `fixed.py`: the integer rules every twin is built on, which no float
-model reads. The two files stand as `lib/nn`'s do, where `quantized.ml` is its own module.
+THE CUT RUNS ONE WAY. This module imports the shared ones and none of them imports it
+back, thus era six can read them without reading a head it has no frames for. Era six is
+not a `Trunk` for the same reason: its sheet is not a stream of frames, and its own trunk
+walks `every_layer` where these walk `layers`.
 
-What is one thing across the eras stands here one time: a rule changed here changes every
-model at once -- which is the point.
-
-Matmul precision is pinned to true float32 here, no TF32; every model imports this
-module, thus the pin holds everywhere.
+BELOW THE SEAM IS `ar_quantized.py`: the integer rules of these two twins, which no float
+model reads.
 """
-
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 from flax import nnx
-from safetensors.numpy import save_file
 
-import data
+import corpus
 import prng
-
-jax.config.update("jax_default_matmul_precision", "float32")
+import sample
 
 # The slope of head k is 2^-(SLOPE_SPAN (k+1) / heads). Elected 2026-08-18 over spans 4,
 # 8, 16, 24 and 64: the means of 4 and 8 are a dead heat, and the VARIANCE is the finding
 # -- 5 to 7 times tighter over six seeds, replicated at two step budgets. Every head is
 # then local, and seeds stop latching onto whatever distant structure their init favours.
 SLOPE_SPAN = 4
+# THE TRAINING WINDOW, in steps: what `ar_train` cuts a batch to, thus what a player must
+# state back and what the referee's eval rows are cut at. Era five's attention ring is
+# this number as well -- a block carries no context, and the ring of a hybrid is era
+# four's window.
+TRAINING_WINDOW = 256
+
+
 # the phase table IS the bar -- one row for each step of it. Two names for one number let
 # the corpus phase and the table part, and a phase outside the table gathers a clamped row
 # in silence.
-PHASE_BUCKETS = data.BAR_STEPS
+PHASE_BUCKETS = corpus.BAR_STEPS
 TABLES = ("seats", "phase")
 
 
@@ -47,11 +49,20 @@ def rms_norm(x):
     return x * jax.lax.rsqrt(jnp.mean(x * x, axis=-1, keepdims=True) + 1e-6)
 
 
+def alibi_slopes(heads, span=SLOPE_SPAN):
+    """the ALiBi slope of each head, [heads]: head k slopes at -2^-(span (k+1) / heads).
+
+    THE RULE HAS ONE HOME. The window form below and the step form of a Zamba layer both
+    read it, and the integer twins read `ar_quantized.slope_exponent`, which is this
+    exponent floored -- a rule written twice is a rule two forms can part on."""
+    return -(2.0 ** (-span * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
+
+
 def attention_bias(heads, length, span=SLOPE_SPAN):
     """ALiBi plus the causal wall, [1, heads, length, length]."""
     pos = jnp.arange(length, dtype=jnp.float32)
     distance = pos[:, None] - pos[None, :]
-    slopes = -(2.0 ** (-span * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
+    slopes = alibi_slopes(heads, span)
     alibi = slopes[None, :, None, None] * distance[None, None, :, :]
     wall = jnp.triu(jnp.ones((length, length), dtype=jnp.float32), k=1) * -1e9
     return alibi + wall[None, None, :, :]
@@ -61,6 +72,34 @@ def dropout_masks(key, rate, shape):
     """the multiplier form of inverted dropout: 0 or 1/keep, one for each element"""
     keep = 1.0 - rate
     return jax.random.bernoulli(key, keep, shape) / keep
+
+
+def dropout(key, rate, count):
+    """The `drop` a trunk's forward hands down: a fresh mask at each of [count] calls, or
+    the identity where the rate is zero.
+
+    ONE SHAPE FOR BOTH TRUNKS. The two wrote this twice and differently -- one mutated a
+    key through `nonlocal`, one walked an iterator of splits -- and the iterator is the
+    functional one. [count] is stated by the caller because it is a fact of the trunk: a
+    `drop` called more often than the caller said raises StopIteration, where a lazy split
+    would quietly hand out a key nobody accounted for.
+
+    NO GATE PINS THE MASKS, and the change of shape here moves them: the key tree of one
+    split of n is not the tree of n splits of one. Both eras are FROZEN and their
+    checkpoints stand -- nothing that is held moves, and no retrain is planned."""
+    if rate <= 0.0:
+
+        def keep_all(x):
+            return x
+
+        return keep_all
+
+    keys = iter(jax.random.split(key, count))
+
+    def drop(x):
+        return x * dropout_masks(next(keys), rate, x.shape)
+
+    return drop
 
 
 # The draw of every matrix of both frozen eras: a normal at this deviation. It is not a
@@ -81,33 +120,6 @@ def normal_at(key, shape, scale=DRAW_SCALE):
 
 def _host_rms_norm(x):
     return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-6)
-
-
-def temper(raw, temperature, min_p):
-    """the tempered weight of each class against the peak, then the min-p floor; the peak
-    weighs one, thus min_p is a share of the peak"""
-    weights = np.exp((raw - raw.max(axis=1, keepdims=True)) / temperature)
-    if min_p > 0.0:
-        weights = np.where(weights >= min_p, weights, 0.0)
-    return weights
-
-
-def pick_share(weights, share):
-    """The class whose running total passes the draw.
-
-    It takes the uniform and not a draw, thus one function owns both sums and the total is
-    the last running total -- never a second sum of the same weights. numpy adds pairwise
-    in sum() and left to right in cumsum(), thus two sums of one array differ in the last
-    bits, and a draw made against the other sum can land above every running total, where
-    no class passes at all.
-
-    Against this total the draw is strictly below it, because the uniform falls under 1 by
-    2**-24 at the least. Therefore the walk always ends on a class, and that class always
-    holds weight the floor left standing: to reach the last index is to know that no
-    earlier total passed, thus the weight there is the difference of two totals across the
-    draw. No fallback is necessary, and none is written."""
-    running = np.cumsum(weights, axis=1)
-    return (running > (share * running[:, -1])[:, None]).argmax(axis=1)
 
 
 # ---------------------------------------------------------------------
@@ -133,13 +145,14 @@ class Head(nnx.Module):
     [tensors] and [take] are the one statement of that layout."""
 
     def __init__(self, d, *, rngs):
-        self.seats = nnx.Param(normal_at(rngs.params(), (data.SEATS, data.CLASSES, d)))
+        shape = (corpus.SEATS, corpus.CLASSES, d)
+        self.seats = nnx.Param(normal_at(rngs.params(), shape))
         self.phase = nnx.Param(normal_at(rngs.params(), (PHASE_BUCKETS, d)))
 
     @staticmethod
     def shapes(d):
         """the shape of each tensor of [tensors], for a draw that states no shape twice"""
-        return [(data.SEATS, data.CLASSES, d), (PHASE_BUCKETS, d)]
+        return [(corpus.SEATS, corpus.CLASSES, d), (PHASE_BUCKETS, d)]
 
     @property
     def d(self):
@@ -152,7 +165,7 @@ class Head(nnx.Module):
         A phase outside the table gathers a clamped row, in silence, which is why the
         table IS the bar and holds one row for each step of it."""
         seats = self.seats[...]
-        rows = sum(seats[seat][classes[..., seat]] for seat in range(data.SEATS))
+        rows = sum(seats[seat][classes[..., seat]] for seat in range(corpus.SEATS))
         return rows + self.phase[...][phases]
 
     def logits(self, h, drawn):
@@ -181,8 +194,8 @@ class Head(nnx.Module):
         t+1 is a3 + a2 + a1 + a0, and the chain assembles it one voice at a time."""
         seats = self.seats[...]
         stream = h
-        logits = [None] * data.SEATS
-        for seat in reversed(range(data.SEATS)):
+        logits = [None] * corpus.SEATS
+        for seat in reversed(range(corpus.SEATS)):
             logits[seat] = rms_norm(stream) @ seats[seat].T
             if seat:
                 stream = stream + seats[seat][drawn[..., seat]]
@@ -207,12 +220,12 @@ class Head(nnx.Module):
         a draw while the rest go on."""
         seats = np.asarray(self.seats[...])
         stream = h
-        frame = np.zeros((len(h), data.SEATS), dtype=np.int32)
-        for seat in reversed(range(data.SEATS)):
+        frame = np.zeros((len(h), corpus.SEATS), dtype=np.int32)
+        for seat in reversed(range(corpus.SEATS)):
             raw = (_host_rms_norm(stream) @ seats[seat].T).astype(np.float64)
-            weights = temper(raw, temperature, min_p)
+            weights = sample.temper(raw, temperature, min_p)
             state, uniform = prng.uniform(state, True)
-            frame[:, seat] = pick_share(weights, uniform)
+            frame[:, seat] = sample.pick_share(weights, uniform)
             if seat:
                 stream = stream + seats[seat][frame[:, seat]]
         return state, frame
@@ -243,7 +256,13 @@ class Trunk(nnx.Module):
     below reads `hidden` through `seat_nll` and reads nothing else of the era.
 
     Era six is NOT a subclass: its sheet is not a stream of frames, and its own trunk
-    walks `every_layer` where these walk `layers`."""
+    walks `every_layer` where these walk `layers`.
+
+    THE SKELETON IS THREE ATTRIBUTES AND A METHOD, and a subclass states all four:
+    `self.head` (a `Head`), `self.layers` (the list, in the order of the ROM), and
+    `hidden(classes, phases, *, dropout, key)`. `self.d` comes off the head. The integer
+    twins hold the same three names and are NOT subclasses --
+    `ar_quantized.QuantizedImage` states why."""
 
     def every_tensor(self):
         """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
@@ -268,67 +287,3 @@ class Trunk(nnx.Module):
 
     def parameter_count(self):
         return sum(int(tensor.size) for tensor in self.every_tensor())
-
-
-# ---------------------------------------------------------------------
-# the trainer: the rate curve, the update rule, and the seam of a checkpoint
-# ---------------------------------------------------------------------
-
-# THE RULE STANDS HERE AND THE LOOP DOES NOT. Every era runs the same optax chain under
-# the same curve, thus a rate read one step late would be read one step late by all three
-# at once; but the shape of a step is the era's own -- the sheet folds a batch-norm
-# population where the frozen eras draw a dropout mask -- and each `train.py` keeps its
-# loop.
-
-
-def learning_rates(peak, warmup, total):
-    """The rate at every step of the run: linear from 0 to [peak] over [warmup] steps,
-    then cosine from [peak] to 0 over the rest. A warmup of zero is a constant.
-
-    THE SCHEDULE IS READ ONE STEP LATE OR NOT AT ALL. Optax hands a schedule its own
-    update count, which is 0 at the first update where the loop's step is 1, thus a curve
-    read at the raw count applies a rate of 0 to the first update and every later rate one
-    step behind. The `+ 1` is that correction and `tests/test_train.py` holds it.
-
-    THE TWO ENDS ARE THIS PROJECT'S RULES AND NOT OPTAX'S. A warmup of zero is a constant
-    peak, where `warmup_cosine_decay_schedule` would be a bare cosine decay; and a run
-    SHORTER THAN ITS OWN WARMUP -- which every short probe is -- never leaves the ramp,
-    where optax refuses to build a cosine of a negative length at all."""
-    if warmup == 0:
-        curve = optax.constant_schedule(peak)
-    elif total <= warmup:
-        curve = optax.linear_schedule(0.0, peak, warmup)
-    else:
-        curve = optax.warmup_cosine_decay_schedule(0.0, peak, warmup, total, 0.0)
-    return lambda count: curve(count + 1)
-
-
-def update_rule(*, peak, warmup, total, clip, weight_decay):
-    """The update of one step: the global-norm clip, then Adam with a decoupled weight
-    decay under the schedule.
-
-    A clip of zero or less is NO CLIP. It is not a clip at zero, which would zero every
-    gradient of the run. A weight decay of zero makes AdamW Adam, by arithmetic and not by
-    a second code path -- which is what era six's paper asks for."""
-    adam = optax.adamw(
-        learning_rate=learning_rates(peak, warmup, total),
-        b1=0.9,
-        b2=0.999,
-        eps=1e-8,
-        weight_decay=weight_decay,
-    )
-    if clip <= 0.0:
-        return adam
-    return optax.chain(optax.clip_by_global_norm(clip), adam)
-
-
-def save_checkpoint(path, tensors, span=None):
-    """The naming rule of the seam: the tensors named "0" upward, in construction order,
-    then the ALiBi span last and alone where the model carries one -- an older file that
-    does not still reads, because a reader takes whole layer groups and then one scalar
-    if one is there. The era's trainer builds the flat list, because the layer layouts
-    are its own."""
-    if span is not None:
-        tensors = list(tensors) + [np.asarray([span], dtype=np.float32)]
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    save_file({str(i): np.asarray(t) for i, t in enumerate(tensors)}, path)
