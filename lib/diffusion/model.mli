@@ -9,10 +9,10 @@
     the design of this layer and its gates is [docs/diffusion_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/diffusion/model.py] and the
-    integer twin is [jax/diffusion/quantized.py]; [jax/tests/test_rtl.py] states what the
-    circuit must do and [bin/gate_diffusion.ml] states what it did. What stays here is
-    what the CIRCUIT reads, and every one of those facts is a rule the RTL must equal
-    rather than restate:
+    integer twin is [jax/diffusion/quantized.py]; [jax/tests/test_rtl_diffusion.py] states
+    what the circuit must do and [bin/gate_diffusion.ml] states what it did. What stays
+    here is what the CIRCUIT reads, and every one of those facts is a rule the RTL must
+    equal rather than restate:
 
     - **The formats**, which every unit of the machine slices on.
     - **The model as data**: the record the contract file carries, and its reader.
@@ -172,8 +172,8 @@ val hidden_cells
 (** {1 The frames} *)
 
 (** [frames_of_sheet sheet] is the frame of each step: the classes of a step become the
-    voice codes of one word, seat 0 in the low byte. It is the rule [jax/data.py] states,
-    thus a walk here and a walk there compare as text. *)
+    voice codes of one word, seat 0 in the low byte. It is the rule [jax/corpus.py]
+    states, thus a walk here and a walk there compare as text. *)
 val frames_of_sheet : int array array -> int array
 
 (** {1 The drawn model} *)
@@ -191,7 +191,7 @@ module For_test : sig
       checkpoint makes.
 
       Its readers need a model OF A SHAPE and never the twin's arithmetic; the gates that
-      need that are [jax/tests/test_rtl.py]'s. *)
+      need that are [jax/tests/test_rtl_diffusion.py]'s. *)
   val drawn : layers:int -> width:int -> seed:int -> t
 
   (** the kernels of the image, in its order; the gates read them beside [rom_bases] *)

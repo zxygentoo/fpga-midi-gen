@@ -36,8 +36,8 @@ module Constants = struct
      The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
      circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
      would overflow that port under a temperature of about 0.36, and this Q holds down to
-     about 0.18. [jax/fixed.py]'s [temper_of] states the rule for every temperature and
-     [jax/tests/test_fixed.py] pins this reading of it.
+     about 0.18. [jax/quantized.py]'s [temper_of] states the rule for every temperature
+     and [jax/tests/test_quantized.py] pins this reading of it.
 
      A model of a CONTRACT FILE reads its temper from the file. A DRAWN model has no
      training run behind it, thus it states this one. *)

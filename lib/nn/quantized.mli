@@ -1,14 +1,15 @@
 (** The integer rules the eras share: the fixed-point formats, the tables, the scalar
     rules of the arithmetic, the ROM image of a model and the integer draw.
 
-    THE INTEGER TWINS LIVE ABOVE THE SEAM, in [jax/fixed.py] and each era's
+    THE INTEGER TWINS LIVE ABOVE THE SEAM, in [jax/quantized.py] and each era's
     [jax/<era>/quantized.py], and they are what the circuits must equal operation for
     operation. NOTHING HERE QUANTIZES: what stands here is the half of that arithmetic the
     CIRCUITS read — the formats, the tables and the scalar oracles that [Rtl] and each
     era's [Source] elaborate and that the unit gates hold their circuits against, the ROM
     image of a model that is already int8, and the integer draw. A rule written here is
     read by three circuits, thus a change of it changes all three at one time, and
-    [jax/fixed.py] states the same rule for the twins with a gate on each shared table. *)
+    [jax/quantized.py] states the same rule for the twins with a gate on each shared
+    table. *)
 
 (** The shared fixed-point formats, the tables and the constants that cross between the
     twins and the circuits. A Q number holds [value * 2^-q]. *)
@@ -45,7 +46,7 @@ module Constants : sig
       The temper is log2(e) / T, and the spare bit is headroom for the temperature: the
       circuits multiply by this constant on an 18-bit signed port, thus [log2e]'s own Q
       would overflow that port under a temperature of about 0.36, and this Q holds down to
-      about 0.18. [jax/fixed.py]'s [temper_of] states the rule for every temperature.
+      about 0.18. [jax/quantized.py]'s [temper_of] states the rule for every temperature.
 
       A model of a CONTRACT FILE reads its own temper from the file. A DRAWN model has no
       training run behind it, thus it states this one. *)
@@ -83,7 +84,7 @@ end
 (** A vector of a model as this side reads it: the integers a quantizer above the seam
     already stated. The float form and every measure that compares the two — the
     quantization itself, the top-1 agreement, the cosine of the drift reports — stand with
-    the twins, in [jax/fixed.py] and [jax/<era>/quantized.py]. *)
+    the twins, in [jax/quantized.py] and [jax/<era>/quantized.py]. *)
 module Tensor : sig
   type t = int array
 end

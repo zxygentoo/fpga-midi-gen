@@ -1,10 +1,10 @@
 (* gate_diffusion: the driver of the RTL gates of era six.
 
    THE ORACLE IS THE JAX TWIN AND IT IS NOT HERE. This tool runs the circuit in Cyclesim
-   and prints WHAT THE CIRCUIT DID, line by line; [jax/tests/test_rtl.py] states what it
-   must have done, from its own engine at the same seed and its own [layer_writes] over
-   the same model, and compares. Nothing in this file states an expectation, thus a gate
-   cannot pass by the driver agreeing with itself.
+   and prints WHAT THE CIRCUIT DID, line by line; [jax/tests/test_rtl_diffusion.py] states
+   what it must have done, from its own engine at the same seed and its own [layer_writes]
+   over the same model, and compares. Nothing in this file states an expectation, thus a
+   gate cannot pass by the driver agreeing with itself.
 
    The model is a CONTRACT FILE and never a draw of this side:
    [jax/diffusion/quantized.py] draws the tiny model, quantizes it and writes the file,
@@ -200,8 +200,8 @@ let stream_command =
 let command =
   Command.group
     ~summary:
-      "drive the circuit of era six and state what it did; jax/tests/test_rtl.py states \
-       what it must have done"
+      "drive the circuit of era six and state what it did; \
+       jax/tests/test_rtl_diffusion.py states what it must have done"
     [ "walk", walk_command; "stream", stream_command ]
 ;;
 

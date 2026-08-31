@@ -11,9 +11,9 @@
    states over THE FRAMES THE SOURCE IN THE SEAT ANSWERS, byte for byte and in order; the
    run stop plays the silent frame; and a second run from the same seed repeats the first.
    The two halves of the model path are proved separately — the walk gate of
-   [jax/tests/test_rtl.py] holds the source's walk to the integer twin phase for phase,
-   and this holds the sequencer to the frames that source answers — thus a failure here
-   names the sequencer's side and never the network.
+   [jax/tests/test_rtl_diffusion.py] holds the source's walk to the integer twin phase for
+   phase, and this holds the sequencer to the frames that source answers — thus a failure
+   here names the sequencer's side and never the network.
 
    THE REFERENCE IS THE SOURCE, PLAYED ON ITS OWN. [Source]'s bench drives a second
    instance of the same block from the same seed and the same elaboration, thus it answers

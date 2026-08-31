@@ -49,7 +49,7 @@
 
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
-; jax/tests/test_rtl.py, thus nothing here states what the circuit should have done.
+; jax/tests/test_rtl_diffusion.py, thus nothing here states what the circuit should have done.
 
 (executable
  (name gate_diffusion)

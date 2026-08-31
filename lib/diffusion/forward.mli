@@ -128,8 +128,8 @@ end
 (** The bench, narrowed to what the driver of the RTL gate reads.
 
     THE ORACLE IS THE JAX TWIN. [bin/gate_diffusion.ml] drives one pass through this bench
-    and prints every column the stores took; [jax/tests/test_rtl.py] states what they must
-    have been. Nothing here states that. *)
+    and prints every column the stores took; [jax/tests/test_rtl_diffusion.py] states what
+    they must have been. Nothing here states that. *)
 module For_test : sig
   module Bench (M : sig
       val e : Elaboration.t

@@ -8,7 +8,7 @@
     bits 21 to 16 force 0: a magnitude of 16 or above gives 0, because an entry shifted
     that far is 0. The table therefore steps at 2^-8 of the power, and the low four
     fraction bits fall away. This truncation is a rule of the circuit, and
-    [Quantized.For_test.exp2_q] — with the twins that read it through [jax/fixed.py] —
+    [Quantized.For_test.exp2_q] — with the twins that read it through [jax/quantized.py] —
     holds the same one.
 
     EVERY PART OF THE ANSWER DERIVES FROM ONE REGISTERED MAGNITUDE: the entry, the shift

@@ -125,7 +125,7 @@ val streams : chorale list -> count:int -> random_state:Core.Random.State.t -> s
 
     Give it the canonical stream, which [streams] gives first. A referee reads that stream
     alone, thus its measurement is deterministic and two referees that read one checkpoint
-    must agree; the twin of this cut is in [jax/data.py], and the two state the same
+    must agree; the twin of this cut is in [jax/corpus.py], and the two state the same
     windows. A caller that wants fewer windows takes a prefix of the list.
 
     The training draw is not here. A trainer takes a uniform stream and then a uniform

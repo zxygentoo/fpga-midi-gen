@@ -60,7 +60,7 @@ What the machine round stands on:
   folded norm, and `Model.of_int8_checkpoint` reads it into the
   elaboration. Its own gate is the NETLIST — the Verilog of `gen_verilog`
   must stay md5-identical to the one the flash carries.
-- **The gates of the circuit**, in `jax/tests/test_rtl.py`: Python states
+- **The gates of the circuit**, in `jax/tests/test_rtl_diffusion.py`: Python states
   what the machine must do and `bin/gate_diffusion.exe` states what it
   did. The walk gate holds every write of the cell port, phase for phase;
   the stream gate holds every column the stores take. Neither side can
@@ -1638,7 +1638,7 @@ software side already pinned.
      `infer.py sample --quantized` at the panel seed, the one gate that
      waits for a person and the hardware.
 
-  Instruments 2 and 3 are `jax/tests/test_rtl.py` and instruments 1 and 4
+  Instruments 2 and 3 are `jax/tests/test_rtl_diffusion.py` and instruments 1 and 4
   are `dune runtest`: the two that need an ORACLE moved to the side that
   holds it, and the two that hold the machine against itself stayed.
 - **The measurements of phase I**, the numbers the phase must report: the

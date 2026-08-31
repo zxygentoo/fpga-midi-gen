@@ -742,7 +742,7 @@ The ear decides, and it decides on the host. The RTL follows the ear and
 not the other way around.
 
 1. **The JAX prototype.** DONE. `jax/transformer` holds the model, the
-   trainer and the sampler; `jax/data.py` holds the corpus and the
+   trainer and the sampler; `jax/corpus.py` holds the corpus and the
    decode, and `jax/measure.py` the instruments.
 2. **The measurement.** DONE. The windowed texture over long walks,
    twelve seeds, against the canonical packed stream.

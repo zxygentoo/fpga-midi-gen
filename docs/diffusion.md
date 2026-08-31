@@ -67,7 +67,7 @@ the proto round never enters the training.
 The roll keeps the proto's 48 rows: rows for the pitches 36 to 81, row 0
 for silence, and the spare. The paper has no silence row because its data
 always sings; this corpus rests, thus silence stays a class, and the
-vocabulary agreement with `jax/data.py` holds across the eras. A cell is
+vocabulary agreement with `jax/corpus.py` holds across the eras. A cell is
 one-hot over the 48 rows, thus the paper's constraint — one row for each
 voice at each step — holds with silence as one more row.
 
@@ -517,7 +517,7 @@ buys the memory that a batch of 16 needs. A batch of 8 fits without it,
 thus it is off by default and it is a flag.
 
 TF32 changes nothing here: batch 8 reads 327.9 ms with it and 327.3 ms
-without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
+without. The float32 pin of `jax/train.py` therefore costs this round nothing.
 
 ## The files
 
@@ -528,19 +528,20 @@ without. The float32 pin of `jax/nn.py` therefore costs this round nothing.
   `corpus_tool pieces -grid N` writes it. With no `-steps` the longest piece
   states the width of a row and no piece is dropped: 229 train, 76 valid and
   77 test chorales, in rows of 640 steps.
-- `jax/data.py` — the piece reader, and `Crops`, the uniform crop taken
+- `jax/corpus.py` — the piece reader, and `Crops`, the uniform crop taken
   inside the true length. It drops the one train chorale that is shorter
   than the crop, thus the round trains on 228.
 - `jax/diffusion/model.py`, `train.py`, `infer.py` — the sheet, the trainer
   and the walk. `infer.py` draws and measures nothing itself.
-- `jax/measure.py` — THE COMMON HOME of the instruments, as `jax/nn.py` is of
-  the network. Everything in it is arithmetic over a `[sheets, steps,
+- `jax/measure.py` — THE COMMON HOME of the instruments, as `jax/sample.py` is
+  of the draw. Everything in it is arithmetic over a `[sheets, steps,
   SEATS]` array of class indices and none of it knows which era drew them: a
   Gibbs sheet, a walk of the packed stream and a corpus crop all read the
   same way, and a single walk is a stack of one.
 - `jax/diffusion/measure.py` — what this era measures with its OWN model,
   which is the paper's Algorithm 1 and the tail of it. Its sibling
-  `jax/mamba/measure.py` holds era five's forced pass and walk.
+  `jax/ar_measure.py` holds the forced pass and the free walk of the two
+  step-frame eras.
 - `jax/tests/test_diffusion.py`, `jax/tests/test_midi.py` — the loss
   reweighting, the mask draw, the anneal, the mask planes, the checkpoint,
   the battery, Algorithm 1, and the two gestures of the audition wire.

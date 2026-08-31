@@ -213,9 +213,9 @@ module For_test = struct
     in
     (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the floor
        is the elected min-p 0.05 as a share of the peak weight 2^15, which is
-       [jax/fixed.py]'s [min_weight_of] and what [test_fixed.py] pins. The elected numbers
-       themselves live above the seam now, in [ELECTED_TEMPERATURE] and [ELECTED_MIN_P] of
-       [jax/fixed.py]. *)
+       [jax/quantized.py]'s [min_weight_of] and what [test_quantized.py] pins. The elected
+       numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
+       [ELECTED_MIN_P] of [jax/quantized.py]. *)
     (* [Params_data.of_list] owns the order of the parameters; the draw states it nowhere. *)
     { d
     ; heads

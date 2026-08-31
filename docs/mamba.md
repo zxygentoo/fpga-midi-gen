@@ -374,7 +374,7 @@ before.
 
 `jax/mamba/` holds `model.py`, `train.py` and `infer.py`, in the shape
 of `jax/transformer/`. The corpus, the windows, the decode and the
-measure instruments are `jax/data.py` and `jax/measure.py`, unchanged
+measure instruments are `jax/corpus.py` and `jax/measure.py`, unchanged
 and shared.
 
 - **The scan.** A window is `context + 1` steps and the state starts at
@@ -542,8 +542,9 @@ the instrument that should ask for it first.
 The prototype recorded its numbers and the ear heard the result as jittery
 and unmelodic. **The quality round of 2026-08-20** asked where the deficit
 lives. It ran four diagnostics, re-elected the draw, and swept the two
-levers this document reserved. `jax/diagnose.py` holds the diagnostics;
-every number reads on the canonical valid windows, which both eras share.
+levers this document reserved. The diagnostics were a throwaway script of
+that round and were never committed; every number below reads on the
+canonical valid windows, which both eras share.
 
 ### The deficit is in the moving steps, and it is in the melody
 

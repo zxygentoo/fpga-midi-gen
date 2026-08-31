@@ -58,8 +58,9 @@ val create : e:Elaboration.t -> seed:Signal.t -> Signal.t I.t -> Signal.t O.t
 (** The bench, narrowed to what the driver of the RTL gate reads.
 
     THE ORACLE IS THE JAX TWIN. [bin/gate_diffusion.ml] drives the circuit through this
-    harness and prints what it did; [jax/tests/test_rtl.py] states what it must have done.
-    Nothing here states that, thus the driver cannot pass a walk by agreeing with itself. *)
+    harness and prints what it did; [jax/tests/test_rtl_diffusion.py] states what it must
+    have done. Nothing here states that, thus the driver cannot pass a walk by agreeing
+    with itself. *)
 module For_test : sig
   module Bench : sig
     (** one write of the cell port, as the probe sees it *)
