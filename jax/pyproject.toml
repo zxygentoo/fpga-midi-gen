@@ -28,6 +28,17 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# -n auto: the suite is 187 tests of numpy and small jitted models, thus it parallelises
+# almost perfectly -- measured 2026-08-31, 97 s against 31 s on this machine. Every test
+# is deterministic and none writes outside `tmp_path`, thus the split cannot change an
+# answer. `-p no:xdist` runs them in one process where a traceback is easier to read.
+addopts = "-n auto"
+markers = [
+    # the drift sweeps and the trainer smokes: seconds each and they gate the ARITHMETIC,
+    # not a rule of the code. `-m "not slow"` is the inner loop; the whole suite is what
+    # a commit passes.
+    "slow: a gate that costs seconds because it measures rather than asserts",
+]
 
 [tool.ruff]
 # the width of the OCaml side: ocamlformat, profile janestreet
