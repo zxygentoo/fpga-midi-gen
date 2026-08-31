@@ -48,6 +48,15 @@ def fading(step, steps, fade):
     return FADE_FLOOR + (1.0 - FADE_FLOOR) * (left - 1) / max(fade - 1, 1)
 
 
+def struck_velocity(velocity, step, steps, fade):
+    """the velocity a note-on carries at [step], under the fade.
+
+    A note-on of velocity ZERO IS A NOTE-OFF on the wire, thus the floor is one and never
+    a rounding-down to nothing -- [FADE_FLOOR] keeps the ramp well clear of it and this
+    holds the edge case a short piece or a wide fade could still reach."""
+    return max(1, round(velocity * fading(step, steps, fade)))
+
+
 def play(music, *, device, step_ms, channel, velocity, fade=0):
     """Send one walk to the synthesizer: raw channel voice bytes on the rawmidi device."""
     ringing = set()
@@ -55,7 +64,7 @@ def play(music, *, device, step_ms, channel, velocity, fade=0):
         try:
             for step, events in enumerate(music):
                 click.echo(step_line(step, events))
-                struck = max(1, round(velocity * fading(step, len(music), fade)))
+                struck = struck_velocity(velocity, step, len(music), fade)
                 for kind, pitch in events:
                     if kind == "on":
                         wire.write(bytes([NOTE_ON | channel, pitch, struck]))
@@ -101,9 +110,10 @@ def save(music, path, *, step_ms, channel, velocity, fade=0):
     midi = mido.MidiFile(ticks_per_beat=4)
     midi.tracks.append(track)
     track.append(mido.MetaMessage("set_tempo", tempo=int(step_ms * 1000 * 4)))
+    ringing = set()
     waited = 0
     for step, events in enumerate(music):
-        struck = max(1, round(velocity * fading(step, len(music), fade)))
+        struck = struck_velocity(velocity, step, len(music), fade)
         for kind, pitch in events:
             track.append(
                 mido.Message(
@@ -114,8 +124,26 @@ def save(music, path, *, step_ms, channel, velocity, fade=0):
                     time=waited,
                 )
             )
+            if kind == "on":
+                ringing.add(pitch)
+            else:
+                ringing.discard(pitch)
             waited = 0
         waited += 1
+    # the drain, as [play] does it and in the same sorted order: `data.decode` writes an
+    # "off" only where the NEXT frame drops the pitch, thus with no drain the file ends
+    # with its last chord still sounding and the fade closes nothing.
+    for pitch in sorted(ringing):
+        track.append(
+            mido.Message(
+                "note_off",
+                note=pitch,
+                velocity=RELEASE_VELOCITY,
+                channel=channel,
+                time=waited,
+            )
+        )
+        waited = 0
     midi.save(path)
 
 
