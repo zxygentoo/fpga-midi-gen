@@ -1656,30 +1656,30 @@ let%expect_test "the program is data: the state table prints" =
     (drawn ~n:elected.ring);
   [%expect
     {|
-    f0  (Embed(seats 0)(phase 3072)(e 10))
+    f0  (Embed(seats 0)(phase 6144)(e 10))
     f1  (Rms_norm(over Embedding))
     f2  (Rms_norm(over Stream))
-    f3  (Matvec((src Y)(w((base(Fixed 3328))(e 10)))(outer_major true)(inner 16)(outer 82)(landing To_v)))
-    f4  (Conv(block 0)(w((base(Fixed 4640))(e 10))))
-    f5  (Silu_over(from 32)(count 48))
+    f3  (Matvec((src Y)(w((base(Fixed 6656))(e 10)))(outer_major true)(inner 32)(outer 146)(landing To_v)))
+    f4  (Conv(block 0)(w((base(Fixed 11328))(e 10))))
+    f5  (Silu_over(from 64)(count 80))
     f6  (Decay(block 0))
     f7  (State_update(block 0))
     f8  (Readout(block 0))
-    f9  (Silu_over(from 0)(count 32))
+    f9  (Silu_over(from 0)(count 64))
     f10 Gate
     f11 (Rms_norm(over Gated))
-    f12 (Matvec((src Y)(w((base(Fixed 4832))(e 10)))(outer_major false)(inner 32)(outer 16)(landing Add_to_h)))
+    f12 (Matvec((src Y)(w((base(Fixed 11648))(e 10)))(outer_major false)(inner 64)(outer 32)(landing Add_to_h)))
     f13 (Rms_norm(over Stream))
-    f14 (Matvec((src Joined)(w((base(Fixed 5344))(e 10)))(outer_major false)(inner 32)(outer 16)(landing To_q)))
-    f15 (Matvec((src Joined)(w((base(Fixed 5856))(e 10)))(outer_major false)(inner 32)(outer 16)(landing(To_ring(k true)(ring 0)))))
-    f16 (Matvec((src Y)(w((base(Fixed 6368))(e 10)))(outer_major false)(inner 16)(outer 16)(landing(To_ring(k false)(ring 0)))))
+    f14 (Matvec((src Joined)(w((base(Fixed 13696))(e 10)))(outer_major false)(inner 64)(outer 32)(landing To_q)))
+    f15 (Matvec((src Joined)(w((base(Fixed 15744))(e 10)))(outer_major false)(inner 64)(outer 32)(landing(To_ring(k true)(ring 0)))))
+    f16 (Matvec((src Y)(w((base(Fixed 17792))(e 10)))(outer_major false)(inner 32)(outer 32)(landing(To_ring(k false)(ring 0)))))
     f17 (Attend(ring 0))
-    f18 (Matvec((src Y)(w((base(Fixed 6624))(e 10)))(outer_major false)(inner 16)(outer 16)(landing Add_to_h)))
+    f18 (Matvec((src Y)(w((base(Fixed 18816))(e 10)))(outer_major false)(inner 32)(outer 32)(landing Add_to_h)))
     f19 (Rms_norm(over Stream))
-    f20 (Matvec((src Y)(w((base(Fixed 6880))(e 10)))(outer_major false)(inner 16)(outer 64)(landing To_hidden)))
-    f21 (Matvec((src Hidden)(w((base(Fixed 7904))(e 10)))(outer_major false)(inner 64)(outer 16)(landing Add_to_h)))
+    f20 (Matvec((src Y)(w((base(Fixed 19840))(e 10)))(outer_major false)(inner 32)(outer 128)(landing To_hidden)))
+    f21 (Matvec((src Hidden)(w((base(Fixed 23936))(e 10)))(outer_major false)(inner 128)(outer 32)(landing Add_to_h)))
     c0  (Rms_norm(over Stream))
-    c1  (Matvec((src Y)(w((base(Seat_block 0))(e 10)))(outer_major true)(inner 16)(outer 48)(landing To_logits)))
+    c1  (Matvec((src Y)(w((base(Seat_block 0))(e 10)))(outer_major true)(inner 32)(outer 48)(landing To_logits)))
     c2  Temper
     c3  Draw
     c4  Threshold
@@ -1817,10 +1817,7 @@ let%expect_test "the three memories and the two rules their layer fields take" =
   shape
     ~seed:37
     { Model.For_test.shape with
-      d = 32
-    ; d_in = 64
-    ; heads = 4
-    ; state = 16
+      state = 16
     ; plan = [| Block; Block; Attention; Block; Attention; Feed_forward |]
     };
   shape
@@ -1828,10 +1825,10 @@ let%expect_test "the three memories and the two rules their layer fields take" =
     { Model.For_test.shape with state = 32; taps = 16; plan = [| Block; Block; Block |] };
   [%expect
     {|
-    1 blocks, 1 rings: state 256 rows, 8 bits = block 0 + lane 5 + n 3 (packed); taps 192 rows, 48 channels in 6 bits, block stride 192 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
-    2 blocks, 2 rings: state 512 rows, 9 bits = block 1 + lane 5 + n 3 (packed); taps 384 rows, 48 channels in 6 bits, block stride 192 (added); ring 256 rows, 8 bits = head 1 + slot 3 + dim 4 (packed)
+    1 blocks, 1 rings: state 512 rows, 9 bits = block 0 + lane 6 + n 3 (packed); taps 320 rows, 80 channels in 7 bits, block stride 320 (added); ring 256 rows, 8 bits = head 0 + slot 3 + dim 5 (packed)
+    2 blocks, 2 rings: state 1024 rows, 10 bits = block 1 + lane 6 + n 3 (packed); taps 640 rows, 80 channels in 7 bits, block stride 320 (added); ring 512 rows, 9 bits = head 1 + slot 3 + dim 5 (packed)
     3 blocks, 2 rings: state 3072 rows, 12 bits = block 2 + lane 6 + n 4 (packed); taps 1152 rows, 96 channels in 7 bits, block stride 384 (added); ring 512 rows, 9 bits = head 1 + slot 3 + dim 5 (packed)
-    3 blocks, 0 rings: state 3072 rows, 12 bits = block 2 + lane 5 + n 5 (packed); taps 4608 rows, 96 channels in 7 bits, block stride 1536 (added); ring 128 rows, 7 bits = head 0 + slot 3 + dim 4 (packed)
+    3 blocks, 0 rings: state 6144 rows, 13 bits = block 2 + lane 6 + n 5 (packed); taps 6144 rows, 128 channels in 7 bits, block stride 2048 (added); ring 256 rows, 8 bits = head 0 + slot 3 + dim 5 (packed)
     |}]
 ;;
 
@@ -1911,10 +1908,10 @@ let%expect_test "the cycle bench: the measured walk against the cost model" =
   [%expect
     {|
     rewind: measured 2
-    step  0: silent, measured 12383, model 12383, delta 0
-    step 15: draws,  measured 20831, model 20831, delta 0
-    step 16: draws,  measured 20831, model 20831, delta 0
-    step 17: draws,  measured 20831, model 20831, delta 0
-    18 steps, 0 disagree, total 251934
+    step  0: silent, measured 34575, model 34575, delta 0
+    step 15: draws,  measured 49263, model 49263, delta 0
+    step 16: draws,  measured 49263, model 49263, delta 0
+    step 17: draws,  measured 49263, model 49263, delta 0
+    18 steps, 0 disagree, total 672574
     |}]
 ;;

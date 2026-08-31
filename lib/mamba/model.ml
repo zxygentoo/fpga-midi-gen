@@ -218,6 +218,13 @@ let check_shape t =
   let power_of_two name v =
     if not (Int.is_pow2 v) then invalid_argf "%s is %d, not a power of two" name v ()
   in
+  (* Quantized.score_shift folds the 1/sqrt(head_d) into its shift, thus a head width that
+     is a power of two and not of four scales by the next power of two DOWN — and the twin
+     makes the same mistake, thus the gate reads a pass. *)
+  let power_of_four name v =
+    if Int.floor_log2 v % 2 <> 0
+    then invalid_argf "%s is %d, thus no shift is its square root" name v ()
+  in
   (* the rms_norm of the stream divides by [d] and the gated norm by [d_in]: a shift *)
   power_of_two "d" t.d;
   power_of_two "d_in" t.d_in;
@@ -230,6 +237,7 @@ let check_shape t =
   (* the ring wraps by a mask, and the head splits [d] as it splits [d_in] *)
   power_of_two "the ring" t.ring;
   power_of_two "the attention head width" (head_d t);
+  power_of_four "the attention head width" (head_d t);
   if Array.length t.plan <> Array.length t.layers
   then
     invalid_argf
@@ -514,10 +522,15 @@ module For_test = struct
   (* The shape of a test model: small enough to run in a simulation, and the WHOLE PLAN of
      the era. A plan of blocks alone would elaborate no ring and no head, and the faults
      this era's gates found are address faults that only a second layer of a kind can
-     show. *)
+     show.
+
+     [d] is 32 over two heads and not 16, because [check_shape] holds the attention head
+     width to a power of FOUR — what [Quantized.score_shift] needs to divide by its square
+     root in one shift. It is the shape the pytest gates draw at, thus the two sides now
+     state one set of numbers. *)
   let shape =
-    { d = 16
-    ; d_in = 32
+    { d = 32
+    ; d_in = 64
     ; heads = 2
     ; state = 8
     ; taps = 4
@@ -642,9 +655,9 @@ module For_test = struct
           Array.of_list layers
           (* THE ELECTED POLICY, STATED. The temper is [Constants.temper_at_one] and the
              floor is the elected min-p 0.05 as a share of the peak weight 2^15, which is
-             [jax/fixed.py]'s [min_weight_of] and what [test_fixed.py] pins. The elected
-             numbers themselves live above the seam now, in [ELECTED_TEMPERATURE] and
-             [ELECTED_MIN_P] of [jax/fixed.py]. *)
+             [jax/quantized.py]'s [min_weight_of] and what [test_quantized.py] pins. The
+             elected numbers themselves live above the seam now, in [ELECTED_TEMPERATURE]
+             and [ELECTED_MIN_P] of [jax/quantized.py]. *)
       ; temper = Constants.temper_at_one
       ; min_weight = 1638
       }
