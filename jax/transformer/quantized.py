@@ -221,7 +221,7 @@ class Engine(NamedTuple):
     states: np.ndarray  # [walks], the generator of each walk
 
 
-def engine(twin, seeds):
+def create_engine(twin, seeds):
     """The origin of a batch of walks: an empty ring, no residual, and the generator at
     the SEED AS IT STANDS. The lead-in is not here -- it is the first steps of the walk
     itself, thus a caller counts the steps the float sampler counts."""
@@ -238,13 +238,13 @@ def engine(twin, seeds):
     )
 
 
-def forward(eng, classes, phase):
+def forward(engine, classes, phase):
     """one step through the engine: the engine after it"""
-    twin = eng.twin
+    twin = engine.twin
     d, slots = twin.d, twin.context
-    newest = eng.position & (slots - 1)
-    filled = min(eng.position + 1, slots)
-    kc, vc = eng.kc.copy(), eng.vc.copy()
+    newest = engine.position & (slots - 1)
+    filled = min(engine.position + 1, slots)
+    kc, vc = engine.kc.copy(), engine.vc.copy()
     h = twin.head.embed(classes, phase)
     for at, layer in enumerate(twin.layers):
         y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
@@ -278,7 +278,7 @@ def forward(eng, classes, phase):
             )
         )
         h = ar_quantized.join(h, layer.w2, values=hidden, at=ar_quantized.HID_Q)
-    return eng._replace(h=h, kc=kc, vc=vc, position=eng.position + 1)
+    return engine._replace(h=h, kc=kc, vc=vc, position=engine.position + 1)
 
 
 def projection(y, weight):
@@ -288,14 +288,14 @@ def projection(y, weight):
     )
 
 
-def next_step(eng):
+def next_step(engine):
     """one step of the walk -- `ar_quantized.next_step` over era four's own trunk"""
-    return ar_quantized.next_step(eng, forward)
+    return ar_quantized.next_step(engine, forward)
 
 
 def walk(twin, seeds, steps):
     """the classes of each step of the walk, and the draws behind them"""
-    return ar_quantized.walk(engine(twin, seeds), steps, forward)
+    return ar_quantized.walk(create_engine(twin, seeds), steps, forward)
 
 
 # what the quantization costs
@@ -330,11 +330,11 @@ def drift(model, *, context, steps, seed):
     pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
     reads the float draw on the very uniform the engine took, thus the report measures
     the quantization and never a walk that parted for another reason."""
-    eng = engine(Transformer.from_float(model, context=context), [seed])
+    engine = create_engine(Transformer.from_float(model, context=context), [seed])
     history = []
     counted = measure.Counted()
     for at in range(steps):
-        eng, classes, chain_draws = next_step(eng)
+        engine, classes, chain_draws = next_step(engine)
         # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
         # the window the engine's own ring held
         window = list(history)
