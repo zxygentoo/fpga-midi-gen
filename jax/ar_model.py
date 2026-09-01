@@ -1,20 +1,13 @@
 """The common parts of the STEP-FRAME eras, above the seam.
 
-It stands to `sample.py` and `train.py` as `ar_train.py` stands to each era's trainer.
-Eras
-four and five share `Head` -- the four tied voice tables, the bar-phase table and the
-chained readout over them -- one position rule, one norm and one draw scale, and each
-model module keeps what is its own: the trunk, the layer layout and the checkpoint walk.
-What is one thing across ALL THREE eras is smaller and stands elsewhere: `sample.py` is
-the host-side draw and `train.py` the rate curve, the update rule and the checkpoint.
+Eras four and five share `Head` -- the four tied voice tables, the bar-phase table and the
+chained readout over them -- one position rule, one norm and one draw scale. Each model
+module keeps the trunk, the layer layout and the checkpoint walk, which are its own.
 
-THE CUT RUNS ONE WAY. This module imports the shared ones and none of them imports it
+THE CUT RUNS ONE WAY: this module imports the shared ones and none of them imports it
 back, thus era six can read them without reading a head it has no frames for. Era six is
-not a `Trunk` for the same reason: its sheet is not a stream of frames, and its own trunk
-walks `every_layer` where these walk `layers`.
-
-BELOW THE SEAM IS `ar_quantized.py`: the integer rules of these two twins, which no float
-model reads.
+not a `Trunk` for the same reason -- its sheet is not a stream of frames. Below the seam
+is `ar_quantized.py`, the integer rules of these two twins.
 """
 
 import jax
@@ -26,21 +19,18 @@ import corpus
 import prng
 import sample
 
-# The slope of head k is 2^-(SLOPE_SPAN (k+1) / heads). Elected 2026-08-18 over spans 4,
-# 8, 16, 24 and 64: the means of 4 and 8 are a dead heat, and the VARIANCE is the finding
-# -- 5 to 7 times tighter over six seeds, replicated at two step budgets. Every head is
-# then local, and seeds stop latching onto whatever distant structure their init favours.
+# The slope of head k is 2^-(SLOPE_SPAN (k+1) / heads). Elected 4 over spans 4 to 64: the
+# means tie, but the variance is 5 to 7 times tighter over six seeds. Every head is then
+# local, and seeds stop latching onto whatever distant structure their init favours.
 SLOPE_SPAN = 4
-# THE TRAINING WINDOW, in steps: what `ar_train` cuts a batch to, thus what a player must
-# state back and what the referee's eval rows are cut at. Era five's attention ring is
-# this number as well -- a block carries no context, and the ring of a hybrid is era
-# four's window.
+# THE TRAINING WINDOW, in steps: what `ar_train` cuts a batch to, what a player states
+# back, and what the referee's eval rows are cut at. Era five's attention ring is this
+# number as well, because the ring of a hybrid is era four's window.
 TRAINING_WINDOW = 256
 
 
-# the phase table IS the bar -- one row for each step of it. Two names for one number let
-# the corpus phase and the table part, and a phase outside the table gathers a clamped row
-# in silence.
+# the phase table IS the bar, one row for each step of it; a phase outside the table
+# gathers a clamped row in silence
 PHASE_BUCKETS = corpus.BAR_STEPS
 TABLES = ("seats", "phase")
 
@@ -50,11 +40,10 @@ def rms_norm(x):
 
 
 def alibi_slopes(heads, span=SLOPE_SPAN):
-    """the ALiBi slope of each head, [heads]: head k slopes at -2^-(span (k+1) / heads).
+    """The ALiBi slope of each head: head k slopes at -2^-(span (k+1) / heads).
 
-    THE RULE HAS ONE HOME. The window form below and the step form of a Zamba layer both
-    read it, and the integer twins read `ar_quantized.slope_exponent`, which is this
-    exponent floored -- a rule written twice is a rule two forms can part on."""
+    THE RULE HAS ONE HOME. The window form, the step form of a Zamba layer and the twins'
+    `ar_quantized.slope_exponent` all read it; written twice, two forms could part."""
     return -(2.0 ** (-span * (jnp.arange(heads, dtype=jnp.float32) + 1.0) / heads))
 
 
@@ -78,15 +67,10 @@ def dropout(key, rate, count):
     """The `drop` a trunk's forward hands down: a fresh mask at each of [count] calls, or
     the identity where the rate is zero.
 
-    ONE SHAPE FOR BOTH TRUNKS. The two wrote this twice and differently -- one mutated a
-    key through `nonlocal`, one walked an iterator of splits -- and the iterator is the
-    functional one. [count] is stated by the caller because it is a fact of the trunk: a
-    `drop` called more often than the caller said raises StopIteration, where a lazy split
-    would quietly hand out a key nobody accounted for.
-
-    NO GATE PINS THE MASKS, and the change of shape here moves them: the key tree of one
-    split of n is not the tree of n splits of one. Both eras are FROZEN and their
-    checkpoints stand -- nothing that is held moves, and no retrain is planned."""
+    [count] is the caller's because it is a fact of the trunk: a `drop` called more often
+    raises StopIteration, where a lazy split would quietly hand out an unaccounted key. NO
+    GATE PINS THE MASKS, thus a change of shape here moves them; both eras are frozen and
+    their checkpoints stand."""
     if rate <= 0.0:
 
         def keep_all(x):
@@ -102,9 +86,8 @@ def dropout(key, rate, count):
     return drop
 
 
-# The draw of every matrix of both frozen eras: a normal at this deviation. It is not a
-# fan-in rule and it was measured against one -- `Mamba.drawn` records the reading on the
-# convolution kernel, where 1/sqrt(K) read worse.
+# the draw of every matrix of both frozen eras: a normal at this deviation, and not a
+# fan-in rule -- it was measured against one, and 1/sqrt(K) read worse
 DRAW_SCALE = 0.02
 
 
@@ -131,18 +114,14 @@ class Head(nnx.Module):
     """The four tied voice tables and the bar-phase table, and the chained head over them.
 
     IT IS THE INPUT AND THE READOUT AT ONCE, because the tables are tied: the table that
-    reads a voice is the table that writes it. That is why one module carries both
-    directions and why neither era holds a table of its own.
+    reads a voice is the table that writes it.
 
-    A shared table with a voice tag cannot work here, and the reason is arithmetic and not
-    capacity. Every step carries all four seats, thus the sum of the four tags is the same
-    vector at every position -- a bias, which carries nothing -- and what remains is
-    symmetric in the four codes. A soprano on 72 over a bass on 48 would give the vector
-    of a soprano on 48 under a bass on 72, and the voices would be thrown away on the way
-    in. Four tables break the symmetry, and no voice tag is then necessary anywhere.
+    FOUR TABLES AND NOT ONE WITH A VOICE TAG, for an arithmetic reason and not capacity.
+    Every step carries all four seats, thus the sum of the tags is the same vector
+    everywhere -- a bias -- and what remains is symmetric in the four codes: a soprano on
+    72 over a bass on 48 would embed as a soprano on 48 under a bass on 72.
 
-    The two tensors stand FIRST in every checkpoint of both eras, in this order, thus
-    [tensors] and [take] are the one statement of that layout."""
+    The two tensors stand FIRST in every checkpoint of both eras, in this order."""
 
     def __init__(self, d, *, rngs):
         shape = (corpus.SEATS, corpus.CLASSES, d)
@@ -178,20 +157,15 @@ class Head(nnx.Module):
             h1 = h2 + E[2][c2]       logits(seat 1) = E[1] . rms(h1)
             h0 = h1 + E[1][c1]       logits(seat 0) = E[0] . rms(h0)
 
-        [drawn] holds the classes the chain conditions on -- the true frame in training,
-        where all four heads then run in one pass with no sampling, and the drawn seats at
-        the draw. Only seats 3, 2 and 1 are read.
+        [drawn] holds the classes the chain conditions on: the true frame in training,
+        where all four heads then run in one pass, and the drawn seats at the draw. Only
+        seats 3, 2 and 1 are read.
 
-        The chain runs from the soprano down, which keeps the one decision the ear
-        accepted: the top voice is chosen first and conditions on no voice under it, as
-        the music is written. Four heads that drew in parallel would make the voices
-        conditionally independent, and a chord is a joint choice: measured on era four,
-        that costs 0.3157 nats for each step -- 0.456 bits, sixteen times the seed spread.
-        The chain removes the cost for no parameters at all -- parallel heads need the
-        same four tables -- and three adds of a vector.
-
-        What the chain adds is also what the next step reads: the input embedding of step
-        t+1 is a3 + a2 + a1 + a0, and the chain assembles it one voice at a time."""
+        THE CHAIN RUNS FROM THE SOPRANO DOWN, as the music is written. Parallel heads
+        would make the voices conditionally independent where a chord is a joint choice --
+        0.3157 nats for each step on era four -- and the chain removes that for no
+        parameters and three adds of a vector. What it adds is also what the next step
+        reads: the embedding of step t+1 is a3 + a2 + a1 + a0."""
         seats = self.seats[...]
         stream = h
         logits = [None] * corpus.SEATS
@@ -209,15 +183,10 @@ class Head(nnx.Module):
 
     def draw_frame(self, h, state, temperature, min_p):
         """One step of the chain ON THE HOST, in numpy float64 and on the PRNG of the
-        circuit: the soprano first, and each seat under it reading the stream the seats
-        above have written.
-
-        The chain is the reason a frame is a joint choice and not four independent ones.
-        Seat 0 is the bass and seat 3 the soprano, thus the loop runs down.
+        circuit: seat 0 is the bass and seat 3 the soprano, thus the loop runs down.
 
         Every walk of the batch draws. A step is one frame and never a sentence of its own
-        length, thus no walk of the batch finishes before another and none has to sit out
-        a draw while the rest go on."""
+        length, thus no walk finishes before another and none sits out a draw."""
         seats = np.asarray(self.seats[...])
         stream = h
         frame = np.zeros((len(h), corpus.SEATS), dtype=np.int32)
@@ -235,8 +204,7 @@ class Head(nnx.Module):
         return [self.seats[...], self.phase[...]]
 
     def take(self, tensors):
-        """the reverse of [tensors]. The two stand together so that the layout cannot
-        drift apart."""
+        """the reverse of [tensors]; the two stand together so the layout cannot drift"""
         seats, phase = tensors
         self.seats[...] = jnp.asarray(seats)
         self.phase[...] = jnp.asarray(phase)
@@ -251,18 +219,12 @@ class Trunk(nnx.Module):
     """WHAT `ar_train.train` TAKES: a tied `Head` and a `layers` list under it.
 
     The step-frame eras are one skeleton -- the head states the frame and the layers carry
-    the stream -- thus the three rules that read only that skeleton stand here and not
-    once in each era. An era states its own `hidden` and its own `describe`; everything
-    below reads `hidden` through `seat_nll` and reads nothing else of the era.
+    the stream -- thus the rules that read only that skeleton stand here and not once in
+    each era. Era six is NOT a subclass: its sheet is not a stream of frames.
 
-    Era six is NOT a subclass: its sheet is not a stream of frames, and its own trunk
-    walks `every_layer` where these walk `layers`.
-
-    THE SKELETON IS THREE ATTRIBUTES AND A METHOD, and a subclass states all four:
-    `self.head` (a `Head`), `self.layers` (the list, in the order of the ROM), and
-    `hidden(classes, phases, *, dropout, key)`. `self.d` comes off the head. The integer
-    twins hold the same three names and are NOT subclasses --
-    `ar_quantized.QuantizedImage` states why."""
+    A SUBCLASS STATES `self.head` (a `Head`), `self.layers` (in the order of the ROM) and
+    `hidden(classes, phases, *, dropout, key)`; `self.d` comes off the head. The integer
+    twins hold the same three names and are not subclasses."""
 
     def every_tensor(self):
         """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
@@ -278,9 +240,8 @@ class Trunk(nnx.Module):
         """The negative log likelihood of every voice of every step: classes
         [batch, length + 1, SEATS] -> [batch, length, SEATS].
 
-        The caller reduces. The loss does not carry across the encoding and neither does a
-        per-prediction mean: report nats for each step, which is the sum over the seats.
-        The two eras speak this same unit on these same windows, thus they compare."""
+        The caller reduces. Report nats for each STEP, the sum over the seats: the two
+        eras speak that unit on these windows, thus they compare."""
         labels = classes[:, 1:]
         h = self.hidden(classes[:, :-1], phases, dropout=dropout, key=key)
         return self.head.nll(h, labels)

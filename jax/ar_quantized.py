@@ -1,25 +1,18 @@
 """The integer rules of the STEP-FRAME twins: what eras four and five hold and era six
 does not.
 
-It stands to `quantized.py` as `ar_train.py` stands to each era's trainer. The two eras
-are one machine in outline -- a residual stream of one frame's width, a norm on it, a
-chained head over the four seats, and for era five's Zamba layer the same attention over
-a ring -- and every format and rule of that machine is here, once, for both twins. What
-is one thing across ALL THREE eras is `quantized.py`: the int16 rails, the exponent rule,
-the temper, the exp2 table, the counted write, the integer pick and the contract file.
+The two eras are one machine in outline -- a residual stream of one frame's width, a norm
+on it, a chained head over the four seats, and for era five's Zamba layer the same
+attention over a ring -- and every format and rule of that machine is here, once, for both
+twins. `quantized.py` holds what all three eras share.
 
-THE CUT RUNS ONE WAY. This module imports `quantized` and `quantized` imports nothing
-back, thus era six can read the shared rules without reading a stream format it has no
-stream for.
+THE CUT RUNS ONE WAY: this module imports `quantized` and `quantized` imports nothing
+back. `lib/nn/quantized.ml` is the same pair undivided below the seam, and
+`tests/test_quantized.py` states the numbers both sides must give.
 
-`lib/nn/quantized.ml` is the same pair of modules in OCaml, undivided: the OCaml side
-carries one file for the three circuits and the elaborations take what each needs. What
-holds the two sides together is `tests/test_quantized.py`, which states the numbers both
-must give.
-
-THE WALK AT THE FOOT OF THIS FILE READS AN ENGINE NOTHING HERE DECLARES. `chain`,
-`next_step` and `walk` take an era's own `Engine`, a `NamedTuple` a `NamedTuple` cannot be
-made to subclass; `walk`'s docstring names the fields it reads.
+THE WALK AT THE FOOT OF THIS FILE READS AN ENGINE NOTHING HERE DECLARES: `chain`,
+`next_step` and `walk` take an era's own `Engine`, which no class here can be the base of.
+`walk`'s docstring names the fields it reads.
 """
 
 import math
@@ -41,9 +34,8 @@ from quantized import (
     round_half_up,
 )
 
-# THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`. A Q number holds value * 2^-q. The
-# OCaml side states these ONCE for all three circuits; this states them once for all the
-# twins, and a twin that wrote a format of its own would part from its circuit in silence.
+# THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`: a Q number holds value * 2^-q. A
+# twin that wrote a format of its own would part from its circuit in silence.
 H_Q = 16  # the residual stream, in int32
 Y_Q = 12  # the normed vector, and the score of attention: int16
 HID_Q = 10  # the feed-forward hidden vector after its ReLU: int16
@@ -66,11 +58,9 @@ def rescale(value, *, at, to):
 
 
 def truncated(numerator, denominator):
-    """OCaml's `/` on integers, which goes TOWARD ZERO where numpy's `//` floors.
-
-    Every division of every circuit truncates, thus a floor here would part from it on the
-    negative half of a stream and nowhere else -- which is the kind of difference that
-    makes music and is still wrong."""
+    """OCaml's `/` on integers, which goes TOWARD ZERO where numpy's `//` floors. Every
+    division of every circuit truncates, thus a floor here would part from it on the
+    negative half of a stream and nowhere else."""
     numerator = np.asarray(numerator, np.int64)
     denominator = np.asarray(denominator, np.int64)
     sign = np.sign(numerator) * np.sign(denominator)
@@ -78,11 +68,9 @@ def truncated(numerator, denominator):
 
 
 def isqrt(values):
-    """floor of the square root, over an array: the one answer the [Isqrt] unit gives.
-
-    The float root is correct to a unit at these widths and the two steps settle it; the
-    loop is written all the same, because a silently wrong root is a silently wrong norm.
-    """
+    """Floor of the square root, the one answer the [Isqrt] unit gives. The float root is
+    correct to a unit at these widths and two steps settle it; the loop is written all the
+    same, because a silently wrong root is a silently wrong norm."""
     values = np.asarray(values, np.int64)
     guess = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
     while True:
@@ -94,12 +82,9 @@ def isqrt(values):
 
 
 def rms_norm_q(v, *, at, width):
-    """rms_norm over [width] elements of a Q[at] vector, giving Q[Y_Q].
-
-    The sum squares a Q[Y_Q] copy -- one DSP-sized product -- then one isqrt, and one
-    truncating division for each element. The stream enters at [H_Q] and the gate of a
-    Mamba block at 2 [Y_Q], thus the shift of the NUMERATOR is the one thing that moves
-    between callers."""
+    """rms_norm over [width] elements of a Q[at] vector, giving Q[Y_Q]: one squared
+    Q[Y_Q] copy, one isqrt, one truncating division for each element. The stream enters at
+    [H_Q] and a Mamba gate at 2 [Y_Q], thus [at] is what moves between callers."""
     copy = rescale(v, at=at, to=Y_Q)
     total = (copy * copy).sum(axis=-1, keepdims=True)
     mean = (total >> (width.bit_length() - 1)) + EPS_Q
@@ -114,11 +99,9 @@ def score_shift(*, row_q, head_d):
 
 
 def is_power_of_four(value):
-    """Does `score_shift` divide by sqrt([value]) exactly?
-
-    The shift is `(bit_length - 1) // 2`, thus a power of two that is not a power of four
-    scales by the next power of two DOWN and the circuit agrees with the twin in silence.
-    Every attention head width is checked against this."""
+    """Does `score_shift` divide by sqrt([value]) exactly? The shift is
+    `(bit_length - 1) // 2`, thus a power of two that is NOT a power of four scales by the
+    next power of two down and the circuit agrees with the twin in silence."""
     return value >= 1 and not value & (value - 1) and not (value.bit_length() - 1) % 2
 
 
@@ -129,43 +112,29 @@ def slope_exponent(*, span, heads, head):
 
 
 def fixed_q12(values, bound):
-    """a per-head number in Q12, clamped to the PORT that carries it.
-
-    Era five's `dt_bias` joins an int16 sum and its `d_skip` rides an 18-bit operand port,
-    thus the bound is a fact of the circuit and the caller states it."""
+    """a per-head number in Q12, clamped to the PORT that carries it; the bound is a fact
+    of the circuit, thus the caller states it"""
     values = np.ldexp(np.asarray(values, np.float64), 12)
     return np.clip(round_half_up(values), -bound, bound).astype(np.int32)
 
 
 def join(h, weight, *, values, at):
-    """a residual join: [values] times the weight lands on the stream; the exponent of the
-    weight folds into the shift with [at], the format of [values].
-
-    It stands here and not in a twin because it is the one arithmetic every residual write
-    of every era does, and the shift it takes is the whole of what a residual write can
-    get wrong."""
+    """A residual join: [values] times the weight lands on the stream, and the weight's
+    exponent folds into the shift with [at]. That shift is the whole of what a residual
+    write can get wrong, thus every era does it here."""
     return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
 
 
 class QuantizedImage:
-    """A layer whose WHOLE image is named tensors: nothing stands beside the weights, thus
-    the name list alone spells the layer.
+    """A layer whose WHOLE image is named tensors, thus the name list alone spells it.
 
-    THE TWIN HOLDS THE FLOAT LAYER'S TENSORS UNDER THE SAME ATTRIBUTE NAMES, and that is
-    the rule this class exists for: the float tree and the integer tree are one tree, and
-    a reader can audit them layer for layer. `names` is the class attribute that states
-    the order, and the order is the CHECKPOINT ORDER and the ROM order behind it, thus a
-    subclass cannot carry one kind and read another's names.
+    THE TWIN HOLDS THE FLOAT LAYER'S TENSORS UNDER THE SAME ATTRIBUTE NAMES, so a reader
+    can audit the two trees layer for layer. `names` states the order, which is the
+    checkpoint order and the ROM order behind it. Each tensor takes its own exponent.
 
-    Each tensor takes its OWN exponent; nothing forces them together. A layer that is not
-    all weights -- one whose float tensors become facts of another shape -- is not one of
-    these and states itself.
-
-    IT IS NOT A FLAX MODULE, and neither is any twin of the step-frame eras. A twin holds
-    HOST NUMPY in int64 -- it is never traced, never split and never a pytree of device
-    tensors -- thus `nnx.Module` would buy the tree walk and then every field would have
-    to switch it off again with `nnx.data`. Era six's twin is the other case and is a
-    module: it holds `nnx.Variable`s and `jax.jit` runs its forward."""
+    IT IS NOT A FLAX MODULE, and neither is any step-frame twin: a twin holds host numpy
+    in int64, never traced and never a pytree, thus `nnx.Module` would buy a tree walk
+    every field would then switch off. Era six's twin is the other case."""
 
     def __init__(self, weights):
         for name, weight in zip(self.names, weights):
@@ -183,16 +152,12 @@ class QuantizedImage:
 class QuantizedHead:
     """The two tables of `Head` as the machine holds them -- and ONE exponent over both.
 
-    THE SEAT AND PHASE TABLES SHARE IT and take it from the larger peak: their rows ADD --
-    the embedding sums them and the Embed op of a circuit walks them as one tensor -- thus
-    a difference of exponents would be a difference of formats inside one sum. Here that
-    rule is the shape of the module and cannot be broken by a caller; a FILE can still
-    state two, and `of_file` refuses one that does.
+    THE SEAT AND PHASE TABLES SHARE IT, from the larger peak: their rows ADD, thus two
+    exponents would be two formats inside one sum. The module's shape holds the rule and
+    `of_file` refuses a file that states two.
 
-    The four seat tables are ONE tensor, seat 0 first, and a circuit reaches a row of it
-    with a shift and an add from the base: row (seat * CLASSES + class).
-
-    Both frozen eras hold one of these, and the twin of each reads the stream at [H_Q]."""
+    The four seat tables are ONE tensor, seat 0 first: a circuit reaches row
+    (seat * CLASSES + class) with a shift and an add from the base."""
 
     def __init__(self, *, seats, phase, e):
         self.seats = np.asarray(seats, np.int64)
@@ -206,9 +171,8 @@ class QuantizedHead:
     @classmethod
     def of_file(cls, tensors, exponents):
         """the head of a contract file: tensors "0" and "1", under the one exponent.
-
-        THE REFUSAL STANDS HERE and not in an era's `load`, because the rule is this
-        class's: a file that states two exponents states two formats inside one sum."""
+        The refusal stands here and not in an era's `load`, because the rule is this
+        class's."""
         if exponents[0] != exponents[1]:
             raise ValueError("the seat and phase tables must share one exponent")
         return cls(seats=tensors["0"], phase=tensors["1"], e=int(exponents[0]))
@@ -249,25 +213,16 @@ class QuantizedHead:
         return [Weight(self.seats, self.e), Weight(self.phase, self.e)]
 
     def check_tables(self, d):
-        """the seat table holds one row for each seat and class, at width [d].
-
-        THE RULE IS THIS CLASS'S, thus the refusal stands here and not in an era's
-        `check_shape`: a circuit reaches row (seat * CLASSES + class) with a shift and an
-        add, and a table of another height sends every seat but the first to another
-        seat's rows."""
+        """The seat table holds one row for each seat and class, at width [d]. A table of
+        another height sends every seat but the first to another seat's rows."""
         if self.seats.size != corpus.SEATS * corpus.CLASSES * d:
             raise ValueError("the seat table holds no row for each seat and class")
 
 
-# The sigmoid of a Q12 value, in Q15. The input is int16, thus its range is |v| < 8
-# exactly and a clamp costs nothing: 256 buckets of 256 Q12 units cover it, and the index
-# is the top eight bits with the sign flipped.
-#
-# The entry is the sigmoid at the CENTRE of its bucket and not at its left edge. The
-# bucket is 1/16 wide and the slope peaks at 1/4, thus the left edge would bias every
-# reading by up to 2^-10 of full scale; the centre halves the worst error and costs
-# nothing at elaboration. The centres are symmetric about zero, thus the two halves of the
-# table sum to 2^15 and sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
+# The sigmoid of a Q12 value, in Q15. The input is int16, thus |v| < 8 exactly and 256
+# buckets of 256 Q12 units cover it. THE ENTRY IS THE CENTRE OF ITS BUCKET and not its
+# left edge: the centre halves the worst error, and the centres are symmetric about zero,
+# thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
 SIGMOID_TABLE = np.array(
     [
         int(round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
@@ -277,11 +232,9 @@ SIGMOID_TABLE = np.array(
 )
 
 
-# The correction term of the softplus, ln(1 + exp(-|v|)), in Q12 over a Q12 magnitude:
-# softplus(v) = relu(v) + this. The ramp is exact and carries the whole of a large input,
-# thus the table only has to hold a quantity that falls to nothing: at |v| = 8, the
-# largest magnitude an int16 Q12 value takes, it is one unit of Q12. 256 buckets of
-# 128 units cover the range, and the entry is again the centre of its bucket.
+# The correction term of the softplus, ln(1 + exp(-|v|)) in Q12: softplus(v) = relu(v) +
+# this. The ramp is exact and carries a large input whole, thus the table only holds a
+# quantity that falls to nothing -- one Q12 unit at |v| = 8, the int16 maximum.
 SOFTPLUS_TABLE = np.array(
     [
         int(round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
@@ -292,9 +245,8 @@ SOFTPLUS_TABLE = np.array(
 
 
 def sigmoid_q(value):
-    """`Nn_quantized.For_test.sigmoid_q`: the sigmoid of a Q12 value in Q15 -- the rule
-    of the [Sigmoid] unit. The index is the top eight bits with the sign flipped, which is
-    no arithmetic at all in a circuit."""
+    """`Nn_quantized.For_test.sigmoid_q`: the sigmoid of a Q12 value in Q15. The index is
+    the top eight bits with the sign flipped, which is no arithmetic in a circuit."""
     return SIGMOID_TABLE[((np.asarray(value, np.int64) >> 8) + 128) & 255]
 
 
@@ -305,11 +257,9 @@ def silu(value):
 
 
 def softplus(value):
-    """The ramp plus the correction the table holds -- the rule of the `Softplus` unit.
-
-    The sum rides an int16, thus the input clamps before the table reads it and the result
-    clamps after. The clamp of the index catches the one value -32768 whose magnitude does
-    not fit the table."""
+    """The ramp plus the correction the table holds, the rule of the `Softplus` unit. The
+    sum rides an int16, thus the input clamps before and the result after; the index clamp
+    catches -32768, whose magnitude does not fit the table."""
     value = clamp16(np.asarray(value, np.int64))
     index = np.minimum(255, np.abs(value) >> 7)
     return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
@@ -323,10 +273,8 @@ def coarse_to_ring(row):
 
 
 def tempered_weights(twin, logits):
-    """the Q15 weight of every class of one seat, and the min-p floor over it.
-
-    The peak weighs 2^15, thus the floor is a plain share of it; a class the floor refuses
-    weighs nothing and the pick cannot land on it."""
+    """the Q15 weight of every class of one seat, and the min-p floor over it; a class the
+    floor refuses weighs nothing and the pick cannot land on it"""
     peak = logits.max(axis=-1, keepdims=True)
     weights = exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
     return np.where(weights >= twin.min_weight, weights, 0)
@@ -336,13 +284,9 @@ def attend(keys, values, *, query, cur, filled, heads, span, row_q):
     """Attention of one site over the newest [filled] slots of its rings: the merged
     context of [query], head by head.
 
-    [keys] and [values] are the rings of ONE site -- one layer of era four, one ring of
-    era five -- as [walks, slots, d]; the caller slices its own axis, thus no era's name
-    for that axis stands in here. [row_q] is the Q of a stored row, 12 under both eras,
-    and each states its own because the two are one number and not one format.
-
-    The ring is read NEWEST FIRST, which is what the ALiBi slope counts: the bias of a
-    slot is its age times the slope of its head, and an unwritten slot is never read."""
+    [keys] and [values] are the rings of ONE site, as [walks, slots, d]; the caller slices
+    its own axis. The ring is read NEWEST FIRST, which is what the ALiBi slope counts: the
+    bias of a slot is its age times the slope of its head."""
     walks, slots, d = keys.shape
     head_d = d // heads
     ages = np.arange(filled)
@@ -356,10 +300,9 @@ def attend(keys, values, *, query, cur, filled, heads, span, row_q):
         raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
         scores = (raw >> shift) - (ages << (Y_Q - slope))
         peak = scores.max(axis=-1, keepdims=True)
-        # THE NEGATION STANDS OUTSIDE THE SCALE, as it stands outside the temper of the
-        # draw: the circuit scales the score's distance BELOW the peak and negates the
-        # shifted product, thus a scale that did not divide exactly would round the other
-        # way if this side negated first. `exp2_q` is that order, named.
+        # THE NEGATION STANDS OUTSIDE THE SCALE, as in the temper of the draw: the
+        # circuit scales the distance BELOW the peak and negates the shifted product, and
+        # negating first would round the other way. `exp2_q` is that order, named.
         weights = exp2_q(apply_scale(LOG2E.q_value, LOG2E.q, scores - peak))
         total = weights.sum(axis=-1, keepdims=True)
         merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
@@ -393,12 +336,11 @@ def chain(e):
 
 
 def next_step(e, forward):
-    """one step of the walk: the engine after it, the classes of the frame, and the draws.
+    """One step of the walk: the engine after it, the classes of the frame, and the draws.
 
-    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
-    from the generator. The model opens the music itself after it, thus the walk needs no
-    pitch and no table to begin. [forward] is the era's own trunk, and it is the only part
-    of a step that the two frozen eras do not share."""
+    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no
+    number from the generator -- the model opens the music itself after it. [forward]
+    is the era's own trunk, the only part of a step the two frozen eras do not share."""
     phase = e.position % corpus.BAR_STEPS
     if e.position < LEAD:
         classes = np.full((len(e.h), corpus.SEATS), corpus.SILENCE, np.int64)
@@ -410,18 +352,14 @@ def next_step(e, forward):
 
 
 def walk(e, steps, forward):
-    """the classes of each step of the walk, and the draws behind them.
+    """The classes of each step of the walk, and the draws behind them: the integer twin
+    of the float sampler, the lead-in counted inside [steps] as it is there.
 
-    It is the integer twin of the float sampler, and the lead-in counts inside [steps] as
-    it does there.
-
-    [e] IS AN ENGINE AND NOTHING HERE DECLARES ONE. Each era's `Engine` is a `NamedTuple`
-    of its own, which no class here can be the base of, thus the contract is this
-    sentence: `chain`, `next_step` and `walk` read `e.twin` (the quantized model),
-    `e.h` (the residual stream, Q`H_Q` int32), `e.position` (the step the walk stands at),
-    `e.states` (one generator for each walk), and they rebuild the engine with
-    `e._replace`. An era adds what its own arithmetic carries -- era five's block states,
-    era four's rings -- and [forward] is what reads those."""
+    [e] IS AN ENGINE AND NOTHING HERE DECLARES ONE. The contract is this sentence:
+    `chain`, `next_step` and `walk` read `e.twin` (the quantized model), `e.h` (the
+    residual stream, Q`H_Q` int32), `e.position` and `e.states` (one generator for each
+    walk), and rebuild with `e._replace`. An era adds what its own arithmetic carries,
+    and [forward] reads those."""
     played, taken = [], []
     for _ in range(steps):
         e, classes, draws = next_step(e, forward)
