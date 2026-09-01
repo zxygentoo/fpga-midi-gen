@@ -238,13 +238,13 @@ def engine(twin, seeds):
     )
 
 
-def forward(e, classes, phase):
+def forward(eng, classes, phase):
     """one step through the engine: the engine after it"""
-    twin = e.twin
+    twin = eng.twin
     d, slots = twin.d, twin.context
-    cur = e.position & (slots - 1)
-    filled = min(e.position + 1, slots)
-    kc, vc = e.kc.copy(), e.vc.copy()
+    newest = eng.position & (slots - 1)
+    filled = min(eng.position + 1, slots)
+    kc, vc = eng.kc.copy(), eng.vc.copy()
     h = twin.head.embed(classes, phase)
     for at, layer in enumerate(twin.layers):
         y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
@@ -252,14 +252,14 @@ def forward(e, classes, phase):
         query, key, value = (
             projection(y, getattr(layer, name)) for name in ("wq", "wk", "wv")
         )
-        kc[:, at, cur, :] = ar_quantized.coarse_to_ring(key)
-        vc[:, at, cur, :] = ar_quantized.coarse_to_ring(value)
+        kc[:, at, newest, :] = ar_quantized.coarse_to_ring(key)
+        vc[:, at, newest, :] = ar_quantized.coarse_to_ring(value)
         # the rings of ONE layer: slicing the layer axis here lets `attend` name none
         context = ar_quantized.attend(
             kc[:, at],
             vc[:, at],
             query=query,
-            cur=cur,
+            newest=newest,
             filled=filled,
             heads=twin.heads,
             span=twin.slope_span,
@@ -278,7 +278,7 @@ def forward(e, classes, phase):
             )
         )
         h = ar_quantized.join(h, layer.w2, values=hidden, at=ar_quantized.HID_Q)
-    return e._replace(h=h, kc=kc, vc=vc, position=e.position + 1)
+    return eng._replace(h=h, kc=kc, vc=vc, position=eng.position + 1)
 
 
 def projection(y, weight):
@@ -288,9 +288,9 @@ def projection(y, weight):
     )
 
 
-def next_step(e):
+def next_step(eng):
     """one step of the walk -- `ar_quantized.next_step` over era four's own trunk"""
-    return ar_quantized.next_step(e, forward)
+    return ar_quantized.next_step(eng, forward)
 
 
 def walk(twin, seeds, steps):
@@ -330,11 +330,11 @@ def drift(model, *, context, steps, seed):
     pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
     reads the float draw on the very uniform the engine took, thus the report measures
     the quantization and never a walk that parted for another reason."""
-    e = engine(Transformer.from_float(model, context=context), [seed])
+    eng = engine(Transformer.from_float(model, context=context), [seed])
     history = []
     counted = measure.Counted()
     for at in range(steps):
-        e, classes, chain_draws = next_step(e)
+        eng, classes, chain_draws = next_step(eng)
         # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
         # the window the engine's own ring held
         window = list(history)

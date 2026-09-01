@@ -61,23 +61,23 @@ def isqrt(values):
     correct to a unit at these widths and two steps settle it; the loop is written all the
     same, because a silently wrong root is a silently wrong norm."""
     values = np.asarray(values, np.int64)
-    guess = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
+    root = np.where(values <= 0, 0, np.sqrt(np.maximum(values, 0)).astype(np.int64))
     while True:
-        low = np.maximum(guess - ((guess * guess > values) & (guess > 0)), 0)
-        high = low + ((low + 1) * (low + 1) <= values)
-        if np.array_equal(high, guess):
-            return guess
-        guess = high
+        stepped_down = np.maximum(root - ((root * root > values) & (root > 0)), 0)
+        stepped_up = stepped_down + ((stepped_down + 1) * (stepped_down + 1) <= values)
+        if np.array_equal(stepped_up, root):
+            return root
+        root = stepped_up
 
 
-def rms_norm_q(v, *, at, width):
+def rms_norm_q(vector, *, at, width):
     """rms_norm over [width] elements of a Q[at] vector, giving Q[Y_Q]: one squared
     Q[Y_Q] copy, one isqrt, one truncating division for each element. The stream enters at
     [H_Q] and a Mamba gate at 2 [Y_Q], thus [at] is what moves between callers."""
-    copy = rescale(v, at=at, to=Y_Q)
-    total = (copy * copy).sum(axis=-1, keepdims=True)
-    mean = (total >> (width.bit_length() - 1)) + EPS_Q
-    return q.clamp16(truncated(v * (1 << ((2 * Y_Q) - at)), isqrt(mean)))
+    scaled = rescale(vector, at=at, to=Y_Q)
+    squares = (scaled * scaled).sum(axis=-1, keepdims=True)
+    mean_square = (squares >> (width.bit_length() - 1)) + EPS_Q
+    return q.clamp16(truncated(vector * (1 << ((2 * Y_Q) - at)), isqrt(mean_square)))
 
 
 def join(h, weight, *, values, at):
@@ -131,9 +131,9 @@ def softplus(value):
     """The ramp plus the correction the table holds, the rule of the `Softplus` unit. The
     sum rides an int16, thus the input clamps before and the result after; the index clamp
     catches -32768, whose magnitude does not fit the table."""
-    value = q.clamp16(np.asarray(value, np.int64))
-    index = np.minimum(255, np.abs(value) >> 7)
-    return q.clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
+    clamped = q.clamp16(np.asarray(value, np.int64))
+    index = np.minimum(255, np.abs(clamped) >> 7)
+    return q.clamp16(np.maximum(clamped, 0) + SOFTPLUS_TABLE[index])
 
 
 # the shape rules the circuit forces
@@ -165,8 +165,8 @@ def slope_exponent(*, span, heads, head):
 def fixed_q12(values, bound):
     """a per-head number in Q12, clamped to the PORT that carries it; the bound is a fact
     of the circuit, thus the caller states it"""
-    values = np.ldexp(np.asarray(values, np.float64), 12)
-    return np.clip(q.round_half_up(values), -bound, bound).astype(np.int32)
+    scaled = np.ldexp(np.asarray(values, np.float64), 12)
+    return np.clip(q.round_half_up(scaled), -bound, bound).astype(np.int32)
 
 
 class Weights:
@@ -238,10 +238,10 @@ class Head:
     def embed(self, classes, phase):
         """the embedding: the four seat rows and the phase row add in the shared exponent,
         then shift to Q[H_Q]"""
-        value = np.broadcast_to(self.phase[phase], (len(classes), self.d)).copy()
+        total = np.broadcast_to(self.phase[phase], (len(classes), self.d)).copy()
         for seat in range(corpus.SEATS):
-            value = value + self.seats[seat, classes[:, seat]]
-        return rescale(value, at=self.e, to=H_Q)
+            total = total + self.seats[seat, classes[:, seat]]
+        return rescale(total, at=self.e, to=H_Q)
 
     def logits(self, stream, seat):
         """the tied head of one seat: rms_norm of the stream the chain has written so far,
@@ -274,32 +274,37 @@ def coarse_to_ring(row):
     return (np.asarray(row, np.int64) >> 8) << 8
 
 
-def attend(keys, values, *, query, cur, filled, heads, span, row_q):
+def attend(keys, values, *, query, newest, filled, heads, span, row_q):
     """Attention of one site over the newest [filled] slots of its rings: the merged
     context of [query], head by head.
 
-    [keys] and [values] are the rings of ONE site, as [walks, slots, d]; the caller slices
-    its own axis. The ring is read NEWEST FIRST, which is what the ALiBi slope counts: the
-    bias of a slot is its age times the slope of its head."""
+    [keys] and [values] are the rings of ONE site, [walks, slots, d] in Q[row_q], and the
+    caller slices its own axis off first. [query] is that site's query row. [newest] is
+    the slot the step just wrote and [filled] the slots that hold a row at all. [heads]
+    splits d, and [span] is the ALiBi exponent span the model was trained under.
+
+    THE RING IS READ NEWEST FIRST, which is what the ALiBi slope counts: the bias of a
+    slot is its age times the slope of its head."""
     walks, slots, d = keys.shape
     head_d = d // heads
     ages = np.arange(filled)
-    rows = (cur - ages) & (slots - 1)
-    keys, values = keys[:, rows, :], values[:, rows, :]
+    rows = (newest - ages) & (slots - 1)
+    keys_by_age = keys[:, rows, :]
+    values_by_age = values[:, rows, :]
     context = np.zeros((walks, d), np.int64)
     shift = score_shift(row_q=row_q, head_d=head_d)
     for head in range(heads):
         band = slice(head * head_d, (head + 1) * head_d)
         slope = slope_exponent(span=span, heads=heads, head=head)
-        raw = (query[:, None, band] * keys[:, :, band]).sum(axis=-1)
-        scores = (raw >> shift) - (ages << (Y_Q - slope))
+        products = (query[:, None, band] * keys_by_age[:, :, band]).sum(axis=-1)
+        scores = (products >> shift) - (ages << (Y_Q - slope))
         peak = scores.max(axis=-1, keepdims=True)
         # THE NEGATION STANDS OUTSIDE THE SCALE, as in the temper of the draw: the
         # circuit scales the distance BELOW the peak and negates the shifted product, and
         # negating first would round the other way. `exp2_q` is that order, named.
         weights = q.exp2_q(q.apply_scale(q.LOG2E.q_value, q.LOG2E.q, scores - peak))
         total = weights.sum(axis=-1, keepdims=True)
-        merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
+        merged = (weights[:, :, None] * values_by_age[:, :, band]).sum(axis=1)
         context[:, band] = q.clamp16(truncated(merged, total))
     return context
 
@@ -328,12 +333,13 @@ class Draw(NamedTuple):
     drawn: np.ndarray  # [walks], the class
 
 
-def chain(e):
+def chain(engine):
     """One frame, drawn in a chain from the soprano down: each seat reads the stream that
     the seats above it have written. The draws come back in the order they happened."""
-    twin = e.twin
-    stream, states, draws = e.h, e.states, []
+    twin = engine.twin
+    stream, states = engine.h, engine.states
     everyone = np.ones(len(stream), bool)
+    draws = []
     for seat in reversed(range(corpus.SEATS)):
         logits = twin.head.logits(stream, seat)
         states, word = prng.uniform_word(states, everyone)
@@ -341,37 +347,41 @@ def chain(e):
         if seat:
             stream = twin.head.add_row(stream, seat, drawn)
         draws.append(Draw(seat, logits, word, drawn))
-    return e._replace(states=states), draws
+    return engine._replace(states=states), draws
 
 
-def next_step(e, forward):
-    """One step of the walk: the engine after it, the classes of the frame, and the draws.
+def next_step(engine, forward):
+    """One step of the walk: the engine after it, the classes of the frame, and the draws
+    of the chain that made them -- an empty list through the lead-in.
 
-    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no
-    number from the generator -- the model opens the music itself after it. [forward]
-    is the era's own trunk, the only part of a step the two frozen eras do not share."""
-    phase = e.position % corpus.BAR_STEPS
-    if e.position < LEAD:
-        classes = np.full((len(e.h), corpus.SEATS), corpus.SILENCE, np.int64)
+    [forward] is the era's own trunk, `forward(engine, classes, phase)` giving the engine
+    the step leaves. It is the only part of a step the two frozen eras do not share.
+
+    THE BOOT IS A LEAD-IN OF SILENCE, one bar of it, drawing nothing and taking no number
+    from the generator -- the model opens the music itself after it."""
+    phase = engine.position % corpus.BAR_STEPS
+    if engine.position < LEAD:
+        classes = np.full((len(engine.h), corpus.SEATS), corpus.SILENCE, np.int64)
         draws = []
     else:
-        e, draws = chain(e)
+        engine, draws = chain(engine)
         classes = np.stack([draw.drawn for draw in reversed(draws)], axis=-1)
-    return forward(e, classes, phase), classes, draws
+    return forward(engine, classes, phase), classes, draws
 
 
-def walk(e, steps, forward):
-    """The classes of each step of the walk, and the draws behind them: the integer twin
-    of the float sampler, the lead-in counted inside [steps] as it is there.
+def walk(engine, steps, forward):
+    """The frame of each step, [walks, steps, SEATS], and the draws of each step's chain
+    beside it: the integer twin of the float sampler. [steps] counts the lead-in inside
+    it, as the float sampler does, and a lead-in step's chain is empty.
 
-    [e] IS AN ENGINE AND NOTHING HERE DECLARES ONE. The contract is this sentence:
-    `chain`, `next_step` and `walk` read `e.twin` (the quantized model), `e.h` (the
-    residual stream, Q`H_Q` int32), `e.position` and `e.states` (one generator for each
-    walk), and rebuild with `e._replace`. An era adds what its own arithmetic carries,
-    and [forward] reads those."""
-    played, taken = [], []
+    [engine] IS AN ENGINE AND NOTHING HERE DECLARES ONE. The contract is this sentence:
+    `chain`, `next_step` and `walk` read `engine.twin` (the quantized model), `engine.h`
+    (the residual stream, Q`H_Q` int32), `engine.position` and `engine.states` (one
+    generator for each walk), and rebuild with `engine._replace`. An era adds what its
+    own arithmetic carries, and [forward] reads those."""
+    frames, chains = [], []
     for _ in range(steps):
-        e, classes, draws = next_step(e, forward)
-        played.append(classes)
-        taken.append(draws)
-    return np.stack(played, axis=1), taken
+        engine, classes, draws = next_step(engine, forward)
+        frames.append(classes)
+        chains.append(draws)
+    return np.stack(frames, axis=1), chains

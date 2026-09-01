@@ -525,14 +525,14 @@ def engine(twin, seeds):
     )
 
 
-def block(e, layer, ordinal, h, state, taps, tally):
+def block(eng, layer, ordinal, h, state, taps, tally):
     """One block of the trunk: the stream after the residual join, and the clamps it met.
     It writes the state and the taps of its own region IN PLACE, on copies the caller made
     for this step, as the state RAM of the circuit is written in place."""
-    shape = e.twin.widths
+    shape = eng.twin.widths
     d, d_in, heads, n = shape.d, shape.d_in, shape.heads, shape.state
     width, channels, head = shape.taps, shape.channels, shape.head
-    position = e.position
+    position = eng.position
     y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
     zxbcdt = matvec(y, layer.w_in, transposed=True, at=ar_quantized.Y_Q, to=V_Q)
     # the convolution: the step's input enters the ring, then a row of [width] terms for
@@ -593,14 +593,14 @@ def block(e, layer, ordinal, h, state, taps, tally):
     return ar_quantized.join(h, layer.w_out, values=g, at=V_Q), tally
 
 
-def attention(e, layer, ordinal, h, embedding, kc, vc):
+def attention(eng, layer, ordinal, h, embedding, kc, vc):
     """One attention layer, era four's with one addition: the query and the key read the
     JOINED vector -- the normed stream beside the normed embedding -- thus their walk is
     2d terms where the value's is d."""
-    twin = e.twin
+    twin = eng.twin
     d, slots = twin.d, twin.ring
-    cur = e.position & (slots - 1)
-    filled = min(e.position + 1, slots)
+    newest = eng.position & (slots - 1)
+    filled = min(eng.position + 1, slots)
     y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
     joined = np.concatenate([y, embedding], axis=-1)
 
@@ -609,14 +609,14 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
             source, getattr(layer, name), transposed=False, at=ar_quantized.Y_Q, to=V_Q
         )
 
-    kc[:, ordinal, cur, :] = ar_quantized.coarse_to_ring(project("wk", joined))
-    vc[:, ordinal, cur, :] = ar_quantized.coarse_to_ring(project("wv", y))
+    kc[:, ordinal, newest, :] = ar_quantized.coarse_to_ring(project("wk", joined))
+    vc[:, ordinal, newest, :] = ar_quantized.coarse_to_ring(project("wv", y))
     # the rings of THIS attention site: slicing the ordinal here lets `attend` name none
     context = ar_quantized.attend(
         kc[:, ordinal],
         vc[:, ordinal],
         query=project("wq", joined),
-        cur=cur,
+        newest=newest,
         filled=filled,
         heads=twin.heads,
         span=twin.span,
@@ -639,44 +639,44 @@ def feed_forward(twin, layer, h):
     return ar_quantized.join(h, layer.w2, values=hidden, at=ar_quantized.HID_Q)
 
 
-def layer_streams(e, classes, phase):
+def layer_streams(eng, classes, phase):
     """The residual stream after the embed and after each layer of the step the engine
     would take next, in the order the circuit writes them. A frame gate says only THAT the
     circuit and the twin parted; this says where."""
-    twin = e.twin
-    state, taps = e.state.copy(), e.taps.copy()
-    kc, vc = e.kc.copy(), e.vc.copy()
+    twin = eng.twin
+    state, taps = eng.state.copy(), eng.taps.copy()
+    kc, vc = eng.kc.copy(), eng.vc.copy()
     h = twin.head.embed(classes, phase)
     embedding = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=twin.d)
     written = [h]
-    tally = e.clamps
+    tally = eng.clamps
     for layer, ordinal in zip(twin.layers, twin.ordinals()):
         if layer.kind == recurrence.MAMBA:
-            h, tally = block(e, layer, ordinal, h, state, taps, tally)
+            h, tally = block(eng, layer, ordinal, h, state, taps, tally)
         elif layer.kind == recurrence.ZATTN:
-            h = attention(e, layer, ordinal, h, embedding, kc, vc)
+            h = attention(eng, layer, ordinal, h, embedding, kc, vc)
         else:
             h = feed_forward(twin, layer, h)
         written.append(h)
-    return written, e._replace(
+    return written, eng._replace(
         h=written[-1],
         state=state,
         taps=taps,
         kc=kc,
         vc=vc,
-        position=e.position + 1,
+        position=eng.position + 1,
         clamps=tally,
     )
 
 
-def forward(e, classes, phase):
+def forward(eng, classes, phase):
     """one step of the recurrence: the engine after it"""
-    return layer_streams(e, classes, phase)[1]
+    return layer_streams(eng, classes, phase)[1]
 
 
-def next_step(e):
+def next_step(eng):
     """one step of the walk -- `ar_quantized.next_step` over era five's own recurrence"""
-    return ar_quantized.next_step(e, forward)
+    return ar_quantized.next_step(eng, forward)
 
 
 def walk(twin, seeds, steps):
@@ -687,17 +687,17 @@ def walk(twin, seeds, steps):
 def streams(twin, seeds, steps):
     """the stream writes of each step, in the order the circuit writes them; it walks the
     model, thus they are the writes of a real walk"""
-    e = engine(twin, seeds)
+    eng = engine(twin, seeds)
     written = []
     # `ar_quantized.next_step` states the lead-in and the chain, and the trunk pass it
     # takes is the one this gate reads: a step runs the recurrence once and not twice
-    def recorded(e, classes, phase):
-        rows, e = layer_streams(e, classes, phase)
+    def recorded(eng, classes, phase):
+        rows, eng = layer_streams(eng, classes, phase)
         written.append(rows)
-        return e
+        return eng
 
     for _ in range(steps):
-        e, _, _ = ar_quantized.next_step(e, recorded)
+        eng, _, _ = ar_quantized.next_step(eng, recorded)
     return written
 
 
@@ -746,12 +746,12 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""
-    e = engine(Mamba.from_float(model, ring=ring), [seed])
+    eng = engine(Mamba.from_float(model, ring=ring), [seed])
     carry = model.initial_carry(1, context=ring)
     counted = measure.Counted()
     stream = None
     for at in range(steps):
-        e, classes, chain_draws = next_step(e)
+        eng, classes, chain_draws = next_step(eng)
         # THE CHAIN OF A STEP READS THE STREAM OF THE STEP BEFORE IT, on both sides: the
         # float row must be the row that same forward states and never the one this
         # step's classes make
@@ -776,5 +776,5 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
         same_peak=counted.same_peak,
         same_draw=counted.same_draw,
         mean_cosine=counted.cosine / max(1, counted.draws),
-        clamps=e.clamps,
+        clamps=eng.clamps,
     )
