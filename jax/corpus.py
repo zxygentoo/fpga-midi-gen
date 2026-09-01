@@ -220,19 +220,9 @@ class Crops:
     def batch(self, rng, batch):
         return np.stack([self.row(rng) for _ in range(batch)])
 
-    def every_piece(self, seed):
+    def pieces(self, seed):
         """One crop of every piece that holds one, at a FIXED seed: the valid curve and
         the referees read these, and a fresh crop each time would move the number by the
         draw as much as by the model."""
         rng = np.random.default_rng(seed)
         return np.stack([self.crop(rng, row) for row in self.rows])
-
-
-def moving(classes):
-    """[batch, length + 1, SEATS] -> [batch, length] the count of voices that move into
-    each predicted step.
-
-    77.91 percent of the voice slots repeat the step before: they dominate the mean and
-    invite a model that holds its chord for ever. The second number of the report divides
-    over the steps where two or more voices move, which is where the music is."""
-    return (classes[:, 1:] != classes[:, :-1]).sum(axis=-1)

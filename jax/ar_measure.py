@@ -27,6 +27,16 @@ import measure
 CONTEXT = ar_model.TRAINING_WINDOW
 
 
+def moving(classes):
+    """[batch, length + 1, SEATS] -> [batch, length] the count of voices that move into
+    each predicted step.
+
+    77.91 percent of the voice slots repeat the step before: they dominate the mean and
+    invite a model that holds its chord for ever. The second number of the report divides
+    over the steps where two or more voices move, which is where the music is."""
+    return (classes[:, 1:] != classes[:, :-1]).sum(axis=-1)
+
+
 # ==================================================================== #
 # FORCED — what the model predicts, on the corpus's own windows        #
 # ==================================================================== #
@@ -51,10 +61,10 @@ def loss_row(held, corpus_path=str(corpus.FRAMES), limit=128, batch=16):
         classes, phases = jnp.asarray(classes), jnp.asarray(phases)
         nll = held.seat_nll(classes, phases)
         by_step = jnp.sum(nll, axis=-1)
-        moving = corpus.moving(classes) >= 2
+        moved_in = moving(classes) >= 2
         total += float(jnp.sum(by_step))
-        moved += float(jnp.sum(jnp.where(moving, by_step, 0.0)))
-        moves += int(jnp.sum(moving))
+        moved += float(jnp.sum(jnp.where(moved_in, by_step, 0.0)))
+        moves += int(jnp.sum(moved_in))
         steps += int(jnp.size(by_step))
         seats += np.asarray(jnp.sum(nll, axis=(0, 1)))
     return {

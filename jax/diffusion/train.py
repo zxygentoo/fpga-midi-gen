@@ -105,7 +105,7 @@ def probe_batches(crops, batch):
     of it is hidden, thus a training number that redraws its mask hardly compares with
     itself; these hold the mask still. The probe mean and the training mean do not
     compare."""
-    classes = crops.every_piece(PROBE_SEED)
+    classes = crops.pieces(PROBE_SEED)
     hidden = model.orderless_masks(
         jax.random.key(PROBE_SEED), len(classes), crops.length
     )

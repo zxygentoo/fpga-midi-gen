@@ -302,7 +302,7 @@ def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
 # four steps and then all move together, and each whole window of the referee's context
 # stands one semitone above the one before. Two facts follow that no measurement decides:
 # a step moves exactly when its bar phase is 3 modulo 4, and each window opens on a bass
-# pitch of its own. The stubs below read those two and never `corpus.moving`.
+# pitch of its own. The stubs below read those two and never `ar_measure.moving`.
 
 VOICE_BASE = (48, 55, 60, 67)
 FIRST_BASS = VOICE_BASE[0] - corpus.PITCH_LOW + 1

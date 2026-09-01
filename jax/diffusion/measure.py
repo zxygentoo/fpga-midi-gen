@@ -32,7 +32,7 @@ from diffusion import model
 def corpus_sheets(corpus_path, split, crop, seed):
     """one crop of every piece of a split that holds one, at a fixed seed: the rows the
     corpus row and the likelihood referee both read"""
-    return corpus.Crops(corpus.load_pieces(corpus_path)[split], crop).every_piece(seed)
+    return corpus.Crops(corpus.load_pieces(corpus_path)[split], crop).pieces(seed)
 
 
 def echo_battery(label, sheets):
