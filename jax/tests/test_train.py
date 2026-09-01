@@ -12,13 +12,17 @@ loop applies still decides whether a run trains.
 """
 
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import ar_model
+import corpus
 import train
 from mamba import train as mamba_train
 from tests import gate
+from tests.models import drawn_mamba, drawn_transformer
 from transformer import train as transformer_train
 
 SHORT_RUN = [
@@ -118,3 +122,109 @@ def test_a_clip_of_zero_is_no_clip():
     state = rule.init(tree)
     updates, _ = rule.update(tree, state, tree)
     assert float(jnp.max(jnp.abs(updates[0]))) > 0.0
+
+
+# Dropout: the masks that nothing pinned
+
+
+# THREE VERSIONS OF `ar_model.dropout` PASSED THIS WHOLE SUITE while handing ONE mask to
+# every site of a forward pass. Nothing caught it and nothing could: the loss still fell,
+# the shapes were still right, and both eras are frozen, thus no checkpoint moves when the
+# masks do. The rule is written out below and held against the code, as the curve is.
+
+
+def masks_in_order(key, rate, count, shape):
+    """The masks this project wants, call by call: the key split [count] ways and taken
+    IN THAT ORDER, each an inverted-dropout multiplier. It is spelt here so that the gate
+    does not read the rule back out of the function it holds."""
+    keep = 1.0 - rate
+    return [
+        np.asarray(jax.random.bernoulli(one, keep, shape) / keep)
+        for one in jax.random.split(key, count)
+    ]
+
+
+@pytest.mark.parametrize("count", [1, 3, 13])
+def test_each_call_of_a_drop_takes_the_next_key(count):
+    """THE WHOLE OF THE BUG: a `drop` that built its iterator inside itself answered every
+    call with the FIRST key, thus every residual branch of a pass dropped the same units.
+    Call k reads key k, or the masks of a pass are one mask."""
+    key, rate, shape = jax.random.key(7), 0.5, (64,)
+    want = masks_in_order(key, rate, count, shape)
+    # the oracle itself must not repeat, or the loop below could pass on a single mask
+    assert len({mask.tobytes() for mask in want}) == count
+    drop = ar_model.dropout(key, rate, count)
+    ones = np.ones(shape, np.float32)
+    for at, mask in enumerate(want):
+        assert np.array_equal(np.asarray(drop(ones)), mask), f"call {at} took another key"
+
+
+def test_a_drop_spends_its_count_and_no_more():
+    """[count] is a fact of the trunk and the docstring promises that it BITES: a trunk
+    that grew a site past what it asked for must raise here, and never quietly draw an
+    unaccounted key."""
+    drop = ar_model.dropout(jax.random.key(0), 0.5, 2)
+    ones = np.ones((8,), np.float32)
+    drop(ones)
+    drop(ones)
+    with pytest.raises(StopIteration):
+        drop(ones)
+
+
+def test_a_rate_of_zero_is_the_identity_and_asks_for_no_key():
+    """EVERY EVALUATION PATH CALLS IN THIS WAY -- `seat_nll` defaults to a rate of 0 and a
+    key of None -- thus a rule that split its keys before it chose would raise on the null
+    key and take the valid curve, the referee and both measure commands with it. The
+    identity spends nothing, thus it also answers past [count]."""
+    drop = ar_model.dropout(None, 0.0, 2)
+    x = np.arange(6, dtype=np.float32)
+    for _ in range(5):
+        assert np.array_equal(np.asarray(drop(x)), x)
+
+
+def test_the_mask_is_the_inverted_form():
+    """0 or 1/keep, and never a plain zero or one: the expectation stays at one, thus the
+    pass that plays needs no rescale to match the pass that trained."""
+    rate = 0.25
+    drop = ar_model.dropout(jax.random.key(3), rate, 1)
+    got = np.asarray(drop(np.ones((4096,), np.float32)))
+    # the two values a multiplier may take, at the float32 the mask is built in
+    assert np.allclose(np.unique(got), [0.0, 1.0 / (1.0 - rate)], rtol=1e-6)
+    assert got.mean() == pytest.approx(1.0, abs=0.05)
+
+
+def drawn_window(rows, length):
+    """one window of classes and bar phases, at the shape a trunk's forward takes"""
+    classes = np.random.default_rng(11).integers(
+        0, corpus.CLASSES, (rows, length, corpus.SEATS)
+    )
+    bar = np.arange(length) % ar_model.PHASE_BUCKETS
+    return jnp.asarray(classes.astype(np.int32)), jnp.asarray(
+        np.tile(bar, (rows, 1)).astype(np.int32)
+    )
+
+
+@pytest.mark.parametrize(
+    "era,drawn", [("four", drawn_transformer), ("five", drawn_mamba)]
+)
+def test_a_trunk_spends_every_key_it_asked_for(era, drawn, monkeypatch):
+    """THE OTHER HALF OF THE CONTRACT IS THE CALLER'S: era four asks for
+    `1 + 2 * len(layers)` and era five for `layers + 1`. Too few and training raises;
+    too many and a key is drawn that no branch reads, which nothing else would report."""
+    asked, spent = [], []
+    real = ar_model.dropout
+
+    def counting(key, rate, count):
+        asked.append(count)
+        drop = real(key, rate, count)
+
+        def watched(x):
+            spent.append(x.shape)
+            return drop(x)
+
+        return watched
+
+    monkeypatch.setattr(ar_model, "dropout", counting)
+    classes, phases = drawn_window(rows=2, length=32)
+    drawn().hidden(classes, phases, dropout=0.5, key=jax.random.key(1))
+    assert asked == [len(spent)], f"era {era}: asked for {asked}, spent {len(spent)}"
