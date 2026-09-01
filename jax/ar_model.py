@@ -23,16 +23,20 @@ import sample
 # means tie, but the variance is 5 to 7 times tighter over six seeds. Every head is then
 # local, and seeds stop latching onto whatever distant structure their init favours.
 SLOPE_SPAN = 4
+
 # THE TRAINING WINDOW, in steps: what `ar_train` cuts a batch to, what a player states
 # back, and what the referee's eval rows are cut at. Era five's attention ring is this
 # number as well, because the ring of a hybrid is era four's window.
 TRAINING_WINDOW = 256
 
-
 # the phase table IS the bar, one row for each step of it; a phase outside the table
 # gathers a clamped row in silence
 PHASE_BUCKETS = corpus.BAR_STEPS
 TABLES = ("seats", "phase")
+
+# the draw of every matrix of both frozen eras: a normal at this deviation, and not a
+# fan-in rule -- it was measured against one, and 1/sqrt(K) read worse
+DRAW_SCALE = 0.02
 
 
 def rms_norm(x):
@@ -57,12 +61,6 @@ def attention_bias(heads, length, span=SLOPE_SPAN):
     return alibi + wall[None, None, :, :]
 
 
-def dropout_masks(key, rate, shape):
-    """the multiplier form of inverted dropout: 0 or 1/keep, one for each element"""
-    keep = 1.0 - rate
-    return jax.random.bernoulli(key, keep, shape) / keep
-
-
 def dropout(key, rate, count):
     """The `drop` a trunk's forward hands down: a fresh mask at each of [count] calls, or
     the identity where the rate is zero.
@@ -71,43 +69,26 @@ def dropout(key, rate, count):
     raises StopIteration, where a lazy split would quietly hand out an unaccounted key. NO
     GATE PINS THE MASKS, thus a change of shape here moves them; both eras are frozen and
     their checkpoints stand."""
-    if rate <= 0.0:
+    def nodrop(x): return x
 
-        def keep_all(x):
-            return x
-
-        return keep_all
-
-    keys = iter(jax.random.split(key, count))
+    def dropout_masks(key, rate, shape):
+        """the multiplier form of inverted dropout: 0 or 1/keep, one for each element"""
+        keep = 1.0 - rate
+        return jax.random.bernoulli(key, keep, shape) / keep
 
     def drop(x):
         return x * dropout_masks(next(keys), rate, x.shape)
 
-    return drop
-
-
-# the draw of every matrix of both frozen eras: a normal at this deviation, and not a
-# fan-in rule -- it was measured against one, and 1/sqrt(K) read worse
-DRAW_SCALE = 0.02
+    if rate <= 0.0:
+        return nodrop
+    else:
+        keys = iter(jax.random.split(key, count))
+        return drop
 
 
 def normal_at(key, shape, scale=DRAW_SCALE):
     """one drawn tensor of a frozen era: a normal, scaled"""
     return jax.random.normal(key, shape, dtype=jnp.float32) * scale
-
-
-# ---------------------------------------------------------------------
-# the host-side draw: numpy, float64, and the PRNG of the circuit
-# ---------------------------------------------------------------------
-
-
-def _host_rms_norm(x):
-    return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-6)
-
-
-# ---------------------------------------------------------------------
-# the head: the tied voice tables, and the chain over them
-# ---------------------------------------------------------------------
 
 
 class Head(nnx.Module):
@@ -187,6 +168,9 @@ class Head(nnx.Module):
 
         Every walk of the batch draws. A step is one frame and never a sentence of its own
         length, thus no walk finishes before another and none sits out a draw."""
+        def _host_rms_norm(x):
+            return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-6)
+
         seats = np.asarray(self.seats[...])
         stream = h
         frame = np.zeros((len(h), corpus.SEATS), dtype=np.int32)
@@ -208,11 +192,6 @@ class Head(nnx.Module):
         seats, phase = tensors
         self.seats[...] = jnp.asarray(seats)
         self.phase[...] = jnp.asarray(phase)
-
-
-# ---------------------------------------------------------------------
-# the trunk: what the step-frame trainer takes
-# ---------------------------------------------------------------------
 
 
 class Trunk(nnx.Module):
