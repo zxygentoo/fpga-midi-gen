@@ -1,42 +1,35 @@
 """The batched twin of lib/core/prng.ml: Marsaglia xorshift32.
 
-The OCaml module is the reference and the circuit computes the same recurrence, so a
-walk here agrees with the software, the simulation and the board byte for byte. That
-agreement is the point: it lets a sweep in JAX nominate a seed and an audition in OCaml
-play the same music.
+The OCaml module is the reference and the circuit computes the same recurrence, thus a
+walk here agrees with the software, the simulation and the board byte for byte. That is
+the point: a sweep in JAX can nominate a seed and an audition in OCaml plays it.
 
-One state per batch element, held as uint32. A draw carries the state forward, and only
-an active element advances -- a finished walk must consume nothing, or every walk queued
-behind it in the same batch shifts.
+One state per batch element, held as uint32. Only an ACTIVE element advances -- a
+finished walk must consume nothing, or every walk behind it in the batch shifts.
 """
 
 import numpy as np
 
 MASK32 = 0xFFFFFFFF
 
-# The bits of the grid a uniform stands on: Prng.uniform_bits, three bytes of the walk.
-# THE GRID HAS ONE HOME -- a threshold, an anneal table and an integer draw are all sized
-# on it, and each reads the width here rather than states 24 again.
+# Prng.uniform_bits: the grid a uniform stands on, three bytes of the walk. A threshold,
+# an anneal table and an integer draw are all sized on it and each reads the width here.
 UNIFORM_BITS = 24
 
 
 def create(seed):
-    """Prng.create: the walk that starts at [seed] itself.
-
-    The seed as it stands, which is the rule of the board's SEED cell -- thus 0 is a seed
-    like any other and the walk it names stands still. Take this where the seed IS the
-    piece, and [create_folded] where it only has to name a walk."""
+    """Prng.create: the walk that starts at [seed] itself, which is the rule of the
+    board's SEED cell -- thus 0 is a seed like any other and its walk stands still. Take
+    [create_folded] where the seed only has to name a walk."""
     if seed & MASK32 != seed:
         raise ValueError("Prng: the seed must fit 32 bits")
     return seed
 
 
 def create_folded(seed):
-    """Prng.create_folded: any integer names a walk.
-
-    The mask comes after the mix, not inside it, so a seed wider than the state still
-    reaches the low bits. Zero is no state of the walk, thus it takes the top state. A
-    seed already inside the range names itself: seed 7 here is the board's seed 7."""
+    """Prng.create_folded: any integer names a walk. The mask comes after the mix, thus a
+    wide seed still reaches the low bits; zero is no state, thus it takes the top one. A
+    seed already inside the range names itself."""
     folded = (seed ^ (seed >> 32)) & MASK32
     return MASK32 if folded == 0 else folded
 
@@ -47,8 +40,8 @@ def states(seeds):
 
 
 def step(state):
-    """One step over a batch, and the draw of that step: the low 8 bits of the new state,
-    which is the byte the circuit gives."""
+    """one step over a batch, and its draw: the low 8 bits of the new state, which is the
+    byte the circuit gives"""
     wide = state.astype(np.uint64)
     wide ^= (wide << np.uint64(13)) & np.uint64(MASK32)
     wide ^= wide >> np.uint64(17)
@@ -62,10 +55,7 @@ def uniform_word(state, active):
     first byte highest.
 
     It is the uniform AS THE CIRCUITS TAKE IT -- an integer twin hands its draw a word and
-    never a float -- thus [uniform] is this word on the grid and the two cannot part.
-    [active] holds the walks that draw; the rest keep the state they came in with, so a
-    finished element never consumes a draw it would not have consumed in a run of its
-    own."""
+    never a float -- thus [uniform] is this word on the grid and the two cannot part."""
     held = state.copy()
     state, high = step(state)
     state, middle = step(state)

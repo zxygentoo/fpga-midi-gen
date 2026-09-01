@@ -1,35 +1,22 @@
 """The instruments, over a stack of sheets of class indices.
 
-This is the COMMON HOME of the measurement, as jax/sample.py is of the draw. Everything
-here is arithmetic over a [sheets, steps, SEATS] array of class indices and nothing here
-knows which era drew it -- a Gibbs sheet, a walk of the packed stream and a corpus crop
-all read the same way, and a single walk is a stack of one. What a RECIPE measures with a
-model lives beside that recipe: jax/ar_measure.py holds the forced pass and the walk of
-the two step-frame eras, and jax/diffusion/measure.py holds the paper's Algorithm 1.
+The common home of the measurement. Everything here is arithmetic over a [sheets, steps,
+SEATS] array of class indices and nothing here knows which era drew it -- a Gibbs sheet, a
+walk of the packed stream and a corpus crop all read the same way, and a single walk is a
+stack of one. What a RECIPE measures with a model lives beside that recipe, in
+`ar_measure.py` and `diffusion/measure.py`. The drift count at the end is the one
+instrument that reads logits: what the quantization costs.
 
-ONE INSTRUMENT HERE READS LOGITS AND NOT CLASSES: the drift count at the end scores a
-twin's draw against the float model's on the very uniform the twin took -- what the
-quantization costs, which both step-frame twins report. It reads two rows and a draw, and
-no model of its own.
+A ROW IS A DICT OF INSTRUMENTS AND A LINE IS WHAT PRINTS IT. A function that computes one
+ends in `_row`, a function that renders one in `_line` or `_lines`, and every measure
+module of this tree spells it so.
 
-A ROW IS A DICT OF INSTRUMENTS AND A LINE IS WHAT PRINTS IT, and every measure module of
-this tree spells it the same way: `battery_row` and `battery_lines` here, `walk_row`,
-`loss_row`, `corpus_row`, `walk_line` and `loss_lines` in `ar_measure.py`, `tail_row` and
-`tail_line` in `diffusion/measure.py`. A function that computes one ends in `_row`; a
-function that renders one ends in `_line` or `_lines`.
-
-THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER. A triad share of 40 percent says nothing
-until the corpus row beside it says 64, and three faults of the parallel instrument were
-found by reading it against the corpus and never against another model.
-
-NOTHING HERE RANKS A MODEL. Ten times in this project a metric has ranked a model against
-the ear, and the sheet era added more: the instrument the ear elected reads null on the
-mean, and the draw whose numbers matched the corpus is the one the ear rejected. Read
-these beside the corpus row to catch a pathology, and let the ear elect.
-
-Of the battery, the ear has spoken for two and against three. Read parallel motion, the
-voice pairs and the likelihood; report hold, the onsets and register order to catch a
-pathology and elect on neither.
+NOTHING HERE RANKS A MODEL, and the corpus row is the referee of every number. A triad
+share of 40 percent says nothing until the corpus row beside it says 64. Ten times in this
+project a metric has ranked a model against the ear; read these to catch a pathology and
+let the ear elect. Of the battery the ear has spoken FOR parallel motion, the voice pairs
+and the likelihood, and AGAINST hold, the onsets and register order. The findings are in
+docs/diffusion.md.
 """
 
 import itertools
@@ -41,29 +28,24 @@ import corpus
 import prng
 import sample
 
-# The intervals a chorale treats as a dissonance, in semitones and modulo the octave: the
-# two seconds, the tritone and the two sevenths. The perfect fourth is left out -- it is a
-# dissonance against the bass and a consonance between the upper voices, and a measurement
-# that cannot tell them apart should not name it. This set puts the corpus at 10.3
-# percent, which is the number the proto round recorded.
+# The intervals a chorale treats as a dissonance, modulo the octave: the two seconds, the
+# tritone and the two sevenths. The perfect fourth is left out -- it is a dissonance
+# against the bass and a consonance between the upper voices, and one number cannot tell
+# them apart. This set puts the corpus at 10.3 percent.
 DISSONANT = (1, 2, 6, 10, 11)
-# The triad qualities the battery counts: major and minor, which puts the corpus at 63.9
-# percent of the steps that carry three voices. Diminished is left out on the proto
-# round's method; adding it moves the corpus row to 67.9, thus it is a labelling choice
-# and not a finding either way.
+# Major and minor, which puts the corpus at 63.9 percent of the steps carrying three
+# voices. Diminished is left out on the proto round's method; adding it moves the corpus
+# row to 67.9, thus it is a labelling choice and not a finding either way.
 TRIADS = ((0, 4, 7), (0, 3, 7))
-# THE TAIL OF THE HARMONY. A frame holding three dissonant pairs or more is rare in the
-# corpus -- 3.2 percent of its frames -- where TWO is 20.6 percent and merely a seventh
-# chord. A mean can therefore hold while these multiply, and it is the mean that the ear
-# disagrees with: one strange chord in a phrase is heard, and it moves the average of 128
-# frames by nothing.
+# THE TAIL OF THE HARMONY: a frame of three dissonant pairs or more is 3.2 percent of the
+# corpus, where TWO is 20.6 percent and merely a seventh chord. A mean holds while these
+# multiply, and one strange chord in a phrase is heard.
 CLASH = 3
 # seat 0 is the bass and seat 3 the soprano, as the packed stream and the chained head of
 # the earlier eras both read them
 VOICE_NAMES = ("bass", "tenor", "alto", "soprano")
-# The pairs of voices, in the order of the seats between them: the three neighbours, then
-# the two that skip a voice, then the outer pair. That order is nearly the order of their
-# span in the corpus, thus [voice_pairs] reads left to right as the pitch reach runs out.
+# the pairs in the order of the seats between them, which is nearly the order of their
+# span in the corpus: [voice_pairs] then reads left to right as the pitch reach runs out
 PAIRS = tuple(
     sorted(
         itertools.combinations(range(corpus.SEATS), 2), key=lambda p: (p[1] - p[0], p[0])
@@ -73,11 +55,8 @@ PAIRS = tuple(
 
 def triad_table():
     """A row for each of the 4096 sets of pitch classes: does this set fit inside some
-    triad?
-
-    A step holds at most four voices and therefore at most four pitch classes, thus its
-    set is one 12-bit word and the whole question is a table lookup. The table is built
-    one time and it makes the battery a vector operation instead of a loop over steps."""
+    triad? A step holds at most four pitch classes, thus its set is one 12-bit word and
+    the battery is a vector operation instead of a loop over steps."""
     fits = np.zeros(1 << 12, dtype=bool)
     for quality in TRIADS:
         for root in range(12):
@@ -100,16 +79,10 @@ def pitch_class_words(classes):
 
 
 def apply_or_zero(of, numbers):
-    """[of] applied to [numbers], or ZERO where nothing was heard.
-
-    EVERY INSTRUMENT OF THIS BATTERY IS CONDITIONAL and the condition is the same one: a
-    mean over the steps that carry three voices, a share over the pairs that sound, a
-    spread over the pitches one seat sang. A sheet that carries none of them has no
-    answer, and the battery reads 0.0 rather than nan -- a nan poisons a mean of several
-    sheets and prints as a hole, where a zero prints as the finding it is: nothing there.
-
-    THE CORPUS ROW IS WHAT SAYS WHICH ZERO IS WHICH. A zero triad share beside a corpus
-    row of 64 is a thin sheet, and no number here means anything without it."""
+    """[of] applied to [numbers], or ZERO where nothing was heard. Every instrument
+    here is conditional, and a nan poisons a mean of several sheets and prints as a
+    hole where a zero prints as the finding it is. The corpus row says which zero is
+    which."""
     return float(of(numbers)) if len(numbers) else 0.0
 
 
@@ -119,22 +92,13 @@ def dissonant_share(intervals):
 
 
 def voice_pairs(spans, intervals, pairs_sound):
-    """Each pair of voices: how far apart it sits in semitones, and how often it sounds a
+    """Each pair of voices: its mean span in semitones, and how often it sounds a
     dissonance.
 
-    THIS IS THE INSTRUMENT THAT EXPLAINS THE OTHERS, and the trunk is why. Three-by-three
-    convolutions with no pooling reach exactly L rows up the pitch axis at L layers, and a
-    voice's pitch lives at its own row of the roll -- thus a pair that sits further apart
-    than the reach cannot be seen at all, at any width.
-
-    Measured 2026-08-24 over the three board rungs, the excess dissonance of a pair is a
-    function of its span and of nothing else. At L 16 every pair inside 16 semitones reads
-    the corpus, and the bass against the soprano, which spans 19.6, reads 16 points over
-    it; L 24 takes that pair from 24.6 percent to 16.6. Depth is the reach and width is
-    the resolution.
-
-    Read it against the corpus row, as everything here is read. A pair can be too
-    consonant as well as too dissonant, and the narrow rungs are both."""
+    THE INSTRUMENT THAT EXPLAINS THE OTHERS, because the trunk is a stack of
+    three-by-three convolutions: it reaches L rows up the pitch axis at L layers, thus
+    a pair sitting further apart than the reach cannot be seen at any width. Depth is
+    the reach and width is the resolution; docs/diffusion.md measures both."""
     rows = []
     for at, (low, high) in enumerate(PAIRS):
         sounds = pairs_sound[..., at]
@@ -152,45 +116,15 @@ def voice_pairs(spans, intervals, pairs_sound):
 def parallel_motion(classes, pitches, sounding):
     """Parallel fifths and octaves, for each thousand pairs that live across a step.
 
-    THE FAULT THAT LIVES BETWEEN FRAMES, and the only instrument here that reads across
-    time at all. Two voices a fifth or an octave apart, both moving, landing on the same
-    interval. It is the most audible error in four-part writing, because an octave
-    collapses two voices into one and the texture thins where nothing else changed.
+    Two voices a fifth or an octave apart, both moving the same way, landing on the same
+    interval. It is the most audible error in four-part writing and the only instrument
+    here that reads across time; docs/diffusion.md reports that no lever of era six
+    reaches it, and why.
 
-    Measured 2026-08-25, it is what separates this era's models from the corpus where
-    every vertical instrument says they have arrived. Bach writes 0.26 fifths and 0.10
-    octaves for each thousand; the board rung writes 2.0 and 1.9, and the paper's own size
-    0.8 and 1.3. More Gibbs passes take it down two or three times and then stop -- both
-    sizes saturate, one by N 256 and one by N 512 -- and sixty-two times the parameters
-    halves it and stops. NEITHER REACHES THE CORPUS.
-
-    The reason is structural, and it is the finding of the round. The loss scores the
-    MARGINAL of each cell under its context, and the walk draws those marginals
-    INDEPENDENTLY; a joint configuration of two voices across two steps is therefore
-    evaluated by neither. A term that stands in no objective cannot be sampled away.
-
-    TWO CORRECTIONS OF 2026-08-25, both found by reading the corpus row and not the
-    models.
-
-    THE MOTION MUST BE SIMILAR. A parallel is two voices moving THE SAME WAY from a
-    perfect interval to the same perfect interval. The first version asked only that the
-    interval class stand before and after, thus contrary motion onto a fifth -- which is
-    how a fifth is correctly approached -- counted as a fault. It read 53 percent of the
-    corpus's own fifths that way, 10 events of 19. The octaves were untouched, 4 of 4
-    already similar.
-
-    THE PAIR MUST KEEP ITS ORDER. The gap was an absolute value, thus a pair that crossed
-    could hold its interval class while its interval turned upside down. 3.7 percent of
-    the corpus's moving pairs swap order across a step.
-
-    THE DIVISOR IS THE PAIRS THAT MOVE, and it was the pairs that merely SOUND until
-    2026-08-25. A parallel needs both voices to move, thus a model that holds its notes
-    writes fewer of them for no musical reason at all, and the earlier divisor paid it for
-    that. The span round caught this: it took the old number from 1.87 to 0.89 while its
-    onsets fell from 0.89 for each step to 0.69 and its held cells rose above the corpus.
-    [moving] is reported beside the rates for the same reason -- it is the term that was
-    hiding, and a rung whose motion has left the corpus is not to be read on the rates
-    alone."""
+    THE DIVISOR IS THE PAIRS THAT MOVE, not the pairs that merely sound: a parallel needs
+    both voices to move, thus the older divisor paid a model for holding its notes.
+    [moving] is reported beside the rates, because a rung whose motion has left the corpus
+    is not to be read on the rates alone."""
     moved = (classes[:, 1:] != classes[:, :-1]) & sounding[:, 1:] & sounding[:, :-1]
     fifths = octaves = moving = alive = 0
     for low, high in PAIRS:
@@ -203,15 +137,15 @@ def parallel_motion(classes, pitches, sounding):
         both = moved[..., low] & moved[..., high] & held
         gap_before = pitches[:, :-1, high] - pitches[:, :-1, low]
         gap_after = pitches[:, 1:, high] - pitches[:, 1:, low]
-        # SIMILAR MOTION is what makes a parallel a parallel. Contrary motion that lands
-        # on a fifth is how a fifth is correctly approached, and counting it read 53
-        # percent of the corpus's own fifths as faults.
+        # SIMILAR MOTION is what makes a parallel a parallel. Contrary motion onto a fifth
+        # is how a fifth is correctly approached, and counting it read 53 percent of the
+        # corpus's own fifths as faults.
         together = np.sign(pitches[:, 1:, low] - pitches[:, :-1, low]) == np.sign(
             pitches[:, 1:, high] - pitches[:, :-1, high]
         )
-        # and the pair must keep its order. A fifth whose voices cross becomes a fourth,
-        # thus the interval did not hold, and the absolute gap cannot see that. A unison
-        # has no side, thus a zero on either end keeps its place.
+        # and the pair must keep its order: a fifth whose voices cross becomes a fourth,
+        # which the absolute gap cannot see. A unison has no side, thus a zero keeps
+        # place.
         straight = np.sign(gap_before) * np.sign(gap_after) >= 0
         parallel = both & together & straight
         before = np.abs(gap_before) % 12
@@ -230,22 +164,14 @@ def parallel_motion(classes, pitches, sounding):
 def tessitura(pitches, sounding):
     """Where each voice SITS, and how often it leaves the register of its seat.
 
-    THE THING NOTHING ELSE HERE COVERS. [voice_pairs] reads DIFFERENCES of pitch and the
-    order instrument reads the stacking, thus a texture that slid four semitones as a body
-    would move neither of them. The trunk invites exactly that: a three-by-three
-    convolution over the pitch axis is EQUIVARIANT in pitch, so a cell knows where it
-    stands only when its reach touches an edge of the roll, and at L 16 a cell in the
-    middle of 48 rows touches neither. Register error should therefore fall with DEPTH and
-    settle at L 48, where every cell reaches both edges.
-
-    The seats overlap by 14 to 18 semitones, which is why the order instrument is weak and
-    reads 97 to 99 percent everywhere: a voice can stand in good order and still sing in
-    the wrong part of its range.
+    The thing nothing else here covers: [voice_pairs] reads DIFFERENCES of pitch and the
+    order instrument reads the stacking, thus a texture that slid bodily would move
+    neither. A convolution over the pitch axis is equivariant in pitch, so register error
+    falls with DEPTH -- a cell knows where it stands only when its reach touches an edge.
 
     The mean says a voice has DRIFTED and the spread says it RANGES too widely; the two
-    are different faults and a single number would confuse them. [outside] is the tail --
-    the share of sounding cells beyond their own seat's [corpus.VOICE_RANGES] -- and the
-    corpus reads zero on it by construction, as the spare row does."""
+    are different faults. [outside] is the share of sounding cells beyond their own
+    seat's [corpus.VOICE_RANGES], and the corpus reads zero on it by construction."""
     seats = []
     outside = alive = 0
     for seat, (low, high) in enumerate(corpus.VOICE_RANGES):
@@ -275,24 +201,15 @@ def clash_share(clashes):
 def battery_row(classes):
     """The battery over a set of sheets: [sheets, steps, VOICES] of class indices.
 
-    HOLD is the share of voice slots that repeat the step before. It reads both failures a
-    sheet can have in one number: far above the corpus is a drone, far below is jitter.
+    HOLD is the share of voice slots that repeat the step before, and it reads both
+    failures in one number: far above the corpus is a drone, far below is jitter. ONSETS
+    is the note-ons for each step under the decode of corpus.py, thus an onset means here
+    what it means on the wire. VOICES is the share of steps carrying 0 to 4 sounding
+    voices; the corpus sings all four at 99.8 percent of its steps.
 
-    ONSETS is the note-ons for each step under the decode of corpus.py, thus an onset
-    means here what it means on the wire.
-
-    VOICES is the share of steps carrying 0, 1, 2, 3 and 4 sounding voices. The corpus
-    sings all four at 99.8 percent of its steps, thus this row alone catches the thin
-    sheet that was the open defect of the proto round.
-
-    TRIADS is the share of steps that fit inside a major or minor triad, over the steps
-    that carry THREE VOICES OR MORE. DISSONANT is the share of sounding pairs at a
-    dissonant interval. ORDER is the share of steps whose sounding voices stand in
-    register order, the bass lowest.
-
-    SPARE is the share of cells drawn on the spare row of the vocabulary, which the corpus
-    never sings. It is a smoke number: anything above zero says the model puts mass where
-    no music is."""
+    TRIADS is over the steps that carry THREE VOICES OR MORE, DISSONANT is over the
+    sounding pairs, and ORDER is the share of steps whose voices stand bass lowest. SPARE
+    is a smoke number: the corpus never sings that row."""
     sounding = classes != corpus.SILENCE
     voices = sounding.sum(axis=-1)
     words = pitch_class_words(classes)
@@ -385,19 +302,12 @@ class Counted(NamedTuple):
 
 
 def count_draws(counted, here, there, *, drawn, uniform, temperature, min_p):
-    """A BATCH of the twin's rows against the float rows of the same places, on the very
-    uniforms the twin took.
+    """A BATCH of the twin's rows [here] against the float rows [there] of the same
+    places, on the very uniform the twin drew [drawn] on.
 
-    [here] and [there] are [rows, classes] -- the twin's integer logits and the float
-    model's, one row for each draw counted. [drawn] is the class the twin picked and
-    [uniform] the [0, 1) draw it picked on.
-
-    The float draw runs at the policy the twin was quantized under -- the caller states
-    it, because the elected numbers are the twin's and not this instrument's.
-
-    IT IS BATCHED because era six redraws a whole sheet at a time and a step-frame chain
-    redraws four seats; the arithmetic is one arithmetic and the batch is what parts
-    them."""
+    It is batched because era six redraws a whole sheet where a step-frame chain redraws
+    four seats. The caller states the policy, because the elected numbers are the twin's
+    and not this instrument's."""
     here, there = np.asarray(here, np.float64), np.asarray(there, np.float64)
     weights = sample.temper(there, temperature, min_p)
     return Counted(
@@ -411,10 +321,9 @@ def count_draws(counted, here, there, *, drawn, uniform, temperature, min_p):
 
 
 def count_chain_draws(counted, floated, chain_draws, *, temperature, min_p):
-    """one step's CHAIN as a batch of four: the step-frame adapter over `count_draws`.
-
-    A `Draw` of the chain holds a walk axis the drift report does not use -- the report
-    runs one walk -- thus every row here is that walk's row."""
+    """one step's CHAIN as a batch of four: the step-frame adapter over `count_draws`. A
+    `Draw` holds a walk axis the drift report does not use -- it runs one walk -- thus
+    every row here is that walk's row."""
     return count_draws(
         counted,
         np.stack([taken.logits[0] for taken in chain_draws]),
