@@ -1,6 +1,6 @@
 """The trainer of the masked sheet of docs/diffusion.md.
 
-Run it from the jax directory as a module:
+Run it as a module, from any directory of the tree:
 
     uv run python -m diffusion.train --steps 200 --ckpt ../_train/diffusion/probe.ckpt
 

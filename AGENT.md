@@ -99,8 +99,10 @@ models, the integer twins and the oracle gates, all in `jax/`.
 - Hardcaml version: `v0.18~preview`
 - Vivado: hardware synthesis
 - dune
-- `uv` runs everything in `jax/`: `uv run pytest`, `uv run ruff check`,
-  `uv run python -m diffusion.infer`. Never bare `python` or `pip`.
+- `uv` runs everything FROM THE REPOSITORY ROOT, which is the dune root as well:
+  `uv run pytest`, `uv run ruff check`, `uv run python -m diffusion.infer`. It
+  walks up to `pyproject.toml`, thus any directory of the tree answers the same.
+  Never bare `python` or `pip`.
 - `jax`, `jaxlib` and `jax-cuda12-plugin` move together or not at all. A
   plugin one release behind the runtime is refused, and the trainer falls
   back to the CPU with no message, ten times slower.
@@ -289,10 +291,12 @@ Rules:
 
 # Tests
 
-Run all tests with `dune runtest`, and then `uv run pytest` in `jax/`. pytest runs
-`-n auto` by default (208 tests, 106 s against 32 s); `-n0` puts them back in one
-process where a traceback is easier to read, NOT `-p no:xdist`, which leaves the
-`-n` of `addopts` unrecognised and exits. The `slow` marker is on the drift sweeps
+Run all tests with `dune runtest`, and then `uv run pytest`, both from the root.
+pytest runs `-n auto` by default (216 tests, 111 s against 31 s); `-n0` puts them
+back in one process where a traceback is easier to read, NOT `-p no:xdist`, which
+leaves the `-n` of `addopts` unrecognised and exits. PYTEST IS THE ONE COMMAND THAT
+WANTS THE ROOT: it reads `testpaths` there and nowhere else, thus `uv run pytest`
+from `lib/` collects nothing and exits 5. The `slow` marker is on the drift sweeps
 and the trainer smokes, thus `-m "not slow"` is the inner loop and the whole suite
 is what a commit passes.
 

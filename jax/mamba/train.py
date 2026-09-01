@@ -1,6 +1,6 @@
 """The trainer of the state-space model of docs/mamba.md.
 
-Run it from the jax directory as a module:
+Run it as a module, from any directory of the tree:
 
     uv run python -m mamba.train --steps 200
 
