@@ -22,17 +22,7 @@ import numpy as np
 
 import corpus
 import prng
-from quantized import (
-    LOG2E,
-    Weight,
-    apply_scale,
-    clamp16,
-    exp2_q,
-    max_exponent,
-    pick,
-    quantize,
-    round_half_up,
-)
+import quantized as q
 
 # THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`: a Q number holds value * 2^-q. A
 # twin that wrote a format of its own would part from its circuit in silence.
@@ -42,7 +32,7 @@ HID_Q = 10  # the feed-forward hidden vector after its ReLU: int16
 
 
 # the rms epsilon of the float models, in the Q of the squared stream
-EPS_Q = int(round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
+EPS_Q = int(q.round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
 
 
 # the integer arithmetic both circuits share
@@ -87,7 +77,7 @@ def rms_norm_q(v, *, at, width):
     copy = rescale(v, at=at, to=Y_Q)
     total = (copy * copy).sum(axis=-1, keepdims=True)
     mean = (total >> (width.bit_length() - 1)) + EPS_Q
-    return clamp16(truncated(v * (1 << ((2 * Y_Q) - at)), isqrt(mean)))
+    return q.clamp16(truncated(v * (1 << ((2 * Y_Q) - at)), isqrt(mean)))
 
 
 def join(h, weight, *, values, at):
@@ -106,7 +96,7 @@ def join(h, weight, *, values, at):
 # thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
 SIGMOID_TABLE = np.array(
     [
-        int(round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
+        int(q.round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
         for j in range(256)
     ],
     np.int64,
@@ -118,7 +108,7 @@ SIGMOID_TABLE = np.array(
 # quantity that falls to nothing -- one Q12 unit at |v| = 8, the int16 maximum.
 SOFTPLUS_TABLE = np.array(
     [
-        int(round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
+        int(q.round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
         for j in range(256)
     ],
     np.int64,
@@ -134,16 +124,16 @@ def sigmoid_q(value):
 def silu(value):
     """the value times its sigmoid, shifted back to Q12 and clamped"""
     value = np.asarray(value, np.int64)
-    return clamp16((value * sigmoid_q(value)) >> 15)
+    return q.clamp16((value * sigmoid_q(value)) >> 15)
 
 
 def softplus(value):
     """The ramp plus the correction the table holds, the rule of the `Softplus` unit. The
     sum rides an int16, thus the input clamps before and the result after; the index clamp
     catches -32768, whose magnitude does not fit the table."""
-    value = clamp16(np.asarray(value, np.int64))
+    value = q.clamp16(np.asarray(value, np.int64))
     index = np.minimum(255, np.abs(value) >> 7)
-    return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
+    return q.clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
 
 
 # the shape rules the circuit forces
@@ -176,7 +166,7 @@ def fixed_q12(values, bound):
     """a per-head number in Q12, clamped to the PORT that carries it; the bound is a fact
     of the circuit, thus the caller states it"""
     values = np.ldexp(np.asarray(values, np.float64), 12)
-    return np.clip(round_half_up(values), -bound, bound).astype(np.int32)
+    return np.clip(q.round_half_up(values), -bound, bound).astype(np.int32)
 
 
 class Weights:
@@ -198,7 +188,7 @@ class Weights:
     @classmethod
     def from_float(cls, layer):
         """one float layer under the exponent rule, tensor for tensor"""
-        return cls([Weight.from_float(tensor) for tensor in layer.tensors()])
+        return cls([q.Weight.from_float(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in self.names]
@@ -236,12 +226,12 @@ class Head:
     def from_float(cls, head):
         """the float `Head` under the exponent rule, one exponent over both tables"""
         seats, phase = (np.asarray(t, np.float64) for t in head.tensors())
-        shared = max_exponent(
+        shared = q.max_exponent(
             max(float(np.abs(t).max(initial=0.0)) for t in (seats, phase))
         )
         return cls(
-            seats=quantize(seats, e=shared)[0],
-            phase=quantize(phase, e=shared)[0],
+            seats=q.quantize(seats, e=shared)[0],
+            phase=q.quantize(phase, e=shared)[0],
             e=shared,
         )
 
@@ -265,7 +255,7 @@ class Head:
 
     def tensors(self):
         """the two tables, in the order of the checkpoint and of the ROM"""
-        return [Weight(self.seats, self.e), Weight(self.phase, self.e)]
+        return [q.Weight(self.seats, self.e), q.Weight(self.phase, self.e)]
 
     def check_tables(self, d):
         """The seat table holds one row for each seat and class, at width [d]. A table of
@@ -307,10 +297,10 @@ def attend(keys, values, *, query, cur, filled, heads, span, row_q):
         # THE NEGATION STANDS OUTSIDE THE SCALE, as in the temper of the draw: the
         # circuit scales the distance BELOW the peak and negates the shifted product, and
         # negating first would round the other way. `exp2_q` is that order, named.
-        weights = exp2_q(apply_scale(LOG2E.q_value, LOG2E.q, scores - peak))
+        weights = q.exp2_q(q.apply_scale(q.LOG2E.q_value, q.LOG2E.q, scores - peak))
         total = weights.sum(axis=-1, keepdims=True)
         merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
-        context[:, band] = clamp16(truncated(merged, total))
+        context[:, band] = q.clamp16(truncated(merged, total))
     return context
 
 
@@ -325,7 +315,7 @@ def tempered_weights(twin, logits):
     """the Q15 weight of every class of one seat, and the min-p floor over it; a class the
     floor refuses weighs nothing and the pick cannot land on it"""
     peak = logits.max(axis=-1, keepdims=True)
-    weights = exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
+    weights = q.exp2_q(q.apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
     return np.where(weights >= twin.min_weight, weights, 0)
 
 
@@ -347,7 +337,7 @@ def chain(e):
     for seat in reversed(range(corpus.SEATS)):
         logits = twin.head.logits(stream, seat)
         states, word = prng.uniform_word(states, everyone)
-        drawn = pick(tempered_weights(twin, logits), word)
+        drawn = q.pick(tempered_weights(twin, logits), word)
         if seat:
             stream = twin.head.add_row(stream, seat, drawn)
         draws.append(Draw(seat, logits, word, drawn))

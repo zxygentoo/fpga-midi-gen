@@ -31,8 +31,8 @@ root:
 import numpy as np
 import pytest
 
+import quantized as q
 from diffusion import model, quantized
-from quantized import Tally, engine_states
 from tests import gate
 
 DRIVER = gate.driver("gate_diffusion.exe")
@@ -74,12 +74,12 @@ def wanted_walk(twin, *, steps, walk, seed):
     owns each one: the opening, then for each pass its mask and its redraws.
 
     A disagreement therefore names its phase and not only its index."""
-    states, given = model.opening_sheet(engine_states([seed]), steps)
+    states, given = model.opening_sheet(q.engine_states([seed]), steps)
     wanted = [
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in model.cell_order(steps)
     ]
-    tally = Tally()
+    tally = q.Tally()
     for at, taken in enumerate(
         quantized.passes(twin, states, given, walk=walk, tally=tally)
     ):
@@ -202,7 +202,7 @@ def test_the_store_writes_are_the_twins(
         "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
     )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, Tally(), rows=rows)
+    want = twin.layer_writes(classes, hidden, q.Tally(), rows=rows)
     checked = 0
     for word in lines:
         if word[0] == "write":

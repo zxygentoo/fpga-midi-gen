@@ -17,9 +17,9 @@ from typing import NamedTuple
 import numpy as np
 import pytest
 
+import quantized as q
 from diffusion import model, quantized
 from mamba import quantized as mamba_twin
-from quantized import engine_states
 from tests.models import drawn_transformer, plan_of
 from transformer import quantized as transformer_twin
 
@@ -71,7 +71,7 @@ def drawn_pairs(seed, span, trials):
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
-    states, given = model.opening_sheet(engine_states([walk_seed]), STEPS)
+    states, given = model.opening_sheet(q.engine_states([walk_seed]), STEPS)
     return quantized.drift(coconet, states, given, walk=passes)
 
 

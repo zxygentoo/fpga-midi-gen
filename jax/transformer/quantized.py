@@ -42,23 +42,8 @@ import ar_model
 import ar_quantized
 import corpus
 import measure
+import quantized as q
 from ar_model import TABLES
-from quantized import (
-    ELECTED_MIN_P,
-    ELECTED_TEMPERATURE,
-    EXPONENTS,
-    MIN_WEIGHT,
-    TEMPER,
-    Temper,
-    clamp16,
-    engine_states,
-    image_from_tensors,
-    image_tensors,
-    min_weight_of,
-    read_contract,
-    scalar_tensor,
-    write_contract,
-)
 from transformer import model as step
 
 # the names of this era's own scalars; the shared ones are `contract`'s
@@ -67,17 +52,18 @@ CONTEXT = "context"
 SLOPE_SPAN = "slope_span"
 # the tensors the file carries beside its numbered weights
 BESIDE_THE_WEIGHTS = (
-    EXPONENTS,
-    TEMPER,
-    MIN_WEIGHT,
+    q.EXPONENTS,
+    q.TEMPER,
+    q.MIN_WEIGHT,
     HEADS,
     CONTEXT,
     SLOPE_SPAN,
 )
 
-# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above so era four's player can
-# read them here; the policy has one home in `quantized.py` and this era does not
-# re-elect it.
+# the policy has one home, `quantized.py`, and this era does not re-elect it; era four's
+# player reads it through this module
+ELECTED_TEMPERATURE = q.ELECTED_TEMPERATURE
+ELECTED_MIN_P = q.ELECTED_MIN_P
 
 
 class Layer(ar_quantized.Weights):
@@ -134,8 +120,8 @@ class Transformer:
             heads=model.heads,
             context=context,
             slope_span=model.span,
-            temper=Temper.from_float(temperature),
-            min_weight=min_weight_of(min_p),
+            temper=q.Temper.from_float(temperature),
+            min_weight=q.min_weight_of(min_p),
         )
 
 
@@ -162,13 +148,13 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    tensors = image_tensors(twin.tensors())
-    tensors[HEADS] = scalar_tensor(twin.heads)
-    tensors[CONTEXT] = scalar_tensor(twin.context)
-    tensors[SLOPE_SPAN] = scalar_tensor(twin.slope_span)
-    tensors[TEMPER] = twin.temper.tensor()
-    tensors[MIN_WEIGHT] = scalar_tensor(twin.min_weight)
-    write_contract(
+    tensors = q.image_tensors(twin.tensors())
+    tensors[HEADS] = q.scalar_tensor(twin.heads)
+    tensors[CONTEXT] = q.scalar_tensor(twin.context)
+    tensors[SLOPE_SPAN] = q.scalar_tensor(twin.slope_span)
+    tensors[q.TEMPER] = twin.temper.tensor()
+    tensors[q.MIN_WEIGHT] = q.scalar_tensor(twin.min_weight)
+    q.write_contract(
         path,
         tensors,
         {
@@ -182,17 +168,17 @@ def save(path, twin):
 
 def load(path):
     """the model of one contract file; a round trip through `save` is exact"""
-    tensors, metadata = read_contract(path)
+    tensors, metadata = q.read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
     if count < len(TABLES) + step.PER_LAYER or spare:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized step model")
-    exponents = tensors[EXPONENTS]
+    exponents = tensors[q.EXPONENTS]
     twin = Transformer(
         head=ar_quantized.Head.from_file(tensors, exponents),
         layers=[
             Layer(
-                image_from_tensors(
+                q.image_from_tensors(
                     tensors,
                     exponents,
                     first=len(TABLES) + step.PER_LAYER * at,
@@ -204,8 +190,8 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=Temper.from_file(tensors, metadata, key=TEMPER),
-        min_weight=int(tensors[MIN_WEIGHT]),
+        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
+        min_weight=int(tensors[q.MIN_WEIGHT]),
     )
     check_shape(twin)
     return twin
@@ -248,7 +234,7 @@ def engine(twin, seeds):
         kc=np.zeros(rings, np.int64),
         vc=np.zeros(rings, np.int64),
         position=0,
-        states=engine_states(seeds),
+        states=q.engine_states(seeds),
     )
 
 
@@ -281,7 +267,7 @@ def forward(e, classes, phase):
         )
         h = ar_quantized.join(h, layer.wo, values=context, at=KV_Q)
         y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=d)
-        hidden = clamp16(
+        hidden = q.clamp16(
             np.maximum(
                 ar_quantized.rescale(
                     y @ layer.w1.values,
@@ -297,7 +283,7 @@ def forward(e, classes, phase):
 
 def projection(y, weight):
     """one of the three projections of a step: one matvec column, Q12 in int16"""
-    return clamp16(
+    return q.clamp16(
         ar_quantized.rescale(y @ weight.values, at=ar_quantized.Y_Q + weight.e, to=KV_Q)
     )
 

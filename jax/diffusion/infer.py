@@ -31,10 +31,10 @@ import cli
 import corpus
 import midi
 import prng
+import quantized as q
 from diffusion import measure as referee
 from diffusion import model, quantized
 from diffusion.sample import gibbs_passes, tempered_pick
-from quantized import engine_states
 
 
 def gibbs(coconet, given, states, *, walk, temperature):
@@ -79,7 +79,7 @@ def draw(coconet, *, crop, seeds, walk, temperature, twin):
     both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
         engine = quantized.Coconet.from_float(coconet, temperature)
-        states, given = model.opening_sheet(engine_states(seeds), crop)
+        states, given = model.opening_sheet(q.engine_states(seeds), crop)
 
         def walked():
             return quantized.gibbs(engine, states, given, walk=walk)[0]
@@ -212,7 +212,7 @@ def drift(ckpt, crop, seed, walk, temperature):
     the float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands
     between the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
-    states, given = model.opening_sheet(engine_states([seed]), crop)
+    states, given = model.opening_sheet(q.engine_states([seed]), crop)
     said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 

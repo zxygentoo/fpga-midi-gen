@@ -18,8 +18,8 @@ import pytest
 import ar_model
 import ar_quantized
 import corpus
+import quantized as q
 from mamba import model, quantized, train
-from quantized import round_half_up
 from tests.models import drawn_mamba, plan_of
 
 # Six layers of float32 over a window of 64 steps, reduced in two different orders. A real
@@ -254,7 +254,7 @@ def test_the_decay_reads_the_libms_exponential():
     arithmetic, and `test_parity.py`'s G1 states it through the netlist."""
     for a_log in (-1.5, 0.0, 0.5, 2.7):
         a = math.exp(a_log)
-        want = int(round_half_up(math.ldexp(a / math.log(2.0), 12)))
+        want = int(q.round_half_up(math.ldexp(a / math.log(2.0), 12)))
         assert quantized.decay_scale(a_log) == want
     # a decay rate the port cannot hold saturates and never wraps
     assert quantized.decay_scale(20.0) == quantized.DECAY_HIGH

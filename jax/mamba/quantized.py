@@ -63,30 +63,8 @@ import ar_model
 import ar_quantized
 import corpus
 import measure
+import quantized as q
 from mamba import model as recurrence
-from quantized import (
-    ELECTED_MIN_P,
-    ELECTED_TEMPERATURE,
-    EXPONENTS,
-    INT16_HIGH,
-    INT16_LOW,
-    MIN_WEIGHT,
-    TEMPER,
-    Temper,
-    Weight,
-    apply_scale,
-    clamp16,
-    clamps16,
-    engine_states,
-    exp2_of_magnitude,
-    image_from_tensors,
-    image_tensors,
-    min_weight_of,
-    read_contract,
-    round_half_up,
-    scalar_tensor,
-    write_contract,
-)
 
 # the names of this era's own scalars; the shared ones are `contract`'s
 SPAN = "span"
@@ -97,9 +75,9 @@ DT_BIAS = "dt_bias"
 D_SKIP = "d_skip"
 # the tensors the file carries beside its numbered weights
 BESIDE_THE_WEIGHTS = (
-    EXPONENTS,
-    TEMPER,
-    MIN_WEIGHT,
+    q.EXPONENTS,
+    q.TEMPER,
+    q.MIN_WEIGHT,
     SPAN,
     RING,
     DECAY_Q_VALUE,
@@ -130,8 +108,10 @@ DECAY_HIGH = (1 << 24) - 1
 DT_BIAS_BOUND = 32767
 D_SKIP_BOUND = 131071
 
-# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above so era five's player can
-# read them here; the policy has one home in `quantized.py`.
+# the policy has one home, `quantized.py`; era five's player reads it through this module
+ELECTED_TEMPERATURE = q.ELECTED_TEMPERATURE
+ELECTED_MIN_P = q.ELECTED_MIN_P
+
 # The depth of the ring at INFERENCE, a choice of the player and no fact of the training
 # run. It is era four's training window, thus a window of the loss reads exactly the
 # attention the trainer computed.
@@ -144,7 +124,7 @@ def decay_scale(a_log):
     It takes the exponential through `math.exp` in float64 -- the C library's own, which
     is what the OCaml quantizer read -- because one ulp here moves a ROM byte."""
     a = math.exp(float(a_log))
-    q_value = int(round_half_up(math.ldexp(a / math.log(2.0), DECAY_Q_BITS)))
+    q_value = int(q.round_half_up(math.ldexp(a / math.log(2.0), DECAY_Q_BITS)))
     return min(max(q_value, 0), DECAY_HIGH)
 
 
@@ -172,9 +152,9 @@ class Block:
         return cls(
             # THE IMAGE STORES W_IN TRANSPOSED, because the circuit walks the projection
             # as the outer axis; every other tensor stands as the checkpoint holds it.
-            w_in=Weight.from_float(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
-            conv=Weight.from_float(layer.conv[...]),
-            w_out=Weight.from_float(layer.w_out[...]),
+            w_in=q.Weight.from_float(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
+            conv=q.Weight.from_float(layer.conv[...]),
+            w_out=q.Weight.from_float(layer.w_out[...]),
             decay=[decay_scale(a) for a in np.asarray(layer.a_log[...])],
             dt_bias=ar_quantized.fixed_q12(layer.dt_bias[...], DT_BIAS_BOUND),
             d_skip=ar_quantized.fixed_q12(layer.d_skip[...], D_SKIP_BOUND),
@@ -310,8 +290,8 @@ class Mamba:
             layers=[TWIN_OF[layer.kind].from_float(layer) for layer in model.layers],
             span=model.span,
             ring=ring,
-            temper=Temper.from_float(temperature),
-            min_weight=min_weight_of(min_p),
+            temper=q.Temper.from_float(temperature),
+            min_weight=q.min_weight_of(min_p),
         )
 
     def ordinals(self):
@@ -359,11 +339,11 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    tensors = image_tensors(twin.tensors())
-    tensors[SPAN] = scalar_tensor(twin.span)
-    tensors[RING] = scalar_tensor(twin.ring)
-    tensors[TEMPER] = twin.temper.tensor()
-    tensors[MIN_WEIGHT] = scalar_tensor(twin.min_weight)
+    tensors = q.image_tensors(twin.tensors())
+    tensors[SPAN] = q.scalar_tensor(twin.span)
+    tensors[RING] = q.scalar_tensor(twin.ring)
+    tensors[q.TEMPER] = twin.temper.tensor()
+    tensors[q.MIN_WEIGHT] = q.scalar_tensor(twin.min_weight)
     # one tensor for each per-head row, a line for each BLOCK in the plan order: the
     # elaboration reads one image and not a tree
     decay, dt_bias, d_skip = (
@@ -374,7 +354,7 @@ def save(path, twin):
     tensors[DECAY_Q] = np.full_like(decay, DECAY_Q_BITS)
     tensors[DT_BIAS] = dt_bias
     tensors[D_SKIP] = d_skip
-    write_contract(
+    q.write_contract(
         path,
         tensors,
         {
@@ -392,18 +372,20 @@ def load(path):
 
     THE PLAN COMES BACK OUT OF THE SHAPES, by the rule the module docstring states, thus
     the reader of this side and the reader of the elaboration walk the image alike."""
-    tensors, metadata = read_contract(path)
+    tensors, metadata = q.read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     if count < len(ar_model.TABLES) + 1:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized state model")
-    exponents = tensors[EXPONENTS]
+    exponents = tensors[q.EXPONENTS]
     d = tensors["0"].size // (corpus.SEATS * corpus.CLASSES)
     plan, groups, at = [], [], len(ar_model.TABLES)
     while at < count:
         kind = kind_of_image(tensors[str(at)].shape, d, path)
         names = IMAGE_TENSORS[kind]
         plan.append(kind)
-        groups.append(image_from_tensors(tensors, exponents, first=at, count=len(names)))
+        groups.append(
+            q.image_from_tensors(tensors, exponents, first=at, count=len(names))
+        )
         at += len(names)
     if at != count:
         raise ValueError(f"{path}: {count} image tensors do not fill whole layer groups")
@@ -430,8 +412,8 @@ def load(path):
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
-        temper=Temper.from_file(tensors, metadata, key=TEMPER),
-        min_weight=int(tensors[MIN_WEIGHT]),
+        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
+        min_weight=int(tensors[q.MIN_WEIGHT]),
     )
     check_shape(twin)
     return twin
@@ -479,7 +461,7 @@ def matvec(y, weight, *, transposed, at, to):
     [transposed] states that the image holds the tensor with its OUTER axis first, as it
     does for w_in, and the circuit reads that same order."""
     matrix = weight.values.T if transposed else weight.values
-    return clamp16(ar_quantized.rescale(y @ matrix, at=at + weight.e, to=to))
+    return q.clamp16(ar_quantized.rescale(y @ matrix, at=at + weight.e, to=to))
 
 
 class Clamps(NamedTuple):
@@ -538,7 +520,7 @@ def engine(twin, seeds):
         vc=np.zeros((walks, max(1, rings), twin.ring, shape.d), np.int64),
         h=np.zeros((walks, shape.d), np.int64),
         position=0,
-        states=engine_states(seeds),
+        states=q.engine_states(seeds),
         clamps=Clamps(),
     )
 
@@ -568,35 +550,35 @@ def block(e, layer, ordinal, h, state, taps, tally):
         back = tap_base + (np.arange(channels) * width) + ((position - k) & (width - 1))
         accumulated = accumulated + (taps[:, back] * kernel[:, k])
     scaled = ar_quantized.rescale(accumulated, at=V_Q + kernel_e, to=V_Q)
-    xbc = ar_quantized.silu(clamp16(scaled))
+    xbc = ar_quantized.silu(q.clamp16(scaled))
     x = xbc[:, :d_in]
     b = xbc[:, d_in : d_in + n]
     c = xbc[:, d_in + n :]
     # the decay of each head: softplus of the biased draw, then one exp2
     raw = zxbcdt[:, d_in + channels :]
     dt = ar_quantized.softplus(raw + layer.dt_bias)
-    rails = (dt == INT16_HIGH) | (dt == INT16_LOW)
+    rails = (dt == q.INT16_HIGH) | (dt == q.INT16_LOW)
     tally = tally.counting("dt", rails, dt.size)
-    alpha = exp2_of_magnitude(apply_scale(layer.decay, DECAY_Q_BITS, dt))
+    alpha = q.exp2_of_magnitude(q.apply_scale(layer.decay, DECAY_Q_BITS, dt))
     # the state update and the readout, head by head. [beta] is the inject operand of the
     # head: [state] products of [dt] against B, written before the walk.
     base = ordinal * d_in * n
     read = np.zeros((len(h), d_in), np.int64)
     for hd in range(heads):
         wide = (dt[:, hd, None] * b) >> (V_Q + V_Q - BETA_Q)
-        tally = tally.counting("beta", clamps16(wide), wide.size)
-        beta = clamp16(wide)
+        tally = tally.counting("beta", q.clamps16(wide), wide.size)
+        beta = q.clamp16(wide)
         lanes = np.arange(hd * head, (hd + 1) * head)
         rows = base + (lanes[:, None] * n) + np.arange(n)
         updated = (
             (alpha[:, hd, None, None] * state[:, rows])
             + (x[:, lanes, None] * beta[:, None, :])
         ) >> ALPHA_Q
-        tally = tally.counting("state", clamps16(updated), updated.size)
-        state[:, rows] = clamp16(updated)
+        tally = tally.counting("state", q.clamps16(updated), updated.size)
+        state[:, rows] = q.clamp16(updated)
         # the readout reads the state the update just wrote, and the skip folds into the
         # row as its last term
-        read[:, lanes] = clamp16(
+        read[:, lanes] = q.clamp16(
             (
                 (state[:, rows] * c[:, None, :]).sum(axis=-1)
                 + (x[:, lanes] * layer.d_skip[hd])

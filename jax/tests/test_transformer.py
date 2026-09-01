@@ -16,7 +16,7 @@ from safetensors.numpy import load_file, save_file
 
 import ar_quantized
 import corpus
-from quantized import EXPONENTS, max_exponent
+import quantized as q
 from tests.models import drawn_transformer, transformer_twin
 from transformer import model, quantized
 
@@ -71,7 +71,7 @@ def test_the_two_tables_take_the_larger_peaks_exponent():
     held.head.set_tensors([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
     twin = ar_quantized.Head.from_float(held.head)
     peak = float(np.abs(np.asarray(held.head.phase[...])).max())
-    assert twin.e == max_exponent(peak)
+    assert twin.e == q.max_exponent(peak)
     assert np.abs(twin.seats).max() < 127, "the smaller table does not reach the rail"
 
 
@@ -132,7 +132,7 @@ def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
     path = tmp_path / "tiny.int8"
     quantized.save(path, transformer_twin())
     tensors = load_file(str(path))
-    tensors[EXPONENTS][1] += 1
+    tensors[q.EXPONENTS][1] += 1
     save_file(tensors, str(path))
     with pytest.raises(ValueError, match="share one exponent"):
         quantized.load(path)

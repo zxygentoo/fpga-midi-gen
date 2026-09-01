@@ -60,25 +60,8 @@ from flax import nnx
 
 import measure
 import prng
+import quantized as q
 from diffusion import model, sample
-from quantized import (
-    EXP2_IN_Q,
-    INT16_HIGH,
-    INT16_LOW,
-    TEMPER,
-    Tally,
-    Temper,
-    apply_scale,
-    exp2_q,
-    largest_exponent,
-    pick,
-    quantize,
-    read_contract,
-    round_half_up,
-    scalar_tensor,
-    tallied_write,
-    write_contract,
-)
 
 # the formats
 
@@ -89,7 +72,7 @@ ACTIVATION_Q = 6
 ACTIVATION_ONE = 1 << ACTIVATION_Q
 # what the format reaches in real units. It is DERIVED and never a literal: a written
 # 512.0 beside a moved Q says nothing and looks like a fact.
-ACTIVATION_CEILING = (INT16_HIGH + 1) / ACTIVATION_ONE
+ACTIVATION_CEILING = (q.INT16_HIGH + 1) / ACTIVATION_ONE
 
 # THE WIDEST LAYER THE INT32 ACCUMULATOR IS EXACT FOR: 9 * 57 * 127 * 32767 stands under
 # 2^31 and one channel more can pass it
@@ -110,8 +93,8 @@ def gain_scale(value, weight_exponent):
     """The 16-bit form of the exponent rule, as (q_value, q). The shift retires the weight
     exponent in the same move, thus the accumulator reaches Q(ACTIVATION_Q) in one
     multiply."""
-    e = largest_exponent(abs(value), opening=30, cap=32767)
-    return int(round_half_up(np.ldexp(value, e))), e + weight_exponent
+    e = q.largest_exponent(abs(value), opening=30, cap=32767)
+    return int(q.round_half_up(np.ldexp(value, e))), e + weight_exponent
 
 
 @jax.jit
@@ -163,7 +146,7 @@ class NormedConv(nnx.Module):
         inference batch normalization is the affine `a * gain + bias` and the fold is
         that same affine, in float64 and IN THE ORDER WRITTEN HERE; its rounding is
         part of what `drift` measures."""
-        q, e = quantize(layer.conv.kernel[...])
+        kernel, e = q.quantize(layer.conv.kernel[...])
         scale = np.asarray(layer.norm.scale[...], np.float64)
         shift = np.asarray(layer.norm.shift[...], np.float64)
         mean = np.asarray(layer.norm.mean[...], np.float64)
@@ -171,10 +154,12 @@ class NormedConv(nnx.Module):
         gain = scale / np.sqrt(variance + model.NORM_EPSILON)
         scales = [gain_scale(float(value), e) for value in gain]
         bias = np.clip(
-            round_half_up((shift - mean * gain) * ACTIVATION_ONE), INT16_LOW, INT16_HIGH
+            q.round_half_up((shift - mean * gain) * ACTIVATION_ONE),
+            q.INT16_LOW,
+            q.INT16_HIGH,
         )
         return cls(
-            kernel=q,
+            kernel=kernel,
             e=e,
             gain_q_value=np.array([q_value for q_value, _ in scales], np.int32),
             gain_q=np.array([shift_of for _, shift_of in scales], np.int32),
@@ -188,13 +173,13 @@ class NormedConv(nnx.Module):
         accumulated = np.asarray(accumulate(jnp.asarray(x), self.kernel[...]))
         gain, shift = self.gain_q_value[...], self.gain_q[...]
         value = ((accumulated.astype(np.int64) * gain) >> shift) + self.bias[...]
-        return tallied_write(tally, np.maximum(value, 0) if relu else value)
+        return q.tallied_write(tally, np.maximum(value, 0) if relu else value)
 
     def tensors(self):
         """the five tensors of this layer in the order of the contract file"""
         return [
             np.asarray(self.kernel[...], np.int32),
-            scalar_tensor(self.e),
+            q.scalar_tensor(self.e),
             self.gain_q_value[...],
             self.gain_q[...],
             self.bias[...],
@@ -224,7 +209,7 @@ class ResidualPair(nnx.Module):
         tensor from here and never from the second layer alone."""
         first = self.first(x, True, tally)
         second = self.second(first, False, tally)
-        return first, tallied_write(tally, np.maximum(x + second, 0))
+        return first, q.tallied_write(tally, np.maximum(x + second, 0))
 
 
 class Coconet(model.Trunk):
@@ -246,7 +231,7 @@ class Coconet(model.Trunk):
             stem=NormedConv.from_float(coconet.stem),
             pairs=[ResidualPair.from_float(pair) for pair in coconet.pairs],
             head=NormedConv.from_float(coconet.head),
-            temper=Temper.from_float(temperature),
+            temper=q.Temper.from_float(temperature),
         )
 
     def _writes(self, classes, hidden, tally, *, rows=model.ROWS):
@@ -330,7 +315,7 @@ LAYER_TENSORS = 5
 # `TEMPER` is `contract`'s; this era's own scalar name is the activation Q
 ACTIVATION = "activation_q"
 # the tensors the file carries beside its numbered layers
-BESIDE_THE_LAYERS = (TEMPER, ACTIVATION)
+BESIDE_THE_LAYERS = (q.TEMPER, ACTIVATION)
 
 
 def save(path, twin):
@@ -342,9 +327,9 @@ def save(path, twin):
         base = LAYER_TENSORS * at
         for on, tensor in enumerate(layer.tensors()):
             tensors[str(base + on)] = tensor
-    tensors[TEMPER] = twin.temper.tensor()
-    tensors[ACTIVATION] = scalar_tensor(ACTIVATION_Q)
-    write_contract(
+    tensors[q.TEMPER] = twin.temper.tensor()
+    tensors[ACTIVATION] = q.scalar_tensor(ACTIVATION_Q)
+    q.write_contract(
         path,
         tensors,
         {
@@ -358,7 +343,7 @@ def save(path, twin):
 
 def load(path):
     """the model of one contract file; a round trip through `save` is exact"""
-    tensors, metadata = read_contract(path)
+    tensors, metadata = q.read_contract(path)
     count, spare = divmod(len(tensors) - len(BESIDE_THE_LAYERS), LAYER_TENSORS)
     if spare or count < 4 or count % 2:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized sheet model")
@@ -384,7 +369,7 @@ def load(path):
         stem=stem,
         pairs=paired(trunk),
         head=head,
-        temper=Temper.from_file(tensors, metadata, key=TEMPER),
+        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
     )
     check_shape(twin)
     return twin
@@ -422,8 +407,8 @@ def class_weights(twin, raw):
     holds a min-p floor."""
     raw = np.asarray(raw, np.int64)
     peak = raw.max(axis=-1, keepdims=True)
-    shifted = (raw - peak) << (EXP2_IN_Q - ACTIVATION_Q)
-    return exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, shifted))
+    shifted = (raw - peak) << (q.EXP2_IN_Q - ACTIVATION_Q)
+    return q.exp2_q(q.apply_scale(twin.temper.q_value, twin.temper.q, shifted))
 
 
 # the walk
@@ -474,7 +459,7 @@ def passes(twin, states, given, *, walk, tally):
 
     def redraw(states, logits, step, voice, active):
         states, word = prng.uniform_word(states, active)
-        drawn = pick(class_weights(twin, logits[:, step, :, voice]), word)
+        drawn = q.pick(class_weights(twin, logits[:, step, :, voice]), word)
         spent[step, voice] = (word, drawn)
         return states, drawn
 
@@ -500,7 +485,7 @@ def gibbs(twin, states, given, *, walk, tally=None):
     """The whole walk: `infer.gibbs` in the arithmetic of the board, giving the sheets and
     the generator behind them so a caller can hold the two side by side. A walk of no
     passes is the opening."""
-    tally = Tally() if tally is None else tally
+    tally = q.Tally() if tally is None else tally
     classes = given
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         classes, states = taken.redrawn, taken.states
@@ -530,7 +515,7 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
     what stands between them is the arithmetic alone. The quantization happens here,
     from the float model handed in, thus the pair cannot slip."""
     twin = Coconet.from_float(coconet, temperature)
-    tally = Tally()
+    tally = q.Tally()
     counted = measure.Counted()
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         floated = np.asarray(
