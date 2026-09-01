@@ -213,21 +213,21 @@ def drift(ckpt, crop, seed, walk, temperature):
     between the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
     states, given = model.opening_sheet(q.engine_states([seed]), crop)
-    said = integer.drift(coconet, states, given, walk=walk, temperature=temperature)
-    seen = said.cells
+    report = integer.drift(coconet, states, given, walk=walk, temperature=temperature)
+    seen = report.cells
 
     def share(count):
         return 100.0 * count / max(1, seen)
 
-    click.echo(f"{said.passes} passes over {crop} steps redrew {seen} cells")
+    click.echo(f"{report.passes} passes over {crop} steps redrew {seen} cells")
     click.echo(
-        f"against the float model: top-1 {share(said.same_peak):.1f}% "
-        f"({said.same_peak}/{seen})  cosine {said.mean_cosine:.4f}  "
-        f"same draw {share(said.same_draw):.1f}% ({said.same_draw}/{seen})"
+        f"against the float model: top-1 {share(report.same_peak):.1f}% "
+        f"({report.same_peak}/{seen})  cosine {report.mean_cosine:.4f}  "
+        f"same draw {share(report.same_draw):.1f}% ({report.same_draw}/{seen})"
     )
     click.echo(
-        f"activations on the clamp: {100.0 * said.activations_clamped:.4f}%  "
-        f"the hottest write: {said.activation_peak:.1f} of the format's "
+        f"activations on the clamp: {100.0 * report.activations_clamped:.4f}%  "
+        f"the hottest write: {report.activation_peak:.1f} of the format's "
         f"{integer.ACTIVATION_CEILING:.1f}"
     )
 

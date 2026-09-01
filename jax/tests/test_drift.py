@@ -47,11 +47,11 @@ class Shares(NamedTuple):
     cosine: float
 
 
-def shares_of(said, counted):
+def shares_of(report, counted):
     """the three shares of one drift report; [counted] names the field that says what the
     comparison ran over, which is `cells` on a sheet and `draws` on a chain"""
-    over = getattr(said, counted)
-    return Shares(said.same_peak / over, said.same_draw / over, said.mean_cosine)
+    over = getattr(report, counted)
+    return Shares(report.same_peak / over, report.same_draw / over, report.mean_cosine)
 
 
 def lowest(here, there):
@@ -113,12 +113,12 @@ def test_the_long_walk_does_not_compound(passes):
     later pass, thus one model runs at 8, 32 and 128 passes and a cumulative error would
     show as numbers that FALL with the length. A zero clamp count is the finding that the
     format's margin holds."""
-    said = drift(11, 42, passes)
+    report = drift(11, 42, passes)
     peak, cells, cosine, clamped, hottest = LONG_WALK[passes]
-    assert (said.same_peak, said.cells) == (peak, cells)
-    assert said.mean_cosine == pytest.approx(cosine, abs=5e-5)
-    assert said.activations_clamped == clamped
-    assert said.activation_peak == pytest.approx(hottest, abs=5e-3)
+    assert (report.same_peak, report.cells) == (peak, cells)
+    assert report.mean_cosine == pytest.approx(cosine, abs=5e-5)
+    assert report.activations_clamped == clamped
+    assert report.activation_peak == pytest.approx(hottest, abs=5e-3)
 
 
 # The floors, calibrated on this model's own first measured minima over the CLEAN trials,
@@ -226,11 +226,11 @@ def test_the_mamba_long_walk_does_not_compound(steps):
     show as numbers that FALL with the length. They do not -- the top-1 share reads
     0.953, 0.930 and 0.926 -- and a zero clamp count is the finding that the margin
     holds."""
-    said = mamba_drift(11, 42, steps=steps)
+    report = mamba_drift(11, 42, steps=steps)
     peak, draws, cosine = MAMBA_LONG_WALK[steps]
-    assert (said.same_peak, said.draws) == (peak, draws)
-    assert said.mean_cosine == pytest.approx(cosine, abs=5e-5)
-    clamps = said.clamps
+    assert (report.same_peak, report.draws) == (peak, draws)
+    assert report.mean_cosine == pytest.approx(cosine, abs=5e-5)
+    clamps = report.clamps
     assert (clamps.dt, clamps.beta, clamps.state) == (0, 0, 0)
     assert clamps.dt_seen and clamps.beta_seen and clamps.state_seen
 
@@ -278,11 +278,11 @@ def test_a_sweep_states_its_measured_numbers(sweep, weight_seed):
     counted = same_peak = same_draw = 0
     low_cosine = 1.0
     for walk_seed in WALK_SEEDS:
-        said = sweep.drift(weight_seed, walk_seed)
-        counted += getattr(said, sweep.counted)
-        same_peak += said.same_peak
-        same_draw += said.same_draw
-        low_cosine = min(low_cosine, said.mean_cosine)
+        report = sweep.drift(weight_seed, walk_seed)
+        counted += getattr(report, sweep.counted)
+        same_peak += report.same_peak
+        same_draw += report.same_draw
+        low_cosine = min(low_cosine, report.mean_cosine)
     peak, draw, over, cosine = sweep.table[weight_seed]
     assert (same_peak, same_draw, counted) == (peak, draw, over)
     assert low_cosine == pytest.approx(cosine, abs=5e-5)
@@ -321,11 +321,11 @@ def test_the_floors_hold_on_drawn_seed_pairs(trials, capsys):
     low = Shares(1.0, 1.0, 1.0)
     released = 0
     for weight_seed, walk_seed in trials.pairs:
-        said = trials.drift(weight_seed, walk_seed)
-        if trials.releases and said.activations_clamped > 0.001:
+        report = trials.drift(weight_seed, walk_seed)
+        if trials.releases and report.activations_clamped > 0.001:
             released += 1
             continue
-        low = lowest(low, shares_of(said, trials.counted))
+        low = lowest(low, shares_of(report, trials.counted))
     # the minima print BEFORE the floors: they are what the reader needs at the moment a
     # floor breaks, and an assert inside the loop loses them
     with capsys.disabled():

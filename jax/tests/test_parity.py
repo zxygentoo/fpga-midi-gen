@@ -101,9 +101,9 @@ def test_g1_the_pink_source_states_its_netlist(tmp_path):
     each need a file, thus each can skip; this one holds the elaboration and the board top
     level itself on every tree."""
     need(GEN_VERILOG)
-    said = netlist_md5([str(GEN_VERILOG), "pink"], tmp_path)
-    assert said == PINK_NETLIST_MD5, (
-        f"era one states the netlist {said} and the golden is {PINK_NETLIST_MD5}"
+    md5 = netlist_md5([str(GEN_VERILOG), "pink"], tmp_path)
+    assert md5 == PINK_NETLIST_MD5, (
+        f"era one states the netlist {md5} and the golden is {PINK_NETLIST_MD5}"
     )
 
 
@@ -147,7 +147,7 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
     """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
     seat and phase tables first -- they share one exponent -- and then the layer ROM."""
     need(CHECKPOINT, GEN_VERILOG)
-    said = netlist_md5(
+    md5 = netlist_md5(
         [
             str(GEN_VERILOG),
             "transformer",
@@ -156,8 +156,8 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
         ],
         tmp_path,
     )
-    assert said == TRANSFORMER_NETLIST_MD5, (
-        f"the JAX quantizer states the netlist {said} and the golden is "
+    assert md5 == TRANSFORMER_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {md5} and the golden is "
         f"{TRANSFORMER_NETLIST_MD5}"
     )
 
@@ -202,7 +202,7 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
     """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
     decay tensors first -- one ulp of `exp` moves a q_value by one -- and then the ROM."""
     need(MAMBA_CHECKPOINT, GEN_VERILOG)
-    said = netlist_md5(
+    md5 = netlist_md5(
         [
             str(GEN_VERILOG),
             "mamba",
@@ -211,8 +211,8 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
         ],
         tmp_path,
     )
-    assert said == MAMBA_NETLIST_MD5, (
-        f"the JAX quantizer states the netlist {said} and the golden is "
+    assert md5 == MAMBA_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {md5} and the golden is "
         f"{MAMBA_NETLIST_MD5}"
     )
 
@@ -284,7 +284,7 @@ def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
     quantization parted; diff the norm ROM first -- the gains and the biases -- and then
     the weight ROM."""
     need(DIFFUSION_CHECKPOINT, GEN_VERILOG)
-    said = netlist_md5(
+    md5 = netlist_md5(
         [
             str(GEN_VERILOG),
             "diffusion",
@@ -293,7 +293,7 @@ def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
         ],
         tmp_path,
     )
-    assert said == DIFFUSION_NETLIST_MD5, (
-        f"the JAX quantizer states the netlist {said} and the golden is "
+    assert md5 == DIFFUSION_NETLIST_MD5, (
+        f"the JAX quantizer states the netlist {md5} and the golden is "
         f"{DIFFUSION_NETLIST_MD5}"
     )
