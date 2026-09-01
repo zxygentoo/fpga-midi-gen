@@ -34,6 +34,10 @@ from quantized import (
     round_half_up,
 )
 
+# ---------------------------------------------------------------------
+# the formats of the machine
+# ---------------------------------------------------------------------
+
 # THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`: a Q number holds value * 2^-q. A
 # twin that wrote a format of its own would part from its circuit in silence.
 H_Q = 16  # the residual stream, in int32
@@ -45,8 +49,9 @@ HID_Q = 10  # the feed-forward hidden vector after its ReLU: int16
 EPS_Q = int(round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
 
 
-# the silent lead-in of a boot, in steps: one bar, as the float samplers play it
-LEAD = corpus.BAR_STEPS
+# ---------------------------------------------------------------------
+# the integer arithmetic both circuits share
+# ---------------------------------------------------------------------
 
 
 def rescale(value, *, at, to):
@@ -91,6 +96,68 @@ def rms_norm_q(v, *, at, width):
     return clamp16(truncated(v * (1 << ((2 * Y_Q) - at)), isqrt(mean)))
 
 
+def join(h, weight, *, values, at):
+    """A residual join: [values] times the weight lands on the stream, and the weight's
+    exponent folds into the shift with [at]. That shift is the whole of what a residual
+    write can get wrong, thus every era does it here."""
+    return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
+
+
+# ---------------------------------------------------------------------
+# the tables: what the arithmetic cannot reach
+# ---------------------------------------------------------------------
+
+# The sigmoid of a Q12 value, in Q15. The input is int16, thus |v| < 8 exactly and 256
+# buckets of 256 Q12 units cover it. THE ENTRY IS THE CENTRE OF ITS BUCKET and not its
+# left edge: the centre halves the worst error, and the centres are symmetric about zero,
+# thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
+SIGMOID_TABLE = np.array(
+    [
+        int(round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
+        for j in range(256)
+    ],
+    np.int64,
+)
+
+
+# The correction term of the softplus, ln(1 + exp(-|v|)) in Q12: softplus(v) = relu(v) +
+# this. The ramp is exact and carries a large input whole, thus the table only holds a
+# quantity that falls to nothing -- one Q12 unit at |v| = 8, the int16 maximum.
+SOFTPLUS_TABLE = np.array(
+    [
+        int(round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
+        for j in range(256)
+    ],
+    np.int64,
+)
+
+
+def sigmoid_q(value):
+    """`Nn_quantized.For_test.sigmoid_q`: the sigmoid of a Q12 value in Q15. The index is
+    the top eight bits with the sign flipped, which is no arithmetic in a circuit."""
+    return SIGMOID_TABLE[((np.asarray(value, np.int64) >> 8) + 128) & 255]
+
+
+def silu(value):
+    """the value times its sigmoid, shifted back to Q12 and clamped"""
+    value = np.asarray(value, np.int64)
+    return clamp16((value * sigmoid_q(value)) >> 15)
+
+
+def softplus(value):
+    """The ramp plus the correction the table holds, the rule of the `Softplus` unit. The
+    sum rides an int16, thus the input clamps before and the result after; the index clamp
+    catches -32768, whose magnitude does not fit the table."""
+    value = clamp16(np.asarray(value, np.int64))
+    index = np.minimum(255, np.abs(value) >> 7)
+    return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
+
+
+# ---------------------------------------------------------------------
+# the shape rules the circuit forces
+# ---------------------------------------------------------------------
+
+
 def score_shift(*, row_q, head_d):
     """`Constants.score_shift`: what carries a score walk's sum from Q(2 [row_q]) to
     Q[Y_Q] and applies the 1/sqrt([head_d]) in the same shift, thus [head_d] is a power of
@@ -111,18 +178,16 @@ def slope_exponent(*, span, heads, head):
     return (span * (head + 1)) // heads
 
 
+# ---------------------------------------------------------------------
+# a layer as the machine holds it
+# ---------------------------------------------------------------------
+
+
 def fixed_q12(values, bound):
     """a per-head number in Q12, clamped to the PORT that carries it; the bound is a fact
     of the circuit, thus the caller states it"""
     values = np.ldexp(np.asarray(values, np.float64), 12)
     return np.clip(round_half_up(values), -bound, bound).astype(np.int32)
-
-
-def join(h, weight, *, values, at):
-    """A residual join: [values] times the weight lands on the stream, and the weight's
-    exponent folds into the shift with [at]. That shift is the whole of what a residual
-    write can get wrong, thus every era does it here."""
-    return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
 
 
 class Weights:
@@ -220,50 +285,9 @@ class Head:
             raise ValueError("the seat table holds no row for each seat and class")
 
 
-# The sigmoid of a Q12 value, in Q15. The input is int16, thus |v| < 8 exactly and 256
-# buckets of 256 Q12 units cover it. THE ENTRY IS THE CENTRE OF ITS BUCKET and not its
-# left edge: the centre halves the worst error, and the centres are symmetric about zero,
-# thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization.
-SIGMOID_TABLE = np.array(
-    [
-        int(round_half_up(32768.0 / (1.0 + math.exp(-((j - 128) + 0.5) / 16.0))))
-        for j in range(256)
-    ],
-    np.int64,
-)
-
-
-# The correction term of the softplus, ln(1 + exp(-|v|)) in Q12: softplus(v) = relu(v) +
-# this. The ramp is exact and carries a large input whole, thus the table only holds a
-# quantity that falls to nothing -- one Q12 unit at |v| = 8, the int16 maximum.
-SOFTPLUS_TABLE = np.array(
-    [
-        int(round_half_up(4096.0 * math.log(1.0 + math.exp(-(j + 0.5) / 32.0))))
-        for j in range(256)
-    ],
-    np.int64,
-)
-
-
-def sigmoid_q(value):
-    """`Nn_quantized.For_test.sigmoid_q`: the sigmoid of a Q12 value in Q15. The index is
-    the top eight bits with the sign flipped, which is no arithmetic in a circuit."""
-    return SIGMOID_TABLE[((np.asarray(value, np.int64) >> 8) + 128) & 255]
-
-
-def silu(value):
-    """the value times its sigmoid, shifted back to Q12 and clamped"""
-    value = np.asarray(value, np.int64)
-    return clamp16((value * sigmoid_q(value)) >> 15)
-
-
-def softplus(value):
-    """The ramp plus the correction the table holds, the rule of the `Softplus` unit. The
-    sum rides an int16, thus the input clamps before and the result after; the index clamp
-    catches -32768, whose magnitude does not fit the table."""
-    value = clamp16(np.asarray(value, np.int64))
-    index = np.minimum(255, np.abs(value) >> 7)
-    return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
+# ---------------------------------------------------------------------
+# the attention over a ring
+# ---------------------------------------------------------------------
 
 
 def coarse_to_ring(row):
@@ -271,14 +295,6 @@ def coarse_to_ring(row):
     at the read. The circuit stores eight bits, thus the granularity is 2^-4 and the
     format stays Q12. A query does not pass here -- only the stored rows coarsen."""
     return (np.asarray(row, np.int64) >> 8) << 8
-
-
-def tempered_weights(twin, logits):
-    """the Q15 weight of every class of one seat, and the min-p floor over it; a class the
-    floor refuses weighs nothing and the pick cannot land on it"""
-    peak = logits.max(axis=-1, keepdims=True)
-    weights = exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
-    return np.where(weights >= twin.min_weight, weights, 0)
 
 
 def attend(keys, values, *, query, cur, filled, heads, span, row_q):
@@ -309,6 +325,22 @@ def attend(keys, values, *, query, cur, filled, heads, span, row_q):
         merged = (weights[:, :, None] * values[:, :, band]).sum(axis=1)
         context[:, band] = clamp16(truncated(merged, total))
     return context
+
+
+# ---------------------------------------------------------------------
+# the chain and the walk over it
+# ---------------------------------------------------------------------
+
+# the silent lead-in of a boot, in steps: one bar, as the float samplers play it
+LEAD = corpus.BAR_STEPS
+
+
+def tempered_weights(twin, logits):
+    """the Q15 weight of every class of one seat, and the min-p floor over it; a class the
+    floor refuses weighs nothing and the pick cannot land on it"""
+    peak = logits.max(axis=-1, keepdims=True)
+    weights = exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, logits - peak))
+    return np.where(weights >= twin.min_weight, weights, 0)
 
 
 class Draw(NamedTuple):

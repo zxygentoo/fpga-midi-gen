@@ -26,6 +26,10 @@ import measure
 # the referee cuts its eval rows at the window the models trained on
 CONTEXT = ar_model.TRAINING_WINDOW
 
+# ==================================================================== #
+# FORCED — what the model predicts, on the corpus's own windows        #
+# ==================================================================== #
+
 
 def moving(classes):
     """[batch, length + 1, SEATS] -> [batch, length] the count of voices that move into
@@ -35,11 +39,6 @@ def moving(classes):
     invite a model that holds its chord for ever. The second number of the report divides
     over the steps where two or more voices move, which is where the music is."""
     return (classes[:, 1:] != classes[:, :-1]).sum(axis=-1)
-
-
-# ==================================================================== #
-# FORCED — what the model predicts, on the corpus's own windows        #
-# ==================================================================== #
 
 
 def loss_row(held, corpus_path=str(corpus.FRAMES), limit=128, batch=16):
@@ -112,6 +111,13 @@ def walk_row(classes):
     return {name: row[name] for name in ("hold", "onsets")}
 
 
+def corpus_row(corpus_path=str(corpus.FRAMES)):
+    """the same two numbers over stream zero of the train split: the row every other row
+    is read against"""
+    split = corpus.load_corpus(corpus_path)["train"]
+    return walk_row(split.classes[: int(split.index[0, 1])])
+
+
 def mean_over_seeds(rows):
     """The mean of each instrument over several walks, and the standard error beside it.
 
@@ -140,10 +146,3 @@ def walk_line(label, row):
         )
 
     return f"{label:<22} hold {show('hold')}%   onsets {show('onsets')}"
-
-
-def corpus_row(corpus_path=str(corpus.FRAMES)):
-    """the same two numbers over stream zero of the train split: the row every other row
-    is read against"""
-    split = corpus.load_corpus(corpus_path)["train"]
-    return walk_row(split.classes[: int(split.index[0, 1])])

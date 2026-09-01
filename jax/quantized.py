@@ -29,6 +29,10 @@ from safetensors.numpy import load_file, save_file
 
 import prng
 
+# ---------------------------------------------------------------------
+# the formats, and the rounding every twin takes
+# ---------------------------------------------------------------------
+
 # the rails of int16; every clamp of every twin reads them here, thus none can write a
 # rail of its own and part from its circuit in silence
 INT16_BITS = 16
@@ -67,18 +71,9 @@ def round_half_up(x):
     return np.floor(np.asarray(x, np.float64) + 0.5)
 
 
-# the policy the ear elected, and the draw the bitstreams commit to; an era that
-# re-elects shadows these two in its own module and says so
-ELECTED_TEMPERATURE = 1.0
-ELECTED_MIN_P = 0.05
-
-
-def apply_scale(q_value, q, value):
-    """`Constants.apply`: value times a fixed-point multiplier, toward negative infinity.
-    The two halves travel together because a multiply that takes the wrong shift is
-    silently wrong; [q_value] may be a per-head ROW, thus two numbers and not a
-    `Temper`."""
-    return (value * q_value) >> q
+# ---------------------------------------------------------------------
+# the exponent rule of a checkpoint
+# ---------------------------------------------------------------------
 
 
 def largest_exponent(magnitude, *, opening, cap):
@@ -107,6 +102,39 @@ def quantize(weights, e=None):
     if e is None:
         e = max_exponent(float(np.abs(weights).max(initial=0.0)))
     return np.clip(round_half_up(np.ldexp(weights, e)), -127, 127).astype(np.int32), e
+
+
+class Weight(NamedTuple):
+    """One tensor of a twin's image: the int8 values in the shape the float tensor had,
+    and the exponent that reads them. They are held int64 so a product cannot wrap."""
+
+    values: np.ndarray
+    e: int
+
+    @classmethod
+    def from_float(cls, tensor, e=None):
+        """one float tensor under the exponent rule; [e] overrides the tensor's own
+        peak"""
+        q, e = quantize(np.asarray(tensor, np.float64), e=e)
+        return cls(np.asarray(q, np.int64), e)
+
+
+# ---------------------------------------------------------------------
+# the temper and the bounds of the sampling policy
+# ---------------------------------------------------------------------
+
+# the policy the ear elected, and the draw the bitstreams commit to; an era that
+# re-elects shadows these two in its own module and says so
+ELECTED_TEMPERATURE = 1.0
+ELECTED_MIN_P = 0.05
+
+
+def apply_scale(q_value, q, value):
+    """`Constants.apply`: value times a fixed-point multiplier, toward negative infinity.
+    The two halves travel together because a multiply that takes the wrong shift is
+    silently wrong; [q_value] may be a per-head ROW, thus two numbers and not a
+    `Temper`."""
+    return (value * q_value) >> q
 
 
 def temper_of(temperature):
@@ -159,19 +187,96 @@ class Temper(NamedTuple):
 LOG2E = Temper(int(round_half_up(math.ldexp(1.0 / math.log(2.0), LOG2E_Q))), LOG2E_Q, 1.0)
 
 
-class Weight(NamedTuple):
-    """One tensor of a twin's image: the int8 values in the shape the float tensor had,
-    and the exponent that reads them. They are held int64 so a product cannot wrap."""
+# ---------------------------------------------------------------------
+# the shared exp2 table
+# ---------------------------------------------------------------------
 
-    values: np.ndarray
-    e: int
+# the quantized exponential, exp2 of -j/256 in Q15: the one table the samplers of every
+# era read, and what `Constants.exp2_bits` hands the circuit
+EXP2_TABLE = np.array(
+    [
+        int(round_half_up(float(1 << EXP2_OUT_Q) * 2.0 ** (-j / 256.0)))
+        for j in range(256)
+    ],
+    np.int64,
+)
 
-    @classmethod
-    def from_float(cls, tensor, e=None):
-        """one float tensor under the exponent rule; [e] overrides the tensor's own
-        peak"""
-        q, e = quantize(np.asarray(tensor, np.float64), e=e)
-        return cls(np.asarray(q, np.int64), e)
+
+def exp2_of_magnitude(magnitude):
+    """2^-m in Q15 over a nonnegative Q12 magnitude, the rule of the `Exp2` unit: the
+    integer part shifts and the top eight fraction bits index the table, and a
+    magnitude of 16 or more is 0. The shift is held under the host word width, where a
+    shift past the width states nothing in either language."""
+    whole = magnitude >> EXP2_IN_Q
+    entry = EXP2_TABLE[(magnitude >> (EXP2_IN_Q - 8)) & 255]
+    return np.where(whole >= 16, 0, entry >> np.minimum(whole, 62))
+
+
+def exp2_q(value):
+    """`Nn_quantized.For_test.exp2_q`: 2^value in Q15 over a Q12 value that is 0 or less.
+    The eras exponentiate a nonpositive score, thus the negation stands here and the
+    shared table takes the magnitude."""
+    return exp2_of_magnitude(-np.asarray(value, np.int64))
+
+
+# ---------------------------------------------------------------------
+# the counted write
+# ---------------------------------------------------------------------
+
+
+@dataclass
+class Tally:
+    """A running tally of a walk: the activation writes, the writes that rode the clamp,
+    and the hottest write BEFORE it -- which answers the format question directly.
+
+    IT MUTATES, and that is why it is the one record here that is not a `NamedTuple`: a
+    walk makes millions of writes and each updates the same three numbers."""
+
+    seen: int = 0
+    clamped: int = 0
+    peak: int = 0
+
+    @property
+    def clamped_share(self):
+        """the share of the writes that rode the clamp; a walk that wrote nothing rode
+        nothing"""
+        return 0.0 if self.seen == 0 else self.clamped / self.seen
+
+
+def tallied_write(tally, value):
+    """Every activation write goes through here: the clamp is counted and the peak kept.
+    A peak inside the format proves nothing clamped, thus the clip is skipped -- millions
+    of writes make that short circuit the whole of the difference."""
+    high, low = int(value.max()), int(value.min())
+    tally.seen += value.size
+    tally.peak = max(tally.peak, high, -low)
+    if high <= INT16_HIGH and low >= INT16_LOW:
+        return value.astype(np.int32)
+    tally.clamped += int(np.count_nonzero(value > INT16_HIGH))
+    tally.clamped += int(np.count_nonzero(value < INT16_LOW))
+    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
+
+
+# ---------------------------------------------------------------------
+# the integer draw
+# ---------------------------------------------------------------------
+
+
+def pick(weights, word):
+    """`Nn_quantized.draw`: the class a 24-bit uniform word lands, over the batch.
+
+    THE PICK ALWAYS LANDS: the peak weighs 2^15, thus the total is 2^15 or more, and the
+    word falls under 2^24, thus the threshold stands strictly under it."""
+    running = np.cumsum(weights, axis=-1)
+    threshold = (np.asarray(word, np.int64) * running[..., -1]) >> prng.UNIFORM_BITS
+    return (running > threshold[..., None]).argmax(axis=-1)
+
+
+def engine_states(seeds):
+    """The generator of each walk: THE SEED AS IT STANDS, which is the board's SEED cell
+    rule, thus seed 0 is the walk that stands still. `prng.states` folds instead, and 0 is
+    the one seed where the two walks are not one walk."""
+    return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
 # ---------------------------------------------------------------------
@@ -237,81 +342,3 @@ def read_contract(path):
     with safe_open(str(path), framework="numpy") as opened:
         metadata = opened.metadata() or {}
     return tensors, metadata
-
-
-@dataclass
-class Tally:
-    """A running tally of a walk: the activation writes, the writes that rode the clamp,
-    and the hottest write BEFORE it -- which answers the format question directly.
-
-    IT MUTATES, and that is why it is the one record here that is not a `NamedTuple`: a
-    walk makes millions of writes and each updates the same three numbers."""
-
-    seen: int = 0
-    clamped: int = 0
-    peak: int = 0
-
-    @property
-    def clamped_share(self):
-        """the share of the writes that rode the clamp; a walk that wrote nothing rode
-        nothing"""
-        return 0.0 if self.seen == 0 else self.clamped / self.seen
-
-
-def tallied_write(tally, value):
-    """Every activation write goes through here: the clamp is counted and the peak kept.
-    A peak inside the format proves nothing clamped, thus the clip is skipped -- millions
-    of writes make that short circuit the whole of the difference."""
-    high, low = int(value.max()), int(value.min())
-    tally.seen += value.size
-    tally.peak = max(tally.peak, high, -low)
-    if high <= INT16_HIGH and low >= INT16_LOW:
-        return value.astype(np.int32)
-    tally.clamped += int(np.count_nonzero(value > INT16_HIGH))
-    tally.clamped += int(np.count_nonzero(value < INT16_LOW))
-    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
-
-
-# the quantized exponential, exp2 of -j/256 in Q15: the one table the samplers of every
-# era read, and what `Constants.exp2_bits` hands the circuit
-EXP2_TABLE = np.array(
-    [
-        int(round_half_up(float(1 << EXP2_OUT_Q) * 2.0 ** (-j / 256.0)))
-        for j in range(256)
-    ],
-    np.int64,
-)
-
-
-def exp2_of_magnitude(magnitude):
-    """2^-m in Q15 over a nonnegative Q12 magnitude, the rule of the `Exp2` unit: the
-    integer part shifts and the top eight fraction bits index the table, and a
-    magnitude of 16 or more is 0. The shift is held under the host word width, where a
-    shift past the width states nothing in either language."""
-    whole = magnitude >> EXP2_IN_Q
-    entry = EXP2_TABLE[(magnitude >> (EXP2_IN_Q - 8)) & 255]
-    return np.where(whole >= 16, 0, entry >> np.minimum(whole, 62))
-
-
-def pick(weights, word):
-    """`Nn_quantized.draw`: the class a 24-bit uniform word lands, over the batch.
-
-    THE PICK ALWAYS LANDS: the peak weighs 2^15, thus the total is 2^15 or more, and the
-    word falls under 2^24, thus the threshold stands strictly under it."""
-    running = np.cumsum(weights, axis=-1)
-    threshold = (np.asarray(word, np.int64) * running[..., -1]) >> prng.UNIFORM_BITS
-    return (running > threshold[..., None]).argmax(axis=-1)
-
-
-def engine_states(seeds):
-    """The generator of each walk: THE SEED AS IT STANDS, which is the board's SEED cell
-    rule, thus seed 0 is the walk that stands still. `prng.states` folds instead, and 0 is
-    the one seed where the two walks are not one walk."""
-    return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
-
-
-def exp2_q(value):
-    """`Nn_quantized.For_test.exp2_q`: 2^value in Q15 over a Q12 value that is 0 or less.
-    The eras exponentiate a nonpositive score, thus the negation stands here and the
-    shared table takes the magnitude."""
-    return exp2_of_magnitude(-np.asarray(value, np.int64))

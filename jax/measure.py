@@ -28,6 +28,10 @@ import corpus
 import prng
 import sample
 
+# ---------------------------------------------------------------------
+# what this corpus calls a dissonance, a triad and a clash
+# ---------------------------------------------------------------------
+
 # The intervals a chorale treats as a dissonance, modulo the octave: the two seconds, the
 # tritone and the two sevenths. The perfect fourth is left out -- it is a dissonance
 # against the bass and a consonance between the upper voices, and one number cannot tell
@@ -51,6 +55,11 @@ PAIRS = tuple(
         itertools.combinations(range(corpus.SEATS), 2), key=lambda p: (p[1] - p[0], p[0])
     )
 )
+
+
+# ---------------------------------------------------------------------
+# the shares the instruments are built out of
+# ---------------------------------------------------------------------
 
 
 def triad_table():
@@ -89,6 +98,21 @@ def apply_or_zero(of, numbers):
 def dissonant_share(intervals):
     """the share of [intervals] that this corpus treats as a dissonance"""
     return np.isin(intervals, DISSONANT).mean()
+
+
+def triad_share(words):
+    """the share of pitch-class [words] that fit inside a major or a minor triad"""
+    return FITS_A_TRIAD[words].mean()
+
+
+def clash_share(clashes):
+    """the share of steps carrying [CLASH] dissonant pairs or more"""
+    return (clashes >= CLASH).mean()
+
+
+# ---------------------------------------------------------------------
+# the three instruments that read more than one step
+# ---------------------------------------------------------------------
 
 
 def voice_pairs(spans, intervals, pairs_sound):
@@ -188,14 +212,9 @@ def tessitura(pitches, sounding):
     return {"seats": seats, "outside": 100.0 * outside / max(alive, 1)}
 
 
-def triad_share(words):
-    """the share of pitch-class [words] that fit inside a major or a minor triad"""
-    return FITS_A_TRIAD[words].mean()
-
-
-def clash_share(clashes):
-    """the share of steps carrying [CLASH] dissonant pairs or more"""
-    return (clashes >= CLASH).mean()
+# ---------------------------------------------------------------------
+# the battery, and the lines that print it
+# ---------------------------------------------------------------------
 
 
 def battery_row(classes):
@@ -278,6 +297,10 @@ def battery_lines(label, row):
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
 
+
+# ---------------------------------------------------------------------
+# the drift
+# ---------------------------------------------------------------------
 
 # The drift: the twin's draw against the float model's, on the one uniform the twin took.
 # It is what the quantization costs, and both step-frame twins report it through these.
