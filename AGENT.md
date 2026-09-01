@@ -302,7 +302,8 @@ Rules:
 
 # Tests
 
-Run all tests with `dune runtest`, and then `uv run pytest`, both from the root.
+Run all tests with `make test` — `dune runtest`, then `uv run pytest` — from the
+root.
 pytest runs `-n auto` by default (217 tests, 103 s against 30 s); `-n0` puts them
 back in one process where a traceback is easier to read, NOT `-p no:xdist`, which
 leaves the `-n` of `addopts` unrecognised and exits. PYTEST IS THE ONE COMMAND THAT
@@ -353,8 +354,10 @@ is what a commit passes.
 
 - This repository uses git-flow, with the branches `main` and `develop`, and
   the prefix `feat/` for features.
-- The pre-commit gates are: `dune fmt` makes no change, `dune build`
-  completes with no error and no warning, and — when `jax/` moves —
-  `uv run ruff check` finds nothing and `uv run pytest` passes.
+- The pre-commit gates are `make gates`: `dune build @fmt` reports no
+  difference, `dune build` completes with no error and no warning, and — when
+  `jax/` moves — `uv run ruff check` finds nothing and `uv run pytest` passes.
+  The Makefile is where those four commands live; this line names them and
+  states no command of its own, because a command written twice drifts.
 - A change to the RTL is netlist-identical (the `top.v` md5 gate of
   `jax/tests/test_parity.py`) or it owes a Vivado build before it merges.
