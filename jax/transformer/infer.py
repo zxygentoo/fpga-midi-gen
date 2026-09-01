@@ -23,7 +23,8 @@ import cli
 import corpus
 import midi
 import prng
-from transformer import model, quantized
+from transformer import model
+from transformer import quantized as integer
 
 
 @nnx.jit
@@ -36,22 +37,22 @@ def float_window(held, classes, phases):
     return held.hidden(classes, phases)
 
 
-def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
+def draw(held, *, seeds, steps, context, temperature, min_p, quantized=False):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The model
     opens the music itself inside one bar of its end, thus the boot needs no pitch, no
     range and no table. The lead-in counts inside [steps].
 
-    [twin] draws the INTEGER twin of the circuit: the piece the board plays at this seed.
-    The two walks open on different generators -- the float walk folds its seed and the
-    twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
-    both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
-    if twin:
-        engine = quantized.Transformer.from_float(
+    [quantized] draws the INTEGER twin of the circuit: the piece the board plays at
+    this seed. The two walks open on different generators -- the float walk folds its
+    seed and the twin takes it as the SEED cell does -- and a seed inside 32 bits names
+    itself under both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
+    if quantized:
+        twin = integer.Transformer.from_float(
             held, context=context, temperature=temperature, min_p=min_p
         )
-        return quantized.walk(engine, seeds, steps)[0]
+        return integer.walk(twin, seeds, steps)[0]
     batch = len(seeds)
     state = prng.states(seeds)
     lead = corpus.BAR_STEPS
@@ -103,7 +104,7 @@ def sample(ckpt, seeds, context, heads, alibi_span, **flags):
         steps=flags.pop("steps"),
         temperature=flags.pop("temperature"),
         min_p=flags.pop("min_p"),
-        twin=flags.pop("twin"),
+        quantized=flags.pop("quantized"),
     )
     midi.audition([corpus.decode(walk) for walk in walks], seeds, **flags)
 
@@ -120,21 +121,21 @@ def sample(ckpt, seeds, context, heads, alibi_span, **flags):
 @click.option(
     "--alibi-span", default=ar_model.SLOPE_SPAN, help="must match the training run"
 )
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=quantized.ELECTED_MIN_P)
+@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=integer.ELECTED_MIN_P)
 def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     It is the only thing that crosses the seam for a build. The heads, the context and
     the span are NOT in the checkpoint, thus they are flags here and named tensors in
     the file. The temperature and the floor bake into the temper and the min-p share."""
-    twin = quantized.Transformer.from_float(
+    twin = integer.Transformer.from_float(
         model.Transformer.load(ckpt, heads=heads, span=alibi_span),
         context=context,
         temperature=temperature,
         min_p=min_p,
     )
-    quantized.save(out, twin)
+    integer.save(out, twin)
     click.echo(
         f"wrote {out}: d {twin.d}, {len(twin.layers)} layers, {twin.heads} heads, "
         f"context {twin.context}, span {twin.slope_span}"

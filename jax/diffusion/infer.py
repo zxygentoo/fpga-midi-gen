@@ -33,7 +33,8 @@ import midi
 import prng
 import quantized as q
 from diffusion import measure as referee
-from diffusion import model, quantized
+from diffusion import model
+from diffusion import quantized as integer
 from diffusion.sample import gibbs_passes, tempered_pick
 
 
@@ -41,7 +42,7 @@ def gibbs(coconet, given, states, *, walk, temperature):
     """The FLOAT walk of the era: the `gibbs_passes` of `diffusion/sample.py`, in float64
     over the trained model. The loop, the schedule and the order of the draws stand there
     once for both walks; what is here is this walk's arithmetic alone. It gives the sheets
-    and the generator behind them, as `quantized.gibbs` does."""
+    and the generator behind them, as `integer.gibbs` does."""
 
     def forward(classes, hidden):
         return np.asarray(
@@ -70,19 +71,19 @@ def audition_path(path, at, count):
     return str(name.with_name(f"{name.stem}-{at}{name.suffix}"))
 
 
-def draw(coconet, *, crop, seeds, walk, temperature, twin):
+def draw(coconet, *, crop, seeds, walk, temperature, quantized):
     """one batch of sheets, and the seconds the walk cost.
 
-    [twin] draws the INTEGER twin of the circuit: the piece the board plays at this seed.
-    The two walks open on different generators -- the float walk folds its seed and the
-    twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
-    both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
-    if twin:
-        engine = quantized.Coconet.from_float(coconet, temperature)
+    [quantized] draws the INTEGER twin of the circuit: the piece the board plays at
+    this seed. The two walks open on different generators -- the float walk folds its
+    seed and the twin takes it as the SEED cell does -- and a seed inside 32 bits names
+    itself under both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
+    if quantized:
+        twin = integer.Coconet.from_float(coconet, temperature)
         states, given = model.opening_sheet(q.engine_states(seeds), crop)
 
         def walked():
-            return quantized.gibbs(engine, states, given, walk=walk)[0]
+            return integer.gibbs(twin, states, given, walk=walk)[0]
     else:
         states, given = model.opening_sheet(prng.states(seeds), crop)
 
@@ -109,11 +110,10 @@ def main():
     callback=cli.parse_seeds,
     help="a list, or LOW-HIGH; each seed is one sheet, one whole piece",
 )
-# `quantized.ELECTED_TEMPERATURE` is the one home of this era's draw and states why
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+# `integer.ELECTED_TEMPERATURE` is the one home of this era's draw and states why
+@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
 @click.option(
     "--quantized",
-    "twin",
     is_flag=True,
     help="draw the integer twin of the circuit: the piece the board plays at this seed",
 )
@@ -149,7 +149,7 @@ def sample(
     crop,
     seeds,
     temperature,
-    twin,
+    quantized,
 ):
     coconet = model.Coconet.load(ckpt)
     reference = referee.corpus_sheets(corpus_path, split, crop, corpus_seed)
@@ -159,7 +159,7 @@ def sample(
         seeds=seeds,
         walk=walk,
         temperature=temperature,
-        twin=twin,
+        quantized=quantized,
     )
     referee.echo_battery("the corpus", reference)
     referee.echo_battery(f"N {walk}, {len(classes)} sheets", classes)
@@ -206,14 +206,14 @@ def sample(
 @click.option("--crop", default=model.CROP, help="T; the steps of the sheet")
 @click.option("--seed", default=42, help="N, the seed of the walk")
 @click.option("--walk", default=32, help="N, the Gibbs passes to compare")
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
 def drift(ckpt, crop, seed, walk, temperature):
     """What the quantization costs, measured on the walk the board takes: at every pass
     the float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands
     between the two is the arithmetic alone."""
     coconet = model.Coconet.load(ckpt)
     states, given = model.opening_sheet(q.engine_states([seed]), crop)
-    said = quantized.drift(coconet, states, given, walk=walk, temperature=temperature)
+    said = integer.drift(coconet, states, given, walk=walk, temperature=temperature)
     seen = said.cells
 
     def share(count):
@@ -228,22 +228,22 @@ def drift(ckpt, crop, seed, walk, temperature):
     click.echo(
         f"activations on the clamp: {100.0 * said.activations_clamped:.4f}%  "
         f"the hottest write: {said.activation_peak:.1f} of the format's "
-        f"{quantized.ACTIVATION_CEILING:.1f}"
+        f"{integer.ACTIVATION_CEILING:.1f}"
     )
 
 
 @main.command()
 @cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
+@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
 def quantize(ckpt, out, temperature):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     It is the only thing that crosses the seam for a build. The population statistics and
     the float scales do not travel: the fold happens here, one time."""
     coconet = model.Coconet.load(ckpt)
-    twin = quantized.Coconet.from_float(coconet, temperature)
-    quantized.save(out, twin)
+    twin = integer.Coconet.from_float(coconet, temperature)
+    integer.save(out, twin)
     layers = twin.layers()
     widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in layers)
     click.echo(f"wrote {out}: {len(layers)} layers, {widths}")

@@ -58,7 +58,6 @@ sampler_options = add_options(
         click.option("--min-p", default=quantized.ELECTED_MIN_P),
         click.option(
             "--quantized",
-            "twin",
             is_flag=True,
             help="draw the integer twin of the circuit: the piece the board plays at "
             "this seed",
