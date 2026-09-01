@@ -1,29 +1,15 @@
 """The RTL gates of era five: the circuit against the integer twin.
 
 THE ORACLE IS THIS SIDE AND THE CIRCUIT IS THE OTHER. `bin/gate_mamba.exe` drives the
-Hardcaml circuit in Cyclesim and prints WHAT IT DID -- the frame the socket face answered
-at each step, and every write of the whole residual stream in the order the machine made
-them -- and this module states what it must have done, from `mamba/quantized.py` over the
-same model, and compares in order. Neither side can pass by agreeing with itself.
-
-The model crosses the seam as a CONTRACT FILE. A tiny model is drawn here, quantized here
-and written to a `tmp_path`; the driver reads it and elaborates a circuit from it. EVERY
-WIDTH AND THE PLAN travel in that file, thus no flag of this module states a shape.
+Hardcaml circuit in Cyclesim and prints WHAT IT DID; this module states what it must have
+done, from `mamba/quantized.py` over the same model. Neither side can pass by agreeing
+with itself. The model crosses the seam as a CONTRACT FILE, and every width and the plan
+travel in it, thus no flag of this module states a shape.
 
 TWO GATES, AND THE SECOND IS THE ONE THAT FOUND THE FAULTS. Era five's four faults were
-all faults of the composition layer -- a weight address whose stride was not the tensor's,
-a channel block read at the gate's offset, an operand taken on the address side of a
-two-cycle read, and a ring run off its end -- and NONE OF THEM MOVED A FRAME. The stream
-gate compares the residual stream after the embed and after every layer, thus a
-disagreement names the layer it began in.
-
-The shapes are the ones the frame and stream benches of `source.ml` ran until the all-era
-cut moved the gates here, and each was put there by a fault: the whole plan at one of each
-kind, where the region field of every memory is EMPTY and an address that strided by it
-would still pass; two blocks and two attention layers, where both fields appear; three
-blocks under a plan that interleaves them, where the tap ring's layer stride runs the top
-block off the end of its memory if the stride is wrong; and a wide state and kernel, where
-a stride written for one K and an address field written for one N both land.
+all faults of the composition layer and NONE OF THEM MOVED A FRAME; the stream gate
+compares the residual stream after the embed and after every layer, thus a disagreement
+names the layer it began in. Each shape below was put here by one of them.
 
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
@@ -44,9 +30,9 @@ DRIVER = gate.driver("gate_mamba.exe")
 
 @pytest.fixture(scope="module", autouse=True)
 def built():
-    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
-    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
-    for every case of this file before skipping on each. Module scope asks once."""
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT: inside `drive`, a tree with no
+    `dune build` behind it drew and quantized a model for every case before skipping on
+    each."""
     gate.need(DRIVER)
 
 
@@ -91,12 +77,10 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(tmp_path, spelt, seed, 
     [
         # the whole plan, at the shape the frame gate runs
         ("MZF", 42, {}),
-        # three blocks the plan interleaves: at one block the tap ring's layer field is
-        # absent, at two the top block still fits its memory by an accident of rounding,
-        # and at three it runs off the end if the stride is wrong. TWO heads and not four:
-        # the state memory is the same size either way (heads * head * state), and two
-        # keeps the attention head width a power of four, which `ar_quantized.score_shift`
-        # needs.
+        # three blocks the plan interleaves: at one the tap ring's layer field is absent,
+        # at two the top block still fits by an accident of rounding, and at three it runs
+        # off the end if the stride is wrong. TWO heads and not four, so the attention
+        # head width stays a power of four.
         ("MMZMZF", 7, {"d": 32, "heads": 2, "state": 16}),
         # a wide state and a wide kernel: a stride written for one K and an address field
         # written for one N both land here

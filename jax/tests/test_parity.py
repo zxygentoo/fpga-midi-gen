@@ -1,24 +1,16 @@
 """The parity gates of the JAX seam: what holds the two sides of a model together.
 
-Four kinds of gate stand here, and they are not the same kind of thing.
+Two kinds of gate stand here, one of each for every era.
 
-G0, THE FLOAT MODEL, one for each era. A number MEASURED and pinned, and not a threshold:
-the loss of the era's float model over its canonical windows. It reads the forward alone
--- every table, every fold of the norm, every plane, and the reader that loaded them --
-thus a rewrite above the seam that moves no number reads it back. Each one is pinned
-BEFORE the rewrite that must read it back.
+G0, THE FLOAT MODEL: a number MEASURED and pinned, and not a threshold -- the loss of the
+era's float model over its canonical windows. It reads the forward alone, thus a rewrite
+above the seam that moves no number reads it back, and each one is pinned BEFORE the
+rewrite that must.
 
-G1, THE QUANTIZER THROUGH THE NETLIST, one for each era. The elaboration reads the
-contract file the JAX quantizer writes, and the Verilog it states must be the golden's
-byte for byte: one rounding, one exponent or one fold out of place moves a weight, and a
-moved weight moves the netlist. It is the gate of the quantizer and it costs one second.
-Between G0 and G1 a change to a model has nowhere to hide.
-
-THE WELDS ARE GONE. Gate A and gate C held a JAX trainer to the OCaml float model beside
-it, and each frozen era had a pair; both pairs went with the twins that replaced them. G0
-holds a forward to a measured number, `test_rtl_<era>.py` holds a draw to the circuit
-itself, and `test_drift.py` holds a twin to the float model it quantizes -- thus nothing
-is left for a weld to say, and no gate of this file reads an OCaml float model any more.
+G1, THE QUANTIZER THROUGH THE NETLIST: the elaboration reads the contract file the JAX
+quantizer writes, and the Verilog it states must be the golden's byte for byte. One
+rounding, one exponent or one fold out of place moves a weight, and a moved weight moves
+the netlist. Between G0 and G1 a change to a model has nowhere to hide.
 
 Every gate needs a checkpoint that git ignores and binaries that dune builds. They SKIP
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
@@ -94,10 +86,9 @@ def seat_loss(nll):
 # Era four: the transformer                                            #
 # ==================================================================== #
 
-# The shape of the canonical reading, as `check_transformer loss` printed it on
-# 2026-08-28, the day before the all-era cut deleted that tool. The file states the width
-# and the layer count; the heads, the context and the slope span are the draw of the era,
-# thus G0 carries them here and nothing else states them any more.
+# The shape of the canonical reading. The file states the width and the layer count; the
+# heads, the context and the slope span are the draw of the era, thus G0 carries them here
+# and nothing else states them any more.
 TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
 
 # The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
@@ -105,12 +96,8 @@ TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
 # reference beside it stated the same 1.628177.
 TRANSFORMER_LOSS = 1.628177
 
-# The netlist of the elected checkpoint, RE-PINNED 2026-08-29 by this gate through
-# `gate_transformer.exe verilog`, at the end of the lifts into `lib/nn`. Three of them
-# moved it, in this order: the Exp2 backport (`4ab6e292` -> `323bd22d`), the shared
-# `clamp16` (-> `c43ee3b2`) and `Placement.rom` (-> here). `Placement.block_ram` moved
-# nothing, which is the answer that gate was asked for. `4ab6e292` had stood since the
-# unification round's one divider and nine-bit `Mac` functor, at MET +0.005.
+# The netlist of the elected checkpoint, re-pinned by this gate through
+# `gate_transformer.exe verilog` at the end of the lifts into `lib/nn`.
 # IT OWES A VIVADO BUILD before it merges.
 TRANSFORMER_NETLIST_MD5 = "a106ff1a991ed756f4c78af99b8d5b35"
 
@@ -163,11 +150,9 @@ MAMBA_CHECKPOINT = (
     ROOT / "_train" / "mamba" / "d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
 )
 
-# The shape of the canonical reading, as `check_mamba loss` printed it on 2026-08-28, the
-# day before the all-era cut deleted that tool. Only two numbers stand here: every width,
-# the plan and the span come out of the file, and the context is a choice of the REFEREE
-# -- a window of the recurrence opens on a zero state and the model has no context length
-# at all.
+# The shape of the canonical reading. Only two numbers stand here: every width, the plan
+# and the span come out of the file, and the context is a choice of the REFEREE -- a
+# window of the recurrence opens on a zero state and the model has no context length.
 MAMBA_SHAPE = {"windows": 75, "context": 256}
 
 # The loss of the elected checkpoint over those windows, MEASURED 2026-08-28 against the
@@ -175,12 +160,8 @@ MAMBA_SHAPE = {"windows": 75, "context": 256}
 # beside it stated the same 1.640810.
 MAMBA_LOSS = 1.640810
 
-# The netlist of the elected checkpoint, RE-PINNED 2026-08-29 by this gate through
-# `gate_mamba.exe verilog`, at the end of the lifts into `lib/nn`. It moved with era
-# four's and at the same three steps: the Exp2 backport (`a648db22` -> `68fef409`), the
-# shared `clamp16` (-> `d64f3e63`) and `Placement.rom` (-> here). `a648db22` was the
-# unification round's number of 2026-08-23, which five days of refactors to `lib/nn` and
-# `lib/core` had not moved.
+# The netlist of the elected checkpoint, re-pinned by this gate through
+# `gate_mamba.exe verilog` at the end of the lifts into `lib/nn`.
 # IT OWES A VIVADO BUILD before it merges.
 MAMBA_NETLIST_MD5 = "e6abe8c20c983a930b99a626c18a9b13"
 
@@ -223,11 +204,8 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
 # Era six: the quantizer, held through the netlist                     #
 # ==================================================================== #
 
-# TWO GATES STAND HERE AND NEITHER OF THEM IS OCAML'S ANY MORE. The two temporary gates
-# that welded the two integer twins -- the walk and the drift report -- went with the
-# OCaml twin; `tests/test_rtl_diffusion.py` holds the CIRCUIT against the JAX twin and is
-# what
-# stays.
+# `tests/test_rtl_diffusion.py` holds the CIRCUIT against the JAX twin; what stands here
+# is the float model's loss and the netlist the quantizer states.
 
 DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
 PIECES = corpus.PIECES
@@ -238,23 +216,15 @@ GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.e
 DIFFUSION_LOSS = 0.193459
 DIFFUSION_CROP = 128
 
-# The golden candidate at T 128, G 5, N 512, RE-PINNED 2026-08-29 by this gate at the end
-# of the lifts into `lib/nn`, AND IT IS WHAT THE FLASH HOLDS: the bitstream went in that
-# day and the capture at seed 47872 read 840 bytes and 280 messages byte for byte against
-# the twin. `4e367cef` was the number of 2026-08-28, which it replaces. The Exp2 backport
-# did not move it — the fork became the shared unit verbatim and the signal graph with it
-# — and neither did the shared `clamp16`, which era six already read. `Placement.rom`
-# moved it (the weight and norm banks lost a dead write port each) and the frames moved it
-# again (one wide register became several narrow ones).
+# The golden candidate at T 128, G 5, N 512, AND IT IS WHAT THE FLASH HOLDS: the capture
+# at seed 47872 read 840 bytes and 280 messages byte for byte against the twin.
 DIFFUSION_NETLIST_MD5 = "ca16397aa3c91be2d8fe4c34736d0834"
 
 
 def diffusion_gate_masks(sheets, crop):
-    """The Bernoulli-half masks of G0: sheet i on the generator at seed i + 1, one uniform
-    for each cell in the cell order, hidden exactly when u * 2^24 < 2^23.
-
-    They come from the shared generator and not from either framework's own draw, thus the
-    mask is a fact of this repository and no change of a key rule can move it."""
+    """The Bernoulli-half masks of G0: sheet i on the generator at seed i + 1, hidden
+    exactly when u * 2^24 < 2^23. They come from the SHARED generator and not from either
+    framework's draw, thus no change of a key rule can move them."""
     states = prng.states(np.arange(1, sheets + 1))
     hidden = np.zeros((sheets, crop, sheet_model.VOICES), dtype=bool)
     everyone = np.ones(sheets, dtype=bool)
@@ -265,16 +235,10 @@ def diffusion_gate_masks(sheets, crop):
 
 
 def test_g0_the_float_model_reads_its_measured_loss():
-    """THE FLOAT MODEL DOES NOT MOVE. The sheets are deterministic -- the first 128 steps
-    of every valid piece that holds them, in corpus order -- and the masks come from the
-    shared generator, thus no draw of either framework enters and the number reads the
-    FORWARD alone: every kernel, every fold of the norm, every plane, and the reader that
-    loaded them.
-
-    It was measured on the functional model this era's `model.py` used to be, and it is
-    what said that the Flax module tree moved no number. The tolerance is Gate A's: a mean
-    of 76 sheets through 48 layers of float32, where two readings reduce in different
-    orders. A disagreement that matters moves the fourth decimal at least."""
+    """THE FLOAT MODEL DOES NOT MOVE. The sheets and the masks are deterministic, thus no
+    draw of either framework enters and the number reads the FORWARD alone: every kernel,
+    every fold of the norm, every plane, and the reader that loaded them. The tolerance
+    holds two readings of 48 float32 layers that reduce in different orders."""
     need(DIFFUSION_CHECKPOINT, PIECES)
     from diffusion import model as sheet_model
 
@@ -302,12 +266,8 @@ def test_g0_the_float_model_reads_its_measured_loss():
 
 
 def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
-    """THE CIRCUIT DOES NOT MOVE. The elaboration reads the contract file the JAX
-    quantizer writes, and the Verilog it states must be the golden's byte for byte: one
-    rounding, one exponent or one fold out of place moves a weight, and a moved weight
-    moves the netlist.
-
-    It is the gate of the quantizer and it costs one second. A different md5 says the
+    """THE CIRCUIT DOES NOT MOVE: one rounding, one exponent or one fold out of place
+    moves a weight, and a moved weight moves the netlist. A different md5 says the
     quantization parted; diff the norm ROM first -- the gains and the biases -- and then
     the weight ROM."""
     need(DIFFUSION_CHECKPOINT, GEN_VERILOG)

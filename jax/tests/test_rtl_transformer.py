@@ -1,28 +1,16 @@
 """The RTL gate of era four: the circuit against the integer twin.
 
 THE ORACLE IS THIS SIDE AND THE CIRCUIT IS THE OTHER. `bin/gate_transformer.exe` drives
-the Hardcaml circuit in Cyclesim and prints WHAT IT DID -- the frame the socket face
-answered at each step, and the classes that frame states -- and this module states what it
-must have done, from `transformer/quantized.py` over the same model, and compares in
-order. Neither side can pass by agreeing with itself.
+the Hardcaml circuit in Cyclesim and prints WHAT IT DID; this module states what it must
+have done, from `transformer/quantized.py` over the same model. Neither side can pass by
+agreeing with itself. The model crosses the seam as a CONTRACT FILE and every shape number
+of the era travels in it, thus no flag of this module states a shape.
 
-The model crosses the seam as a CONTRACT FILE. A tiny model is drawn here, quantized here
-and written to a `tmp_path`; the driver reads it and elaborates a circuit from it. EVERY
-SHAPE NUMBER OF THIS ERA TRAVELS IN THAT FILE -- the width and the layers in the tensors,
-the heads, the context and the ALiBi span beside them -- thus no flag of this module
-states a shape.
-
-THE COMPARISON IS OVER CLASSES AND NOT OVER FRAME WORDS. The vocabulary and the seat
-packing are the corpus library's rule and they stay on the OCaml side; the driver decodes
-the frame it answered through `Vocab.classes_of_frame`, thus this side holds no format of
-its own. `lib/corpus/vocab.ml` gates that decode against its own inverse.
-
-The shapes are the ones the frame benches of `source.ml` ran until the all-era cut moved
-the gate here, and each was put there by a fault: one layer, where the ring's layer field
-is EMPTY and an address that strides by it would still pass; seed 0, the fixed point of
-the generator, where every uniform is 0 and each seat takes the first class the min-p
-floor left standing; and two layers, where the layer field appears and a ring that ignored
-it would read another layer's keys.
+THE COMPARISON IS OVER CLASSES AND NOT OVER FRAME WORDS: the vocabulary and the seat
+packing stay on the OCaml side, and the driver decodes through `Vocab.classes_of_frame`.
+Each shape below was put here by a fault -- one layer, where the ring's layer field is
+EMPTY; seed 0, where every uniform is 0; and two layers, where the field appears and a
+ring that ignored it would read another layer's keys.
 
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
@@ -42,9 +30,9 @@ DRIVER = gate.driver("gate_transformer.exe")
 
 @pytest.fixture(scope="module", autouse=True)
 def built():
-    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
-    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
-    for every case of this file before skipping on each. Module scope asks once."""
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT: inside `drive`, a tree with no
+    `dune build` behind it drew and quantized a model for every case before skipping on
+    each."""
     gate.need(DRIVER)
 
 
@@ -84,11 +72,9 @@ def contract(tmp_path, **shape):
 def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(
     tmp_path, seed, layers, heads, d
 ):
-    """CLASS FOR CLASS, STEP FOR STEP. The chain draws the four seats from the soprano
-    down, each reading the stream the seats above it wrote, thus a chain wired the wrong
-    way round moves every class after the first -- and the lead-in of one bar must draw
-    nothing at all, or the generator stands one draw ahead of the twin's for the whole
-    walk."""
+    """CLASS FOR CLASS, STEP FOR STEP: a chain wired the wrong way round moves every class
+    after the first, and a lead-in that drew would stand the generator one draw ahead of
+    the twin's for the whole walk."""
     steps = 20
     path, twin = contract(tmp_path, seed=5, d=d, layers=layers, heads=heads)
     circuit = drive(path, seed=seed, steps=steps)

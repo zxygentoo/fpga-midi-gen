@@ -1,15 +1,10 @@
 """The arithmetic of the draw, which is `sample.py`.
 
 [temper] and [pick_share] are the two places a rewrite can be plausibly wrong and still
-make music: a peak taken over the wrong axis, a min-p floor applied before the
-temperature, an inclusive compare in the cumulative walk. Each shifts the distribution a
-little and nothing raises. The INTEGER pick beside them is `quantized.pick`, over Q15
-weights and a 24-bit word, and `test_quantized.py` gates it.
-
-No mask stands here any more. The era of the token measured its peak over the legal set
-alone, because an illegal code could hold the largest logit; no frame is illegal, thus the
-peak is the peak.
-"""
+make music: a peak over the wrong axis, a min-p floor applied before the temperature,
+an inclusive compare in the cumulative walk. Each shifts the distribution a little and
+nothing raises. The INTEGER pick beside them is `quantized.pick`, which
+`test_quantized.py` gates."""
 
 import numpy as np
 import pytest
@@ -52,11 +47,9 @@ def test_pick_takes_the_first_class_whose_total_passes_the_draw():
 
 def test_pick_holds_the_top_of_the_uniform_range():
     """The draw is the uniform times the LAST RUNNING TOTAL, thus it is strictly under
-    that total and a class always passes. A draw made against a second sum of the same
-    weights -- numpy adds pairwise in sum() and left to right in cumsum() -- could land
-    above every running total, and then no class would pass and the pick would need a rule
-    for it. The classes above the mass weigh zero, thus a pick that fell off the end would
-    state a class the floor cut away."""
+    that total and a class always passes. A draw made against a second sum -- numpy
+    adds pairwise in sum() and left to right in cumsum() -- could land above every
+    running total, and the pick would fall off the end onto a class the floor cut away."""
     weights = np.zeros((1, corpus.CLASSES))
     weights[0, 3] = 1.0
     assert sample.pick_share(weights, np.array([1.0 - 2.0**-24]))[0] == 3

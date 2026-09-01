@@ -1,13 +1,10 @@
 """The drawn models the gates share, at shapes a test can afford.
 
-IT DOES NOT BEGIN WITH `test_`, AND THAT IS THE WHOLE POINT. `tests/` carries no
+IT DOES NOT BEGIN WITH `test_`, AND THAT IS THE WHOLE POINT: `tests/` carries no
 `__init__.py`, thus `from tests.test_transformer import tiny` imports a SECOND module
-object of a file pytest has already collected under its own rootdir name: two copies of
-every constant, two draws of every model, and a `__pycache__` that holds both. Anything
-one gate module needs from another moves here instead.
+object of a file pytest has already collected, with two draws of every model behind it.
 
-Each name says its era, because this module holds both and a bare `drawn` in it would
-say neither.
+Each name says its era, because a bare `drawn` here would say neither.
 """
 
 from mamba import model as recurrence
@@ -29,8 +26,7 @@ def transformer_twin(seed=5, d=8, layers=2, heads=2, context=16):
 
 
 # Era five's small shape. d 32 over 2 heads gives an attention head width of 16, a power
-# of FOUR, which is what `ar_quantized.score_shift` needs to divide by its square root in
-# one shift; the OCaml side draws at the same numbers, `Model.For_test.shape`.
+# of FOUR, which `ar_quantized.score_shift` needs; `Model.For_test.shape` is the same.
 MAMBA_SHAPE = {
     "d": 32,
     "layers": 3,

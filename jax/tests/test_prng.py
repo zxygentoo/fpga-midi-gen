@@ -1,12 +1,10 @@
 """The batched walk must equal the scalar one.
 
-prng.py vectorises lib/core/prng.ml over a batch, and a vectorised recurrence is exactly
-where a wrong dtype or a wrong mask hides: it still produces plausible numbers. These
-tests pin the walk against a scalar reference written straight from the OCaml, and pin
-the one invariant batching adds -- an inactive element must consume nothing.
-
-The end-to-end proof that this walk is the board's walk is gate C of tests/test_parity.py,
-which compares whole frame streams against the OCaml sampler.
+prng.py vectorises lib/core/prng.ml over a batch, and a vectorised recurrence is where a
+wrong dtype or a wrong mask hides: it still produces plausible numbers. These pin the walk
+against a scalar reference written straight from the OCaml, and pin the one invariant
+batching adds -- an inactive element must consume nothing. The end-to-end proof is gate C
+of tests/test_parity.py.
 """
 
 import numpy as np

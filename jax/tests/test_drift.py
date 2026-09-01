@@ -1,31 +1,15 @@
 """What the quantization costs: each integer twin against the float model it quantizes.
 
-Era six holds the file and the frozen eras stand at its foot. The shape of the gate is one
-shape -- a fixed sweep that pins MEASURED NUMBERS AND NOT THRESHOLDS, and a property part
-that draws seed pairs at a fixed generator and holds floors calibrated under the first
-measured minima -- and what differs is the feedback axis each era carries.
+Era six holds the file and the frozen eras stand at its foot. Every era takes the same
+shape of gate and what differs is its FEEDBACK AXIS -- era four's KV ring, era five's
+state, era six's sheet -- because that is what decides whether an arithmetic error dies
+with its step or compounds.
 
-`Coconet.drawn` and the quantization inside `quantized.drift` read the same draw, thus the
-comparison isolates the fixed-point scheme and the sweep reads no file that git ignores.
-The randomness is pseudo-randomness with the seed an input, per the project rule, thus
-both parts are deterministic.
-
-THE FEEDBACK AXIS OF THIS ERA IS THE WALK, and it is what parts this gate from era five's.
-That model held a state that carried an error forward in time; this one holds a sheet --
-every cell a pass redraws stands in the context of every later pass, thus an arithmetic
-error compounds through the music rather than through a register. The fixed sweep
-therefore runs the walk out to 128 passes beside the short ones, which is a quarter of the
-board's full budget at a quarter of its sheet.
-
-THE DRAWN WEIGHTS TAKE THE TRAINED NORM'S SCALE, which is `Coconet.drawn`'s own default
-and its docstring's argument: at the trainer's opening tenth an untrained trunk decays
-tenfold at every layer, and by the third the report reads the resolution floor of the
-format and not the arithmetic.
-
-Two parts, the rule of the sibling gates. The fixed sweep pins MEASURED NUMBERS AND NOT
-THRESHOLDS: a diff says the integers moved -- judge whether it is a re-measurement or a
-bug. The property part draws seed pairs at a fixed generator and holds the floors; the
-printed minima keep the calibration honest.
+TWO PARTS, and the drawn weights make both deterministic. The fixed sweep pins MEASURED
+NUMBERS AND NOT THRESHOLDS: a diff says the integers moved, and the reader judges whether
+it is a re-measurement or a bug. The property part draws seed pairs at a fixed generator
+and holds floors calibrated under the first measured minima; the printed minima keep the
+calibration honest.
 """
 
 from typing import NamedTuple
@@ -39,10 +23,8 @@ from quantized import engine_states
 from tests.models import drawn_transformer, plan_of
 from transformer import quantized as transformer_twin
 
-# EVERY GATE IN THIS FILE IS SLOW, and each is slow for the same reason: it MEASURES.
-# 112 drift runs stand here, each a whole walk of a drawn model against its twin, and
-# what they gate is the arithmetic and not a rule of the code. `-m "not slow"` is the
-# inner loop; the whole suite is what a commit passes.
+# EVERY GATE HERE IS SLOW because it MEASURES: 112 drift runs, each a whole walk of a
+# drawn model against its twin. `-m "not slow"` is the inner loop.
 pytestmark = pytest.mark.slow
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
@@ -62,10 +44,9 @@ def drift(weight_seed, walk_seed, passes):
     return quantized.drift(coconet, states, given, walk=passes)
 
 
-# The row `test_a_sweep_states_its_measured_numbers` reads, at the foot of this file: for
-# each weight seed, summed over the four walks, the top-1 count, the same-draw count, the
-# cells they were counted over, and the lowest mean cosine of the four. The sharpest
-# cosine signal is the lowest walk.
+# The row `test_a_sweep_states_its_measured_numbers` reads: for each weight seed, summed
+# over the four walks, the top-1 count, the same-draw count, the cells counted, and the
+# LOWEST mean cosine of the four -- which is the sharpest cosine signal.
 SWEPT = {
     11: (3029, 3040, 3299, 0.9984),
     23: (3104, 3033, 3299, 0.9984),
@@ -91,13 +72,10 @@ LONG_WALK = {
 
 @pytest.mark.parametrize("passes", sorted(LONG_WALK))
 def test_the_long_walk_does_not_compound(passes):
-    """THE LONG WALK, AND THE CLAMPS UNDER IT.
-
-    A redrawn cell enters the context of every later pass, thus a quantization error can
-    compound over the walk in a way one pass never shows. The same model runs at 8, 32 and
-    128 passes; a cumulative error would show as numbers that FALL with the length. The
-    clamps stand beside them because the formats were chosen with margin and not metered
-    on a trained checkpoint: a zero here is the finding that the margin holds."""
+    """THE LONG WALK, AND THE CLAMPS UNDER IT. A redrawn cell enters the context of every
+    later pass, thus one model runs at 8, 32 and 128 passes and a cumulative error would
+    show as numbers that FALL with the length. A zero clamp count is the finding that the
+    format's margin holds."""
     said = drift(11, 42, passes)
     peak, cells, cosine, clamped, hottest = LONG_WALK[passes]
     assert (said.same_peak, said.cells) == (peak, cells)
@@ -117,13 +95,10 @@ TRIALS = 60
 
 
 def test_the_floors_hold_on_drawn_seed_pairs(capsys):
-    """A TRIAL THAT CLAMPS IS THE FORMAT'S ANSWER AND NOT THE SCHEME'S FAULT.
-
-    A drawn trunk can outgrow any fixed format, thus a trial whose clamps fired is counted
-    and released from the floors, and a trial that does not clamp has no excuse -- the
-    floors still hold the arithmetic. At Q6 no drawn trial of this sweep clamps; the
-    release guarded three at the retired Q12, where one pair clamped 5.5 percent of its
-    writes and read a cosine of 0.87."""
+    """A TRIAL THAT CLAMPS IS THE FORMAT'S ANSWER AND NOT THE SCHEME'S FAULT: a drawn
+    trunk can outgrow any fixed format, thus a trial whose clamps fired is released from
+    the floors and one that does not clamp has no excuse. At Q6 no trial of this sweep
+    clamps."""
     rng = np.random.default_rng(0xD21F8)
     low_top1 = low_draw = low_cosine = 1.0
     released = 0
@@ -153,10 +128,9 @@ def test_the_floors_hold_on_drawn_seed_pairs(capsys):
 # Era four: the step-frame transformer                                 #
 # ==================================================================== #
 
-# THE FEEDBACK AXIS OF THIS ERA IS THE KV RING. A drawn key or value row is coarsened to
-# its top byte and stored, and every later step reads it back, thus an arithmetic error
-# lives in the ring for a whole window rather than dying with its step. The walk therefore
-# runs past the ring -- 40 steps over a window of 16 -- so that every trial wraps it.
+# THE FEEDBACK AXIS OF THIS ERA IS THE KV RING: a coarsened row is read back by every
+# later step, thus an error lives a whole window. The walk runs 40 steps over a window of
+# 16, so that every trial wraps it.
 
 TRANSFORMER_SHAPE = {"d": 16, "layers": 2}
 TRANSFORMER_HEADS = 4
@@ -183,11 +157,9 @@ TRANSFORMER_SWEPT = {
 }
 
 
-# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
-# 2026-08-13 against the model of the token, held for the frame, and they stand where they
-# stood: the measured minima of this sweep read 0.823, 0.958 and 0.9951, far above them. A
-# floor tightened onto a measurement turns a re-draw of the set into a failure, and the
-# printed minima are what keeps the calibration honest instead.
+# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED: the measured minima read
+# 0.823, 0.958 and 0.9951, far above them. A floor tightened onto a measurement turns a
+# re-draw of the set into a failure; the printed minima keep the calibration honest.
 TRANSFORMER_TOP1_FLOOR = 0.55
 TRANSFORMER_SAME_DRAW_FLOOR = 0.80
 TRANSFORMER_COSINE_FLOOR = 0.98
@@ -196,13 +168,9 @@ TRANSFORMER_TRIALS = 40
 
 
 def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
-    """The scheme against a set of drawn models, not the four the sweep pins. A fail is a
-    break of the scheme and not a re-draw of the set; the printed minima keep the
-    calibration honest.
-
-    The old OCaml gate read 0.833, 0.948 and 0.9943 over 100 pairs of its own draw; this
-    side reads 0.823, 0.958 and 0.9951 over 40 of a different draw. The two agree about
-    what the scheme costs, which is what the re-measurement had to show."""
+    """The scheme against a set of drawn models, not the four the sweep pins: a fail is a
+    break of the scheme, and the printed minima keep the calibration honest. This side
+    reads 0.823, 0.958 and 0.9951 where the OCaml gate read 0.833, 0.948 and 0.9943."""
     generator = np.random.default_rng(7)
     low_peak = low_draw = 1.0
     low_cosine = 1.0
@@ -226,23 +194,18 @@ def test_the_transformer_floors_hold_on_drawn_seed_pairs(capsys):
 # Era five: the state-space model                                      #
 # ==================================================================== #
 
-# THE FEEDBACK AXIS OF THIS ERA IS THE STATE. A block carries a state that no window
-# forgets, thus a quantization error accumulates in a register rather than dying with a
-# ring's depth -- and the long walk below is what says whether it does. BOTH MODELS TAKE
-# ONE STEP FOR ONE STEP here, thus the comparison is linear in the walk and can run past
-# many decay lifetimes.
+# THE FEEDBACK AXIS OF THIS ERA IS THE STATE: a block carries a state no window forgets,
+# thus an error accumulates in a register rather than dying with a ring's depth. Both
+# models take one step for one step, thus the walk can run past many decay lifetimes.
 
-# The whole plan of the era at a shape a test can afford: two blocks, the Zamba head and
-# the feed-forward. The head brings a SECOND source of drift that the trunk does not have
-# -- a coarse ring, a softmax and a division -- thus the report answers for the whole
-# model and not for the recurrence alone.
+# The whole plan of the era at a shape a test can afford. The Zamba head brings a SECOND
+# source of drift -- a coarse ring, a softmax and a division -- thus the report answers
+# for the whole model and not the recurrence alone.
 MAMBA_SPELT = "MMZF"
-# d 32 over 2 heads and not 16: the attention head width is a power of FOUR, which is
-# what `ar_quantized.score_shift` needs to divide by its square root in one shift. The
-# table
-# below was re-measured on 2026-08-31 when `check_shape` gained that rule; the numbers it
-# read before were taken at head width 8, where the twin scaled by 1/2 and the float
-# model by 1/sqrt(8).
+# d 32 over 2 heads and not 16: the attention head width is then a power of FOUR, which
+# `ar_quantized.score_shift` needs. The table below was re-measured when `check_shape`
+# gained that rule -- the numbers before it were taken at head width 8, where the twin
+# scaled by 1/2 and the float model by 1/sqrt(8).
 MAMBA_SHAPE = {"d": 32, "heads": 2, "state": 8, "taps": 4}
 MAMBA_RING = 16
 MAMBA_STEPS = 64
@@ -279,16 +242,11 @@ MAMBA_LONG_WALK = {
 
 @pytest.mark.parametrize("steps", sorted(MAMBA_LONG_WALK))
 def test_the_mamba_long_walk_does_not_compound(steps):
-    """THE LONG WALK, AND THE CLAMPS UNDER IT.
-
-    The state of a block carries forward for ever, thus a quantization error can compound
-    over a walk in a way one step never shows. The same model runs at 64, 256 and 1024
-    steps; a cumulative error would show as numbers that FALL with the length. They do
-    not: the top-1 share reads 0.953, 0.930 and 0.926 and the cosine stands flat.
-
-    The clamps stand beside them because the formats of this era are chosen with margin
-    and not metered on a trained checkpoint: a zero here is the finding that the margin
-    holds, and it is the finding the OCaml gate made before it."""
+    """THE LONG WALK, AND THE CLAMPS UNDER IT. The state of a block carries forward for
+    ever, thus one model runs at 64, 256 and 1024 steps and a cumulative error would
+    show as numbers that FALL with the length. They do not -- the top-1 share reads
+    0.953, 0.930 and 0.926 -- and a zero clamp count is the finding that the margin
+    holds."""
     said = mamba_drift(11, 42, steps=steps)
     peak, draws, cosine = MAMBA_LONG_WALK[steps]
     assert (said.same_peak, said.draws) == (peak, draws)
@@ -298,12 +256,10 @@ def test_the_mamba_long_walk_does_not_compound(steps):
     assert clamps.dt_seen and clamps.beta_seen and clamps.state_seen
 
 
-# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They were calibrated on
-# 2026-08-20 against this model's own first measured minima, and they are much tighter
-# than era four's 0.55, 0.8 and 0.98 for a reason that is a format and not a virtue: this
-# datapath keeps the gate product whole into the norm that reads it, where a truncation
-# back to the working class cost 0.10 of the cosine on its own. A scheme that measures
-# this well must be held to it.
+# THE FLOORS ARE THE ERA'S OWN AND THEY ARE NOT TIGHTENED. They are much tighter than era
+# four's 0.55, 0.8 and 0.98 for a reason that is a FORMAT and not a virtue: this datapath
+# keeps the gate product whole into the norm, where a truncation back to the working class
+# cost 0.10 of the cosine on its own.
 MAMBA_TOP1_FLOOR = 0.80
 MAMBA_SAME_DRAW_FLOOR = 0.90
 MAMBA_COSINE_FLOOR = 0.99
@@ -312,12 +268,9 @@ MAMBA_TRIALS = 12
 
 
 def test_the_mamba_floors_hold_on_drawn_seed_pairs(capsys):
-    """The scheme against a set of drawn models, not the four the sweep pins. A fail is a
-    break of the scheme and not a re-draw of the set; the printed minima keep the
-    calibration honest.
-
-    The old OCaml gate read 0.875, 0.979 and 0.9972 over 60 pairs of its own draw. This
-    side reads 0.875, 0.969 and 0.9980 over 12 of its own."""
+    """The scheme against a set of drawn models, not the four the sweep pins: a fail is a
+    break of the scheme, and the printed minima keep the calibration honest. This side
+    reads 0.875, 0.969 and 0.9980 where the OCaml gate read 0.875, 0.979 and 0.9972."""
     generator = np.random.default_rng(7)
     low_peak = low_draw = low_cosine = 1.0
     for _ in range(MAMBA_TRIALS):
@@ -342,14 +295,9 @@ def test_the_mamba_floors_hold_on_drawn_seed_pairs(capsys):
 
 
 class Sweep(NamedTuple):
-    """One era's fixed sweep, as the gate below runs it.
-
-    [drift] takes a weight seed and a walk seed and gives that era's report. [counted]
-    names the report field that says what the comparison ran over -- `cells` where the
-    era redraws a sheet, `draws` where a chain redraws four seats -- and it is the ONE
-    thing that parts the three bodies. [table] holds, for each weight seed and summed over
-    the four walks, the top-1 count, the same-draw count, the count they were taken over,
-    and the lowest mean cosine of the four."""
+    """One era's fixed sweep, as the gate below runs it. [drift] takes a weight seed and a
+    walk seed; [counted] names the report field that says what the comparison ran over,
+    which is the ONE thing that parts the three bodies; [table] is the pinned row."""
 
     era: str
     drift: object
@@ -359,11 +307,9 @@ class Sweep(NamedTuple):
 
 SWEEPS = (
     Sweep("six", sweep_drift, "cells", SWEPT),
-    # Eras four and five were measured on THIS side and NOT carried over from the OCaml
-    # gates that stood before them: the drawn weights come from a JAX draw now, thus the
-    # numbers are a re-measurement of the same scheme on a different draw. The old gates
-    # read 363, 355, 361, 358 top-1 of 384 draws for era four, and 721, 718, 711, 739 of
-    # 768 for era five.
+    # Eras four and five were measured on THIS side and not carried over from the OCaml
+    # gates: the drawn weights come from a JAX draw, thus these are a re-measurement of
+    # the same scheme on a different draw.
     Sweep("four", transformer_drift, "draws", TRANSFORMER_SWEPT),
     Sweep("five", mamba_drift, "draws", MAMBA_SWEPT),
 )
@@ -372,12 +318,9 @@ SWEEPS = (
 @pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
 @pytest.mark.parametrize("sweep", SWEEPS, ids=[sweep.era for sweep in SWEEPS])
 def test_a_sweep_states_its_measured_numbers(sweep, weight_seed):
-    """MEASURED NUMBERS AND NOT THRESHOLDS, the rule of every drift gate: a diff here says
-    the integers moved, and the reader judges whether it is a re-measurement or a bug.
-
-    The three eras run ONE body because the sweep is one gate: four weight seeds over four
-    walk seeds, summed, against a pinned row. What is each era's own is its drift and its
-    table, above."""
+    """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved, and the
+    reader judges whether it is a re-measurement or a bug. The three eras run ONE body --
+    four weight seeds over four walk seeds, summed, against a pinned row."""
     counted = same_peak = same_draw = 0
     low_cosine = 1.0
     for walk_seed in WALK_SEEDS:

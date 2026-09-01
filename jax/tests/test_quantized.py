@@ -1,17 +1,12 @@
 """The integer rules every twin stands on.
 
-`quantized.py` holds the part of the integer arithmetic that all three eras read and
-`ar_quantized.py` the part the two step-frame eras read; `lib/nn/quantized.ml` holds both
-in OCaml, undivided, where the elaborations take what each needs. The two sides are TWO
-STATEMENTS OF ONE RULE and nothing in the types welds them: what stands here is the
-arithmetic, stated in numbers, that both must give.
+`quantized.py` and `ar_quantized.py` on this side, `lib/nn/quantized.ml` undivided on the
+other: TWO STATEMENTS OF ONE RULE, and nothing in the types welds them. What stands here
+is the arithmetic, in numbers, that both must give.
 
-THESE ARE THE SMALLEST GATES OF A TWIN. `test_rtl_diffusion.py` holds a twin against its
-circuit,
-write for write; `test_drift.py` holds it against the float model it quantizes; and
-`test_parity.py`'s G1 holds a quantizer through the netlist a build carries. What stands
-here is the arithmetic each of those would break on FIRST -- a rounding, an exponent, a
-table entry -- so that a failure names the rule and not the walk.
+THESE ARE THE SMALLEST GATES OF A TWIN -- the rounding, the exponent, the table entry that
+`test_rtl_diffusion.py`, `test_drift.py` and `test_parity.py` would each break on FIRST --
+so that a failure names the rule and not the walk.
 """
 
 import numpy as np
@@ -51,11 +46,9 @@ def test_a_stated_exponent_overrides_the_tensors_own_peak():
 
 
 def test_the_exp2_table_is_the_shared_table():
-    """exp2 of -j/256 in Q15, the one table the samplers of every era read. Entry 0 is the
+    """exp2 of -j/256 in Q15, the one table the samplers of every era read: entry 0 is the
     peak 2^15, a full fractional step halves, and the last entry sits one table step above
-    one half. The whole table was compared entry for entry against
-    `Nn_quantized.Constants.exp2_bits` when it was written, and no entry differed: the two
-    libm implementations agree here."""
+    one half. It agrees with `Nn_quantized.Constants.exp2_bits` entry for entry."""
     table = quantized.EXP2_TABLE
     assert (table[0], table[128], table[255]) == (32768, 23170, 16428)
     assert quantized.exp2_of_magnitude(np.int64(4096)) == 16384
@@ -64,12 +57,10 @@ def test_the_exp2_table_is_the_shared_table():
 
 
 def test_the_sigmoid_table_is_the_shared_table():
-    """The sigmoid of a Q12 value in Q15, 256 buckets AT THEIR CENTRES. The bucket is 1/16
-    wide and the slope peaks at 1/4, thus the left edge would bias every reading by up to
-    2^-10 of full scale. The centres are symmetric about zero, and that is the property
-    the table must have: the two halves sum to 2^15, thus sigmoid(-v) = 1 - sigmoid(v)
-    survives the quantization. `Nn_quantized.Constants.sigmoid_table` states the same
-    rule, and era five's RTL gate holds the two together through the circuit."""
+    """The sigmoid of a Q12 value in Q15, 256 buckets AT THEIR CENTRES: the left edge
+    would bias every reading by up to 2^-10 of full scale. The centres are symmetric
+    about zero, which is the property the table must have -- the two halves sum to
+    2^15, thus sigmoid(-v) = 1 - sigmoid(v) survives the quantization."""
     table = ar_quantized.SIGMOID_TABLE
     assert (table[0], table[128], table[255]) == (11, 16640, 32757)
     for j in range(128):

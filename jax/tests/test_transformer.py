@@ -1,22 +1,13 @@
 """Era four, the step-frame transformer of docs/transformer.md: the chained head.
 
-ONE RULE OF THIS ERA FAILS SILENTLY, and it is the chain. Under a chain wired the wrong
-way round the shapes stay right, the loss still falls, and what is lost is the joint
-choice that is the whole reason the chain exists: measured on this era, four heads that
-drew in parallel cost 0.3157 nats for each step -- 0.456 bits, sixteen times the seed
-spread.
+ONE RULE OF THIS ERA FAILS SILENTLY, and it is the chain: wired the wrong way round the
+shapes stay right and the loss still falls, and what is lost is the joint choice the chain
+exists for -- 0.3157 nats for each step, measured. No referee outside this repository can
+see it, because a chain drawn upward is still a model that trains and plays.
 
-The rest of the era is held elsewhere, and deliberately. `test_parity.py` holds the
-forward to its measured loss and the QUANTIZER through the netlist the elaboration states;
-`test_sample.py` holds the arithmetic of the draw; `test_quantized.py` holds the integer
-rules the quantizer stands on; `test_train.py` holds the loop. What is left is the one
-rule no referee outside this repository can see, because a chain drawn upward is still a
-model that trains and still a model that plays -- and the CONTRACT FILE, whose round trip
-is the seam itself.
-
-The head itself lives in jax/ar_model.py, where era five reads it too (its twin is
-`ar_quantized.QuantizedHead`); it is read here through this era's own module, as the era's
-trainer and sampler read it.
+The rest of the era is held elsewhere and deliberately. What is left here is that one rule
+and the CONTRACT FILE, whose round trip is the seam itself. The head lives in
+jax/ar_model.py, where era five reads it too.
 """
 
 import numpy as np
@@ -74,11 +65,9 @@ def test_the_twin_carries_the_float_models_skeleton():
 
 
 def test_the_two_tables_take_the_larger_peaks_exponent():
-    """The seat rows and the phase row ADD, row for row -- the embedding sums them and the
-    Embed op of the circuit walks them as one tensor -- thus ONE exponent covers both. The
-    module holds one field, so no caller can break the rule; what is still a choice is
-    that the exponent comes from the LARGER peak, and a table quantized at another
-    tensor's exponent clamps."""
+    """The seat rows and the phase row ADD, thus ONE exponent covers both and the module
+    holds one field. What is still a choice is that it comes from the LARGER peak: a table
+    quantized at another tensor's exponent clamps."""
     held = drawn_transformer()
     # the phase table is lifted far past the seats, thus the shared exponent is its own
     held.head.take([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
@@ -165,13 +154,10 @@ def test_a_shape_the_circuit_cannot_hold_refuses_at_the_file():
 
 
 def test_the_lead_in_draws_nothing_and_moves_no_generator():
-    """One bar of silence opens the walk and the generator does not move through it. A
-    twin that spent a uniform there would draw a different piece from the same seed, and
-    every step of it would be legal music.
-
-    IT IS THE TWIN AGAINST ITSELF and no circuit is in it, thus it stands here and not in
-    `test_rtl_transformer.py`: a gate that mounts a driver it never runs skips on a tree
-    with no `dune build` and gates nothing there."""
+    """One bar of silence opens the walk and the generator does not move through it: a
+    twin that spent a uniform there would draw a different piece from the same seed,
+    and every step of it would be legal music. IT IS THE TWIN AGAINST ITSELF and no
+    circuit is in it, thus it stands here and not in `test_rtl_transformer.py`."""
     twin = transformer_twin(layers=1)
     played, draws = quantized.walk(twin, [1, 7], ar_quantized.LEAD + 2)
     assert (played[:, : ar_quantized.LEAD] == 0).all(), "the lead-in is not silent"

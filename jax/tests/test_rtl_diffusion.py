@@ -1,35 +1,25 @@
 """The RTL gates of era six: the circuit against the integer twin.
 
 THE ORACLE IS THIS SIDE AND THE CIRCUIT IS THE OTHER. `bin/gate_diffusion.exe` drives the
-Hardcaml circuit in Cyclesim and prints WHAT IT DID -- every write of the cell port, every
-column the stores took, the logits the head offered, the frames the score face answered --
-and this module states what it must have done, from `diffusion/quantized.py` over the same
-model, and compares in order. Neither side can pass by agreeing with itself.
+Hardcaml circuit in Cyclesim and prints WHAT IT DID; this module states what it must have
+done, from `diffusion/quantized.py` over the same model. Neither side can pass by agreeing
+with itself. The model crosses the seam as a CONTRACT FILE; the GEOMETRY cannot travel in
+one -- T, G and N are the elaboration's -- thus it travels in the flags below.
 
-The model crosses the seam as a CONTRACT FILE. A tiny model is drawn here, quantized here
-and written to a `tmp_path`; the driver reads it and elaborates a circuit from it. The
-geometry cannot travel in a file -- T, G and N are the elaboration's -- thus it travels in
-the flags this module passes.
-
-Two gates, and each one exists because a whole class of fault does not move a frame:
+Two gates, and each exists because a whole class of fault does not move a frame:
 
 - THE WALK, PHASE FOR PHASE. The finished sheet alone would pass a walk whose masks are
-  one pass out of phase, or one that spends a uniform on a standing cell: both draw a
-  sheet, and both draw the WRONG one with no local symptom. The comparison is therefore
-  per phase -- the opening, then each pass's mask in the cell order and each pass's draws
-  in the cell order -- and the frames close it through the sequencer's own face.
-- THE STREAM, COLUMN FOR COLUMN. Era five's four faults were all faults of the composition
-  layer -- a weight address whose stride was not the tensor's, a channel block read at the
-  gate's offset, an operand taken on the address side of a two-cycle read, and a ring run
-  off its end -- and none of them moved a frame.
+  one pass out of phase, or one that spends a uniform on a standing cell. The comparison
+  is therefore per phase -- the opening, then each pass's mask and each pass's draws in
+  the cell order -- and the frames close it through the sequencer's own face.
+- THE STREAM, COLUMN FOR COLUMN. Era five's four faults were all faults of the
+  composition layer -- a weight stride, a channel block offset, an operand read one cycle
+  early, a ring run off its end -- and none of them moved a frame.
 
-P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK. Its input is data: the driver
-draws each class over P and prints the sheet it drew, thus a narrow P is a legal sheet and
-the composition layer's P-parametric paths -- the class bits, the store map, the ring, the
-tag width, the drain rule at a short chain -- keep an oracle at more than one width. THE
-WALK CASES STAY AT P 48: a walk draws inside `model.seat_openings`, whose registers reach
-class 46, and a narrower column would be a different walk and not the same walk at another
-P.
+P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK, because its input is data: a
+narrow P is a legal sheet, and the composition layer's P-parametric paths keep an oracle
+at more than one width. THE WALK CASES STAY AT P 48, where the seat registers reach class
+46.
 
 It SKIPS when the driver is absent -- a clean tree is not a failure. From the repository
 root:
@@ -52,9 +42,9 @@ VOICES = model.VOICES
 
 @pytest.fixture(scope="module", autouse=True)
 def built():
-    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT. `gate.need` used to run inside
-    `drive`, thus a tree with no `dune build` behind it drew, quantized and wrote a model
-    for every case of this file before skipping on each. Module scope asks once."""
+    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT: inside `drive`, a tree with no
+    `dune build` behind it drew and quantized a model for every case before skipping on
+    each."""
     gate.need(DRIVER)
 
 
@@ -132,11 +122,9 @@ def wanted_walk(twin, *, steps, walk, seed):
 def test_the_walk_is_the_twins_walk(
     tmp_path, seed, layers, width, lanes, steps, walk, weight_seed
 ):
-    """SEED 0 IS IN THE GATE. It is the fixed point of xorshift32 -- the panel can state
-    it and the engine takes its seed as the SEED cell does -- thus every uniform is 0,
-    every cell hides at every pass and every draw takes the top of the grid. The walk that
-    stands still is the design, and the gate holds the circuit to that stillness like any
-    other walk: the pass counts show it, because every cell is redrawn."""
+    """SEED 0 IS IN THE GATE: it is the fixed point of xorshift32 and the panel can state
+    it, thus every uniform is 0, every cell hides at every pass and every draw takes the
+    top of the grid. The walk that stands still is the design."""
     path, twin = contract_file(
         tmp_path, weight_seed=weight_seed, layers=layers, width=width
     )
@@ -155,11 +143,9 @@ def test_the_walk_is_the_twins_walk(
             f"{phase}, write {at}: the circuit wrote {made} and the twin wants "
             f"{tuple(wanted)}"
         )
-    # THE FRAMES CLOSE THE WALK THROUGH THE SEQUENCER'S OWN FACE. The driver states the
-    # frames of the sheet it drew, thus this side holds the format to nothing of its own:
-    # the writes above prove the sheet is the twin's, and this proves the score face
-    # states that sheet -- through the Vocab decode, the seat packing, and the silence
-    # past T - 1.
+    # THE FRAMES CLOSE THE WALK THROUGH THE SEQUENCER'S OWN FACE: the writes above prove
+    # the sheet is the twin's, and this proves the score face states that sheet -- through
+    # the Vocab decode, the seat packing, and the silence past T - 1.
     played = [(word[1], word[2]) for word in lines if word[0] == "frame"]
     stated = [(word[1], word[2]) for word in lines if word[0] == "want_frame"]
     assert played and played == stated, (
@@ -188,10 +174,9 @@ def stem_input(lines, steps):
 @pytest.mark.parametrize(
     "name,layers,width,lanes,steps,weight_seed,rows",
     [
-        # P 8 IS A SIMULATION'S P AND NOT THE BOARD'S. A stream case tests the composition
-        # layer, and every address of it -- the store map, the ring, the bank select, the
-        # weight stride -- is P-parametric. Eight rows run the same shapes at a quarter of
-        # the column width, and the case below holds the board's own P as well.
+        # P 8 IS A SIMULATION'S P AND NOT THE BOARD'S. Every address of the composition
+        # layer is P-parametric, thus eight rows run the same shapes at a quarter of the
+        # column width; the last case holds the board's own P.
         ("H 8, G 2, two pairs, T 6", 6, 8, 2, 6, 1, 8),
         ("H 7, G 3, one pair, T 5", 4, 7, 3, 5, 2, 8),
         # AN IMAGE THAT REALLY BANKS: 1 080 words plan as 1 024 and 512, thus this case

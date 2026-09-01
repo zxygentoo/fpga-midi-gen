@@ -117,13 +117,10 @@ def test_the_parallel_instrument_catches_the_fifth_and_the_octave():
 
 
 def test_the_parallel_rate_is_per_moving_pair_and_not_per_sounding_one():
-    """A parallel needs BOTH voices to move. A divisor of the pairs that merely sound pays
-    a model for holding its notes, which the span round of 2026-08-25 caught it doing: the
-    rate halved while the onsets fell a fifth below the corpus.
-
-    One sheet of four steps holds one parallel fifth and one held step. Under the pairs
-    that move it reads the whole of the motion; under the pairs that sound it would read
-    half of it, for a sheet that wrote exactly the same fault."""
+    """A parallel needs BOTH voices to move, thus a divisor of the pairs that merely sound
+    pays a model for holding its notes. One sheet of four steps holds one parallel fifth
+    and one held step: per moving pair it reads the whole of the motion, per sounding pair
+    half of it, for the same fault."""
     sheet = np.stack(
         [
             held(row)[0, 0]
@@ -177,14 +174,10 @@ def test_a_silent_frame_is_not_a_clash():
 
 
 def test_the_register_sees_a_texture_that_slid_where_nothing_else_does():
-    """A texture in good order, correctly spaced, and sitting a whole octave too low. The
-    order instrument and the voice pairs both read it CLEAN -- the stacking holds and
-    every span is unchanged -- thus the register mean is the only thing that can see it.
-
-    And the tail is coarse on purpose. The seats overlap by 14 to 18 semitones, so a drop
-    of an octave puts only the SOPRANO under its own floor of 60; the other three are
-    still inside ranges their neighbours share. [outside] is a backstop for a gross
-    departure and the mean is the sensitive instrument."""
+    """A texture in good order, correctly spaced, and a whole octave too low: the order
+    instrument and the voice pairs both read it CLEAN, thus the register mean is the only
+    thing that can see it. The tail is coarse on purpose -- the seats overlap by 14 to 18
+    semitones, so the drop puts only the soprano under its own floor."""
     right = measure.battery_row(held([50, 59, 65, 71]))["register"]
     low = measure.battery_row(held([38, 47, 53, 59]))["register"]
     assert right["outside"] == pytest.approx(0.0)
@@ -226,9 +219,8 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     assert row["hold"] == pytest.approx(76.9, abs=0.2)
     assert row["clash"] == pytest.approx(2.9, abs=0.3)
     # the horizontal referee: Bach essentially never writes them, thus any rate far above
-    # this is a fault of the model and not a taste of the corpus. The divisor is the pairs
-    # that MOVE, thus a rung cannot buy the number by holding its notes, and the share
-    # that moves stands beside it to catch a rung whose motion has left the corpus.
+    # this is a fault of the model. The divisor is the pairs that MOVE, thus a rung cannot
+    # buy the number by holding its notes.
     parallels = row["parallels"]
     # the fifths halved on 2026-08-25 when similar motion became a condition of the count
     assert parallels["fifths"] < 1.5 and parallels["octaves"] < 1.5

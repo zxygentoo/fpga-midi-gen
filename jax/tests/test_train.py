@@ -1,21 +1,14 @@
 """The trainer must train.
 
-This file exists because of a bug that every other check passed. Converting the CLI to
-click renamed `args.lr` to `lr`, and the loop already wrote its rate back into a name of
-its own -- so `lr = schedule(step, lr, ...)` fed the schedule its own output and the rate
-collapsed geometrically to zero. The model initialised correctly, the shapes were right,
-and a one-step run reported the exact baseline loss, because a step-1 loss is measured
-before the first update. Nothing was wrong except that no learning happened.
+This file exists because of a bug every other check passed: a loop that fed the schedule
+its own output collapsed the rate geometrically to zero, and the model still initialised
+correctly, the shapes were still right, and a one-step run still reported the exact
+baseline loss -- because a step-1 loss is measured before the first update. Nothing was
+wrong except that no learning happened.
 
-Therefore: run the loop and watch the loss fall. A smoke test at d 8 costs seconds.
-
-THE SCHEDULE IS INSIDE THE OPTIMIZER now and no loop can overwrite its peak, thus the bug
-above has no home left; the curve is held here all the same, because the rate the loop
-applies is still the thing that decides whether a run trains.
-
-Era four and era five run ONE loop now -- `ar_train.train` -- thus this file holds the
-shape of a training run and not of a trainer: each era's own CLI, its own draw, and the
-loop they share.
+Therefore: run the loop and watch the loss fall. The schedule is inside the optimizer now
+and the bug has no home left; the curve is held here all the same, because the rate the
+loop applies still decides whether a run trains.
 """
 
 
@@ -58,13 +51,10 @@ SHORT_RUN = [
     ],
 )
 def test_the_loss_falls_over_a_short_run(era, command, flags):
-    """THE GUARD IS PER ERA, and `mamba/measure.py free` is why: it called a click
-    `Command` with a model for weeks and raised for anyone who ran it, because nothing ran
-    it. A trainer that cannot learn still prints a correct step-1 loss -- the loss at step
-    1 is measured before the first update -- so only a run of several steps can tell.
-
-    Sixty steps at d 8 costs seconds, and it is the only thing that reads a trainer's
-    whole path: the flags, the draw, the optimizer, the loop and the log."""
+    """THE GUARD IS PER ERA, and `mamba/measure.py free` is why: it raised for anyone
+    who ran it for weeks, because nothing ran it. Sixty steps at d 8 costs seconds and
+    it is the only thing that reads a trainer's whole path -- the flags, the draw, the
+    optimizer, the loop and the log."""
     losses, output = gate.losses_of(command, SHORT_RUN + flags)
     assert len(losses) >= 3, output
     assert losses[-1] < losses[0] - 0.2, f"era {era}: the loss did not fall: {losses}"
@@ -74,22 +64,16 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
 # The rate curve: optax says what this project's schedule says          #
 # ==================================================================== #
 
-# THE HAND-ROLLED `adamw` AND `schedule` OF THE FIRST ERAS ARE GONE, and the gates that
-# held optax to them went with them: they had done their work, which was to prove that a
-# checkpoint trained under the old rule is a checkpoint of the new one. What is left is
-# the CURVE, against the closed form written here -- because `train.learning_rates` is
-# now the only statement of it in the code and a test that read it back from itself
-# would state nothing.
+# What is left is the CURVE, against the closed form written here: `train.learning_rates`
+# is the only statement of it in the code, and a test that read it back from itself would
+# state nothing.
 
 
 def curve_at(step, peak, warmup, total):
-    """The rate this project wants at [step] of the run, ONE BASED: linear from 0 to
-    [peak] over [warmup] steps, then cosine from [peak] to 0 over the rest.
-
-    THE TWO ENDS ARE THIS PROJECT'S AND NOT OPTAX'S. A warmup of zero is a constant peak,
-    where `warmup_cosine_decay_schedule` would be a bare cosine decay; and a run SHORTER
-    THAN ITS OWN WARMUP -- every short probe -- is the ramp alone, where optax refuses to
-    build a cosine of a negative length at all."""
+    """The rate this project wants at [step] of the run, ONE BASED: linear to [peak] over
+    [warmup] steps, then cosine to 0. THE TWO ENDS ARE THIS PROJECT'S AND NOT OPTAX'S -- a
+    warmup of zero is a constant peak, and a run shorter than its warmup is the ramp
+    alone."""
     if warmup == 0:
         return peak
     if step <= warmup:
@@ -100,12 +84,10 @@ def curve_at(step, peak, warmup, total):
 
 @pytest.mark.parametrize("warmup,total", [(1000, 30000), (0, 30000), (1000, 200)])
 def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
-    """`train.learning_rates` at every step of the run, and THE STEP IS ONE BASED.
-
-    optax hands a schedule its own update count, which is 0 at the first update; the
-    correction inside `learning_rates` is what puts the curve on the loop's step, and a
-    rule that dropped it would apply a rate of 0 to the first update and every later rate
-    one step behind -- which trains a slightly different model and says nothing."""
+    """`train.learning_rates` at every step, and THE STEP IS ONE BASED: optax hands a
+    schedule its own update count, which is 0 at the first update, thus a rule that
+    dropped the correction would apply a rate of 0 there and every later rate one step
+    behind."""
     peak = 3e-3
     theirs = np.array(
         [curve_at(step, peak, warmup, total) for step in range(1, total + 1)]
@@ -133,12 +115,9 @@ def test_the_rate_curve_is_the_one_the_recipe_states(warmup, total):
 
 
 def test_a_clip_of_zero_is_no_clip():
-    """It is not a clip AT zero, which would zero every gradient of the run. The chain
-    leaves the node out entirely.
-
-    ONLY the zero case is a property this can hold: Adam is scale-invariant, thus a
-    global-norm clip is unobservable through one update and a positive clip would pass
-    this assertion whatever the chain did."""
+    """It is not a clip AT zero, which would zero every gradient of the run: the chain
+    leaves the node out. ONLY the zero case is a property this can hold, because Adam is
+    scale-invariant and a positive clip is unobservable through one update."""
     rule = train.update_rule(peak=1e-3, warmup=0, total=10, clip=0.0, weight_decay=0.0)
     tree = [jnp.full((3,), 1e3, jnp.float32)]
     state = rule.init(tree)

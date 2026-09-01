@@ -1,21 +1,13 @@
 """The vocabulary and the decode of jax/corpus.py: what a class means, and what a stream
 of frames states on the wire.
 
-NEITHER OF THEM BELONGS TO AN ERA, which is why they stand beside the corpus and not
-inside a model. The loader reads every piece through [classes_of_codes], the battery of
-measure.py reads every pitch through [pitches_of_classes], and all three eras speak
-through [decode]. A break in any of them is wrong music under a model that is perfectly
-correct.
+NEITHER OF THEM BELONGS TO AN ERA, which is why they stand beside the corpus. A break in
+either is wrong music under a model that is perfectly correct.
 
-THE CLASS MAP is where the wire's MIDI pitch meets the model's vocabulary. The two are
-different questions -- the wire states any pitch and the model does not -- and a map wrong
-by one semitone or one seat round trips nothing.
-
-THE DECODE has an OCaml twin in Frame.events_of_frames of lib/core/frame.ml, and the eight
-cases here are the eight of its expect test and of docs/transformer.md. Both were measured
-against the packed corpus and give its texture -- onsets/step 0.81, single-ON 0.10, median
-4.0, under a quarter 0.37 -- which is the number the token era recorded.
-"""
+THE CLASS MAP is where the wire's MIDI pitch meets the model's vocabulary: the wire
+states any pitch and the model does not, and a map wrong by one semitone or one seat
+round trips nothing. THE DECODE has an OCaml twin in `Frame.events_of_frames`, and the
+eight cases here are the eight of its expect test and of docs/transformer.md."""
 
 import numpy as np
 import pytest

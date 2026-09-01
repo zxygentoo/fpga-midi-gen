@@ -1,17 +1,14 @@
 """The masked sheet of the diffusion era: the roll, the mask, the loss and the measure.
 
-Four things here can fail silently, and each one would still train, still sample and still
-play -- it would play the wrong piece, or read a number that means nothing:
+Four things here can fail silently, and each would still train, still sample and still
+play -- the wrong piece, or a number that means nothing:
 
-- the roll. A map wrong by one semitone or one seat round trips nothing, thus every class
-  and the corpus itself are pinned.
-- the mask. The masked count decides the whole objective; a mask that never hid
-  everything, or that hid the pitch rows of a cell unevenly, would train a different
-  model.
+- the roll. A map wrong by one semitone or one seat round trips nothing.
+- the mask. The masked count decides the whole objective.
 - the loss reweighting. One over the masked count is per SHEET, and a batch-wide divisor
   reads the same at every step and is wrong at all of them.
 - Algorithm 1. A referee that computes a different number than the paper's reads nothing,
-  and the batched form of it is subtle: its frames must be independent given the ordering.
+  and the batched form is subtle: its frames must be independent given the ordering.
 """
 
 import itertools
@@ -62,9 +59,7 @@ def test_a_column_of_the_roll_holds_one_row():
 def test_a_neighbour_pitch_is_a_neighbour_row():
     """The reason the pitch is an axis and not a set of channels: a semitone is one row,
     thus a convolution over the rows sees an interval as one shape wherever it stands.
-
-    This is the paper's inductive bias -- the near-invariance of counterpoint to
-    translation in pitch -- and the sheets of the proto round had none of it."""
+    That is the paper's inductive bias, and the proto round had none of it."""
     classes = np.array([[[10, 11, 20, 21]]], dtype=np.int32)
     sheet = np.asarray(model.planes(classes, np.zeros(classes.shape, dtype=bool)))
     rows = [int(np.argmax(sheet[0, 0, :, seat])) for seat in range(model.VOICES)]
@@ -85,12 +80,9 @@ def test_a_masked_cell_shows_zero_in_the_roll_and_one_in_its_plane():
 
 
 def test_the_orderless_draw_masks_from_one_cell_to_all_of_them():
-    """The paper's training distribution, as its code release states it: the masked count
-    is uniform on 1 to D.
-
-    Both ends earn a test. A draw that never masked every cell would never teach the model
-    the prior it must state at the opening of a Gibbs walk, and a draw that could mask
-    none would divide the loss by zero."""
+    """The paper's training distribution: the masked count is uniform on 1 to D. Both ends
+    earn a test -- a draw that never masked every cell would never teach the prior a Gibbs
+    walk opens on, and a draw that could mask none would divide the loss by zero."""
     steps = 8
     width = model.cells(steps)
     hidden = np.asarray(model.orderless_masks(jax.random.key(0), 4096, steps))
@@ -241,13 +233,10 @@ def test_the_loss_reads_the_masked_cells_and_no_others():
 
 
 def test_the_loss_divides_by_the_count_of_each_sheet():
-    """One over the masked count is PER SHEET. A sheet with one cell hidden and one with
-    sixteen must weigh the same, thus a batch-wide divisor is wrong -- and it is wrong in
-    a way that reads plausible at every step.
-
-    Sheet 0 states nothing and costs log(ROWS) at its single masked cell; sheet 1 is
-    certain and costs nothing at all sixteen of its own. The per-sheet divisor reads half
-    of log(ROWS); a batch-wide one would read a seventeenth of it."""
+    """One over the masked count is PER SHEET, and a batch-wide divisor is wrong in a way
+    that reads plausible at every step. Sheet 0 costs log(ROWS) at its one masked cell and
+    sheet 1 costs nothing at sixteen: per sheet that is half of log(ROWS), batch-wide a
+    seventeenth."""
     flat = jnp.zeros((4, model.ROWS, model.VOICES))
     sure = jnp.broadcast_to(
         jnp.where(jnp.arange(model.ROWS) == 0, 0.0, -30.0)[None, :, None], flat.shape
@@ -368,12 +357,9 @@ def certain_forward(row):
 
 
 def test_algorithm_one_adds_the_four_voices_of_a_frame():
-    """The frame is the unit of the measurement, thus its four voices add and the return
-    is nats for each frame and not for each cell.
-
-    A sheet of the row the stub is sure of costs nearly nothing. A sheet of any other row
-    costs four times the log probability the stub leaves that row -- one for each voice.
-    """
+    """The frame is the unit of the measurement, thus its four voices add: a sheet of the
+    row the stub is sure of costs nearly nothing, and a sheet of any other costs four
+    times the log probability the stub leaves it."""
     ordering = referee.frame_ordering(np.random.default_rng(0), 8)
     forward = certain_forward(7)
     agrees = np.full((8, model.VOICES), 7, dtype=np.int32)
@@ -516,10 +502,9 @@ def test_the_loss_falls_over_a_short_run():
 # The integer twin: the module tree and the contract file              #
 # ==================================================================== #
 
-# The SCALAR rules the twin stands on -- the exponent, the rounding, the table, the temper
-# -- are shared with every era and stand in `test_quantized.py`. What is era six's own
-# stands here: the tree that carries the float model's skeleton, and the file that crosses
-# the seam.
+# The SCALAR rules the twin stands on are shared with every era and stand in
+# `test_quantized.py`. What is era six's own is here: the tree that carries the float
+# model's skeleton, and the file that crosses the seam.
 
 
 def test_the_twin_carries_the_float_models_skeleton():
@@ -567,12 +552,9 @@ def rebuilt(twin, **parts):
 
 
 def test_a_broken_model_refuses_loudly():
-    """`check_shape` states the rules its consumers assume, and the elaboration calls it
-    where a bad shape must fail loudly.
-
-    THE SHORT AND THE ODD TRUNK ARE NOT AMONG THEM ANY MORE: a [QuantizedCoconet] is a
-    stem, whole pairs and a head by construction, thus neither can be built. What a file
-    of the wrong tensor count meets is `load`, and the test below holds that."""
+    """`check_shape` states the rules its consumers assume. THE SHORT AND THE ODD TRUNK
+    ARE NOT AMONG THEM: a [QuantizedCoconet] is a stem, whole pairs and a head by
+    construction. A file of the wrong tensor count meets `load` instead."""
     twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
     head = twin.head
     chopped = quantized.QuantizedNormedConv(

@@ -1,17 +1,12 @@
 """The gate that the two forms of the recurrence are one recurrence.
 
-jax/mamba/model.py holds the step form, which the sampler and the OCaml reference run, and
-the window form, which the trainer runs because a scan of the step form takes 203 ms for
-each training step against era four's 61. The window form is an unrolling and not an
-approximation, thus the two must agree to float noise, and this is where that is stated.
-
-The gate reads the WHOLE forward and not the block alone: the convolution, the state, the
-gated norm and the residual joins all have a window form, and a difference in any of them
-lands here.
+jax/mamba/model.py holds the step form, which the sampler runs, and the window form, which
+the trainer runs because a scan of the step form costs 203 ms for each step against era
+four's 61. The window form is an UNROLLING and not an approximation, thus the two must
+agree to float noise. The gate reads the whole forward and not the block alone.
 
 THE CONTRACT FILE stands at the foot of this module: what crosses the seam to the
-elaboration, and the rules the circuit cannot hold. `test_parity.py` holds the quantizer
-through the netlist and `test_quantized.py` holds the integer rules it stands on.
+elaboration, and the rules the circuit cannot hold.
 """
 
 import math
@@ -27,10 +22,9 @@ from mamba import model, quantized, train
 from quantized import round_half_up
 from tests.models import drawn_mamba, plan_of
 
-# Six layers of float32 over a window of 64 steps, reduced in two different orders: the
-# window form sums a row of the decay matrix where the step form carries a state forward.
-# A real disagreement -- a tap read backward, a decay off by one step, the readout taking
-# the state before the update -- moves the stream far past this.
+# Six layers of float32 over a window of 64 steps, reduced in two different orders. A real
+# disagreement -- a tap read backward, a decay off by one step, the readout taking the
+# state before the update -- moves the stream far past this.
 TOLERANCE = 2e-4
 
 
@@ -44,12 +38,9 @@ def drawn_window(rows, length):
 
 
 def assert_one_stream(stepped, windowed):
-    """the two forms of the recurrence against each other, at the RELATIVE tolerance.
-
-    The gap is read on the scale of the stream and not absolutely: era five's stream
-    grows with the plan, thus a fixed epsilon would tighten on a wide model and slacken
-    on a narrow one. A real disagreement -- a tap read backward, a decay off by one step,
-    the readout taking the state before the update -- moves the two far past this."""
+    """The two forms of the recurrence against each other, at the RELATIVE tolerance: the
+    stream grows with the plan, thus a fixed epsilon would tighten on a wide model and
+    slacken on a narrow one."""
     gap = float(jnp.max(jnp.abs(stepped - windowed)))
     scale = float(jnp.max(jnp.abs(windowed)))
     assert gap / scale < TOLERANCE, (
@@ -140,15 +131,10 @@ def test_a_window_shorter_than_the_taps_still_agrees(taps, length):
 def test_a_hybrid_plan_agrees_step_for_step(attention_at):
     """The hybrid probe: era four's attention sublayer swapped in where a block stood.
 
-    The attention layer is the one layer of this model with a CONTEXT, and its ring is the
-    one place a hybrid can disagree with itself. The window form attends over the whole
-    window with ALiBi and the causal wall; the step form attends over a ring of the last
-    keys and values, with a mask for the slots the walk has not written yet. They are one
-    attention or they are a bug: a ring read one slot late, a distance counted from the
-    wrong end, or a mask off by one all land here.
-
-    The plan varies because the position of the attention layer is the probe's own second
-    question, and a form that only works in the middle of the stack is not a form."""
+    The attention layer is the one layer with a CONTEXT and its ring is the one place a
+    hybrid can disagree with itself: a ring read one slot late, a distance counted from
+    the wrong end, or a mask off by one all land here. The plan varies because a form
+    that only works in the middle of the stack is not a form."""
     held = drawn_mamba(attention_at=attention_at)
     assert sum(1 for kind in held.plan if kind == model.ATTN) == len(attention_at)
     classes, phases = drawn_window(rows=2, length=64)
@@ -161,14 +147,11 @@ def test_a_hybrid_plan_agrees_step_for_step(attention_at):
 def test_a_spelt_plan_agrees_step_for_step(spelt):
     """The Zamba block and the feed-forward, held to the same gate as everything else.
 
-    Z is the one layer whose KEY is built from something other than the residual stream --
-    the query and the key read the ORIGINAL EMBEDDING beside it -- thus the ring carries a
-    key the step form must build the same way the window form did, or the two part. F
-    carries no state at all and its carry is None, which the walk must not trip over.
-
-    The plans put Z first, last and in the middle, because a block whose input is the
-    embedding is exactly the one that could accidentally work only where the stream still
-    looks like the embedding."""
+    Z is the one layer whose KEY is built from something other than the residual
+    stream, thus the step form must build it the way the window form did. F carries no
+    state at all and its carry is None. The plans put Z first, last and in the middle,
+    because a block that reads the embedding could accidentally work only where the
+    stream still looks like it."""
     held = plan_of(spelt)
     classes, phases = drawn_window(rows=2, length=64)
     stepped = walk_by_steps(held, classes, phases)
@@ -190,14 +173,10 @@ def test_a_checkpoint_states_its_own_plan(tmp_path):
 
 @pytest.mark.parametrize("span", [4.0, 8.0])
 def test_the_span_rides_in_the_file_and_not_in_a_flag(tmp_path, span):
-    """Era four carried the ALiBi span as a flag that had to match the training run, and a
-    span played back wrong is silently wrong music -- the walk still sounds like music, it
-    is just not the model's. This era writes it after the last layer and reads it back.
-
-    The gate is a round trip and a consequence: the file gives the span back, and a
-    forward that reads it from the file equals a forward told the span outright. It also
-    holds the older files, which carry no span at all and must still read at era four's
-    elected 4."""
+    """Era four carried the ALiBi span as a flag, and a span played back wrong is silently
+    wrong music. This era writes it after the last layer and reads it back: the file gives
+    the span back, a forward that reads it equals a forward told outright, and an older
+    file with no span still reads at the elected 4."""
     held = plan_of("MMZF", span=span)
     classes, phases = drawn_window(rows=2, length=24)
     path = tmp_path / "span.ckpt"
@@ -320,13 +299,10 @@ def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():
 
 
 def test_the_lead_in_draws_nothing_and_moves_no_generator():
-    """One bar of silence opens the walk and the generator does not move through it. A
-    twin that spent a uniform there would draw a different piece from the same seed, and
-    every step of it would be legal music.
-
-    IT IS THE TWIN AGAINST ITSELF and no circuit is in it, thus it stands here and not in
-    `test_rtl_mamba.py`: a gate that mounts a driver it never runs skips on a tree with no
-    `dune build` and gates nothing there."""
+    """One bar of silence opens the walk and the generator does not move through it: a
+    twin that spent a uniform there would draw a different piece from the same seed,
+    and every step of it would be legal music. IT IS THE TWIN AGAINST ITSELF and no
+    circuit is in it, thus it stands here and not in `test_rtl_mamba.py`."""
     twin = quantized_plan("MZF")
     played, draws = quantized.walk(twin, [1, 7], ar_quantized.LEAD + 2)
     assert (played[:, : ar_quantized.LEAD] == 0).all(), "the lead-in is not silent"
