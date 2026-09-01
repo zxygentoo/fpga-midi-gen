@@ -34,10 +34,6 @@ from quantized import (
     round_half_up,
 )
 
-# ---------------------------------------------------------------------
-# the formats of the machine
-# ---------------------------------------------------------------------
-
 # THE FORMATS OF THE MACHINE, `Nn_quantized.Constants`: a Q number holds value * 2^-q. A
 # twin that wrote a format of its own would part from its circuit in silence.
 H_Q = 16  # the residual stream, in int32
@@ -49,9 +45,7 @@ HID_Q = 10  # the feed-forward hidden vector after its ReLU: int16
 EPS_Q = int(round_half_up(math.ldexp(1e-6, 2 * Y_Q)))
 
 
-# ---------------------------------------------------------------------
 # the integer arithmetic both circuits share
-# ---------------------------------------------------------------------
 
 
 def rescale(value, *, at, to):
@@ -103,9 +97,8 @@ def join(h, weight, *, values, at):
     return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
 
 
-# ---------------------------------------------------------------------
 # the tables: what the arithmetic cannot reach
-# ---------------------------------------------------------------------
+
 
 # The sigmoid of a Q12 value, in Q15. The input is int16, thus |v| < 8 exactly and 256
 # buckets of 256 Q12 units cover it. THE ENTRY IS THE CENTRE OF ITS BUCKET and not its
@@ -153,9 +146,7 @@ def softplus(value):
     return clamp16(np.maximum(value, 0) + SOFTPLUS_TABLE[index])
 
 
-# ---------------------------------------------------------------------
 # the shape rules the circuit forces
-# ---------------------------------------------------------------------
 
 
 def score_shift(*, row_q, head_d):
@@ -178,9 +169,7 @@ def slope_exponent(*, span, heads, head):
     return (span * (head + 1)) // heads
 
 
-# ---------------------------------------------------------------------
 # a layer as the machine holds it
-# ---------------------------------------------------------------------
 
 
 def fixed_q12(values, bound):
@@ -285,9 +274,7 @@ class Head:
             raise ValueError("the seat table holds no row for each seat and class")
 
 
-# ---------------------------------------------------------------------
 # the attention over a ring
-# ---------------------------------------------------------------------
 
 
 def coarse_to_ring(row):
@@ -327,9 +314,8 @@ def attend(keys, values, *, query, cur, filled, heads, span, row_q):
     return context
 
 
-# ---------------------------------------------------------------------
 # the chain and the walk over it
-# ---------------------------------------------------------------------
+
 
 # the silent lead-in of a boot, in steps: one bar, as the float samplers play it
 LEAD = corpus.BAR_STEPS

@@ -26,9 +26,8 @@ import measure
 # the referee cuts its eval rows at the window the models trained on
 CONTEXT = ar_model.TRAINING_WINDOW
 
-# ==================================================================== #
-# FORCED — what the model predicts, on the corpus's own windows        #
-# ==================================================================== #
+
+# FORCED — what the model predicts, on the corpus's own windows
 
 
 def moving(classes):
@@ -91,9 +90,7 @@ def loss_lines(label, row):
     ]
 
 
-# ==================================================================== #
-# FREE — what the model plays, on its own walks                        #
-# ==================================================================== #
+# FREE — what the model plays, on its own walks
 
 
 def walk_row(classes):

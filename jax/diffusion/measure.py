@@ -41,9 +41,8 @@ def echo_battery(label, sheets):
         click.echo(line)
 
 
-# ==================================================================== #
-# THE LIKELIHOOD — the paper's Algorithm 1                             #
-# ==================================================================== #
+# THE LIKELIHOOD — the paper's Algorithm 1
+
 
 # Table 1 of the paper on this corpus lineage, sixteenth grid, random orderings. It is the
 # anchor of the round and never a target to optimise against.
@@ -196,9 +195,7 @@ def tail_line(frames, seed=0):
     )
 
 
-# ==================================================================== #
-# The commands                                                         #
-# ==================================================================== #
+# The commands
 
 
 @click.group(help=__doc__)

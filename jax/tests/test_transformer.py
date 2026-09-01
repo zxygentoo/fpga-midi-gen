@@ -45,9 +45,7 @@ def test_the_chain_conditions_downward():
     assert np.allclose(from_base, logits(bass))
 
 
-# ==================================================================== #
-# The contract file: the seam to the elaboration                       #
-# ==================================================================== #
+# The contract file: the seam to the elaboration
 
 
 def test_the_twin_carries_the_float_models_skeleton():

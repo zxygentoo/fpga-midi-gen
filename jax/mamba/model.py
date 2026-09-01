@@ -100,9 +100,8 @@ class Shape(NamedTuple):
         return self.d_in + 2 * self.state
 
 
-# ---------------------------------------------------------------------
 # the three kinds of layer
-# ---------------------------------------------------------------------
+
 
 # EACH ANSWERS [step] AND [window] UNDER ONE SIGNATURE, thus the trunk walks the plan and
 # dispatches on nothing; a layer that reads no embedding and no span takes them anyway.
@@ -384,9 +383,7 @@ def kind_of_group(shape, d):
     return MAMBA
 
 
-# ---------------------------------------------------------------------
 # the trunk
-# ---------------------------------------------------------------------
 
 
 class Trunk(ar_model.Trunk):

@@ -93,9 +93,7 @@ def test_the_decode_keeps_its_three_properties():
         assert len(sounding) <= corpus.SEATS, "five notes sound at the same time"
 
 
-# ---------------------------------------------------------------------
 # the packed stream: what a reader cuts out of it
-# ---------------------------------------------------------------------
 
 
 @needs_frames

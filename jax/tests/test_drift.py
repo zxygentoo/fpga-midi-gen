@@ -129,9 +129,8 @@ FLOORS = Shares(top1=0.80, same_draw=0.70, cosine=0.985)
 PAIRS = drawn_pairs(0xD21F8, 1_000_001, 60)
 
 
-# ==================================================================== #
-# Era four: the step-frame transformer                                 #
-# ==================================================================== #
+# Era four: the step-frame transformer
+
 
 # THE FEEDBACK AXIS OF THIS ERA IS THE KV RING: a coarsened row is read back by every
 # later step, thus an error lives a whole window. The walk runs 40 steps over a window of
@@ -171,9 +170,8 @@ TRANSFORMER_FLOORS = Shares(top1=0.55, same_draw=0.80, cosine=0.98)
 TRANSFORMER_PAIRS = drawn_pairs(7, 1 << 20, 40)
 
 
-# ==================================================================== #
-# Era five: the state-space model                                      #
-# ==================================================================== #
+# Era five: the state-space model
+
 
 # THE FEEDBACK AXIS OF THIS ERA IS THE STATE: a block carries a state no window forgets,
 # thus an error accumulates in a register rather than dying with a ring's depth. Both
@@ -247,9 +245,7 @@ MAMBA_FLOORS = Shares(top1=0.80, same_draw=0.90, cosine=0.99)
 MAMBA_PAIRS = drawn_pairs(7, 1 << 20, 12)
 
 
-# ==================================================================== #
-# The two gates of the three eras: one body each                       #
-# ==================================================================== #
+# The two gates of the three eras: one body each
 
 
 class Sweep(NamedTuple):

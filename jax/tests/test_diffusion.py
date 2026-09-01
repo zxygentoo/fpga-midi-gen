@@ -39,9 +39,7 @@ def tiny(seed=0, layers=6, width=8):
     return model.Coconet(layers, width, rngs=nnx.Rngs(seed))
 
 
-# ---------------------------------------------------------------------
 # the roll and the mask planes
-# ---------------------------------------------------------------------
 
 
 def test_a_column_of_the_roll_holds_one_row():
@@ -115,9 +113,7 @@ def test_the_anneal_falls_from_the_top_and_settles_on_the_floor():
     assert model.anneal(settles - 1, walk) > model.ANNEAL_LOW
 
 
-# ---------------------------------------------------------------------
 # the net and its checkpoint
-# ---------------------------------------------------------------------
 
 
 def test_the_net_states_a_distribution_for_every_cell():
@@ -212,9 +208,7 @@ def test_the_population_statistics_decide_the_answer():
     assert not np.allclose(np.asarray(said), np.asarray(other))
 
 
-# ---------------------------------------------------------------------
 # the loss
-# ---------------------------------------------------------------------
 
 
 def test_the_loss_reads_the_masked_cells_and_no_others():
@@ -262,9 +256,7 @@ def test_an_untrained_model_reads_the_uniform_prior():
     assert abs(value - np.log(model.ROWS)) < 0.3
 
 
-# ---------------------------------------------------------------------
 # the likelihood referee
-# ---------------------------------------------------------------------
 
 
 def test_the_likelihood_keeps_its_frames():
@@ -298,7 +290,6 @@ def test_the_tail_error_resamples_the_pieces_and_not_the_frames():
     assert read["loud"] == pytest.approx(5.0)
     # a binomial over 20 pieces reads 4.9 percent here; over 100 frames it would read 2.2
     assert read["loud error"] > 3.5
-
 
 
 def test_the_ordering_covers_every_frame_and_every_voice():
@@ -369,9 +360,7 @@ def test_algorithm_one_adds_the_four_voices_of_a_frame():
     ) == pytest.approx(model.VOICES * 30.0, rel=0.05)
 
 
-# ---------------------------------------------------------------------
 # the walk, and the trainer end to end
-# ---------------------------------------------------------------------
 
 
 def test_the_walk_rewrites_the_sheet():
@@ -497,9 +486,8 @@ def test_the_loss_falls_over_a_short_run():
     assert losses[-1] < losses[0] - 0.5, f"the loss did not fall: {losses}"
 
 
-# ==================================================================== #
-# The integer twin: the module tree and the contract file              #
-# ==================================================================== #
+# The integer twin: the module tree and the contract file
+
 
 # The SCALAR rules the twin stands on are shared with every era and stand in
 # `test_quantized.py`. What is era six's own is here: the tree that carries the float

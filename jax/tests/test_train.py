@@ -56,9 +56,8 @@ def test_the_loss_falls_over_a_short_run(era, command, flags):
     assert losses[-1] < losses[0] - 0.2, f"era {era}: the loss did not fall: {losses}"
 
 
-# ==================================================================== #
-# The rate curve: optax says what this project's schedule says          #
-# ==================================================================== #
+# The rate curve: optax says what this project's schedule says
+
 
 # What is left is the CURVE, against the closed form written here: `train.learning_rates`
 # is the only statement of it in the code, and a test that read it back from itself would

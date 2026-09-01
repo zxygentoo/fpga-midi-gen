@@ -66,9 +66,7 @@ def contract_file(tmp_path, *, weight_seed, layers, width):
     return path, twin
 
 
-# ---------------------------------------------------------------------
 # the walk, phase for phase
-# ---------------------------------------------------------------------
 
 
 def wanted_walk(twin, *, steps, walk, seed):
@@ -148,9 +146,7 @@ def test_the_walk_is_the_twins_walk(
     )
 
 
-# ---------------------------------------------------------------------
 # the stream, column for column
-# ---------------------------------------------------------------------
 
 
 def stem_input(lines, steps):

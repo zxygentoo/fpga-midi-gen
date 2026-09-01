@@ -10,6 +10,8 @@ not a `Trunk` for the same reason -- its sheet is not a stream of frames. Below 
 is `ar_quantized.py`, the integer rules of these two twins.
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -76,14 +78,9 @@ def dropout(key, rate, count):
         keep = 1.0 - rate
         return jax.random.bernoulli(key, keep, shape) / keep
 
-    def drop(x):
-        return x * dropout_masks(next(keys), rate, x.shape)
+    def drop(keys, x): return x * dropout_masks(next(keys), rate, x.shape)
 
-    if rate <= 0.0:
-        return nodrop
-    else:
-        keys = iter(jax.random.split(key, count))
-        return drop
+    return nodrop if rate <= 0.0 else partial(drop, iter(jax.random.split(key, count)))
 
 
 def normal_at(key, shape, scale=DRAW_SCALE):

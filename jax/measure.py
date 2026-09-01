@@ -28,9 +28,8 @@ import corpus
 import prng
 import sample
 
-# ---------------------------------------------------------------------
 # what this corpus calls a dissonance, a triad and a clash
-# ---------------------------------------------------------------------
+
 
 # The intervals a chorale treats as a dissonance, modulo the octave: the two seconds, the
 # tritone and the two sevenths. The perfect fourth is left out -- it is a dissonance
@@ -56,10 +55,7 @@ PAIRS = tuple(
     )
 )
 
-
-# ---------------------------------------------------------------------
 # the shares the instruments are built out of
-# ---------------------------------------------------------------------
 
 
 def triad_table():
@@ -110,9 +106,7 @@ def clash_share(clashes):
     return (clashes >= CLASH).mean()
 
 
-# ---------------------------------------------------------------------
 # the three instruments that read more than one step
-# ---------------------------------------------------------------------
 
 
 def voice_pairs(spans, intervals, pairs_sound):
@@ -212,9 +206,7 @@ def tessitura(pitches, sounding):
     return {"seats": seats, "outside": 100.0 * outside / max(alive, 1)}
 
 
-# ---------------------------------------------------------------------
 # the battery, and the lines that print it
-# ---------------------------------------------------------------------
 
 
 def battery_row(classes):
@@ -297,10 +289,6 @@ def battery_lines(label, row):
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
 
-
-# ---------------------------------------------------------------------
-# the drift
-# ---------------------------------------------------------------------
 
 # The drift: the twin's draw against the float model's, on the one uniform the twin took.
 # It is what the quantization costs, and both step-frame twins report it through these.

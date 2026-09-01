@@ -213,9 +213,7 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
     assert np.allclose(lives, [4.0, 16.0, 64.0, 256.0], rtol=1e-5)
 
 
-# ==================================================================== #
-# The contract file: the seam to the elaboration                       #
-# ==================================================================== #
+# The contract file: the seam to the elaboration
 
 
 def quantized_plan(spelt="MZF", ring=8):

@@ -62,9 +62,8 @@ import prng
 import sample
 from train import save_checkpoint
 
-# ---------------------------------------------------------------------
 # the sheet: the classes of a crop as the paper's input planes
-# ---------------------------------------------------------------------
+
 
 # The paper has no silence row because its data always sings; this corpus rests in 0.35
 # percent of its cells, thus silence is one more class and the paper's constraint -- one
@@ -133,9 +132,7 @@ def planes(classes, hidden):
     )
 
 
-# ---------------------------------------------------------------------
 # the two mask distributions
-# ---------------------------------------------------------------------
 
 
 def orderless_masks(key, batch, steps):
@@ -174,9 +171,7 @@ def anneal(n, total):
     )
 
 
-# ---------------------------------------------------------------------
 # the rules of the walk: the opening, the mask of one pass, and the draw
-# ---------------------------------------------------------------------
 
 
 def opening_sheet(states, steps):
@@ -275,9 +270,7 @@ def tempered_pick(raw, temperature, uniform):
     return sample.pick_share(sample.temper(raw, temperature, MIN_P), uniform)
 
 
-# ---------------------------------------------------------------------
 # the net
-# ---------------------------------------------------------------------
 
 
 class Statistics(NamedTuple):

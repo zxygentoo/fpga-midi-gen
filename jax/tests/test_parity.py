@@ -83,9 +83,8 @@ def seat_loss(nll):
     return float(jnp.mean(jnp.sum(nll, axis=-1)))
 
 
-# ==================================================================== #
-# Era four: the transformer                                            #
-# ==================================================================== #
+# Era four: the transformer
+
 
 # The shape of the canonical reading. The file states the width and the layer count; the
 # heads, the context and the slope span are the draw of the era, thus G0 carries them here
@@ -141,9 +140,8 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
     )
 
 
-# ==================================================================== #
-# Era five: the same gates, over the state-space model                 #
-# ==================================================================== #
+# Era five: the same gates, over the state-space model
+
 
 # the elected model of the era: six blocks, the Zamba head, the feed-forward. The plan and
 # the span are in the file, thus neither side states one and neither can drift.
@@ -201,9 +199,8 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
     )
 
 
-# ==================================================================== #
-# Era six: the quantizer, held through the netlist                     #
-# ==================================================================== #
+# Era six: the quantizer, held through the netlist
+
 
 # `tests/test_rtl_diffusion.py` holds the CIRCUIT against the JAX twin; what stands here
 # is the float model's loss and the netlist the quantizer states.

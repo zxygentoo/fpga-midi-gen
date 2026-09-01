@@ -458,9 +458,8 @@ def kind_of_image(shape, d, path):
     return recurrence.MAMBA
 
 
-# ---------------------------------------------------------------------
 # the integer engine: one running inference over a batch of seeds
-# ---------------------------------------------------------------------
+
 
 # THE FORMATS THIS ERA NAMES OF ITS OWN; every other stands in `ar_quantized.py`.
 # `V_Q` is the value rows of a block and of the attention rings, Q12 in int16. Era four's
@@ -720,9 +719,7 @@ def streams(twin, seeds, steps):
     return written
 
 
-# ---------------------------------------------------------------------
 # what the quantization costs
-# ---------------------------------------------------------------------
 
 
 @nnx.jit

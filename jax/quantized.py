@@ -29,9 +29,8 @@ from safetensors.numpy import load_file, save_file
 
 import prng
 
-# ---------------------------------------------------------------------
 # the formats, and the rounding every twin takes
-# ---------------------------------------------------------------------
+
 
 # the rails of int16; every clamp of every twin reads them here, thus none can write a
 # rail of its own and part from its circuit in silence
@@ -71,9 +70,7 @@ def round_half_up(x):
     return np.floor(np.asarray(x, np.float64) + 0.5)
 
 
-# ---------------------------------------------------------------------
 # the exponent rule of a checkpoint
-# ---------------------------------------------------------------------
 
 
 def largest_exponent(magnitude, *, opening, cap):
@@ -119,9 +116,8 @@ class Weight(NamedTuple):
         return cls(np.asarray(q, np.int64), e)
 
 
-# ---------------------------------------------------------------------
 # the temper and the bounds of the sampling policy
-# ---------------------------------------------------------------------
+
 
 # the policy the ear elected, and the draw the bitstreams commit to; an era that
 # re-elects shadows these two in its own module and says so
@@ -187,10 +183,6 @@ class Temper(NamedTuple):
 LOG2E = Temper(int(round_half_up(math.ldexp(1.0 / math.log(2.0), LOG2E_Q))), LOG2E_Q, 1.0)
 
 
-# ---------------------------------------------------------------------
-# the shared exp2 table
-# ---------------------------------------------------------------------
-
 # the quantized exponential, exp2 of -j/256 in Q15: the one table the samplers of every
 # era read, and what `Constants.exp2_bits` hands the circuit
 EXP2_TABLE = np.array(
@@ -219,9 +211,7 @@ def exp2_q(value):
     return exp2_of_magnitude(-np.asarray(value, np.int64))
 
 
-# ---------------------------------------------------------------------
 # the counted write
-# ---------------------------------------------------------------------
 
 
 @dataclass
@@ -257,9 +247,7 @@ def tallied_write(tally, value):
     return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
 
 
-# ---------------------------------------------------------------------
 # the integer draw
-# ---------------------------------------------------------------------
 
 
 def pick(weights, word):
@@ -279,9 +267,8 @@ def engine_states(seeds):
     return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
-# ---------------------------------------------------------------------
 # the contract file: one writer and one reader
-# ---------------------------------------------------------------------
+
 
 # THE ARCHIVE IS THE SEAM, and two facts of the OCaml reader shape it. Each era's module
 # docstring holds its own LAYOUT and points here for the rules under it.

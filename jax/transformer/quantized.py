@@ -211,9 +211,8 @@ def load(path):
     return twin
 
 
-# ---------------------------------------------------------------------
 # the integer engine: one running inference over a batch of seeds
-# ---------------------------------------------------------------------
+
 
 # THE ONE FORMAT THIS ERA NAMES OF ITS OWN; every other stands in `ar_quantized.py`.
 # `KV_Q` is the query, the keys, the values and the context, Q12 in int16. Era five's
@@ -313,9 +312,7 @@ def walk(twin, seeds, steps):
     return ar_quantized.walk(engine(twin, seeds), steps, forward)
 
 
-# ---------------------------------------------------------------------
 # what the quantization costs
-# ---------------------------------------------------------------------
 
 
 @nnx.jit

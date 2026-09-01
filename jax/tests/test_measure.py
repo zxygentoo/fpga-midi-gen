@@ -250,9 +250,7 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     assert all(8.0 < pair["dissonant"] < 12.0 for pair in row["pairs"])
 
 
-# ---------------------------------------------------------------------
 # the drift count: the twin's draw against the float model's
-# ---------------------------------------------------------------------
 
 
 def test_the_cosine_reads_the_shape_of_a_row_and_not_its_scale():
@@ -291,9 +289,8 @@ def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
     assert said.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
 
 
-# ---------------------------------------------------------------------
 # the step-frame referee: the forced pass, and the error over walks
-# ---------------------------------------------------------------------
+
 
 # The free walk's own arithmetic is the common battery's, gated above; what is this half's
 # alone is the CUT the forced pass makes and the error the several walks carry.

@@ -80,9 +80,8 @@ from quantized import (
     write_contract,
 )
 
-# ---------------------------------------------------------------------
 # the formats
-# ---------------------------------------------------------------------
+
 
 # THE ACTIVATION FORMAT IS Q6 IN INT16, AND IT IS MEASURED; the module docstring holds
 # the measurement and the margin
@@ -103,9 +102,8 @@ WIDEST_INPUTS = 57
 # that trimmed its tail would harden the sheet it opened on.
 ELECTED_TEMPERATURE = 1.0
 
-# ---------------------------------------------------------------------
+
 # the quantization of a checkpoint
-# ---------------------------------------------------------------------
 
 
 def gain_scale(value, weight_exponent):
@@ -134,9 +132,7 @@ def accumulate(x, kernel):
     return sum(tap(dy, dx) for dy in range(3) for dx in range(3))
 
 
-# ---------------------------------------------------------------------
 # the module tree: model.Trunk in integers
-# ---------------------------------------------------------------------
 
 
 class NormedConv(nnx.Module):
@@ -326,9 +322,8 @@ def check_shape(twin):
             raise ValueError(f"the constants of layer {at} do not cover its channels")
 
 
-# ---------------------------------------------------------------------
 # the contract file
-# ---------------------------------------------------------------------
+
 
 # the tensors one layer holds, in the order of the file
 LAYER_TENSORS = 5
@@ -395,9 +390,7 @@ def load(path):
     return twin
 
 
-# ---------------------------------------------------------------------
 # the forward pass
-# ---------------------------------------------------------------------
 
 
 def plane_activations(classes, hidden, rows=model.ROWS):
@@ -418,9 +411,7 @@ def plane_activations(classes, hidden, rows=model.ROWS):
     return ACTIVATION_ONE * planes.astype(np.int32)
 
 
-# ---------------------------------------------------------------------
 # the integer draw
-# ---------------------------------------------------------------------
 
 
 def class_weights(twin, raw):
@@ -435,9 +426,7 @@ def class_weights(twin, raw):
     return exp2_q(apply_scale(twin.temper.q_value, twin.temper.q, shifted))
 
 
-# ---------------------------------------------------------------------
 # the walk
-# ---------------------------------------------------------------------
 
 
 class Draw(NamedTuple):
@@ -520,9 +509,7 @@ def gibbs(twin, states, given, *, walk, tally=None):
     return classes, states
 
 
-# ---------------------------------------------------------------------
 # what the quantization costs
-# ---------------------------------------------------------------------
 
 
 class Drift(NamedTuple):
