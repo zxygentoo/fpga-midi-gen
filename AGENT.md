@@ -22,17 +22,26 @@
   - Decompose a dense function into named stages; the top function then reads
     as the algorithm (`cadential_holds`, `vote`, `metre`).
 - Comments:
-  - An interface file has a full API document comment: what the data and each
+  - In general, keep them short, sweet and to the point.
+  - The lengths below are a soft rule, and in general you must obey them.
+  - An OCaml interface file has a full API document: what the data and each
     field are, what each function takes and gives, what the reader must know
-    to use the interface correctly, and the important design choices.
-  - Do not overdo the other comments: a comment states only what the code
-    cannot say.
-  - The *what* is easy to see in the code; the *why* is not. Comment the why:
-    the design and the reasoning behind the code.
-  - Some *what* comments are necessary — a tie rule, or a part that looks
-    unusual. For example, some software here is unconventional because it
-    must agree with the circuit.
-  - Keep inline comments sparse and terse.
+    to use the interface correctly, and the important design choices. A long
+    comment is warranted there when the content needs one.
+  - A comment that says the same thing twice, or that says at length what
+    the code says at a glance, is a defect. Shorten it.
+  - A module comment gives the core idea in three paragraphs or fewer. For
+    the rest, point to the paper or to `docs/`.
+  - A function comment is three lines or fewer. If the name and the code
+    say the work, one line is enough for a public function and nothing at
+    all for a module-internal one.
+  - An inline comment is one line, almost always.
+  - A dated log of what a round measured, tried or dropped goes in
+    `docs/`, not in the code. What stays beside a constant is the rule and
+    the verdict, in a line or two: *why this number*, never *how the sweep
+    ran*.
+  - A gotcha stays, however old: a trap of the tool, a rule the circuit
+    forces on the software, an edge a reader would remove by accident.
 - Datatypes:
   - Do not make a tuple of more than three items. Use a record, and give each
     field a good name.
