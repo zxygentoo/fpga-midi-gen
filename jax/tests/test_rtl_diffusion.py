@@ -40,12 +40,7 @@ DRIVER = gate.driver("gate_diffusion.exe")
 VOICES = model.VOICES
 
 
-@pytest.fixture(scope="module", autouse=True)
-def built():
-    """THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT: inside `drive`, a tree with no
-    `dune build` behind it drew and quantized a model for every case before skipping on
-    each."""
-    gate.need(DRIVER)
+built = gate.built_fixture(DRIVER)
 
 
 def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):

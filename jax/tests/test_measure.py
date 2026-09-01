@@ -1,21 +1,30 @@
-"""The common battery, over a stack of sheets of class indices.
+"""The measurement: the common battery over sheets of class indices, the drift count that
+reads two models against each other, and the step-frame referee.
 
-`measure.py` knows which era drew nothing: a Gibbs sheet, a walk of the packed stream and
-a corpus crop all read the same way, thus the instruments are gated here and not inside an
-era's file. Each test states a chord, a motion or a register whose answer is known by
-hand, and the corpus row at the foot is the referee every other number is read against.
+`measure.py` AND `ar_measure.py` UNDER ONE DOCSTRING, as `test_quantized.py` holds
+`quantized.py` and `ar_quantized.py`: the cut between the pair runs one way, thus the two
+stand together and each test below says which side of it the rule is on. The common
+battery knows which era drew nothing -- a Gibbs sheet, a walk of the packed stream and a
+corpus crop all read the same way -- and the step-frame half asks eras four and five their
+two questions, the FORCED pass over the corpus's own windows and the FREE walk.
 
-WHAT AN ERA MEASURES WITH ITS OWN MODEL IS NOT HERE: era six's likelihood referee is
-`tests/test_diffusion.py`, and the forced pass and free walk of the step-frame eras are
-`ar_measure.py`'s. The two names of era six this file does touch -- `model.VOICES` and
-`model.CROP` -- are the shape of a sheet and nothing more.
+Each test states a chord, a motion, a register or a window whose answer is known by hand.
+The corpus row at the foot is the referee every battery number is read against, and the
+forced pass runs on a stream written here, whose music is arithmetic.
+
+WHAT ERA SIX MEASURES WITH ITS OWN MODEL IS NOT HERE: its likelihood referee is
+`tests/test_diffusion.py`. The two names of era six this file does touch -- `model.VOICES`
+and `model.CROP` -- are the shape of a sheet and nothing more.
 """
 
 import itertools
+import math
 
 import numpy as np
 import pytest
+from safetensors.numpy import save_file
 
+import ar_measure
 import corpus
 import measure
 from diffusion import measure as referee
@@ -239,3 +248,161 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     assert pairs["ba-so"]["span"] == pytest.approx(19.7, abs=0.2)
     assert pairs["al-so"]["span"] == pytest.approx(5.5, abs=0.2)
     assert all(8.0 < pair["dissonant"] < 12.0 for pair in row["pairs"])
+
+
+# ---------------------------------------------------------------------
+# the drift count: the twin's draw against the float model's
+# ---------------------------------------------------------------------
+
+
+def test_the_cosine_reads_the_shape_of_a_row_and_not_its_scale():
+    """The third number of every drift report, at rows whose answer is known by hand: a
+    row against itself is 1, a row against a scaling of itself is still 1, and a row
+    against one at 45 degrees to it is the root of a half."""
+    here = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    there = np.array([[1.0, 0.0], [7.0, 0.0], [1.0, 1.0]])
+    assert list(measure.cosines(here, there)) == pytest.approx([1.0, 1.0, 0.5**0.5])
+
+
+def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
+    """THE INSTRUMENT ITSELF IS GATED NOWHERE ELSE, and that is the reason this stands
+    here: the drift tables are measured numbers and are legitimately re-pinned, thus a
+    fault in the instrument would be absorbed into the next re-pin with nothing to say so.
+
+    Two rows over three classes, on numbers chosen by hand. The float rows are one row
+    twice; the twin agrees with it on the first and reverses it on the second, thus one of
+    the two elects the same class and the cosines are 1 and 9/73. Under a temperature of
+    one and a min-p of 0.01 the weights are 1, e^-3 and 0, thus THE PICK LEAVES CLASS 0 AT
+    A SHARE OF 1/1.0498 and the two uniforms straddle it; the twin is said to have drawn
+    class 0 both times, thus one of the two draws agrees. The count adds onto a report
+    that has already seen ten draws, because a walk calls this once for each step."""
+    there = np.array([[0.0, -3.0, -8.0]] * 2)
+    here = np.array([[0.0, -3.0, -8.0], [-8.0, -3.0, 0.0]])
+    said = measure.count_draws(
+        measure.Counted(draws=10, same_peak=5, same_draw=4, cosine=3.0),
+        here,
+        there,
+        drawn=np.array([0, 0]),
+        uniform=np.array([0.95, 0.96]),
+        temperature=1.0,
+        min_p=0.01,
+    )
+    assert (said.draws, said.same_peak, said.same_draw) == (12, 6, 5)
+    assert said.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
+
+
+# ---------------------------------------------------------------------
+# the step-frame referee: the forced pass, and the error over walks
+# ---------------------------------------------------------------------
+
+# The free walk's own arithmetic is the common battery's, gated above; what is this half's
+# alone is the CUT the forced pass makes and the error the several walks carry.
+
+# THE STREAM IS WRITTEN HERE AND ITS MUSIC IS ARITHMETIC: the four voices hold a chord for
+# four steps and then all move together, and each whole window of the referee's context
+# stands one semitone above the one before. Two facts follow that no measurement decides:
+# a step moves exactly when its bar phase is 3 modulo 4, and each window opens on a bass
+# pitch of its own. The stubs below read those two and never `corpus.moving`.
+
+VOICE_BASE = (48, 55, 60, 67)
+FIRST_BASS = VOICE_BASE[0] - corpus.PITCH_LOW + 1
+# three whole windows of the referee's context, thus a limit of 3 and a batch of 2 leave
+# the last batch short
+STREAM_STEPS = 3 * ar_measure.CONTEXT + 1
+
+
+def stream_pitch(step, seat):
+    """the pitch of one seat at one step of the written stream"""
+    return VOICE_BASE[seat] + ((step // 4) % 2) * 2 + step // ar_measure.CONTEXT
+
+
+def written_corpus(path):
+    """The stream as `corpus_tool` writes one, in the layout `corpus.Split` reads: the
+    wire codes, the rolling coordinate of each step, and one stream in the index. All
+    three splits carry it, because `load_corpus` reads them all and the referee reads
+    valid."""
+    steps = np.arange(STREAM_STEPS)
+    seats = range(corpus.SEATS)
+    frames = np.array(
+        [[0x80 | stream_pitch(step, seat) for seat in seats] for step in steps], np.int32
+    )
+    tensors = {}
+    for name in corpus.SPLITS:
+        tensors[f"{name}/frames"] = frames
+        tensors[f"{name}/positions"] = steps.astype(np.int32)
+        tensors[f"{name}/index"] = np.array([[0, STREAM_STEPS]], np.int32)
+    save_file(tensors, str(path))
+    return str(path)
+
+
+class Trunk:
+    """a stub in the shape of a trained model: `loss_row` reads nothing of one but this"""
+
+    def __init__(self, nll_of):
+        self.nll_of = nll_of
+
+    def seat_nll(self, classes, phases):
+        return self.nll_of(np.asarray(classes), np.asarray(phases))
+
+
+def nats_where_the_voices_move(classes, phases):
+    """one nat for each seat index on the steps whose bar phase is 3 modulo 4, and nothing
+    anywhere else -- which on this stream is exactly the steps where all four voices
+    move"""
+    del classes
+    seats = np.arange(1, corpus.SEATS + 1, dtype=np.float64)
+    return np.where((phases % 4 == 3)[..., None], seats, 0.0)
+
+
+def nats_of_the_window(classes, phases):
+    """a cost that is a CONSTANT OF ITS WINDOW: the window's opening bass class, which the
+    stream sets one higher at each window, thus the three eval rows cost 0, 1 and 2"""
+    rows = (classes[:, 0, 0] - FIRST_BASS).astype(np.float64)
+    return np.broadcast_to(rows[:, None, None], (*phases.shape, corpus.SEATS))
+
+
+def test_the_forced_pass_cuts_the_moving_steps_from_the_still_ones(tmp_path):
+    """78 percent of the voice slots repeat the step before, thus a mean can hide a
+    model's whole deficit in the quarter of the steps that carry the music. MOVING is the
+    steps where two voices or more move, STILL is the complement, and era five's whole
+    story was in the pair.
+
+    One step in four moves here and the stub costs its seat index in nats there and
+    nothing elsewhere: the moving row reads the whole cost, the still row reads zero, and
+    the mean reads a quarter -- which is the hiding this cut exists to stop."""
+    path = written_corpus(tmp_path / "frames.safetensors")
+    row = ar_measure.loss_row(Trunk(nats_where_the_voices_move), path, limit=3, batch=16)
+    assert (row["moves"], row["steps"]) == (192, 768)
+    assert row["moving"] == pytest.approx(10.0)  # 1 + 2 + 3 + 4 nats, at every such step
+    assert row["still"] == pytest.approx(0.0)
+    assert row["loss"] == pytest.approx(2.5)
+    assert list(row["seats"]) == pytest.approx([0.25, 0.5, 0.75, 1.0])
+
+
+def test_the_forced_pass_sums_over_a_count_and_never_means_the_means(tmp_path):
+    """EVERYTHING IS A SUM OVER A COUNT: the last eval batch is short, and a mean of the
+    batch means would weigh its rows above every other row of the run.
+
+    The three windows cost 0, 1 and 2 nats for each seat. At a batch of two the last batch
+    holds the costliest of them alone: the sum over the count states 4.0 and a mean of the
+    two batch means would state 5.0. The batch size is a fact of the machine and not of
+    the music, thus the whole-batch reading must be the same number."""
+    path = written_corpus(tmp_path / "frames.safetensors")
+    short = ar_measure.loss_row(Trunk(nats_of_the_window), path, limit=3, batch=2)
+    whole = ar_measure.loss_row(Trunk(nats_of_the_window), path, limit=3, batch=16)
+    assert short["steps"] == whole["steps"] == 768
+    assert short["loss"] == pytest.approx(4.0)
+    assert short["loss"] == pytest.approx(whole["loss"])
+
+
+def test_the_error_beside_the_mean_needs_a_second_walk():
+    """THE ERROR IS NOT DECORATION: a single-seed reading did not survive a second seed
+    once in this era, thus a mean over walks travels with the standard error of that mean.
+    One walk has no error and states nan, where a zero would read as certainty."""
+    rows = [{"hold": 70.0, "onsets": 0.6}, {"hold": 78.0, "onsets": 1.0}]
+    read = ar_measure.mean_over_seeds(rows)
+    assert read["hold"] == pytest.approx((74.0, 4.0))
+    assert read["onsets"] == pytest.approx((0.8, 0.2))
+    alone = ar_measure.mean_over_seeds(rows[:1])
+    assert alone["hold"][0] == pytest.approx(70.0)
+    assert math.isnan(alone["hold"][1])

@@ -45,6 +45,25 @@ def test_a_stated_exponent_overrides_the_tensors_own_peak():
     assert list(quantized.quantize(np.array([1.0, -1.0]), e=14)[0]) == [127, -127]
 
 
+def test_the_counted_write_keeps_the_peak_and_counts_both_rails():
+    """The two branches of every activation write. A write INSIDE the format keeps the
+    peak, counts no clamp and skips the clip -- a walk makes millions of writes, and that
+    short circuit is the whole of the difference. A write outside counts each rail it
+    passed and clips to it.
+
+    THE PEAK IS A MAGNITUDE AND THE FORMAT IS NOT SYMMETRIC: a write that lands on the low
+    rail reads a peak of 32768, one above the high rail, with nothing clamped."""
+    tally = quantized.Tally()
+    assert tally.clamped_share == 0.0  # a walk that wrote nothing rode nothing
+    inside = quantized.tallied_write(tally, np.array([[100, -32768, 32767]], np.int64))
+    assert list(inside[0]) == [100, -32768, 32767] and inside.dtype == np.int32
+    assert (tally.seen, tally.clamped, tally.peak) == (3, 0, 32768)
+    outside = quantized.tallied_write(tally, np.array([[40000, -40000, 5]], np.int64))
+    assert list(outside[0]) == [32767, -32768, 5]
+    assert (tally.seen, tally.clamped, tally.peak) == (6, 2, 40000)
+    assert tally.clamped_share == pytest.approx(2 / 6)
+
+
 def test_the_exp2_table_is_the_shared_table():
     """exp2 of -j/256 in Q15, the one table the samplers of every era read: entry 0 is the
     peak 2^15, a full fractional step halves, and the last entry sits one table step above
@@ -88,6 +107,78 @@ def test_the_softplus_table_is_the_correction_alone():
     assert ar_quantized.softplus(np.int64(-32768)) == table[255]
 
 
+def test_the_division_goes_toward_zero_and_not_toward_the_floor():
+    """OCaml's `/` on integers, which every division of every circuit is. numpy's `//`
+    floors, and THE TWO PART ONLY WHERE THE QUOTIENT IS NEGATIVE. Where both signs are
+    negative the quotient is positive and the floor agrees, thus a twin written with `//`
+    passes on the positive half of a stream and drifts on the negative half alone."""
+    assert int(ar_quantized.truncated(7, 2)) == 3 == 7 // 2
+    assert int(ar_quantized.truncated(-7, 2)) == -3 and -7 // 2 == -4
+    assert int(ar_quantized.truncated(7, -2)) == -3 and 7 // -2 == -4
+    # both signs negative: the quotient is positive, and there the floor agrees
+    assert int(ar_quantized.truncated(-7, -2)) == 3 == -7 // -2
+    # an exact division leaves no remainder to send either way
+    assert int(ar_quantized.truncated(-8, 2)) == -4 == -8 // 2
+    assert list(ar_quantized.truncated([-7, 7], [2, 2])) == [-3, 3]
+
+
+def test_the_root_is_the_floor_at_every_boundary():
+    """Floor of the square root, the one answer the [Isqrt] unit gives. The boundaries are
+    where a root moves: v*v - 1 is v - 1, v*v is v, and v*v + 1 is still v.
+
+    THE FLOAT ROOT IS NOT THE ANSWER, which is why the settling loop is written at all: at
+    (2^26 + 1)^2 - 1 it reads one unit high, and a silently wrong root is a silently wrong
+    norm."""
+    assert list(ar_quantized.isqrt([143, 144, 145])) == [11, 12, 12]
+    assert int(ar_quantized.isqrt(0)) == 0
+    big = (1 << 26) + 1
+    assert int(np.sqrt(np.float64(big * big - 1))) == big  # the float root, one unit high
+    assert list(ar_quantized.isqrt([big * big - 1, big * big, big * big + 1])) == [
+        big - 1,
+        big,
+        big,
+    ]
+
+
+def test_the_norm_divides_by_the_root_of_the_mean_square():
+    """rms_norm of a Q16 stream in Q12, at values known by hand: four ones have an rms of
+    one and normalise to 1.0, which is 4096, and a vector carrying one of them alone has
+    an rms of a half and normalises to 2.0.
+
+    THE EPSILON IS WHAT HOLDS THE ALL-ZERO STREAM. Without it the root would be zero and
+    the division would raise; with it the answer is the zero vector, as the circuit
+    gives."""
+    assert ar_quantized.EPS_Q == 17
+    every = np.array([[1 << 16] * 4])
+    assert list(ar_quantized.rms_norm_q(every, at=16, width=4)[0]) == [4096] * 4
+    alone = np.array([[1 << 16, 0, 0, 0]])
+    assert list(ar_quantized.rms_norm_q(alone, at=16, width=4)[0]) == [8192, 0, 0, 0]
+    silent = np.zeros((1, 4), np.int64)
+    assert list(ar_quantized.rms_norm_q(silent, at=16, width=4)[0]) == [0] * 4
+
+
+def test_the_norm_of_a_negated_stream_is_the_negated_norm():
+    """The property the toward-zero division buys, and the one a floor would break: a
+    stream and its negation square the same, thus every element divides the same root and
+    only the sign moves. Under `//` the negative half would fall one unit further and this
+    symmetry would go -- which is what a norm written with the wrong division looks like
+    from the outside."""
+    odd = np.array([[3 << 16, -(1 << 16), 0, 0]])  # a division that leaves a remainder
+    said = ar_quantized.rms_norm_q(odd, at=16, width=4)
+    assert list(said[0]) == [7772, -2590, 0, 0]
+    assert list(ar_quantized.rms_norm_q(-odd, at=16, width=4)[0]) == list(-said[0])
+
+
+def test_a_stored_ring_row_keeps_its_top_byte():
+    """What a KV ring keeps of a Q12 row: the circuit stores eight bits and restores eight
+    zero low bits at the read, thus the granularity is 2^-4 and the format stays Q12.
+
+    THE SHIFT IS ARITHMETIC AND IT FLOORS: a negative row coarsens DOWNWARD and never
+    toward zero, thus -1 comes back as -256 and not as 0."""
+    row = np.array([0x1234, 255, 0, -1, -256, -257])
+    assert list(ar_quantized.coarse_to_ring(row)) == [0x1200, 0, 0, -256, -256, -512]
+
+
 def test_the_temper_is_log2e_over_the_temperature():
     """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
     temperature, because the circuits carry this constant on an 18-bit signed port."""
@@ -95,6 +186,18 @@ def test_the_temper_is_log2e_over_the_temperature():
     assert quantized.temper_of(0.5) == (47274, 14)
     with pytest.raises(ValueError):
         quantized.temper_of(0.0)
+
+
+def test_a_file_with_no_metadata_reads_back_no_temperature():
+    """The temperature is PROVENANCE and not arithmetic: it travels in the metadata alone,
+    thus a contract file an older tool wrote carries the pair and no temperature. It must
+    read back nan and raise nothing -- the pair is the whole of what the circuit takes."""
+    tensors = {"temper": np.array(quantized.temper_of(1.0), np.int32)}
+    older = quantized.Temper.of_file(tensors, {}, key="temper")
+    assert (older.q_value, older.q) == quantized.temper_of(1.0)
+    assert np.isnan(older.temperature)
+    told = quantized.Temper.of_file(tensors, {"temperature": "0.9"}, key="temper")
+    assert told.temperature == 0.9
 
 
 def test_the_min_p_floor_is_a_share_of_the_peak_weight():

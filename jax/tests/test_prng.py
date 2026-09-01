@@ -57,6 +57,24 @@ def test_uniform_takes_three_steps_on_the_grid():
     assert 0.0 <= value[0] < 1.0
 
 
+def test_the_word_is_the_float_draw_on_its_own_grid():
+    """`uniform_word` is the uniform AS THE CIRCUITS TAKE IT -- an integer twin hands its
+    draw a 24-bit word and never a float -- and `uniform` is that same word on the grid of
+    2^-24. THE TWO MUST NOT PART: the drift report reads an integer draw against a float
+    one, and a word off a different walk would read there as quantization cost.
+
+    The batch carries a finished walk, thus the mask is welded too: it holds the STATE and
+    not the number, and both forms must hold the same one."""
+    state = prng.states([7, 1997, 11])
+    active = np.array([True, False, True])
+    worded, word = prng.uniform_word(state.copy(), active)
+    floated, value = prng.uniform(state.copy(), active)
+    assert list(word * 2.0**-prng.UNIFORM_BITS) == list(value)
+    assert list(worded) == list(floated)
+    assert worded[1] == state[1]  # the finished walk consumed nothing under either form
+    assert all(0 <= number < (1 << prng.UNIFORM_BITS) for number in word)
+
+
 def test_an_inactive_walk_consumes_nothing():
     """the invariant batching adds: a finished element must not advance, or every walk
     beside it in the batch draws numbers a solo run would never have drawn"""

@@ -240,8 +240,6 @@ def test_g0_the_float_model_reads_its_measured_loss():
     every fold of the norm, every plane, and the reader that loaded them. The tolerance
     holds two readings of 48 float32 layers that reduce in different orders."""
     need(DIFFUSION_CHECKPOINT, PIECES)
-    from diffusion import model as sheet_model
-
     pieces = corpus.load_pieces(str(PIECES))["valid"]
     keep = [
         at for at in range(len(pieces.lengths)) if pieces.lengths[at] >= DIFFUSION_CROP

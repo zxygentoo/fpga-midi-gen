@@ -1,18 +1,26 @@
-"""The vocabulary and the decode of jax/corpus.py: what a class means, and what a stream
-of frames states on the wire.
+"""jax/corpus.py: what a class means, what a stream of frames states on the wire, and
+what a reader cuts out of the packed stream.
 
-NEITHER OF THEM BELONGS TO AN ERA, which is why they stand beside the corpus. A break in
-either is wrong music under a model that is perfectly correct.
+NONE OF THE THREE BELONGS TO AN ERA, which is why they stand beside the corpus. A break in
+any of them is wrong music under a model that is perfectly correct.
 
 THE CLASS MAP is where the wire's MIDI pitch meets the model's vocabulary: the wire
 states any pitch and the model does not, and a map wrong by one semitone or one seat
 round trips nothing. THE DECODE has an OCaml twin in `Frame.events_of_frames`, and the
-eight cases here are the eight of its expect test and of docs/transformer.md."""
+eight cases here are the eight of its expect test and of docs/transformer.md. THE PACKED
+STREAM is index arithmetic over the `frames.safetensors` export, thus its cases carry the
+skip: a window off by one frame trains every step against itself, and a referee whose
+stride slipped reads the same music twice and calls it a second measurement.
+
+The other export, the whole pieces of era six, is read by `tests/test_diffusion.py`."""
 
 import numpy as np
 import pytest
 
 import corpus
+from tests import gate
+
+needs_frames = gate.needs_frames
 
 
 def frame(seats):
@@ -83,3 +91,72 @@ def test_the_decode_keeps_its_three_properties():
                 assert pitch in sounding, "a release of a pitch that does not sound"
                 sounding.discard(pitch)
         assert len(sounding) <= corpus.SEATS, "five notes sound at the same time"
+
+
+# ---------------------------------------------------------------------
+# the packed stream: what a reader cuts out of it
+# ---------------------------------------------------------------------
+
+
+@needs_frames
+def test_a_window_reads_its_own_stream_and_folds_the_position_into_the_bar():
+    """A WINDOW IS CONTEXT + 1 FRAMES AND CONTEXT PHASES: the last frame is the one the
+    last context step predicts, thus a reader that took context frames alone would train
+    every step against itself.
+
+    THE PHASE IS THE POSITION FOLDED INTO THE BAR. The export carries the rolling
+    coordinate of the step and the model wants its low four bits, thus a window that opens
+    inside a bar opens at that bar's phase and never at zero."""
+    split = corpus.load_corpus(str(corpus.FRAMES))["train"]
+    classes, phases = split.window(0, 20, 8)
+    assert classes.shape == (9, corpus.SEATS) and phases.shape == (8,)
+    assert phases.tolist() == [4, 5, 6, 7, 8, 9, 10, 11]
+    # a stream reads from ITS OWN offset, which is what [index] carries: stream 1 at start
+    # 0 is the file at index[1, 0] and not the file at 0
+    at = int(split.index[1, 0])
+    later, _ = split.window(1, 0, 8)
+    assert np.array_equal(later, split.classes[at : at + 9])
+    assert not np.array_equal(later, split.window(0, 0, 8)[0])
+
+
+@needs_frames
+def test_a_training_window_is_always_full_and_never_leaves_its_stream():
+    """The training draw is a uniform stream, then a uniform window of it. THE LAST LEGAL
+    START IS length - context - 1, where the window ends on the last frame of the stream:
+    one further and it would read across the seam and hear the next stream's opening as
+    the phrase this one closed with."""
+    pool = corpus.train_pool(corpus.load_corpus(str(corpus.FRAMES)))
+    rng = np.random.default_rng(0)
+    context = 32
+    for _ in range(64):
+        classes, phases = corpus.train_row(rng, pool, context)
+        assert classes.shape == (context + 1, corpus.SEATS)
+        assert phases.shape == (context,)
+    split, row = pool[3]
+    at, length = (int(v) for v in split.index[row])
+    last, _ = split.window(row, length - context - 1, context)
+    assert last.shape == (context + 1, corpus.SEATS)
+    assert np.array_equal(last[-1], split.classes[at + length - 1])
+
+
+@needs_frames
+def test_the_referee_reads_the_canonical_stream_at_stride_context():
+    """The fixed windows of the referee: stream zero -- every piece at shift zero, in the
+    order of the corpus -- cut at STRIDE CONTEXT from its start. The stride is the context
+    and not one, thus no frame is predicted twice and the loss is a mean over the music.
+
+    The limit caps the count and the stream caps the limit: a stream too short to hold one
+    whole window states NO window rather than a short one, which the batcher below would
+    otherwise stack against windows of another length."""
+    split = corpus.load_corpus(str(corpus.FRAMES))["valid"]
+    context = 256
+    length = int(split.index[0, 1])
+    rows = corpus.eval_rows(split, context, 4)
+    assert len(rows) == 4
+    for at, (classes, _) in enumerate(rows):
+        assert classes.shape == (context + 1, corpus.SEATS)
+        assert np.array_equal(classes, split.window(0, at * context, context)[0])
+    # under no limit the count is what the stream holds, the last window ending inside it
+    whole = (length - context - 1) // context + 1
+    assert len(corpus.eval_rows(split, context, 1 << 20)) == whole
+    assert corpus.eval_rows(split, length, 4) == []

@@ -6,8 +6,9 @@ what the circuit did; the test states what it must have done, against a twin tha
 circuit. This module holds only the part that is NEITHER, thus the eras share the mounting
 and share nothing of the judgement.
 
-Two skips and not three: [need] is for a path `dune build` writes and `needs_corpus` for
-one `corpus_tool` writes. Neither absence is a failure.
+TWO KINDS OF ABSENCE AND NOT THREE: [need] is for a path `dune build` writes, and
+`needs_corpus` and `needs_frames` for the two exports `corpus_tool` writes. Neither is a
+failure.
 """
 
 import re
@@ -39,6 +40,25 @@ def need(*paths):
 needs_corpus = pytest.mark.skipif(
     not corpus.PIECES.exists(), reason="needs corpus_tool pieces"
 )
+
+needs_frames = pytest.mark.skipif(
+    not corpus.FRAMES.exists(), reason="needs corpus_tool frames"
+)
+
+
+def built_fixture(path):
+    """The module-scoped skip of one RTL gate: `built = gate.built_fixture(DRIVER)` at the
+    head of the module, and pytest reads the name it is bound to.
+
+    THE SKIP STANDS BEFORE THE WORK AND NOT INSIDE IT: inside the drive, a tree with no
+    `dune build` behind it drew and quantized a model for every case before skipping on
+    each."""
+
+    @pytest.fixture(scope="module", autouse=True)
+    def built():
+        need(path)
+
+    return built
 
 
 def losses_of(command, argv):

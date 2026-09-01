@@ -16,14 +16,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import corpus
 import train
 from mamba import train as mamba_train
 from tests import gate
 from transformer import train as transformer_train
-
-CORPUS = corpus.FRAMES
-
 
 SHORT_RUN = [
     "--d", "8",
@@ -40,7 +36,7 @@ SHORT_RUN = [
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not CORPUS.exists(), reason="needs corpus_tool export")
+@gate.needs_frames
 @pytest.mark.parametrize(
     "era,command,flags",
     [
