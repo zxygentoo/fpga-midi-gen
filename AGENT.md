@@ -226,10 +226,15 @@ It is not 48000 Hz.
     step-frame program (`Program`).
   - one directory for each era: `pink`, `transformer`, `mamba`, `diffusion`.
 - `bin/` — executables: the board driver (`board_tool`), the pink player,
-  the corpus tool, and one RTL-gate driver for each era with a circuit
-  (`gate_transformer`, `gate_mamba`, `gate_diffusion`).
-- `board/` — the top level, the configuration and the scripts of each board,
-  for example `board/nexys-4`. `board/_generated/` holds the Verilog and
+  the corpus tool, one RTL-gate driver for each era with a circuit
+  (`gate_transformer`, `gate_mamba`, `gate_diffusion`), and the two
+  elaborators — `gen_verilog`, which writes the board top level over ANY
+  era's source, and `gen_probe`, which writes one unit for an
+  out-of-context reading. Neither is a board's: `Top` names no era and the
+  probe names no board.
+- `board/` — the top level, the pin map and the Vivado scripts of each board,
+  for example `board/nexys-4`. IT NAMES NO ERA. `board/_generated/` holds the
+  Verilog and
   `board/_build/` the Vivado work; git ignores both.
 - `jax/` — the Python side, parted in two by SCOPE. What all three eras read:
   `corpus.py` (the chorales and the vocabulary, as `lib/corpus` holds `Jsb`
@@ -252,8 +257,14 @@ It is not 48000 Hz.
   `from tests.test_x import y` makes a SECOND module of a file pytest already
   collected. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
 - `corpus/` — the chorale corpus.
+- `weights/` — the elected model of each era, committed, so that a clone can
+  audition and build with nothing behind it: `<era>.ckpt`, and `<era>.int8`
+  derived beside it and ignored. THE ERA IS THE NAME, because there is one
+  elected model for each. Era one has no file — `Pink.default` is a value of
+  `lib/pink`. `weights/README.md` holds the run each came from.
 - `_train/` — the training runs: the logs and the checkpoints. Git ignores
-  it. Every run pipes to `_train/NAME.log` beside its checkpoint.
+  it. Every run pipes to `_train/NAME.log` beside its checkpoint. It is the
+  PROCESS where `weights/` is the product.
 - `docs/` — the design documents: `<era>.md` for the model and `<era>_rtl.md`
   for the circuit. A work order is process: write it in `docs/`, never commit
   it, and delete it when its round is done.
@@ -292,7 +303,7 @@ Rules:
 # Tests
 
 Run all tests with `dune runtest`, and then `uv run pytest`, both from the root.
-pytest runs `-n auto` by default (216 tests, 111 s against 31 s); `-n0` puts them
+pytest runs `-n auto` by default (217 tests, 103 s against 30 s); `-n0` puts them
 back in one process where a traceback is easier to read, NOT `-p no:xdist`, which
 leaves the `-n` of `addopts` unrecognised and exits. PYTEST IS THE ONE COMMAND THAT
 WANTS THE ROOT: it reads `testpaths` there and nowhere else, thus `uv run pytest`

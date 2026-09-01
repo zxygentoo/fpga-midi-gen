@@ -26,15 +26,26 @@
   mgen_core
   mgen_corpus))
 
-; What the three gate drivers share: the flags, the netlist command and the walk print.
-; It is a library and not a module of one of them, because bin/dune builds one executable
-; per file. It names NO era library -- the model reader and the source are arguments --
-; and it could not name one: mgen_nexys4, which it elaborates through, already depends on
-; every era.
+; What the three gate drivers share: the flags and the walk print. It is a library and
+; not a module of one of them, because bin/dune builds one executable per file. It names
+; NO era library -- the model reader and the walk are arguments -- and NO BOARD LIBRARY
+; either: a gate driver states what a circuit did, and a board top level is `gen_verilog`.
 
 (library
  (name gate_common)
  (modules gate_common)
+ (preprocess
+  (pps ppx_let))
+ (libraries core core_unix.command_unix mgen_core mgen_corpus))
+
+; The elaborator of a board top level, over any era's source. It is the ONE program that
+; names an era for a build, thus it names all four; `Top` itself names none. It stands in
+; bin/ and not beside a board, because nothing in it is a board's: `board/nexys-4` holds
+; the top level, the pin map and the Vivado scripts, and names no era at all.
+
+(executable
+ (name gen_verilog)
+ (modules gen_verilog)
  (preprocess
   (pps ppx_let))
  (libraries
@@ -43,9 +54,20 @@
   core_unix.command_unix
   hardcaml
   jane_rope
-  mgen_core
-  mgen_corpus
-  mgen_nexys4))
+  mgen_diffusion
+  mgen_mamba
+  mgen_nexys4
+  mgen_pink
+  mgen_transformer))
+
+; The out-of-context probe: one unit alone, for a timing and utilization reading before
+; the machine around it exists. It carries no model -- the column array takes its weights
+; as ports -- thus it names no checkpoint, and no board either.
+
+(executable
+ (name gen_probe)
+ (modules gen_probe)
+ (libraries core core_unix hardcaml jane_rope mgen_nn mgen_diffusion))
 
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
@@ -65,10 +87,10 @@
   mgen_core
   mgen_diffusion))
 
-; The driver of the RTL gates of era four: it runs the circuit in Cyclesim and states what
-; the circuit did, and it elaborates the era's own top level for the netlist gate. The
-; ORACLE is jax/transformer/quantized.py and the gates are jax/tests/test_rtl_transformer.py
-; and test_parity.py, thus nothing here states what the circuit should have done.
+; The driver of the RTL gates of era four: it runs the circuit in Cyclesim and states
+; what the circuit did. The ORACLE is jax/transformer/quantized.py and the gate is
+; jax/tests/test_rtl_transformer.py, thus nothing here states what the circuit should have
+; done. The era's netlist is `gen_verilog transformer`, and test_parity.py pins its md5.
 
 (executable
  (name gate_transformer)
@@ -81,13 +103,12 @@
   core_unix.command_unix
   gate_common
   mgen_core
-  mgen_nexys4
   mgen_transformer))
 
-; The driver of the RTL gates of era five: it runs the circuit in Cyclesim and states what
-; the circuit did, and it elaborates the era's own top level for the netlist gate. The
-; ORACLE is jax/mamba/quantized.py and the gates are jax/tests/test_rtl_mamba.py and
-; test_parity.py, thus nothing here states what the circuit should have done.
+; The driver of the RTL gates of era five: it runs the circuit in Cyclesim and states
+; what the circuit did. The ORACLE is jax/mamba/quantized.py and the gate is
+; jax/tests/test_rtl_mamba.py, thus nothing here states what the circuit should have done.
+; The era's netlist is `gen_verilog mamba`, and test_parity.py pins its md5.
 
 (executable
  (name gate_mamba)
@@ -100,5 +121,4 @@
   core_unix.command_unix
   gate_common
   mgen_core
-  mgen_mamba
-  mgen_nexys4))
+  mgen_mamba))

@@ -11,10 +11,11 @@
    model. Every width and the plan travel in that file — the image states them — thus no
    flag here states a shape.
 
-   [verilog] is the netlist gate of the era. Era six holds the board and [Top] takes its
-   source as an argument, thus this program elaborates ERA FIVE'S top level, and
-   `test_g1_the_mamba_quantizer_states_its_netlist` holds its md5 against the pin. Neither
-   the elaboration nor the quantizer can move without that gate saying so. *)
+   THE NETLIST GATE OF THE ERA IS NOT HERE. [bin/gen_verilog mamba] elaborates the board
+   top level over this era's source and `test_g1_the_mamba_quantizer_states_its_netlist`
+   holds its md5 against the pin; neither the elaboration nor the quantizer can move
+   without that gate saying so. A gate driver states what a circuit DID, thus it writes no
+   netlist for a build. *)
 
 open Core
 module Model = Mgen_mamba.Model
@@ -65,11 +66,6 @@ let command =
             h.rewind ();
             h.play) )
     ; "stream", stream_command
-    ; ( "verilog"
-      , Gate_common.verilog_command
-          ~summary:"write the Verilog of era five's board top level into a directory"
-          ~model:model_param
-          ~source:(fun model -> Source.create ~model) )
     ]
 ;;
 

@@ -902,7 +902,7 @@ in lanes as well as layers, if the first build fights.
 
 The column array alone, through Vivado out of context on the part, at 100 MHz
 and P 48. It needs no checkpoint: the unit takes its weights and its columns
-as ports, thus the shape is the whole input. `board/nexys-4/gen_probe.ml`
+as ports, thus the shape is the whole input. `bin/gen_probe.ml`
 writes it and `probe.tcl` reads it.
 
 | G | lanes | DSP48E1 | LUTs | registers | WNS | WHS |

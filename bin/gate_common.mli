@@ -1,4 +1,4 @@
-(** What every RTL gate driver mounts: the three flags, the netlist command and the walk.
+(** What every RTL gate driver mounts: the three flags and the walk.
 
     A GATE DRIVER STATES WHAT THE CIRCUIT DID AND NEVER WHAT IT SHOULD HAVE DONE. The
     oracle is the era's integer twin above the seam, in [jax/<era>/quantized.py], and the
@@ -6,9 +6,9 @@
     expectation, thus a gate cannot pass by the driver agreeing with itself, and this
     module holds only the part that is neither side of that comparison.
 
-    IT KNOWS NO ERA. The model reader, the source and the walk all arrive as arguments,
-    thus this library depends on no era library — it could not, because the board library
-    it elaborates through already depends on all of them. *)
+    IT KNOWS NO ERA AND NO BOARD. The model reader and the walk arrive as arguments, thus
+    this library names no era library; and a board top level is not a gate driver's work,
+    thus it names no board library either. [bin/gen_verilog] elaborates every era. *)
 
 open Core
 
@@ -25,23 +25,6 @@ val seed_param : int Command.Param.t
 
 (** the [-steps] flag: the steps of the walk *)
 val steps_param : int Command.Param.t
-
-(** [verilog_command ~summary ~model ~source] writes the Verilog of an era's board top
-    level into a directory named on the command line.
-
-    Era six holds the board and [Top] takes its source as an argument, thus a driver
-    elaborates ITS OWN era's top level and [test_parity.py] holds the md5 of it against
-    the pin. Neither the elaboration nor the quantizer can move without that gate saying
-    so. *)
-val verilog_command
-  :  summary:string
-  -> model:(unit -> 'model) Command.Param.t
-  -> source:
-       ('model
-        -> seed:Hardcaml.Signal.t
-        -> Hardcaml.Signal.t Mgen_core.Source_intf.I.t
-        -> Hardcaml.Signal.t Mgen_core.Source_intf.O.t)
-  -> Command.t
 
 (** [walk_command ~summary ~model ~walk] prints one walk, step by step: the FRAME the
     socket face answered and the CLASSES that frame states, through [Vocab]'s own decode.

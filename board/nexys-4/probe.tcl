@@ -1,6 +1,6 @@
 # Reads one unit out of context: its utilization, and its timing at 100 MHz.
 #
-# First: dune exec board/nexys-4/gen_probe.exe -- UNIT [lanes]
+# First: make probe-UNIT, or dune exec bin/gen_probe.exe -- UNIT [lanes]
 # Then, from the repository root:
 #   vivado -mode batch -journal board/_build/probe.jou \
 #          -log board/_build/probe.log -source board/nexys-4/probe.tcl

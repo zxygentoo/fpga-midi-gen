@@ -16,8 +16,7 @@ Every gate needs a checkpoint that git ignores and binaries that dune builds. Th
 when those are absent -- a clean tree is not a failure -- and they FAIL when the two sides
 disagree. From the repository root:
 
-    dune build bin/gate_transformer.exe bin/gate_mamba.exe
-    dune build board/nexys-4/gen_verilog.exe
+    dune build bin/gate_transformer.exe bin/gate_mamba.exe bin/gen_verilog.exe
 """
 
 import hashlib
@@ -36,7 +35,7 @@ from tests.gate import need, run
 from transformer import model
 
 ROOT = gate.ROOT
-CHECKPOINT = ROOT / "_train" / "transformer" / "d64-frame-do03-96k-s6-l6-nopos-span4.ckpt"
+CHECKPOINT = ROOT / "weights" / "transformer.ckpt"
 CORPUS = corpus.FRAMES
 
 # The loss is a mean of 75 windows of 256 steps through six layers of float32, and the two
@@ -64,6 +63,11 @@ def contract_file(era, checkpoint, tmp_path):
     return path
 
 
+# ONE PROGRAM ELABORATES EVERY ERA: `Top` takes the source as an argument, thus the three
+# netlist gates below name the same driver and part only on the era they hand it.
+GEN_VERILOG = gate.driver("gen_verilog.exe")
+
+
 def netlist_md5(argv, tmp_path):
     """the md5 of the Verilog the elaborator states into [tmp_path]"""
     run(*argv, str(tmp_path))
@@ -83,6 +87,26 @@ def seat_loss(nll):
     return float(jnp.mean(jnp.sum(nll, axis=-1)))
 
 
+# Era one: the pink source, which reads no file
+
+
+# The netlist of era one, pinned 2026-09-02. IT OWES A VIVADO BUILD before it merges.
+PINK_NETLIST_MD5 = "c48f3143eaf8762e6db06a6aad250418"
+
+
+def test_g1_the_pink_source_states_its_netlist(tmp_path):
+    """THE ONE NETLIST GATE THAT CANNOT SKIP. Era one is parameters and not weights --
+    `Pink.default` is a value of `lib/pink` -- thus this gate needs no checkpoint, no
+    quantizer and nothing that git ignores, and a bare clone runs it. The three eras below
+    each need a file, thus each can skip; this one holds the elaboration and the board top
+    level itself on every tree."""
+    need(GEN_VERILOG)
+    said = netlist_md5([str(GEN_VERILOG), "pink"], tmp_path)
+    assert said == PINK_NETLIST_MD5, (
+        f"era one states the netlist {said} and the golden is {PINK_NETLIST_MD5}"
+    )
+
+
 # Era four: the transformer
 
 
@@ -97,11 +121,9 @@ TRANSFORMER_SHAPE = {"windows": 75, "context": 256, "heads": 4, "span": 4}
 TRANSFORMER_LOSS = 1.628177
 
 # The netlist of the elected checkpoint, re-pinned by this gate through
-# `gate_transformer.exe verilog` at the end of the lifts into `lib/nn`.
+# `gen_verilog transformer` at the end of the lifts into `lib/nn`.
 # IT OWES A VIVADO BUILD before it merges.
 TRANSFORMER_NETLIST_MD5 = "a106ff1a991ed756f4c78af99b8d5b35"
-
-GATE_TRANSFORMER = gate.driver("gate_transformer.exe")
 
 
 def test_g0_the_transformer_reads_its_measured_loss():
@@ -124,11 +146,11 @@ def test_g0_the_transformer_reads_its_measured_loss():
 def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
     """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
     seat and phase tables first -- they share one exponent -- and then the layer ROM."""
-    need(CHECKPOINT, GATE_TRANSFORMER)
+    need(CHECKPOINT, GEN_VERILOG)
     said = netlist_md5(
         [
-            str(GATE_TRANSFORMER),
-            "verilog",
+            str(GEN_VERILOG),
+            "transformer",
             "-int8",
             str(contract_file("transformer", CHECKPOINT, tmp_path)),
         ],
@@ -145,9 +167,7 @@ def test_g1_the_transformer_quantizer_states_its_netlist(tmp_path):
 
 # the elected model of the era: six blocks, the Zamba head, the feed-forward. The plan and
 # the span are in the file, thus neither side states one and neither can drift.
-MAMBA_CHECKPOINT = (
-    ROOT / "_train" / "mamba" / "d64-mamba-k4-n16-zamba-ff-do03-48k-s7.ckpt"
-)
+MAMBA_CHECKPOINT = ROOT / "weights" / "mamba.ckpt"
 
 # The shape of the canonical reading. Only two numbers stand here: every width, the plan
 # and the span come out of the file, and the context is a choice of the REFEREE -- a
@@ -163,8 +183,6 @@ MAMBA_LOSS = 1.640810
 # `gate_mamba.exe verilog` at the end of the lifts into `lib/nn`.
 # IT OWES A VIVADO BUILD before it merges.
 MAMBA_NETLIST_MD5 = "e6abe8c20c983a930b99a626c18a9b13"
-
-GATE_MAMBA = gate.driver("gate_mamba.exe")
 
 
 def test_g0_the_mamba_reads_its_measured_loss():
@@ -183,11 +201,11 @@ def test_g0_the_mamba_reads_its_measured_loss():
 def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
     """THE CIRCUIT DOES NOT MOVE. A different md5 says the quantization parted; diff the
     decay tensors first -- one ulp of `exp` moves a q_value by one -- and then the ROM."""
-    need(MAMBA_CHECKPOINT, GATE_MAMBA)
+    need(MAMBA_CHECKPOINT, GEN_VERILOG)
     said = netlist_md5(
         [
-            str(GATE_MAMBA),
-            "verilog",
+            str(GEN_VERILOG),
+            "mamba",
             "-int8",
             str(contract_file("mamba", MAMBA_CHECKPOINT, tmp_path)),
         ],
@@ -205,9 +223,8 @@ def test_g1_the_mamba_quantizer_states_its_netlist(tmp_path):
 # `tests/test_rtl_diffusion.py` holds the CIRCUIT against the JAX twin; what stands here
 # is the float model's loss and the netlist the quantizer states.
 
-DIFFUSION_CHECKPOINT = ROOT / "_train" / "diffusion" / "coconet" / "l48-h20-100k.ckpt"
+DIFFUSION_CHECKPOINT = ROOT / "weights" / "diffusion.ckpt"
 PIECES = corpus.PIECES
-GEN_VERILOG = ROOT / "_build" / "default" / "board" / "nexys-4" / "gen_verilog.exe"
 
 # The masked loss of the golden checkpoint over the sheets below, MEASURED 2026-08-28
 # against the functional model that `diffusion/model.py` carried before the Flax round.
@@ -270,6 +287,7 @@ def test_g1_the_quantizer_states_the_golden_netlist(tmp_path):
     said = netlist_md5(
         [
             str(GEN_VERILOG),
+            "diffusion",
             "-int8",
             str(contract_file("diffusion", DIFFUSION_CHECKPOINT, tmp_path)),
         ],

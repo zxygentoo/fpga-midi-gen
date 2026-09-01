@@ -60,8 +60,8 @@ pythonpath = ["jax"]
 # from another directory of the tree and it collects that directory instead, finds no
 # test, and exits 5. Every other command of the environment answers from anywhere.
 testpaths = ["jax/tests"]
-# -n auto: the suite is 216 tests of numpy and small jitted models, thus it parallelises
-# almost perfectly -- measured 2026-09-02, 111 s against 31 s on twenty cores. Every test
+# -n auto: the suite is 217 tests of numpy and small jitted models, thus it parallelises
+# almost perfectly -- measured 2026-09-02, 103 s against 30 s on twenty cores. Every test
 # is deterministic and none writes outside `tmp_path`, thus the split cannot change an
 # answer. `-n0` runs them in one process where a traceback is easier to read. NOT
 # `-p no:xdist`: dropping the plugin leaves the `-n` of this line unrecognised, and pytest

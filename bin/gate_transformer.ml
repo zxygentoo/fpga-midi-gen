@@ -6,15 +6,17 @@
    in this file states an expectation, thus a gate cannot pass by the driver agreeing with
    itself.
 
-   The flags, the netlist command and the walk print are [Gate_common], which the three
-   drivers share; this file states era four's model reader, its source and its bench, and
-   nothing else. Every shape number of era four travels in the contract file — the width
-   and the layers in the tensors, the heads, the context and the ALiBi span beside them —
-   thus no flag here states a shape.
+   The flags and the walk print are [Gate_common], which the three drivers share; this
+   file states era four's model reader, its source and its bench, and nothing else. Every
+   shape number of era four travels in the contract file — the width and the layers in the
+   tensors, the heads, the context and the ALiBi span beside them — thus no flag here
+   states a shape.
 
-   [verilog] is the netlist gate of the era, and
-   `test_g1_the_transformer_quantizer_states_its_netlist` holds its md5 against the pin.
-   Neither the elaboration nor the quantizer can move without that gate saying so. *)
+   THE NETLIST GATE OF THE ERA IS NOT HERE. [bin/gen_verilog transformer] elaborates the
+   board top level over this era's source and
+   `test_g1_the_transformer_quantizer_states_its_netlist` holds its md5 against the pin;
+   neither the elaboration nor the quantizer can move without that gate saying so. A gate
+   driver states what a circuit DID, thus it writes no netlist for a build. *)
 
 open Core
 module Model = Mgen_transformer.Model
@@ -35,11 +37,6 @@ let command =
             let h = Source.For_test.Bench.harness ~model ~seed () in
             h.rewind ();
             h.play) )
-    ; ( "verilog"
-      , Gate_common.verilog_command
-          ~summary:"write the Verilog of era four's board top level into a directory"
-          ~model:model_param
-          ~source:(fun model -> Source.create ~model) )
     ]
 ;;
 

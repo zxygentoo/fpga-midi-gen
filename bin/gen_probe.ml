@@ -1,5 +1,5 @@
 (* Writes the Verilog of ONE UNIT for an out-of-context reading. Usage: dune exec
-   board/nexys-4/gen_probe.exe -- UNIT [lanes]
+   bin/gen_probe.exe -- UNIT [lanes]
 
    The units of era six take their weights, their columns and their logits as ports, thus
    a probe needs no checkpoint and no drawn weights: the shape is the whole input, and P
