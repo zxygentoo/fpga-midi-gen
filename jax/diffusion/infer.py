@@ -44,7 +44,7 @@ def gibbs(coconet, given, states, *, walk, temperature):
 
     def forward(classes, hidden):
         return np.asarray(
-            model.logits(coconet, jnp.asarray(classes), jnp.asarray(hidden)),
+            coconet.logits(jnp.asarray(classes), jnp.asarray(hidden)),
             dtype=np.float64,
         )
 

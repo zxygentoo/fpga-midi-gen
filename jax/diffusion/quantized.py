@@ -549,7 +549,7 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
     counted = measure.Counted()
     for taken in passes(twin, states, given, walk=walk, tally=tally):
         said = np.asarray(
-            model.logits(coconet, jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
+            coconet.logits(jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
             dtype=np.float64,
         )
         for drawn in taken.draws:
@@ -558,8 +558,8 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
             if not active.any():
                 continue
             # `measure.count_draws`, the common battery's: this era sends the cell's whole
-            # batch of sheets where a chain sends its four seats. MIN-P IS ZERO, which is
-            # `model.tempered_pick`'s rule and the one thing that parts the two calls.
+            # batch of sheets where a chain sends its four seats. `model.MIN_P` is the one
+            # thing that parts the two calls.
             counted = measure.count_draws(
                 counted,
                 taken.said[active, drawn.step, :, drawn.voice],
@@ -567,7 +567,7 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
                 drawn=drawn.drawn[active],
                 uniform=drawn.word[active] * 2.0**-prng.UNIFORM_BITS,
                 temperature=temperature,
-                min_p=0.0,
+                min_p=model.MIN_P,
             )
     return Drift(
         passes=walk,

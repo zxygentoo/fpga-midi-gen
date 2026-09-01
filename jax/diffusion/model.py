@@ -12,11 +12,11 @@ referees all read them: the sheet and its mask planes, the net with its checkpoi
 two mask distributions, and the rules of the walk itself.
 
 THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `opening_sheet`,
-`anneal_threshold`, `hidden_cells`, `logits` and `tempered_pick` are what the float walk
-of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do
-IDENTICALLY: the same opening from the same seed, the same threshold at the same pass, the
-same uniform for the same cell. `lib/diffusion/model.ml` holds the first three under the
-same names.
+`anneal_threshold`, `hidden_cells`, `tempered_pick` and `Coconet.logits` are what the
+float walk of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must
+do IDENTICALLY: the same opening from the same seed, the same threshold at the same pass,
+the same uniform for the same cell. `lib/diffusion/model.ml` holds the first three under
+the same names.
 
 THE NET IS A MODULE TREE AND NOT A LIST OF LAYERS, thus `__call__` reads as the paper's
 own diagram and an odd layer count is UNREPRESENTABLE. `diffusion/quantized.py` carries
@@ -96,6 +96,13 @@ HE_NORMAL = jax.nn.initializers.variance_scaling(2.0, "fan_in", "normal")
 # order
 LAYER_TENSORS = 5
 
+# THE ERA DRAWS WITH NO MIN-P FLOOR, where the step-frame eras hold one at 0.05. A floor
+# would not mean there what it means here: a Gibbs redraw picks one cell against a sheet
+# that is still wrong around it, and a floor that trimmed its tail would harden the sheet
+# it opened on. It is a NAME because both walks state it -- `tempered_pick` and the float
+# half of `quantized.drift`.
+MIN_P = 0.0
+
 
 def cells(steps):
     """D, the variables of one sheet: one voice at one step, and NOT the cells of the
@@ -168,7 +175,7 @@ def anneal(n, total):
 
 
 # ---------------------------------------------------------------------
-# the rules of the walk: the opening, and the mask of one pass
+# the rules of the walk: the opening, the mask of one pass, and the draw
 # ---------------------------------------------------------------------
 
 
@@ -260,6 +267,12 @@ def hidden_cells(states, steps, threshold):
         states, word = prng.uniform_word(states, everyone)
         hidden[:, step, voice] = word < threshold
     return states, hidden
+
+
+def tempered_pick(raw, temperature, uniform):
+    """The draw of one cell over the batch, row for row; [raw] is [sheets, ROWS] float64.
+    The temper is the peak alone, under [MIN_P]."""
+    return sample.pick_share(sample.temper(raw, temperature, MIN_P), uniform)
 
 
 # ---------------------------------------------------------------------
@@ -422,6 +435,17 @@ class Coconet(Trunk):
         said, head = self.head(h, training)
         return said, seen + [head]
 
+    @nnx.jit
+    def logits(self, classes, hidden):
+        """The logits of one pass over the batch, from the masked sheet: what both walks
+        read, with the statistics dropped.
+
+        THE JIT IS BUILT ONCE, WITH THE CLASS, thus its compiled form is keyed on the
+        shapes and every walk of a run reuses the first compile -- an `nnx.jit` built
+        inside a walker would be a new callable at every call."""
+        said, _ = self(planes(classes, hidden))
+        return said
+
     def parameter_count(self):
         """the trainable parameters; the population statistics are not among them"""
         held = jax.tree.leaves(nnx.state(self, nnx.Param))
@@ -477,25 +501,3 @@ class Coconet(Trunk):
                 ]
             )
         return held
-
-
-def nll_of_logits(said, classes):
-    """the negative log likelihood of the true class of every cell: [batch, steps,
-    VOICES], in nats, before any mask or any divisor"""
-    logp = jax.nn.log_softmax(said, axis=-2)
-    return -jnp.take_along_axis(logp, classes[..., None, :], axis=-2)[..., 0, :]
-
-
-@nnx.jit
-def logits(coconet, classes, hidden):
-    """The logits of one pass over the batch, from the masked sheet. It takes the model as
-    an ARGUMENT at the module level, thus its compiled form is keyed on the shapes and
-    every walk of a run reuses the first compile."""
-    said, _ = coconet(planes(classes, hidden))
-    return said
-
-
-def tempered_pick(raw, temperature, uniform):
-    """The draw of one cell over the batch, row for row; [raw] is [sheets, ROWS] float64.
-    The era draws with NO min-p floor, thus the temper is the peak alone."""
-    return sample.pick_share(sample.temper(raw, temperature, 0.0), uniform)

@@ -54,11 +54,18 @@ def population_decay(t):
     return jnp.minimum(POP_DECAY, (1.0 + t) / (10.0 + t))
 
 
+def nll_of_logits(said, classes):
+    """the negative log likelihood of the true class of every cell: [batch, steps,
+    VOICES], in nats, before any mask or any divisor"""
+    logp = jax.nn.log_softmax(said, axis=-2)
+    return -jnp.take_along_axis(logp, classes[..., None, :], axis=-2)[..., 0, :]
+
+
 def masked_nll(said, classes, hidden):
     """The orderless NADE loss of one batch, meaned over the sheets. The divisor is the
     paper's one over |not-C| and it is PER SHEET: every sheet drew its own mask size, and
     one with three cells hidden must not weigh a hundredth of one with three hundred."""
-    nll = model.nll_of_logits(said, classes)
+    nll = nll_of_logits(said, classes)
     masked = hidden.astype(jnp.float32)
     return jnp.mean(jnp.sum(nll * masked, axis=(1, 2)) / jnp.sum(masked, axis=(1, 2)))
 

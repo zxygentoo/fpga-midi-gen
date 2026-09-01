@@ -29,6 +29,7 @@ import pytest
 import corpus
 import prng
 from diffusion import model as sheet_model
+from diffusion import train as sheet_train
 from mamba import model as mamba_model
 from tests import gate
 from tests.gate import need, run
@@ -254,7 +255,7 @@ def test_g0_the_float_model_reads_its_measured_loss():
         said, _ = coconet(
             sheet_model.planes(jnp.asarray(classes[rows]), jnp.asarray(hidden[rows]))
         )
-        nll = np.asarray(sheet_model.nll_of_logits(said, jnp.asarray(classes[rows])))
+        nll = np.asarray(sheet_train.nll_of_logits(said, jnp.asarray(classes[rows])))
         values += [float(row[mask].mean()) for row, mask in zip(nll, hidden[rows])]
     here = float(np.mean(values))
     assert here == pytest.approx(DIFFUSION_LOSS, abs=TOLERANCE), (
