@@ -1,24 +1,18 @@
 """The step-frame transformer of docs/transformer.md.
 
-One step of music is one position. Four voice classes enter through four tables that sum,
-and they leave through the same four tables in a chain from the soprano down -- the head
-is `ar_model.Head`, which era five reads too.
+One step of music is one position. Four voice classes enter through four tables that sum
+and leave through the same four in a chain from the soprano down -- the head is
+`ar_model.Head`, which era five reads too. Under it is a decoder with no bias terms,
+RMSNorm before each sublayer, ALiBi for the position, and d_ff = 4 d.
 
-The network under the head is a decoder with no bias terms, RMSNorm before each sublayer,
-ALiBi for the position, and d_ff = 4 d. Matmul precision is pinned to true float32, no
-TF32.
-
-THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS. `quantized.QuantizedTransformer`
+THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS: `quantized.QuantizedTransformer`
 carries the same skeleton in integers under the same attribute names, thus a reader can
-put `model.layers[k]` beside `twin.layers[k]` and audit one layer against its own
-quantization.
+put `model.layers[k]` beside `twin.layers[k]` and audit one against its quantization.
 
-THE HEADS AND THE SPAN ARE NOT IN A CHECKPOINT and they stand on the module: the heads
-only split d at run time and ALiBi holds no position table, thus neither leaves a tensor
-behind. A player states them, and the contract file carries them to the elaboration.
-
-Checkpoints are safetensors: tensors "0".."N" in construction order -- seats [4, 48, d],
-phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d], w2 [4d, d].
+THE HEADS AND THE SPAN ARE NOT IN A CHECKPOINT -- the heads only split d at run time and
+ALiBi holds no position table -- thus a player states them and the contract file carries
+them to the elaboration. A checkpoint is tensors "0".."N" in construction order: seats
+[4, 48, d], phase [16, d], then per layer wq wk wv wo [d, d], w1 [d, 4d], w2 [4d, d].
 """
 
 import jax
@@ -74,18 +68,15 @@ class Layer(nnx.Module):
         return [getattr(self, name)[...] for name in LAYER_TENSORS]
 
     def take(self, tensors):
-        """the reverse of [tensors]: the six of one layer, written in. The two stand
-        together so that the layout cannot drift apart."""
+        """the reverse of [tensors]; the two stand together so the layout cannot drift"""
         for name, value in zip(LAYER_TENSORS, tensors):
             getattr(self, name)[...] = jnp.asarray(value)
 
 
 class Trunk(ar_model.Trunk):
-    """The skeleton both models of the era carry: the tied head, then the layers.
-
-    [Transformer] fills it with the float tensors and `quantized.QuantizedTransformer`
-    with their integer twins, UNDER THE SAME ATTRIBUTE NAMES AT EVERY LEVEL, thus the two
-    trees are one tree and a reader can audit them layer for layer."""
+    """The skeleton both models of the era carry: the tied head, then the layers. The
+    float tree and the integer twin fill it under the SAME attribute names at every
+    level."""
 
 
 class Transformer(Trunk):
@@ -132,9 +123,8 @@ class Transformer(Trunk):
 
     @classmethod
     def load(cls, path, *, heads, span=SLOPE_SPAN):
-        """The model of one checkpoint. The tensor count states the layers and the seat
-        table states d; the heads and the span are the player's, because no tensor holds
-        them."""
+        """The model of one checkpoint: the tensor count states the layers and the seat
+        table states d. The heads and the span are the player's."""
         tensors = load_file(str(path))
         count = len(tensors)
         layers, spare = divmod(count - len(TABLES), PER_LAYER)
@@ -142,8 +132,7 @@ class Transformer(Trunk):
             raise ValueError(
                 f"{path}: {count} tensors is not {TABLES} and {PER_LAYER} for each layer"
             )
-        # the draw is thrown away one tensor at a time below: it is the cost of one normal
-        # and it buys the one constructor
+        # the draw is thrown away tensor by tensor below; it buys the one constructor
         held = cls(
             tensors["0"].shape[-1], layers, heads=heads, span=span, rngs=nnx.Rngs(0)
         )
@@ -160,11 +149,8 @@ class Transformer(Trunk):
     @classmethod
     def drawn(cls, seed, d, layers, *, heads, span=SLOPE_SPAN):
         """A model of DRAWN weights: the trainer's opening, and the shape a gate can
-        afford.
-
-        THE DRAW IS THE MODULE'S AND NOT ITS INITIALIZER'S, one key for each tensor in the
-        construction order, because the measured numbers of `tests/test_drift.py` read
-        this draw and a framework that changed its key rule would move them."""
+        afford. THE DRAW IS THE MODULE'S AND NOT ITS INITIALIZER'S -- one key for each
+        tensor in construction order -- because `tests/test_drift.py` reads this draw."""
         keys = iter(
             jax.random.split(jax.random.key(seed), len(TABLES) + PER_LAYER * layers)
         )

@@ -1,27 +1,19 @@
 """The integer twin of the step-frame model: the arithmetic the board plays.
 
-The float model of `transformer/model.py` is what the ear elected. This module is the same
+The float model of `transformer/model.py` is what the ear elected; this is the same
 network in the arithmetic the board can hold -- int8 weights with a power-of-two exponent
-for each tensor, int8 KV rings, int16 activations and the draw in integers -- and the
-circuit of era four must equal it operation for operation, not approximately.
+for each tensor, int8 KV rings, int16 activations and the draw in integers. The circuit of
+era four must equal it OPERATION FOR OPERATION, not approximately: a rewrite that is
+algebraically equal and differently ordered is a different machine.
 
-THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal and
-differently ordered is a different machine.
-
-IT CARRIES THE FLOAT MODEL'S SKELETON, `model.Trunk`, under the same attribute names at
-every level: `twin.layers[k].wq` is the quantization of `float.layers[k].wq` and nothing
-has to be aligned by hand.
-
-The rules that are not this era's come from two files. `quantized.py` holds what all
-three eras read -- the exponent rule, the rounding, the int16 rails, the temper, the
-min-p floor, the shared exp2 table, the integer pick and the CONTRACT FILE -- and
-`ar_quantized.py` what this era and era five share: the stream formats, the norm, the
-attention over a ring, the chain and the walk.
+It carries the float model's skeleton under the same attribute names at every level, thus
+`twin.layers[k].wq` is the quantization of `float.layers[k].wq`. What is not this era's
+comes from `quantized.py` and `ar_quantized.py`.
 
 THE CONTRACT FILE is what crosses the seam to the elaboration. `save` writes it and
 `Model.of_int8_checkpoint` reads it; `load` reads it back and a round trip is exact. It
-carries the quantized model and the numbers the OCaml `Config` used to carry beside it,
-because the elaboration reads a file and no flag:
+carries the quantized model and the numbers the elaboration would otherwise take as
+flags:
 
     tensor          dtype   shape          value
     "0"             int32   [4, 48, d]     the seat tables, int8 in int32
@@ -34,20 +26,11 @@ because the elaboration reads a file and no flag:
     "temper"        int32   [2]            the temper: q_value, then q
     "min_weight"    int32   []             the min-p share of the peak weight 2^15
 
-EVERY VALUE TENSOR KEEPS THE SHAPE THE FLOAT TENSOR HAD, and the OCaml reader flattens it
-in the row-major order the ROM wants. A shape says what a tensor IS, thus a Python reader
-sees the model and not a run of bytes; the flat order is the reader's business.
-
-THE NAMES OF THE VALUE TENSORS ARE THE FLOAT CHECKPOINT'S OWN NAMES, thus one order -- the
-construction order -- carries the checkpoint, the file and the ROM, and no reader restates
-it. `d` and the layer count are NOT in the file: the seat tensor sizes d and the tensor
-count states the layers, as the float reader derives them.
-
-EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS -- both facts of the OCaml reader, and
-`quantized.py` states them once for the three eras and writes the archive. The metadata
-is written as well, for a reader that has a Python tool in hand: the temperature, the
-min-p and the checkpoint are PROVENANCE, because the temper and the floor are already
-folded.
+EVERY VALUE TENSOR KEEPS THE SHAPE THE FLOAT TENSOR HAD and the names are the float
+checkpoint's own, thus one order -- the construction order -- carries the checkpoint, the
+file and the ROM. `d` and the layer count are NOT in the file: the seat tensor sizes d and
+the tensor count states the layers. `quantized.py` states why every tensor is int32 and
+every scalar a tensor; the metadata beside them is provenance.
 """
 
 from typing import NamedTuple
@@ -92,9 +75,9 @@ BESIDE_THE_WEIGHTS = (
     SLOPE_SPAN,
 )
 
-# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above and stand as
-# attributes of this module for era four's player to read: the policy has one home,
-# `quantized.py`, and this era does not re-elect it.
+# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above so era four's player can
+# read them here; the policy has one home in `quantized.py` and this era does not
+# re-elect it.
 
 
 class QuantizedLayer(ar_quantized.QuantizedImage):
@@ -105,19 +88,13 @@ class QuantizedLayer(ar_quantized.QuantizedImage):
 
 
 class QuantizedTransformer:
-    """The model as the bitstream carries it.
-
-    The draw stands beside the layers because the bitstream carries it: one quantization
-    serves every seed of a batch, as one bitstream serves every seed of the board. The
-    heads, the context and the span are in no tensor, and the elaboration reads a file and
-    no flag, thus they stand here too.
+    """The model as the bitstream carries it: the draw, the heads, the context and the
+    span stand beside the layers, because one quantization serves every seed as one
+    bitstream serves every seed of the board.
 
     IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
-    era is a Flax module -- thus [every_tensor] is restated below. THE ATTRIBUTE NAMES
-    ARE THE PARITY and not the base class: `held.layers[2].wq` and
-    `twin.layers[2].wq` are the same layer under the two arithmetics, which is what a
-    reader auditing them needs.
-    The rest of `ar_model.Trunk` reads a float forward and no twin ever wanted it."""
+    era is a Flax module -- thus [every_tensor] is restated below. THE ATTRIBUTE NAMES ARE
+    THE PARITY and not the base class."""
 
     def __init__(self, *, head, layers, heads, context, slope_span, temper, min_weight):
         self.head = head
@@ -148,11 +125,9 @@ class QuantizedTransformer:
         temperature=ELECTED_TEMPERATURE,
         min_p=ELECTED_MIN_P,
     ):
-        """The float model in the arithmetic the board holds.
-
-        This is the one quantization of the era -- the drift walk, the audition and the
-        elaboration all take their model here, thus the pair under comparison cannot slip.
-        The heads and the span come off the model, which is where a player set them."""
+        """The float model in the arithmetic the board holds. It is the ONE
+        quantization of the era -- the drift walk, the audition and the elaboration all
+        take their model here -- thus the pair under comparison cannot slip."""
         return cls(
             head=ar_quantized.QuantizedHead.of(model.head),
             layers=[QuantizedLayer.of(layer) for layer in model.layers],
@@ -165,12 +140,9 @@ class QuantizedTransformer:
 
 
 def check_shape(twin):
-    """the rules the consumers assume, refused loudly here rather than inside a walk.
-
-    The arithmetic of the circuit is shifts, thus the shape obeys the shift rules: d and
-    the context are powers of two, the head width is a power of four, and the seat table
-    holds one row for each seat and class. The two tables share one exponent by the shape
-    of `QuantizedHead`, and a FILE that disagrees is refused in `load`."""
+    """The rules the consumers assume, refused here rather than inside a walk. The
+    arithmetic of the circuit is shifts, thus d and the context are powers of two and the
+    head width is a power of four."""
     d = twin.d
     if not len(twin.layers):
         raise ValueError("a model of no layers is no step-frame model")
@@ -209,10 +181,7 @@ def save(path, twin):
 
 
 def load(path):
-    """the model of one contract file; a round trip through `save` is exact.
-
-    The temperature is provenance and not arithmetic -- the temper is already folded --
-    thus it travels in the metadata alone and only a reader with a Python tool sees it."""
+    """the model of one contract file; a round trip through `save` is exact"""
     tensors, metadata = read_contract(path)
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
@@ -246,25 +215,18 @@ def load(path):
 # the integer engine: one running inference over a batch of seeds
 # ---------------------------------------------------------------------
 
-# THE FORMAT THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
-# the hidden vector, the epsilon, log2(e), the lead-in, and the shifts and roots that read
-# them -- stands in `ar_quantized.py`, where `Nn_quantized.Constants` has its twin.
-#
-# `KV_Q` is the query, the keys, the values and the context: the rings store these rows,
-# Q12 in int16. Era five states a 12 of its own -- `V_Q`, which names a BLOCK's value rows
-# as well as an attention ring's and carries its gate at 2 * V_Q -- thus the two are one
-# number and not one format; `Model.Constants` keeps them apart on the OCaml side for that
-# reason.
+# THE ONE FORMAT THIS ERA NAMES OF ITS OWN; every other stands in `ar_quantized.py`.
+# `KV_Q` is the query, the keys, the values and the context, Q12 in int16. Era five's
+# `V_Q` is a 12 of its own and names a block's value rows as well, thus the two are one
+# number and not one format.
 KV_Q = 12
 
 
 class Engine(NamedTuple):
-    """One running inference over a batch of walks. Everything is frozen: a step gives the
-    engine after it, thus a walk is a fold and no state hides in a mutable field.
-
-    THE RINGS ARE THE CONTEXT. `kc` and `vc` hold the coarsened key and value rows of
-    every layer, one slot for each step of the window, and a walk never reads an unwritten
-    slot: `n` counts the filled slots and the wall is the walk itself."""
+    """One running inference over a batch of walks. Everything is frozen: a step gives
+    the engine after it, thus a walk is a fold and no state hides in a mutable field.
+    THE RINGS ARE THE CONTEXT -- one slot for each step of the window -- and a walk
+    never reads an unwritten slot."""
 
     twin: QuantizedTransformer
     h: np.ndarray  # [walks, d], Q16 in int32
@@ -275,11 +237,9 @@ class Engine(NamedTuple):
 
 
 def engine(twin, seeds):
-    """the origin of a batch of walks: an empty ring, no residual, and the generator at
-    the SEED AS IT STANDS, which is the board's SEED cell rule.
-
-    The lead-in is not here. It is the first steps of the walk itself, thus a caller that
-    counts steps counts the steps the float sampler counts."""
+    """The origin of a batch of walks: an empty ring, no residual, and the generator at
+    the SEED AS IT STANDS. The lead-in is not here -- it is the first steps of the walk
+    itself, thus a caller counts the steps the float sampler counts."""
     check_shape(twin)
     walks, d = len(seeds), twin.d
     rings = (walks, len(twin.layers), twin.context, d)
@@ -309,8 +269,7 @@ def forward(e, classes, phase):
         )
         kc[:, at, cur, :] = ar_quantized.coarse_to_ring(key)
         vc[:, at, cur, :] = ar_quantized.coarse_to_ring(value)
-        # the rings of ONE layer: era four's second axis is the layer, and slicing it here
-        # is what lets the shared `attend` name no era's axis
+        # the rings of ONE layer: slicing the layer axis here lets `attend` name none
         context = ar_quantized.attend(
             kc[:, at],
             vc[:, at],
@@ -338,8 +297,7 @@ def forward(e, classes, phase):
 
 
 def projection(y, weight):
-    """one of the three projections of a step: one matvec column, Q12 in int16. The
-    circuit runs the three separately, on one MAC path."""
+    """one of the three projections of a step: one matvec column, Q12 in int16"""
     return clamp16(
         ar_quantized.rescale(y @ weight.values, at=ar_quantized.Y_Q + weight.e, to=KV_Q)
     )
@@ -364,11 +322,10 @@ def walk(twin, seeds, steps):
 def float_row(held, window, phases, drawn, at):
     """The float logits of the seats of ONE step, teacher-forced on the twin's history.
 
-    It takes the model as an ARGUMENT and stands at the module level, thus its compiled
-    form is keyed on the shapes and every step of a drift run reuses the first compile.
-    [window] and [phases] are padded to the model's context and [at] is the last real
-    position, which holds ONE shape over a whole run -- the causal wall keeps [at] from
-    seeing the padding."""
+    It takes the model as an ARGUMENT at the module level, thus its compiled form is keyed
+    on the shapes and every step of a drift run reuses the first compile. [window] is
+    padded to the context and [at] is the last real position, which the causal wall keeps
+    from seeing the padding."""
     h = held.hidden(window, phases)[:, at, None, :]
     return held.head.logits(h, drawn[None])[0, 0]
 
@@ -386,27 +343,23 @@ class Drift(NamedTuple):
 def drift(model, *, context, steps, seed):
     """The quantized walk, scored against the float model draw for draw.
 
-    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
-    cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
-    quantized chain -- it reads the classes the engine drew and conditions each seat on
-    the classes the engine chose -- thus what the report measures is the quantization and
-    never a walk that parted for another reason.
-
-    The same-draw share reads the float draw on the very uniform the engine took, thus a
-    difference there is the arithmetic and not the generator."""
+    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself. The float
+    pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
+    reads the float draw on the very uniform the engine took, thus the report measures
+    the quantization and never a walk that parted for another reason."""
     e = engine(QuantizedTransformer.of(model, context=context), [seed])
     history = []
     counted = measure.Counted()
     for at in range(steps):
         e, classes, chain_draws = next_step(e)
-        # THE HISTORY IS THE TWIN'S, and the float pass reads it: the window the model saw
-        # before this step is the window the engine's own ring held.
+        # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
+        # the window the engine's own ring held
         window = list(history)
         history.append(classes[0])
         if not chain_draws or not window:
             continue
-        # ONE shape for the whole run, as `infer.walk` holds one: the history is
-        # right-padded to [context] and read at its last real position.
+        # ONE shape for the whole run: right-padded to [context], read at the last real
+        # position
         low = max(0, at - context)
         length = at - low
         rows = np.zeros((1, context, corpus.SEATS), dtype=np.int32)

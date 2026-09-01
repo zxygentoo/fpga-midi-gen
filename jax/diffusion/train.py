@@ -10,31 +10,17 @@ on 228 of the 229 train chorales, and a crop never reads the padded tail of the 
 silence inside a crop is the real rests of the music, 0.35 percent of the cells.
 
 The loss is orderless NADE, the paper's: mask a uniform subset of the cells, take the
-negative log-likelihood of the masked cells under the softmax over the pitch rows, and
-scale by one over the masked count. THE NUMBER IS NATS FOR EACH MASKED CELL. It is not the
-paper's Table 1 figure, which is nats for each FRAME under Algorithm 1 with five
-orderings; that referee lives in diffusion/measure.py and it is the only thing that
-compares with 0.57. Nor does this number compare with the loss of any earlier era of this
-project.
+negative log-likelihood of the masked cells, and scale by one over the masked count. THE
+NUMBER IS NATS FOR EACH MASKED CELL. It is not the paper's Table 1 figure, which is nats
+for each FRAME under Algorithm 1; that referee is diffusion/measure.py, and it is the only
+thing that compares with 0.57.
 
 No transposition augmentation: the paper states none, and the pitch axis of the trunk
-carries the equivariance that the shifts used to buy. The elected checkpoint is the best
-valid loss -- 228 pieces against nine million parameters memorize, and the valid curve is
-the only guard the round has.
-
-THE OPTIMIZER IS PLAIN ADAM, by arithmetic and not by a second code path: --wd is 0 by
-default, and AdamW with a weight decay of zero IS Adam. That is the paper's — the code
-release calls `tf.train.AdamOptimizer` with no weight decay, no dropout and no L2
-anywhere, thus batch norm and the best-by-valid checkpoint are the whole of its
-regularisation.
-
-THE UPDATE RULE AND THE RATE CURVE ARE `update_rule` AND `learning_rates`, which
-every era reads; `test_train.py` holds the curve against its closed form.
-
-THE RATE MOVES WITH THE RUNG, and the release carries no flag for it. Measured 2026-08-24
-under the warmup and cosine decay of `learning_rates`, the board rung wants 1.6e-2 and
-the ceiling 3e-3. The default is the ceiling's, because every other default states the
-paper's shape; a rung passes its own, as docs/diffusion.md records them.
+carries the equivariance. The elected checkpoint is the best valid loss -- 228 pieces
+against nine million parameters memorize. THE OPTIMIZER IS PLAIN ADAM, by arithmetic and
+not by a second code path: --wd is 0, and AdamW with a weight decay of zero IS Adam. THE
+RATE MOVES WITH THE RUNG and the release carries no flag for it -- the board rung wants
+1.6e-2 where the ceiling wants the default 3e-3, and docs/diffusion.md records each.
 """
 
 import time
@@ -49,53 +35,45 @@ import corpus
 from diffusion import model
 from train import update_rule
 
-# The batch norm of the code release: `popmean -= 0.01 * (popmean - batchmean)`, thus the
-# population keeps 0.99 of itself at every step.
+# the batch norm of the code release: the population keeps 0.99 of itself at every step
 POP_DECAY = 0.99
-# The probes are the same rows for every run, thus two seeds and two shapes compare. It is
-# not the training seed and it never moves.
+# the probes are the same rows for every run, thus two seeds and two shapes compare; it is
+# not the training seed and it never moves
 PROBE_SEED = 0
 
 
 def population_decay(t):
     """The share of itself the batch-norm population keeps at step [t].
 
-    The population opens at mean 0 and variance 1. At the code release's flat 0.99 it
-    needs some hundreds of steps to reach the batch statistics, and every valid number
-    before that reads the prior and not the model: at step 250 of a 1,500-step probe,
-    valid stood at log 48 while the training loss had already fallen to 3.33. The warmed
-    decay makes the early population the running mean of every batch so far, and settles
-    onto the release's rate at step 890. IT IS WHY THE NORM IS NOT `nnx.BatchNorm`.
-
-    Training never reads it: a training pass normalises by the batch's own statistics,
-    thus this moves the evaluation and the checkpoint and never the gradient."""
+    The population opens at mean 0 and variance 1, and at the release's flat 0.99 it
+    needs hundreds of steps to reach the batch statistics -- valid stood at log 48 at
+    step 250 of a probe whose training loss had reached 3.33. The WARMED decay makes
+    the early population the running mean of every batch so far, and settles onto 0.99
+    at step 890. It is why the norm is not `nnx.BatchNorm`, and training never reads
+    it."""
     return jnp.minimum(POP_DECAY, (1.0 + t) / (10.0 + t))
 
 
 def masked_nll(said, classes, hidden):
-    """The orderless NADE loss of one batch: the negative log-likelihood of the masked
-    cells, over the masked count, meaned over the sheets.
-
-    The divisor is the paper's one over |not-C| and it is PER SHEET: every sheet drew
-    its own mask size, and one with three cells hidden must not weigh a hundredth of
-    one with three hundred. The count is never zero, thus nothing guards the division."""
+    """The orderless NADE loss of one batch, meaned over the sheets. The divisor is the
+    paper's one over |not-C| and it is PER SHEET: every sheet drew its own mask size, and
+    one with three cells hidden must not weigh a hundredth of one with three hundred."""
     nll = model.nll_of_logits(said, classes)
     masked = hidden.astype(jnp.float32)
     return jnp.mean(jnp.sum(nll * masked, axis=(1, 2)) / jnp.sum(masked, axis=(1, 2)))
 
 
 def fold_population(coconet, seen, decay):
-    """The batch statistics of a training pass, folded into the populations of the norms
-    that read them, in the layer order. IT STANDS OUTSIDE THE GRADIENT: a training pass
-    reads no population at all, and the populations are `nnx.BatchStat` in any case."""
+    """the batch statistics of a training pass, folded into the populations in the layer
+    order; IT STANDS OUTSIDE THE GRADIENT, because a training pass reads no population"""
     for layer, statistics in zip(coconet.every_layer(), seen):
         layer.norm.fold(statistics, decay)
 
 
 def make_step(remat):
-    """The jitted training step: the mask draw, the loss, one AdamW update, and the fold
-    of the batch statistics into the population. The mask is drawn INSIDE the step — it
-    reads no corpus, and the device already holds the key."""
+    """The jitted training step: the mask draw, the loss, one AdamW update, and the
+    fold of the batch statistics. The mask is drawn INSIDE the step -- it reads no
+    corpus, and the device already holds the key."""
 
     @nnx.jit
     def step_fn(coconet, optimizer, t, classes, key):
@@ -115,23 +93,18 @@ def make_step(remat):
 
 @nnx.jit
 def eval_fn(coconet, classes, hidden):
-    """The same loss on a fixed probe, under the POPULATION statistics.
-
-    The probe reads the model the sampler and the referees will read, and not the model
-    that a batch of sixteen crops happens to normalize."""
+    """the same loss on a fixed probe, under the POPULATION statistics: the probe reads
+    the model the sampler will read, and not the model one batch happens to normalize"""
     said, _ = coconet(model.planes(classes, hidden))
     return masked_nll(said, classes, hidden)
 
 
 def probe_batches(crops, batch):
-    """The fixed rows of the valid curve: one crop of every valid piece and one orderless
-    mask for each, drawn one time and never drawn again.
-
-    A training batch draws a fresh mask at every step, and a sheet's loss depends heavily
-    on how much of it is hidden, thus two steps of the training number hardly compare. The
-    probes hold the mask still, and what moves in the number is the model.
-
-    The probe mean and the training mean do not compare WITH EACH OTHER."""
+    """The fixed rows of the valid curve: one crop of every valid piece and one
+    orderless mask for each, drawn ONE time. A sheet's loss depends heavily on how much
+    of it is hidden, thus a training number that redraws its mask hardly compares with
+    itself; these hold the mask still. The probe mean and the training mean do not
+    compare."""
     classes = crops.every_piece(PROBE_SEED)
     hidden = model.orderless_masks(
         jax.random.key(PROBE_SEED), len(classes), crops.length
@@ -143,9 +116,9 @@ def probe_batches(crops, batch):
 
 
 def eval_loss(coconet, batches):
-    """the mean over the probe sheets; the last batch is short, thus the mean is a sum
-    over a count and never a mean of means. The sums stay on the device until the loop
-    ends, because a read at every batch blocks the dispatch of the next one."""
+    """the mean over the probe sheets, a sum over a count and never a mean of means;
+    the sums stay on the device until the loop ends, because a read blocks the next
+    dispatch"""
     total = 0.0
     sheets = 0
     for classes, hidden in batches:
@@ -255,9 +228,8 @@ def train(
 @click.option("--warmup", default=1000)
 @click.option("--clip", default=1.0)
 @click.option("--wd", "weight_decay", default=0.0)
-# MEASURED 2026-08-24 on the RTX 3060, at the paper's shape: remat costs 28 percent of the
-# step (batch 8, 327 ms against 432) and buys the memory that a batch of 16 needs -- 16
-# without it exhausts a 12 GB card. Batch 8 fits either way, thus the default is off.
+# measured at the paper's shape: remat costs 28 percent of the step and buys the memory a
+# batch of 16 needs; batch 8 fits either way, thus the default is off
 @click.option(
     "--remat/--no-remat",
     default=False,

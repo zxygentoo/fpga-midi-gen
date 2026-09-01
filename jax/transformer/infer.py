@@ -1,16 +1,12 @@
 """The sampler and the player of the step-frame model.
 
-One step is one forward pass, always: the four seats are drawn in a chain from the soprano
-down, on the host, between two passes of the network. No mask guards the draw, because no
-frame is illegal.
+One step is one forward pass: the four seats are drawn in a chain from the soprano down,
+on the host, between two passes of the network. No mask guards the draw, because no frame
+is illegal.
 
 CPU only, and deliberately: every step needs the drawn frame back on the host before the
-next forward, so the loop is latency-bound and a GPU would take the device from the
-trainer.
-
-The decode is a rule of the frame and lives in corpus.py; the player sends what it makes:
-raw channel voice bytes on the rawmidi device, with no backend library in the way —
-the wire side itself is midi.py, shared by both eras.
+next forward, thus the loop is latency-bound and a GPU would take the device from the
+trainer. The wire side is midi.py and the decode is corpus.py's.
 """
 
 import os
@@ -34,28 +30,23 @@ from transformer import model, quantized
 def float_window(held, classes, phases):
     """the float stream over one window, jitted.
 
-    IT TAKES THE MODEL AS AN ARGUMENT AND STANDS AT THE MODULE LEVEL, thus its compiled
-    form is keyed on the shapes and every step of every walk of the process reuses the
-    first compile. A `nnx.jit` built inside `draw` is a new callable at every call, which
-    is the rule `quantized.float_row` states and this is the audition's half of it."""
+    IT TAKES THE MODEL AS AN ARGUMENT AT THE MODULE LEVEL, thus its compiled form is keyed
+    on the shapes and every walk of the process reuses the first compile; an `nnx.jit`
+    built inside `draw` would be a new callable at every call."""
     return held.hidden(classes, phases)
 
 
 def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
-    The boot is a lead-in of silence: one bar of silent frames, then the draw. It is
-    measured and settled -- over 12 seeds the model opened the music itself inside one bar
-    of the end of the lead-in, always on a multiple of four steps -- thus the boot needs
-    no pitch, no range and no table. The lead-in counts inside [steps] and stands at the
-    head of the music, because it is silence the walk really plays.
+    The boot is a lead-in of silence: one bar of silent frames, then the draw. The model
+    opens the music itself inside one bar of its end, thus the boot needs no pitch, no
+    range and no table. The lead-in counts inside [steps].
 
-    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
-    -- and the temperature and the floor bake into it as the bitstream carries them. The
-    two walks open on different generators: the float walk folds its seed and the twin
-    takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
-    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION,
-    where the twin stands still while the float walk runs from the folded state."""
+    [twin] draws the INTEGER twin of the circuit: the piece the board plays at this seed.
+    The two walks open on different generators -- the float walk folds its seed and the
+    twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
+    both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
         engine = quantized.QuantizedTransformer.of(
             held, context=context, temperature=temperature, min_p=min_p
@@ -66,18 +57,16 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
     lead = corpus.BAR_STEPS
     classes = np.zeros((batch, lead, corpus.SEATS), dtype=np.int32)
 
-    # [classes] carries one column for each step drawn so far and the loop starts at
-    # [lead], thus the width is [step] at the head of every pass.
+    # [classes] carries one column for each step drawn so far, thus its width is [step]
     for step in range(lead, steps):
-        # ONE shape for the whole run, or every window length compiles its own kernel --
-        # the history is right-padded to [batch, context] and read at its last real
-        # position. The causal wall keeps a real position from seeing the padding.
+        # ONE shape for the whole run, or every window length compiles its own kernel:
+        # right-padded to [context] and read at the last real position, which the causal
+        # wall keeps from seeing the padding
         low = max(0, step - context)
         length = step - low
         window = np.zeros((batch, context, corpus.SEATS), dtype=np.int32)
         window[:, :length] = classes[:, low:step]
-        # the phase of a position is the position folded into the bar, which is the rule
-        # the corpus export states; nothing has to be carried beside the frames
+        # the phase of a position is the position folded into the bar
         table = np.zeros((batch, context), dtype=np.int32)
         table[:, :length] = np.arange(low, step) % ar_model.PHASE_BUCKETS
         h = np.asarray(float_window(held, jnp.asarray(window), jnp.asarray(table)))[
@@ -86,9 +75,8 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
 
         state, frame = held.head.draw_frame(h, state, temperature, min_p)
         classes = np.concatenate([classes, frame[:, None, :]], axis=1)
-    # [steps] frames and not [max(lead, steps)]. The lead-in counts inside [steps], thus a
-    # walk shorter than one bar is that many silent frames and not a whole bar of them --
-    # the loop adds nothing there, and the integer twin gives exactly [steps] in any case.
+    # [steps] frames and not [max(lead, steps)]: a walk shorter than one bar is that many
+    # silent frames, as the integer twin gives
     return classes[:, :steps]
 
 
@@ -137,11 +125,9 @@ def sample(ckpt, seeds, context, heads, alibi_span, **flags):
 def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
-    It is the only thing that crosses the seam for a build. The heads, the context and the
-    span are NOT in the checkpoint -- the heads only split the width at run time, ALiBi
-    holds no position table, and the context is a choice of the draw -- thus they are
-    flags here and named tensors in the file, where the elaboration reads them. The
-    temperature and the floor bake into the temper and the min-p share."""
+    It is the only thing that crosses the seam for a build. The heads, the context and
+    the span are NOT in the checkpoint, thus they are flags here and named tensors in
+    the file. The temperature and the floor bake into the temper and the min-p share."""
     twin = quantized.QuantizedTransformer.of(
         model.Transformer.load(ckpt, heads=heads, span=alibi_span),
         context=context,

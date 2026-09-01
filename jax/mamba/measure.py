@@ -3,10 +3,9 @@
     uv run python -m mamba.measure forced --ckpt ../_train/mamba/NAME.ckpt
     uv run python -m mamba.measure free   --ckpt ../_train/mamba/NAME.ckpt --seeds 1-16
 
-THE INSTRUMENTS ARE NOT HERE. Both halves -- the forced loss and the free walk -- are one
-thing across the two step-frame eras and stand in `ar_measure.py`, beside `ar_train.py`.
-What is era five's is the two commands below: they name a model and a player, and
-`ar_measure` names neither.
+THE INSTRUMENTS ARE NOT HERE: both halves stand in `ar_measure.py`, one thing across the
+two step-frame eras. What is era five's is the two commands below, which name a model and
+a player.
 """
 
 from pathlib import Path
@@ -49,15 +48,12 @@ def forced(ckpt, corpus_path):
 @click.option("--ring", default=model.ATTN_CONTEXT, help="the attention ring depth")
 @click.option("--corpus", "corpus_path", default=str(corpus.FRAMES))
 def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):
-    # THE IMPORT IS DEFERRED AND IT IS LOAD-BEARING. `mamba.infer` sets
-    # JAX_PLATFORMS=cpu at import, which is the audition's policy and not the referee's:
-    # a top-level import here would put the `forced` command on the CPU as well, and its
-    # eval pass is the one thing in this module that wants the card.
+    # THE DEFERRED IMPORT IS LOAD-BEARING: `mamba.infer` sets JAX_PLATFORMS=cpu at
+    # import, and at the top level that would put `forced` on the CPU as well
     from mamba import infer
 
     seeds = cli.parse_seeds(None, None, seeds)
-    # [infer.draw] and NOT [infer.sample], which is a click Command and cannot be called
-    # with a model
+    # [infer.draw] and NOT [infer.sample], which is a click Command
     walks = infer.draw(
         model.Mamba.load(ckpt),
         seeds=seeds,

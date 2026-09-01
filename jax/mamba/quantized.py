@@ -1,38 +1,26 @@
 """The integer twin of the state-space model: the arithmetic the board plays.
 
-The float model of `mamba/model.py` is what the ear elected. This module is the same
-network in the arithmetic the board can hold -- int8 weights with a power-of-two exponent
-for each tensor, int16 activations, the per-head numbers folded into the constants the ops
-carry, and the draw in integers -- and the circuit of era five must equal it operation for
-operation, not approximately.
-
-THE ORDER OF OPERATIONS IS THE CONTRACT. A rewrite that is algebraically equal and
-differently ordered is a different machine.
-
-The rules that are not this era's come from two files. `quantized.py` holds what all
-three eras read -- the exponent rule, the rounding, the int16 rails, the temper, the
-min-p floor, the shared exp2 table, the integer pick and the CONTRACT FILE -- and
-`ar_quantized.py` what this era and era four share: the stream formats, the norm, the
-attention over a ring, the chain and the walk.
+The float model of `mamba/model.py` is what the ear elected; this is the same network in
+the arithmetic the board can hold -- int8 weights with a power-of-two exponent for each
+tensor, int16 activations, the per-head numbers folded into the constants the ops carry,
+and the draw in integers. The circuit of era five must equal it OPERATION FOR OPERATION:
+a rewrite that is algebraically equal and differently ordered is a different machine. What
+is not this era's comes from `quantized.py` and `ar_quantized.py`.
 
 THREE THINGS OF A BLOCK ARE NOT TENSORS OF THE IMAGE. `a_log`, `dt_bias` and `d_skip` hold
-one value for each head, and an int8 tensor cannot carry them: the bias enters a softplus,
-where a step of one part in 127 of its range moves `dt` by more than a small `dt` is, and
-the decay would follow it. They quantize here into the numbers the ops carry -- `a *
-log2(e)` folds into one Q constant for each head, exactly as the temperature folds into
-the temper -- thus the run time never sees them as tensors.
+one value for each head and an int8 tensor cannot carry them: the bias enters a softplus,
+where a step of one part in 127 of its range moves `dt` by more than a small `dt` is. They
+fold into the constants the ops carry, thus the run time never sees them as tensors.
 
 ONE ULP DECIDES A ROM BYTE. `decay` reads the exponential of `a_log`, and the OCaml
-quantizer read it through the C library's `exp`. `math.exp` is the same library on the
-same machine, thus this side takes it in float64 and never `np.exp`, whose vectorized path
-may differ by one ulp -- and one ulp there moves a `q_value` by one, which moves a byte,
-which moves the netlist md5.
+quantizer read it through the C library's `exp`; this side takes `math.exp` in float64 and
+never `np.exp`, whose vectorized path may differ by one ulp -- which moves a `q_value`,
+which moves a byte, which moves the netlist md5.
 
 THE CONTRACT FILE is what crosses the seam to the elaboration. `save` writes it and
 `Model.of_int8_checkpoint` reads it; `load` reads it back exactly. IT CARRIES THE ROM
-ORDER AND NOT THE CHECKPOINT ORDER: a block holds six tensors in a checkpoint and three of
-them never reach the ROM, thus the two orders are two structures and neither is implied by
-the other.
+ORDER AND NOT THE CHECKPOINT ORDER: a block holds six tensors in a checkpoint and three
+never reach the ROM.
 
     tensor            dtype   shape             value
     "0"               int32   [4, 48, d]        the seat tables, int8 in int32
@@ -51,26 +39,18 @@ the other.
 A layer's image is: a block, `w_in` TRANSPOSED at [projection, d], `conv` at
 [channels, taps] and `w_out` at [d_in, d]; an attention layer, `wq` and `wk` at [2d, d]
 and `wv` and `wo` at [d, d]; the feed-forward, `w1` at [d, 4d] and `w2` at [4d, d]. The
-four per-block rows are indexed by the ordinal of the block among the BLOCKS and not among
-the layers, which is what indexes a memory of the circuit as well.
+per-block rows are indexed by the ordinal of the block among the BLOCKS, which is what
+indexes a memory of the circuit.
 
-W_in IS STORED TRANSPOSED, and the reason is the address. The circuit reaches a weight by
-CONCATENATING the two walk counters, which costs nothing and is the row-major address only
-when the dimension under the outer counter is a power of two. `d` is one; the projection
--- 2 d_in + 2 N + H, 292 at the baseline -- is not. Storing the tensor the other way round
-puts `d` under the outer counter and the concatenation is right again.
+W_in IS STORED TRANSPOSED, and the reason is the address: the circuit reaches a weight by
+CONCATENATING the two walk counters, which is the row-major address only when the
+dimension under the outer counter is a power of two. `d` is one and the projection is not.
 
 THE PLAN IS IN THE SHAPES and no tensor states it: the first tensor of a group names its
-kind, thus the reader walks the image sequentially and reads the kind before the count.
-`wq` is [2d, d] and `w1` is [d, 4d]; a transposed `w_in` is [projection, d] and the
-projection is never 2d, thus no block can be read as anything else. A SQUARE first tensor
-is era four's plain attention, which this model does not hold, and it is refused.
-
-EVERY TENSOR IS INT32 AND THE SCALARS ARE TENSORS -- both facts of the OCaml reader, and
-`quantized.py` states them once for the three eras and writes the archive. The metadata
-is written as well, for a reader that has a Python tool in hand: the temperature, the
-min-p and the checkpoint are PROVENANCE, because the temper and the floor are already
-folded.
+kind. A transposed `w_in` is [projection, d] and the projection is never 2d, thus no block
+can be read as anything else; a SQUARE first tensor is era four's plain attention, which
+this model does not hold, and it is refused. `quantized.py` states why every tensor is
+int32 and every scalar a tensor.
 """
 
 import math
@@ -128,8 +108,8 @@ BESIDE_THE_WEIGHTS = (
     D_SKIP,
 )
 
-# one letter for each kind, which is how `docs/mamba.md`, the checkpoint names and the
-# `--plan` flag of the trainer all spell a plan. The elected model is MMMMMMZF.
+# one letter for each kind, as `docs/mamba.md` and the `--plan` flag of the trainer spell
+# a plan; the elected model is MMMMMMZF
 LETTERS = {recurrence.MAMBA: "M", recurrence.ZATTN: "Z", recurrence.MLP: "F"}
 
 # the tensors each kind of layer puts in the ROM image, in the order it puts them
@@ -140,9 +120,8 @@ IMAGE_TENSORS = {
 }
 
 # The Q the Decay op's constant carries. The constant rides the 25-bit port and `dt` the
-# 18-bit one, which is the way round that costs nothing -- `dt` is int16 -- and it leaves
-# the constant three million units of room where the other order would clamp a decay rate
-# above 22.
+# 18-bit one -- `dt` is int16, thus this way costs nothing -- and the other order would
+# clamp a decay rate above 22.
 DECAY_Q_BITS = 12
 DECAY_HIGH = (1 << 24) - 1
 
@@ -151,12 +130,11 @@ DECAY_HIGH = (1 << 24) - 1
 DT_BIAS_BOUND = 32767
 D_SKIP_BOUND = 131071
 
-# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above and stand as
-# attributes of this module for era five's player to read: the policy has one home,
-# `quantized.py`, and this era does not re-elect it.
-# The depth of the ring at INFERENCE, which is a choice of the player and not a fact of
-# the training run. It is era four's training window, thus a window of the loss reads
-# exactly the attention the trainer computed.
+# `ELECTED_TEMPERATURE` and `ELECTED_MIN_P` are imported above so era five's player can
+# read them here; the policy has one home in `quantized.py`.
+# The depth of the ring at INFERENCE, a choice of the player and no fact of the training
+# run. It is era four's training window, thus a window of the loss reads exactly the
+# attention the trainer computed.
 ELECTED_RING = recurrence.ATTN_CONTEXT
 
 
@@ -265,24 +243,18 @@ TWIN_OF = {
 
 
 class QuantizedMamba:
-    """The model as the bitstream carries it.
-
-    [every_tensor] walks it in THE ORDER OF THE ROM -- the two tables, then what each
-    layer puts in the image -- which is `ar_model.Trunk`'s own walk over each layer's
-    [tensors].
-
-    The ring is an inference choice and not a fact of the training run, thus it travels in
-    the file beside the span the file already carried.
+    """The model as the bitstream carries it. [every_tensor] walks it in THE ORDER OF THE
+    ROM: the two tables, then what each layer puts in the image. The ring is an inference
+    choice and travels in the file beside the span.
 
     IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
     era is a Flax module -- thus [every_tensor] and [plan] are restated below. THE
-    ATTRIBUTE NAMES ARE THE PARITY and not the base class: `held.layers[2].conv` and
-    `twin.layers[2].conv` are the same layer under the two arithmetics."""
+    ATTRIBUTE NAMES ARE THE PARITY and not the base class."""
 
     def __init__(self, *, head, layers, span, ring, temper, min_weight):
-        # the span reaches the circuit as `slope_exponent`, an integer shift, thus a
-        # fractional span cannot be carried; it is refused here and not truncated, because
-        # `check_shape` sees only the truncated twin and cannot say the run drifted.
+        # the span reaches the circuit as `slope_exponent`, an integer shift; a
+        # fractional one is REFUSED and not truncated, because `check_shape` sees only
+        # the truncated twin and could not say the run drifted
         if int(span) != span:
             raise ValueError(f"the span {span} is fractional and no shift holds it")
         self.head = head
@@ -354,17 +326,12 @@ class QuantizedMamba:
 
 
 def check_shape(twin):
-    """the rules the consumers assume, refused loudly here rather than inside a walk.
+    """The rules the consumers assume, refused here rather than inside a walk.
 
     The arithmetic of the circuit is shifts and address concatenations, thus every field
-    of an address is a power of two: the two widths, the heads, the block head, the state,
-    the taps and the ring. The attention head width obeys the stronger rule of
-    `ar_quantized.score_shift`, a power of FOUR. The ring is the one of them that is not a
-    fact of the training run, and a player that asks for a depth the mask cannot wrap
-    refuses here.
-
-    A PLAN OF ATTENTION ALONE cannot be held by the tree either, because the widths come
-    out of a block; it is refused first so that the message says so."""
+    of an address is a power of two, and the attention head width obeys the stronger rule
+    of `ar_quantized.score_shift`. A PLAN OF ATTENTION ALONE is refused first, because the
+    widths come out of a block and the message should say so."""
     if not twin.blocks:
         raise ValueError("a plan of attention alone is not this model")
     shape = twin.widths
@@ -397,8 +364,8 @@ def save(path, twin):
     tensors[RING] = scalar_tensor(twin.ring)
     tensors[TEMPER] = twin.temper.tensor()
     tensors[MIN_WEIGHT] = scalar_tensor(twin.min_weight)
-    # the three per-head rows are one tensor each, a row for each BLOCK in the plan order,
-    # because the elaboration reads one image and not a tree
+    # one tensor for each per-head row, a line for each BLOCK in the plan order: the
+    # elaboration reads one image and not a tree
     decay, dt_bias, d_skip = (
         np.stack(rows, axis=0).astype(np.int32)
         for rows in zip(*[block.rows() for block in twin.blocks])
@@ -495,15 +462,10 @@ def kind_of_image(shape, d, path):
 # the integer engine: one running inference over a batch of seeds
 # ---------------------------------------------------------------------
 
-# THE FORMATS THIS ERA NAMES OF ITS OWN. Every other one -- the stream, the normed vector,
-# the hidden vector, the epsilon, log2(e), the lead-in, and the shifts, roots and norms
-# that read them -- stands in `ar_quantized.py`, where `Nn_quantized.Constants` has its
-# twin.
-#
-# `V_Q` is the value rows of a block and of the attention rings: Q12 in int16. Era four
-# states a 12 of its own -- `KV_Q`, which names an attention ring's four tensors and
-# nothing else -- thus the two are one number and not one format; `Model.Constants` keeps
-# them apart on the OCaml side for that reason.
+# THE FORMATS THIS ERA NAMES OF ITS OWN; every other stands in `ar_quantized.py`.
+# `V_Q` is the value rows of a block and of the attention rings, Q12 in int16. Era four's
+# `KV_Q` names an attention ring's four tensors and nothing else, thus the two are one
+# number and not one format.
 V_Q = 12
 S_Q = 12  # the state of the recurrence
 ALPHA_Q = 15  # the decay of one step
@@ -515,20 +477,17 @@ GATE_Q = 2 * V_Q
 
 def matvec(y, weight, *, transposed, at, to):
     """One matvec column: the terms of a Q[at] vector against a row of the weight.
-
     [transposed] states that the image holds the tensor with its OUTER axis first, as it
-    does for W_in, and the circuit reads that same order."""
+    does for w_in, and the circuit reads that same order."""
     matrix = weight.values.T if transposed else weight.values
     return clamp16(ar_quantized.rescale(y @ matrix, at=at + weight.e, to=to))
 
 
 class Clamps(NamedTuple):
-    """The clamps of the walk, and the chances each one had.
-
-    The formats of this era are chosen with margin and not metered on a trained
-    checkpoint, thus a clamp that fires is the finding that says which one is wrong -- and
-    where era four could let a hot signal die with its window, an error in the state
-    carries forward."""
+    """The clamps of the walk, and the chances each one had. The formats of this era are
+    chosen with margin and not metered on a trained checkpoint, thus a clamp that fires is
+    the finding that says which is wrong -- and an error in the STATE carries forward,
+    where era four could let a hot signal die with its window."""
 
     dt: int = 0
     dt_seen: int = 0
@@ -538,7 +497,7 @@ class Clamps(NamedTuple):
     state_seen: int = 0
 
     def counting(self, name, hit, size):
-        """[name] and its `_seen` twin, moved together -- a counter that rose without its
+        """[name] and its `_seen` twin, moved together: a counter that rose without its
         chances would read as a rate this walk never had"""
         seen = f"{name}_seen"
         return self._replace(
@@ -550,11 +509,9 @@ class Clamps(NamedTuple):
 
 
 class Engine(NamedTuple):
-    """One running inference over a batch of walks. Everything is frozen: a step gives the
-    engine after it, thus a walk is a fold and no state hides in a mutable field.
-
-    THE STATE AND THE TAPS ARE THE MEMORY OF THE WALK and the only things that survive a
-    step; the key and value rings are era four's, and they die with their window."""
+    """One running inference over a batch of walks. Everything is frozen: a step gives
+    the engine after it, thus a walk is a fold and no state hides in a mutable field.
+    THE STATE AND THE TAPS ARE THE MEMORY and the only things that survive a step."""
 
     twin: QuantizedMamba
     state: np.ndarray  # [walks, blocks * d_in * n], Q12
@@ -589,10 +546,8 @@ def engine(twin, seeds):
 
 def block(e, layer, ordinal, h, state, taps, tally):
     """One block of the trunk: the stream after the residual join, and the clamps it met.
-
-    It writes the state and the taps of its own region IN PLACE -- the two arrays are
-    copies the caller made for this step -- as the state RAM of the circuit is written in
-    place."""
+    It writes the state and the taps of its own region IN PLACE, on copies the caller made
+    for this step, as the state RAM of the circuit is written in place."""
     shape = e.twin.widths
     d, d_in, heads, n = shape.d, shape.d_in, shape.heads, shape.state
     width, channels, head = shape.taps, shape.channels, shape.head
@@ -649,11 +604,9 @@ def block(e, layer, ordinal, h, state, taps, tally):
             )
             >> S_Q
         )
-    # THE GATE PRODUCT STAYS WIDE. Both operands are Q12 values well under one -- the
-    # readout of a small state and the SiLU of a gate -- thus a truncation back to Q12
-    # here would keep about five bits of a product that holds seventeen, and it would
-    # throw them away immediately before the one operation that would have used them: the
-    # norm divides by the size of the vector and does not care what scale it arrives in.
+    # THE GATE PRODUCT STAYS WIDE. Both operands are Q12 values well under one, thus a
+    # truncation back to Q12 would keep five bits of a product that holds seventeen --
+    # right before the norm, which does not care what scale it arrives in.
     gated = read * ar_quantized.silu(zxbcdt[:, :d_in])
     g = ar_quantized.rms_norm_q(gated, at=GATE_Q, width=d_in)
     return ar_quantized.join(h, layer.w_out, values=g, at=V_Q), tally
@@ -677,8 +630,7 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
 
     kc[:, ordinal, cur, :] = ar_quantized.coarse_to_ring(project("wk", joined))
     vc[:, ordinal, cur, :] = ar_quantized.coarse_to_ring(project("wv", y))
-    # the rings of THIS attention site: era five's second axis is the site's ordinal, and
-    # slicing it here is what lets the shared `attend` name no era's axis
+    # the rings of THIS attention site: slicing the ordinal here lets `attend` name none
     context = ar_quantized.attend(
         kc[:, ordinal],
         vc[:, ordinal],
@@ -693,11 +645,9 @@ def attention(e, layer, ordinal, h, embedding, kc, vc):
 
 
 def feed_forward(twin, layer, h):
-    """Era four's feed-forward as a layer of its own: one matvec and a ReLU, Q10.
-
-    The ReLU stands after the clamp of the matvec and the circuit takes it before, which
-    is the same integer: a value the clamp raised was negative and the ReLU makes it zero
-    either way, and a value it lowered was above the ceiling and stays there."""
+    """Era four's feed-forward as a layer of its own: one matvec and a ReLU, Q10. The ReLU
+    stands AFTER the clamp of the matvec where the circuit takes it before, which is the
+    same integer either way."""
     y = ar_quantized.rms_norm_q(h, at=ar_quantized.H_Q, width=twin.d)
     hidden = np.maximum(
         matvec(
@@ -709,12 +659,9 @@ def feed_forward(twin, layer, h):
 
 
 def layer_streams(e, classes, phase):
-    """the residual stream after the embed and then after each layer of the step the
-    engine would take next -- one entry for each time the circuit writes the whole stream,
-    in the order it writes them.
-
-    A frame gate that fails says only THAT the circuit and the twin parted; this says
-    where, and it is the instrument that found era five's four address faults."""
+    """The residual stream after the embed and after each layer of the step the engine
+    would take next, in the order the circuit writes them. A frame gate says only THAT the
+    circuit and the twin parted; this says where."""
     twin = e.twin
     state, taps = e.state.copy(), e.taps.copy()
     kc, vc = e.kc.copy(), e.vc.copy()
@@ -757,15 +704,12 @@ def walk(twin, seeds, steps):
 
 
 def streams(twin, seeds, steps):
-    """the stream writes of each step: the embed and then each layer, in the order the
-    circuit writes them.
-
-    It walks the model, thus the writes are the writes of a real walk and not of a step
-    the engine would never take."""
+    """the stream writes of each step, in the order the circuit writes them; it walks the
+    model, thus they are the writes of a real walk"""
     e = engine(twin, seeds)
     written = []
-    # `ar_quantized.next_step` states the lead-in and the chain; the trunk pass it takes
-    # one this gate reads, thus a step runs the recurrence ONE time and not twice.
+    # `ar_quantized.next_step` states the lead-in and the chain, and the trunk pass it
+    # takes is the one this gate reads: a step runs the recurrence once and not twice
     def recorded(e, classes, phase):
         rows, e = layer_streams(e, classes, phase)
         written.append(rows)
@@ -830,8 +774,8 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
     for at in range(steps):
         e, classes, chain_draws = next_step(e)
         # THE CHAIN OF A STEP READS THE STREAM OF THE STEP BEFORE IT, on both sides: the
-        # twin draws from the stream its own last forward left, thus the float row must be
-        # the row that same forward states and never the one this step's classes make.
+        # float row must be the row that same forward states and never the one this
+        # step's classes make
         if chain_draws and stream is not None:
             floated = np.asarray(float_row(model, stream, classes)).astype(np.float64)
             counted = measure.count_chain_draws(

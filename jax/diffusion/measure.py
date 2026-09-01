@@ -4,20 +4,14 @@ Algorithm 1, and the tail of it.
     uv run python -m diffusion.measure nll     --ckpt ../_train/diffusion/NAME.ckpt
     uv run python -m diffusion.measure corpus
 
-The common battery is NOT here: it knows nothing of a sheet or a mask, thus it stands
-in the common home, jax/measure.py. What stands here needs the model itself and the mask
-planes.
+The common battery is NOT here -- it knows nothing of a sheet or a mask, thus it stands in
+jax/measure.py. What stands here needs the model itself and the mask planes, and nothing
+here draws a sheet: diffusion/infer.py draws and calls in.
 
-THE LIKELIHOOD is the paper's Algorithm 1, and it is the one number of this round that
-compares outside the repository: Table 1 of arXiv 1903.07227 reads **0.57 +- 0.01** nats
-for each frame on the sixteenth grid of this corpus lineage. The protocol is pinned to the
-paper and to its code release, because a referee that computes a different number reads
-nothing; [framewise_lls] states what that means in practice.
-
-THE CORPUS ROW IS THE REFEREE OF EVERY NUMBER and NOTHING HERE RANKS A MODEL, which are
-the standing rules of jax/measure.py and are earned ten times over in this project.
-
-Nothing here draws a sheet: diffusion/infer.py draws and calls in here.
+THE LIKELIHOOD is the paper's Algorithm 1, the one number of this round that compares
+outside the repository: Table 1 of arXiv 1903.07227 reads **0.57 +- 0.01** nats for each
+frame on the sixteenth grid of this corpus lineage. The protocol is pinned to the paper
+and to its code release, because a referee that computes a different number reads nothing.
 """
 
 import time
@@ -42,9 +36,7 @@ def corpus_sheets(corpus_path, split, crop, seed):
 
 
 def echo_battery(label, sheets):
-    """one row of the battery of jax/measure.py, printed under [label]. Every command of
-    this round prints rows and each prints the corpus row first, thus this stands here
-    once."""
+    """one row of the battery of jax/measure.py, printed under [label]"""
     for line in measure.battery_lines(label, measure.battery_row(sheets)):
         click.echo(line)
 
@@ -61,22 +53,19 @@ ORDERINGS = 5
 
 
 def frame_ordering(rng, steps):
-    """One ordering of Algorithm 1: a permutation of the frames, and a permutation of the
-    voices inside each frame.
-
-    The paper's random ordering is over FRAMES and not over all D variables — that is the
-    difference between its framewise measurement and a notewise one. This round reports
-    the random ordering, which is the row of Table 1 that reads 0.57."""
+    """One ordering of Algorithm 1: a permutation of the frames, and a permutation of
+    the voices inside each frame. The paper's random ordering is over FRAMES and not
+    over all D variables, which is what makes its measurement framewise and not
+    notewise."""
     return rng.permutation(steps), np.stack(
         [rng.permutation(model.VOICES) for _ in range(steps)]
     )
 
 
 def forward_in_chunks(forward, classes, hidden, chunk):
-    """the log probabilities of a stack of sheets, [chunk] at a time: one sheet of the
-    stack is one frame of the piece, thus the stack is as tall as the crop and a 12 GB
-    card wants it cut. The chunks cross back to the host ONE TIME, because a read of a
-    chunk blocks the dispatch of the next."""
+    """the log probabilities of a stack of sheets, [chunk] at a time: the stack is as tall
+    as the crop and a 12 GB card wants it cut. The chunks cross back to the host ONE TIME,
+    because a read of a chunk blocks the dispatch of the next."""
     said = [
         forward(jnp.asarray(classes[at : at + chunk]), hidden[at : at + chunk])
         for at in range(0, len(classes), chunk)
@@ -87,17 +76,12 @@ def forward_in_chunks(forward, classes, hidden, chunk):
 def framewise_lls(forward, classes, ordering, chunk):
     """The log-likelihood of every frame of one sheet under one ordering: Algorithm 1.
 
-    THE FRAMES ARE INDEPENDENT GIVEN THE ORDERING, and that is the whole reason this
-    referee is affordable. Algorithm 1 restores the ground truth of a frame the moment it
-    finishes writing it, thus frame l conditions on the TRUE frames before it in the
-    ordering and on nothing the model wrote outside itself. The T frames therefore run as
-    one stack and the walk costs I forward passes and not I times T.
-
-    Inside a frame the model does condition on itself: voice k reads what the model put in
-    the k - 1 voices before it. That is what makes this framewise and not notewise.
-
-    The model's own value is written as the ARGMAX and not as a draw: the paper samples
-    there, its code release takes the argmax, and the release is what produced 0.57."""
+    THE FRAMES ARE INDEPENDENT GIVEN THE ORDERING, and that is why this referee is
+    affordable: Algorithm 1 restores the ground truth of a frame the moment it finishes
+    writing it, thus the T frames run as one stack and the walk costs I forward passes and
+    not I times T. Inside a frame the model does condition on itself, which is what makes
+    this framewise. Its own value is written as the ARGMAX and not as a draw, because the
+    code release takes the argmax and the release produced 0.57."""
     frames, voices = ordering
     steps = len(classes)
     # sheet l of the stack reveals the frames that stand before position l in the ordering
@@ -121,14 +105,10 @@ def framewise_lls(forward, classes, ordering, chunk):
 
 
 def piece_nll(forward, classes, rng, orderings, chunk):
-    """Algorithm 1 for one sheet, frame by frame: the nats of every frame of it.
-
-    The caller means these, which is Algorithm 1's return, AND keeps them: a mean cannot
-    see a rare bad moment and the ear can.
-
-    The orderings are combined IN PROBABILITY SPACE, one frame at a time — logsumexp over
-    the ensemble, less the log of its size. A mean of log-likelihoods would be an
-    unnormalised geometric mean and would waste probability mass."""
+    """Algorithm 1 for one sheet, frame by frame: the nats of every frame of it. The
+    caller means these AND keeps them, because a mean cannot see a rare bad moment. The
+    orderings combine IN PROBABILITY SPACE -- logsumexp less the log of the ensemble size
+    -- where a mean of log-likelihoods would waste probability mass."""
     lls = np.stack(
         [
             framewise_lls(forward, classes, frame_ordering(rng, len(classes)), chunk)
@@ -140,20 +120,16 @@ def piece_nll(forward, classes, rng, orderings, chunk):
 
 @nnx.jit
 def log_probabilities(coconet, classes, hidden):
-    """the log probability of every pitch row of every cell, over a stack of sheets.
-
-    The log softmax runs on the device beside the trunk: the referee then indexes a
-    probability and never normalises one, and the argmax of the two is the same cell."""
+    """the log probability of every pitch row of every cell, over a stack of sheets;
+    the log softmax runs on the device beside the trunk, thus the referee indexes a
+    probability and never normalises one"""
     said, _ = coconet(model.planes(classes, hidden))
     return jax.nn.log_softmax(said, axis=-2)
 
 
 def framewise_nll(coconet, sheets, *, orderings, chunk, seed, report=None):
     """The referee over a set of sheets: Algorithm 1's mean nats for each frame, its
-    standard error, and the frames themselves.
-
-    The standard error is over the PIECES, as the paper's Table 1 reports it. The frames
-    are kept for [tail_line]."""
+    standard error over the PIECES as Table 1 reports it, and the frames themselves."""
     forward = partial(log_probabilities, coconet)
     rng = np.random.default_rng(seed)
     frames = []
@@ -184,11 +160,9 @@ MARKS = (50, 90, 99)
 
 def tail_row(frames, seed=0):
     """The tail of the framewise nats: the percentiles of [MARKS], the share of frames
-    over [LOUD], and a bootstrap error for each of them.
-
-    THE RESAMPLE IS OVER PIECES and not over frames: the frames of one chorale are one
-    draw of a composer and not 128 of them, thus resampling frames would state an error
-    several times too small and every model would separate from every other."""
+    over [LOUD], and a bootstrap error for each. THE RESAMPLE IS OVER PIECES: the
+    frames of one chorale are one draw of a composer and not 128, thus resampling
+    frames would state an error several times too small."""
     rng = np.random.default_rng(seed)
     draws = frames[rng.integers(len(frames), size=(RESAMPLES, len(frames)))]
     draws = draws.reshape(RESAMPLES, -1)
@@ -203,16 +177,12 @@ def tail_row(frames, seed=0):
 
 
 def tail_line(frames, seed=0):
-    """THE RARE BAD MOMENT, which the mean of [framewise_nll] cannot see.
+    """THE RARE BAD MOMENT, which the mean of [framewise_nll] cannot see: one strange
+    chord in a phrase is heard and moves the average of 128 frames by nothing.
 
-    One strange chord in a phrase is heard, and it moves the average of 128 frames by
-    nothing at all. A model with a shorter tail at the same mean is wrong less often and
-    not less badly, which is the trade the ear elects.
-
-    READ IT AGAINST WHAT IT MEASURES. These are corpus sheets, thus a frame of high nats
-    is one where BACH surprised the model, and not one where the model wrote something
-    strange. The second question is [battery_row]'s clash, which reads the model's own
-    draws."""
+    READ IT AGAINST WHAT IT MEASURES. These are CORPUS sheets, thus a frame of high
+    nats is one where Bach surprised the model and not one where the model wrote
+    something strange; that second question is [battery_row]'s clash."""
     read = tail_row(frames, seed)
     marks = "   ".join(
         f"{name} {value:5.3f} +- {error:.3f}"

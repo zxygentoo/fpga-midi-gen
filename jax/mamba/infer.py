@@ -1,19 +1,13 @@
 """The sampler and the player of the state-space model.
 
-One step is one step of the recurrence, always: the state and the convolution taps carry
-forward, the four seats are drawn in a chain from the soprano down, on the host, and the
-frame the chain drew goes back in. No mask guards the draw, because no frame is illegal.
-
-There is no window here and no context flag. The model has no context length at inference:
-what it remembers, it remembers in a state of fixed size.
+One step is one step of the recurrence: the state and the convolution taps carry forward,
+the four seats are drawn in a chain from the soprano down, on the host, and the frame goes
+back in. There is no window and no context flag -- what the model remembers, it remembers
+in a state of fixed size.
 
 CPU only, and deliberately: every step needs the drawn frame back on the host before the
-next forward, so the loop is latency-bound and a GPU would take the device from the
-trainer.
-
-The decode is a rule of the frame and lives in corpus.py; the player sends what it makes:
-raw channel voice bytes on the rawmidi device, with no backend library in the way —
-the wire side itself is midi.py, shared by both eras.
+next forward, thus the loop is latency-bound and a GPU would take the device from the
+trainer. The wire side is midi.py and the decode is corpus.py's.
 """
 
 import os
@@ -37,10 +31,9 @@ from mamba import model, quantized
 def float_step(held, carry, classes, phases):
     """one float step of the walk, jitted.
 
-    IT TAKES THE MODEL AS AN ARGUMENT AND STANDS AT THE MODULE LEVEL, thus its compiled
-    form is keyed on the shapes and every step of every walk of the process reuses the
-    first compile. A `nnx.jit` built inside `draw` is a new callable at every call, which
-    is the rule `quantized.float_step` states and this is the audition's half of it."""
+    IT TAKES THE MODEL AS AN ARGUMENT AT THE MODULE LEVEL, thus its compiled form is keyed
+    on the shapes and every walk of the process reuses the first compile; an `nnx.jit`
+    built inside `draw` would be a new callable at every call."""
     return held.forward_step(carry, classes, phases)
 
 
@@ -48,23 +41,17 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     """One batched run: [len(seeds)] independent walks of [steps] steps each.
 
     [ring] is the depth of the attention layer's keys and values, and it exists only where
-    the plan holds an attention layer -- a trunk of blocks carries a state of fixed size
-    and has no window at all. Training attends over the WHOLE window, thus a ring shorter
-    than the training window is a truncation, and whether the truncation costs anything
-    depends on the ALiBi span: at span 4 the slowest head weighs e^-8 at distance 128 and
-    a ring of 256 reads the same as one of 512, measured. At a longer span it would not.
+    the plan attends at all. Training attends over the WHOLE window, thus a shorter ring
+    is a truncation -- at span 4 the slowest head weighs e^-8 at distance 128 and a ring
+    of 256 reads the same as one of 512, measured; at a longer span it would not.
 
     The boot is a lead-in of silence: one bar of silent frames, then the draw. The state
-    opens at zero, which is where a training window opens, thus the model meets the
-    condition it trained on. The lead-in counts inside [steps] and stands at the head of
-    the music, because it is silence the walk really plays.
+    opens at zero, where a training window opens. The lead-in counts inside [steps].
 
-    [twin] draws the INTEGER twin of the circuit -- the piece the board plays at this seed
-    -- and the temperature and the floor bake into it as the bitstream carries them. The
-    two walks open on different generators: the float walk folds its seed and the twin
-    takes it as the SEED cell does. A seed inside 32 bits names itself under both, thus an
-    A/B at one seed hears the quantization and nothing else; SEED 0 IS THE EXCEPTION,
-    where the twin stands still while the float walk runs from the folded state."""
+    [twin] draws the INTEGER twin of the circuit: the piece the board plays at this seed.
+    The two walks open on different generators -- the float walk folds its seed and the
+    twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
+    both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
         engine = quantized.QuantizedMamba.of(
             held, ring=ring, temperature=temperature, min_p=min_p
@@ -78,8 +65,8 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     played = []
     h = None
     for step in range(steps):
-        # through the lead-in nothing is drawn and the generator does not move, exactly as
-        # the integer twin and the circuit leave it standing
+        # through the lead-in nothing is drawn and the generator does not move, as the
+        # integer twin and the circuit leave it standing
         if step < lead:
             frame = silence
         else:
@@ -134,9 +121,8 @@ def sample(ckpt, seeds, ring, **flags):
 def quantize(ckpt, out, ring, temperature, min_p):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
-    It is the only thing that crosses the seam for a build. Every width and the plan come
-    out of the checkpoint's own shapes; the ring is the one number no training run states,
-    and the temperature and the floor bake into the temper and the min-p share."""
+    Every width and the plan come out of the checkpoint's own shapes; the ring is the one
+    number no training run states."""
     twin = quantized.QuantizedMamba.of(
         model.Mamba.load(ckpt), ring=ring, temperature=temperature, min_p=min_p
     )

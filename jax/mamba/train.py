@@ -4,13 +4,10 @@ Run it from the jax directory as a module:
 
     uv run python -m mamba.train --steps 200
 
-The recipe opens where era four closed, and it is now the same code: the loop, the
-evaluation and the checkpoint policy are `ar_train.train`. This file is the shape of the
-model -- the plan, the state, the taps, the dt ladder -- and the flags that spell it.
-
-THE ERA IS FROZEN and this trainer is kept, not run: the elected checkpoint stands and no
-retrain is planned. THE DRAW IS THE MODEL'S -- `Mamba.drawn` -- because the gates of
-`tests/test_mamba.py` and `tests/test_drift.py` read the same opening.
+The loop, the evaluation and the checkpoint policy are `ar_train.train`; this file is the
+shape of the model -- the plan, the state, the taps, the dt ladder -- and the flags that
+spell it. THE ERA IS FROZEN and this trainer is kept, not run. THE DRAW IS THE MODEL'S,
+`Mamba.drawn`, because the gates read the same opening.
 """
 
 import click
