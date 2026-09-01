@@ -290,10 +290,11 @@ Rules:
 # Tests
 
 Run all tests with `dune runtest`, and then `uv run pytest` in `jax/`. pytest runs
-`-n auto` by default (187 tests, 97 s against 31 s); `-p no:xdist` puts them back
-in one process where a traceback is easier to read. The `slow` marker is on the
-drift sweeps and the trainer smokes, thus `-m "not slow"` is the inner loop and
-the whole suite is what a commit passes.
+`-n auto` by default (208 tests, 106 s against 32 s); `-n0` puts them back in one
+process where a traceback is easier to read, NOT `-p no:xdist`, which leaves the
+`-n` of `addopts` unrecognised and exits. The `slow` marker is on the drift sweeps
+and the trainer smokes, thus `-m "not slow"` is the inner loop and the whole suite
+is what a commit passes.
 
 - Unit tests are expect tests (`ppx_expect`), in the module that they test.
 - A waveform expect test is visual documentation. If a waveform can show the
