@@ -8,13 +8,14 @@ pitch rows for every cell, hidden or not. Nothing here is causal and nothing her
 the whole sheet is one input, and a piece is written knowing its own ending.
 
 Four things stand here, because the trainer, the sampler, the integer twin and the two
-referees all read them: the sheet and its mask planes, the net with its checkpoint, the
-two mask distributions, and the rules of the walk itself.
+referees all read them: the sheet and its mask planes, the two mask distributions, the
+opening and the cell order of a walk, and the net with its checkpoint. The loop that
+spends them, and the draw of one cell, are `diffusion/sample.py`.
 
-THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `opening_sheet`,
-`anneal_threshold`, `hidden_cells`, `tempered_pick` and `Coconet.logits` are what the
-float walk of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must
-do IDENTICALLY: the same opening from the same seed, the same threshold at the same pass,
+THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `cell_order`,
+`opening_sheet`, `hidden_cells` and `Coconet.logits` are what the float walk of
+`diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do
+IDENTICALLY: the same opening from the same seed, the same cells hidden at the same pass,
 the same uniform for the same cell. `lib/diffusion/model.ml` holds the first three under
 the same names.
 
@@ -37,8 +38,6 @@ published number, thus every constant carries its source:
   uniform subset of that size. The paper's line reads "|C| ~ U(1, D)" for the context, but
   its own reweighting term D - d + 1 is the masked count, and a context of all D cells
   would divide by zero.
-- The Gibbs schedule (section 5.2, citing Yao et al.): the annealed masking probability,
-  with the constants from the code release.
 
 The pitch axis is the paper's reason to convolve over it: "the locality of contrapuntal
 rules and their near-invariance to translation, both in time and in pitch space".
@@ -59,48 +58,22 @@ from safetensors.numpy import load_file
 
 import corpus
 import prng
-import sample
 from train import save_checkpoint
 
-# the sheet: the classes of a crop as the paper's input planes
-
-
-# The paper has no silence row because its data always sings; this corpus rests in 0.35
-# percent of its cells, thus silence is one more class and the paper's constraint -- one
-# row for each voice at each step -- still holds.
 ROWS = corpus.CLASSES
 VOICES = corpus.SEATS
-# the planes the stem reads: one class plane and one mask plane for each seat
-PLANES = 2 * VOICES
+PLANES = 2 * VOICES # one class plane and one mask plane for each seat
 
-# The paper's shape. These are the defaults of the trainer, not a limit of the code: the
-# board ladder of a later round subtracts from them and measures each cut.
-CROP = 128  # T, eight measures of the sixteenth grid
+CROP = 128   # T
 LAYERS = 64  # L
 WIDTH = 128  # H
 KERNEL = 3
-# the code release's batch_norm_variance_epsilon
+
 NORM_EPSILON = 1e-7
-
-# The gamma initializer of the code release. A norm that opens at a tenth keeps the
-# residual branch small, and a trunk of 64 layers then trains from a draw.
 NORM_SCALE = 0.1
-
-# THE DRAW IS HE NORMAL AND IT IS UNTRUNCATED, the code release's.
-# `jax.nn.initializers.he_normal()` is the TRUNCATED normal and draws a different model;
-# `nnx.Conv`'s own default is LeCun normal, a different model again.
 HE_NORMAL = jax.nn.initializers.variance_scaling(2.0, "fan_in", "normal")
 
-# what a reader needs to find the layers in a flat file; [NormedConv.tensors] states the
-# order
 LAYER_TENSORS = 5
-
-# THE ERA DRAWS WITH NO MIN-P FLOOR, where the step-frame eras hold one at 0.05. A floor
-# would not mean there what it means here: a Gibbs redraw picks one cell against a sheet
-# that is still wrong around it, and a floor that trimmed its tail would harden the sheet
-# it opened on. It is a NAME because both walks state it -- `tempered_pick` and the float
-# half of `quantized.drift`.
-MIN_P = 0.0
 
 
 def cells(steps):
@@ -132,9 +105,6 @@ def planes(classes, hidden):
     )
 
 
-# the two mask distributions
-
-
 def orderless_masks(key, batch, steps):
     """The training mask of orderless NADE: a uniform masked count, then a uniform subset
     of that size, one draw for each sheet. The rank of a uniform draw states the subset
@@ -145,33 +115,6 @@ def orderless_masks(key, batch, steps):
     order = jax.random.uniform(order_key, (batch, width))
     ranks = jnp.argsort(jnp.argsort(order, axis=-1), axis=-1)
     return (ranks < counts).reshape(batch, steps, VOICES)
-
-
-# the annealed masking probability of Yao et al., as the code release pins it:
-# `YaoSchedule(pmin=0.1, pmax=0.9, alpha=0.7)`; the paper states the formula and no values
-ANNEAL_LOW = 0.1
-ANNEAL_HIGH = 0.9
-ANNEAL_SPAN = 0.7
-
-
-def anneal(n, total):
-    """The masking probability at pass [n] of [total] Gibbs passes:
-
-        alpha_n = max(LOW, HIGH - n (HIGH - LOW) / (SPAN * total))
-
-    High at the opening, where the chain mixes fast and independent resampling is a poor
-    approximation, and settled on [ANNEAL_LOW] after an [ANNEAL_SPAN] share of the walk.
-
-    [n] IS THE PASS AND [step] IS THE SIXTEENTH, everywhere in this era: the two loops
-    of a walk must agree cell for cell, and one name meaning two things is how they
-    part."""
-    return max(
-        ANNEAL_LOW,
-        ANNEAL_HIGH - (ANNEAL_HIGH - ANNEAL_LOW) * n / (ANNEAL_SPAN * total),
-    )
-
-
-# the rules of the walk: the opening, the mask of one pass, and the draw
 
 
 def opening_sheet(states, steps):
@@ -200,57 +143,6 @@ def opening_sheet(states, steps):
     return states, classes
 
 
-def anneal_threshold(n, total):
-    """`Model.anneal_threshold`: the masking threshold of pass [n] of [total], on the
-    24-bit grid of the generator. A cell hides exactly when its word falls under it."""
-    return math.floor(anneal(n, total) * 2.0**prng.UNIFORM_BITS)
-
-
-class Swept(NamedTuple):
-    """One pass of a Gibbs walk: the sheet it opened on, the mask it drew, the logits it
-    read, the sheet its redraws left and the generator behind them. A caller that only
-    plays reads [after] and [states]; a drift report reads the rest as well."""
-
-    before: np.ndarray  # [sheets, steps, VOICES]
-    hidden: np.ndarray  # [sheets, steps, VOICES]
-    said: np.ndarray  # [sheets, steps, ROWS, VOICES]
-    after: np.ndarray  # [sheets, steps, VOICES]
-    states: np.ndarray  # [sheets]
-
-
-def gibbs_passes(states, given, *, walk, forward, redraw):
-    """The skeleton of an independent blocked Gibbs walk with the annealed schedule of Yao
-    et al. -- the one loop BOTH walks of this era take.
-
-    At pass [n] of [walk] every cell draws one uniform in the cell order and hides under
-    the threshold; ONE forward runs over the whole sheet; then the cell order is walked
-    again and each hidden cell is redrawn. The cells are not conditionally independent,
-    which is why the schedule anneals.
-
-    THE TWO WALKS MUST AGREE CELL FOR CELL, thus the order of the draws stands here and
-    not twice. The arithmetic is not here: [forward] gives the logits over the whole sheet
-    and [redraw] gives (states, drawn), one drawing a float uniform and the other a 24-bit
-    word.
-
-    A CELL NO SHEET HID TAKES NO UNIFORM, and [redraw] is never called for one -- a
-    walk that spent one there would state a different piece with no gate to say so.
-    Every cell is free: [given] is the opening, and conditioning returns with the
-    whole-piece round."""
-    _, steps, _ = given.shape
-    classes = given
-    for n in range(walk):
-        threshold = anneal_threshold(n, walk)
-        states, hidden = hidden_cells(states, steps, threshold)
-        said = forward(classes, hidden)
-        before, classes = classes, classes.copy()
-        for step, voice in cell_order(steps):
-            active = hidden[:, step, voice]
-            if active.any():
-                states, drawn = redraw(states, said, step, voice, active)
-                classes[active, step, voice] = drawn[active]
-        yield Swept(before, hidden, said, classes, states)
-
-
 def hidden_cells(states, steps, threshold):
     """`Model.hidden_cells`: the mask of one pass -- one uniform for each cell in the
     cell order, hidden exactly when its word falls under the threshold. The word
@@ -262,15 +154,6 @@ def hidden_cells(states, steps, threshold):
         states, word = prng.uniform_word(states, everyone)
         hidden[:, step, voice] = word < threshold
     return states, hidden
-
-
-def tempered_pick(raw, temperature, uniform):
-    """The draw of one cell over the batch, row for row; [raw] is [sheets, ROWS] float64.
-    The temper is the peak alone, under [MIN_P]."""
-    return sample.pick_share(sample.temper(raw, temperature, MIN_P), uniform)
-
-
-# the net
 
 
 class Statistics(NamedTuple):

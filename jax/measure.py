@@ -320,7 +320,7 @@ def count_draws(counted, here, there, *, drawn, uniform, temperature, min_p):
     four seats. The caller states the policy, because the elected numbers are the twin's
     and not this instrument's."""
     here, there = np.asarray(here, np.float64), np.asarray(there, np.float64)
-    weights = sample.temper(there, temperature, min_p)
+    weights = sample.tempered_weight(there, temperature, min_p)
     return Counted(
         draws=counted.draws + len(here),
         same_peak=counted.same_peak

@@ -250,10 +250,10 @@ It is not 48000 Hz.
   forced pass and the free walk). Every cut runs ONE WAY: an `ar_` module
   imports the shared one and never the reverse, thus era six cannot read a
   format it has no stream for. A top-level module and an era's module may
-  share a name (`quantized.py`, `measure.py`, `train.py`); an era file that
-  needs both imports the shared names directly, never the module. Each era
-  has a directory, and `tests/` holds the oracle gates — `tests/gate.py` and
-  `tests/models.py` do not begin with `test_`, because a
+  share a name (`quantized.py`, `measure.py`, `train.py`, `sample.py`); an
+  era file that needs both imports the shared names directly, never the
+  module. Each era has a directory, and `tests/` holds the oracle gates —
+  `tests/gate.py` and `tests/models.py` do not begin with `test_`, because a
   `from tests.test_x import y` makes a SECOND module of a file pytest already
   collected. Git ignores `jax/_data/`; `corpus_tool` rebuilds it.
 - `corpus/` — the chorale corpus.

@@ -1,9 +1,9 @@
 """The arithmetic of the draw, which is `sample.py`.
 
-[temper] and [pick_share] are the two places a rewrite can be plausibly wrong and still
-make music: a peak over the wrong axis, a min-p floor applied before the temperature,
-an inclusive compare in the cumulative walk. Each shifts the distribution a little and
-nothing raises. The INTEGER pick beside them is `quantized.pick`, which
+[tempered_weight] and [pick_share] are the two places a rewrite can be plausibly wrong
+and still make music: a peak over the wrong axis, a min-p floor applied before the
+temperature, an inclusive compare in the cumulative walk. Each shifts the distribution a
+little and nothing raises. The INTEGER pick beside them is `quantized.pick`, which
 `test_quantized.py` gates."""
 
 import numpy as np
@@ -15,25 +15,25 @@ import sample
 
 def test_the_peak_of_each_row_weighs_one():
     raw = np.array([[10.0, 9.0, 2.0]])
-    weights = sample.temper(raw, temperature=1.0, min_p=0.0)
+    weights = sample.tempered_weight(raw, temperature=1.0, min_p=0.0)
     assert weights[0, 0] == pytest.approx(1.0)
     assert weights[0, 1] == pytest.approx(np.exp(-1.0))
 
 
 def test_min_p_is_a_share_of_the_peak_after_the_temperature():
     raw = np.array([[0.0, -3.0, -8.0]])
-    weights = sample.temper(raw, temperature=1.0, min_p=0.01)
+    weights = sample.tempered_weight(raw, temperature=1.0, min_p=0.01)
     assert weights[0, 0] == pytest.approx(1.0)
     assert weights[0, 1] == pytest.approx(np.exp(-3.0))  # 0.0498, above the floor
     assert weights[0, 2] == 0.0  # 0.000335, below it and cut
     # the floor is a share of the peak, thus raising it cuts more
-    assert sample.temper(raw, temperature=1.0, min_p=0.1)[0, 1] == 0.0
+    assert sample.tempered_weight(raw, temperature=1.0, min_p=0.1)[0, 1] == 0.0
 
 
 def test_temperature_flattens_and_sharpens():
     raw = np.array([[0.0, -1.0]])
-    warm = sample.temper(raw, temperature=2.0, min_p=0.0)
-    cold = sample.temper(raw, temperature=0.5, min_p=0.0)
+    warm = sample.tempered_weight(raw, temperature=2.0, min_p=0.0)
+    cold = sample.tempered_weight(raw, temperature=0.5, min_p=0.0)
     assert warm[0, 1] > cold[0, 1]
 
 

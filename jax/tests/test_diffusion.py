@@ -25,7 +25,7 @@ from safetensors.numpy import load_file, save_file
 
 import corpus
 import prng
-from diffusion import infer, model, quantized, train
+from diffusion import infer, model, quantized, sample, train
 from diffusion import measure as referee
 from tests import gate
 
@@ -101,16 +101,16 @@ def test_the_orderless_draw_masks_a_cell_and_never_a_row():
 
 def test_the_anneal_falls_from_the_top_and_settles_on_the_floor():
     """the schedule of Yao et al. with the code release's constants: high while the chain
-    mixes, and settled on the floor after a [span] share of the walk"""
+    mixes, and settled on the floor after an [alpha] share of the walk"""
     walk = 512
-    assert model.anneal(0, walk) == pytest.approx(model.ANNEAL_HIGH)
-    assert model.anneal(walk - 1, walk) == pytest.approx(model.ANNEAL_LOW)
-    at = [model.anneal(n, walk) for n in range(walk)]
+    assert sample.anneal(0, walk) == pytest.approx(sample.ANNEAL_PMAX)
+    assert sample.anneal(walk - 1, walk) == pytest.approx(sample.ANNEAL_PMIN)
+    at = [sample.anneal(n, walk) for n in range(walk)]
     assert all(later <= earlier for earlier, later in itertools.pairwise(at))
-    # it reaches the floor after a [span] share of the walk and not at its end
-    settles = math.ceil(model.ANNEAL_SPAN * walk)
-    assert model.anneal(settles, walk) == pytest.approx(model.ANNEAL_LOW)
-    assert model.anneal(settles - 1, walk) > model.ANNEAL_LOW
+    # it reaches the floor after an [alpha] share of the walk and not at its end
+    settles = math.ceil(sample.ANNEAL_ALPHA * walk)
+    assert sample.anneal(settles, walk) == pytest.approx(sample.ANNEAL_PMIN)
+    assert sample.anneal(settles - 1, walk) > sample.ANNEAL_PMIN
 
 
 # the net and its checkpoint
@@ -397,12 +397,12 @@ def test_the_tempered_pick_is_the_policy_pick():
     grid lands on the LAST class that holds weight -- never past it."""
     raw = np.array([[0.0, -1.0, -10.0], [-10.0, 0.0, -1.0]])
     top = float(0xFFFFFF) * 2.0**-24
-    assert list(model.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
+    assert list(sample.tempered_pick(raw, 1.0, np.array([0.0, 0.0]))) == [0, 0]
     # a class ten nats under the peak weighs 4.5e-5 of it, which the top of the grid
     # reaches -- the same case Policy's own gate walks
-    assert list(model.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
+    assert list(sample.tempered_pick(raw, 1.0, np.array([top, top]))) == [2, 2]
     # the middle of the grid stays on the heavy classes
-    assert list(model.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
+    assert list(sample.tempered_pick(raw, 1.0, np.array([0.5, 0.5]))) == [0, 1]
 
 
 def test_several_sheets_take_a_file_each():

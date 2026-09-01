@@ -173,7 +173,7 @@ class Head(nnx.Module):
         frame = np.zeros((len(h), corpus.SEATS), dtype=np.int32)
         for seat in reversed(range(corpus.SEATS)):
             raw = (_host_rms_norm(stream) @ seats[seat].T).astype(np.float64)
-            weights = sample.temper(raw, temperature, min_p)
+            weights = sample.tempered_weight(raw, temperature, min_p)
             state, uniform = prng.uniform(state, True)
             frame[:, seat] = sample.pick_share(weights, uniform)
             if seat:

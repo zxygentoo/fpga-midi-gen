@@ -33,14 +33,15 @@ import midi
 import prng
 from diffusion import measure as referee
 from diffusion import model, quantized
+from diffusion.sample import gibbs_passes, tempered_pick
 from quantized import engine_states
 
 
 def gibbs(coconet, given, states, *, walk, temperature):
-    """The FLOAT walk of the era: `model.gibbs_passes`, in float64 over the trained
-    model. The loop, the schedule and the order of the draws stand there once for both
-    walks; what is here is this walk's arithmetic alone. It gives the sheets and the
-    generator behind them, as `quantized.gibbs` does."""
+    """The FLOAT walk of the era: the `gibbs_passes` of `diffusion/sample.py`, in float64
+    over the trained model. The loop, the schedule and the order of the draws stand there
+    once for both walks; what is here is this walk's arithmetic alone. It gives the sheets
+    and the generator behind them, as `quantized.gibbs` does."""
 
     def forward(classes, hidden):
         return np.asarray(
@@ -48,15 +49,15 @@ def gibbs(coconet, given, states, *, walk, temperature):
             dtype=np.float64,
         )
 
-    def redraw(states, said, step, voice, active):
+    def redraw(states, logits, step, voice, active):
         states, u = prng.uniform(states, active)
-        return states, model.tempered_pick(said[:, step, :, voice], temperature, u)
+        return states, tempered_pick(logits[:, step, :, voice], temperature, u)
 
     classes = given
-    for taken in model.gibbs_passes(
-        states, given, walk=walk, forward=forward, redraw=redraw
+    for taken in gibbs_passes(
+        states, given, passes=walk, forward=forward, redraw=redraw
     ):
-        classes, states = taken.after, taken.states
+        classes, states = taken.redrawn, taken.states
     return classes, states
 
 

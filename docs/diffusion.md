@@ -531,8 +531,10 @@ without. The float32 pin of `jax/train.py` therefore costs this round nothing.
 - `jax/corpus.py` — the piece reader, and `Crops`, the uniform crop taken
   inside the true length. It drops the one train chorale that is shorter
   than the crop, thus the round trains on 228.
-- `jax/diffusion/model.py`, `train.py`, `infer.py` — the sheet, the trainer
-  and the walk. `infer.py` draws and measures nothing itself.
+- `jax/diffusion/model.py`, `sample.py`, `train.py`, `infer.py` — the sheet,
+  the walk, the trainer and the audition. `sample.py` holds the anneal and
+  the Gibbs loop that both walks take; `infer.py` draws and measures nothing
+  itself.
 - `jax/measure.py` — THE COMMON HOME of the instruments, as `jax/sample.py` is
   of the draw. Everything in it is arithmetic over a `[sheets, steps,
   SEATS]` array of class indices and none of it knows which era drew them: a

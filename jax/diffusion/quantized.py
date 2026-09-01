@@ -60,7 +60,7 @@ from flax import nnx
 
 import measure
 import prng
-from diffusion import model
+from diffusion import model, sample
 from quantized import (
     EXP2_IN_Q,
     INT16_HIGH,
@@ -442,20 +442,18 @@ class Draw(NamedTuple):
 
 
 class Pass(NamedTuple):
-    """What one pass states: `before` is the sheet the forward pass saw, which the
-    drift report teacher-forces the float model on, and `after` is the sheet its
-    redraws left."""
+    """`sample.Pass` with the `Draw` of every cell of the order beside it."""
 
-    before: np.ndarray  # [sheets, steps, VOICES]
+    read: np.ndarray  # [sheets, steps, VOICES]
     hidden: np.ndarray  # [sheets, steps, VOICES]
-    said: np.ndarray  # [sheets, steps, ROWS, VOICES], the integer logits
+    logits: np.ndarray  # [sheets, steps, ROWS, VOICES], the integer logits
     draws: list  # Draw, in the cell order
-    after: np.ndarray  # [sheets, steps, VOICES]
+    redrawn: np.ndarray  # [sheets, steps, VOICES]
     states: np.ndarray  # [sheets], the generator behind the redraws
 
 
 def passes(twin, states, given, *, walk, tally):
-    """The INTEGER walk of the era, one pass at a time: `model.gibbs_passes` in the
+    """The INTEGER walk of the era, one pass at a time: `sample.gibbs_passes` in the
     arithmetic of the board, with the record the drift report reads.
 
     The loop, the schedule and the order of the draws stand in `gibbs_passes`, once for
@@ -474,14 +472,14 @@ def passes(twin, states, given, *, walk, tally):
     def forward(classes, hidden):
         return twin(classes, hidden, tally)
 
-    def redraw(states, said, step, voice, active):
+    def redraw(states, logits, step, voice, active):
         states, word = prng.uniform_word(states, active)
-        drawn = pick(class_weights(twin, said[:, step, :, voice]), word)
+        drawn = pick(class_weights(twin, logits[:, step, :, voice]), word)
         spent[step, voice] = (word, drawn)
         return states, drawn
 
-    for taken in model.gibbs_passes(
-        states, given, walk=walk, forward=forward, redraw=redraw
+    for taken in sample.gibbs_passes(
+        states, given, passes=walk, forward=forward, redraw=redraw
     ):
         draws = [
             Draw(
@@ -494,7 +492,7 @@ def passes(twin, states, given, *, walk, tally):
         ]
         spent.clear()
         yield Pass(
-            taken.before, taken.hidden, taken.said, draws, taken.after, taken.states
+            taken.read, taken.hidden, taken.logits, draws, taken.redrawn, taken.states
         )
 
 
@@ -505,7 +503,7 @@ def gibbs(twin, states, given, *, walk, tally=None):
     tally = Tally() if tally is None else tally
     classes = given
     for taken in passes(twin, states, given, walk=walk, tally=tally):
-        classes, states = taken.after, taken.states
+        classes, states = taken.redrawn, taken.states
     return classes, states
 
 
@@ -535,8 +533,8 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
     tally = Tally()
     counted = measure.Counted()
     for taken in passes(twin, states, given, walk=walk, tally=tally):
-        said = np.asarray(
-            coconet.logits(jnp.asarray(taken.before), jnp.asarray(taken.hidden)),
+        floated = np.asarray(
+            coconet.logits(jnp.asarray(taken.read), jnp.asarray(taken.hidden)),
             dtype=np.float64,
         )
         for drawn in taken.draws:
@@ -545,16 +543,16 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
             if not active.any():
                 continue
             # `measure.count_draws`, the common battery's: this era sends the cell's whole
-            # batch of sheets where a chain sends its four seats. `model.MIN_P` is the one
-            # thing that parts the two calls.
+            # batch of sheets where a chain sends its four seats. `sample.MIN_P` is the
+            # one thing that parts the two calls.
             counted = measure.count_draws(
                 counted,
-                taken.said[active, drawn.step, :, drawn.voice],
-                said[active, drawn.step, :, drawn.voice],
+                taken.logits[active, drawn.step, :, drawn.voice],
+                floated[active, drawn.step, :, drawn.voice],
                 drawn=drawn.drawn[active],
                 uniform=drawn.word[active] * 2.0**-prng.UNIFORM_BITS,
                 temperature=temperature,
-                min_p=model.MIN_P,
+                min_p=sample.MIN_P,
             )
     return Drift(
         passes=walk,
