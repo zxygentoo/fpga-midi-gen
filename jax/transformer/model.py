@@ -5,7 +5,7 @@ and leave through the same four in a chain from the soprano down -- the head is
 `ar_model.Head`, which era five reads too. Under it is a decoder with no bias terms,
 RMSNorm before each sublayer, ALiBi for the position, and d_ff = 4 d.
 
-THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS: `quantized.QuantizedTransformer`
+THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS: `quantized.Transformer`
 carries the same skeleton in integers under the same attribute names, thus a reader can
 put `model.layers[k]` beside `twin.layers[k]` and audit one against its quantization.
 

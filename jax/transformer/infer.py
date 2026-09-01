@@ -48,7 +48,7 @@ def draw(held, *, seeds, steps, context, temperature, min_p, twin=False):
     twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
     both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
-        engine = quantized.QuantizedTransformer.of(
+        engine = quantized.Transformer.from_float(
             held, context=context, temperature=temperature, min_p=min_p
         )
         return quantized.walk(engine, seeds, steps)[0]
@@ -128,7 +128,7 @@ def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):
     It is the only thing that crosses the seam for a build. The heads, the context and
     the span are NOT in the checkpoint, thus they are flags here and named tensors in
     the file. The temperature and the floor bake into the temper and the min-p share."""
-    twin = quantized.QuantizedTransformer.of(
+    twin = quantized.Transformer.from_float(
         model.Transformer.load(ckpt, heads=heads, span=alibi_span),
         context=context,
         temperature=temperature,

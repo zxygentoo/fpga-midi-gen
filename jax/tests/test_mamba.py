@@ -220,7 +220,7 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
 
 def quantized_plan(spelt="MZF", ring=8):
     """the twin of a drawn model of that plan, at the small test shape"""
-    return quantized.QuantizedMamba.of(plan_of(spelt), ring=ring)
+    return quantized.Mamba.from_float(plan_of(spelt), ring=ring)
 
 
 def test_the_image_is_not_the_checkpoint_order():
@@ -243,7 +243,7 @@ def test_w_in_is_stored_transposed():
     `d` is one; the projection is not. Storing the tensor the other way round puts `d`
     under the outer counter."""
     held = plan_of("M")
-    twin = quantized.QuantizedMamba.of(held)
+    twin = quantized.Mamba.from_float(held)
     rows, cols = twin.blocks[0].w_in.values.shape
     assert (rows, cols) == tuple(reversed(held.layers[0].w_in.shape))
     assert cols == twin.d
@@ -287,7 +287,7 @@ def test_era_fours_attention_is_no_layer_of_this_model():
     """A square query is era four's plain attention, which measured null in this trunk
     three times. It is refused where a build fails loudly."""
     with pytest.raises(ValueError, match="square query"):
-        quantized.QuantizedMamba.of(plan_of("MA"))
+        quantized.Mamba.from_float(plan_of("MA"))
 
 
 def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():

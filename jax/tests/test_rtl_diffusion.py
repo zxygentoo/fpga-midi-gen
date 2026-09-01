@@ -60,7 +60,7 @@ def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
 
 def contract_file(tmp_path, *, weight_seed, layers, width):
     """the contract file of one drawn model, and the twin that wrote it"""
-    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(weight_seed, layers, width))
+    twin = quantized.Coconet.from_float(model.Coconet.drawn(weight_seed, layers, width))
     path = tmp_path / f"l{layers}-h{width}-s{weight_seed}.int8"
     quantized.save(path, twin)
     return path, twin

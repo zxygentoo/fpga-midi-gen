@@ -53,7 +53,7 @@ def draw(held, *, seeds, steps, temperature, min_p, ring=model.ATTN_CONTEXT, twi
     twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
     both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
-        engine = quantized.QuantizedMamba.of(
+        engine = quantized.Mamba.from_float(
             held, ring=ring, temperature=temperature, min_p=min_p
         )
         return quantized.walk(engine, seeds, steps)[0]
@@ -123,7 +123,7 @@ def quantize(ckpt, out, ring, temperature, min_p):
 
     Every width and the plan come out of the checkpoint's own shapes; the ring is the one
     number no training run states."""
-    twin = quantized.QuantizedMamba.of(
+    twin = quantized.Mamba.from_float(
         model.Mamba.load(ckpt), ring=ring, temperature=temperature, min_p=min_p
     )
     quantized.save(out, twin)

@@ -20,7 +20,7 @@ def drawn_transformer(seed=5, d=8, layers=2, heads=2):
 
 def transformer_twin(seed=5, d=8, layers=2, heads=2, context=16):
     """the twin of a drawn model of era four's shape"""
-    return step_twin.QuantizedTransformer.of(
+    return step_twin.Transformer.from_float(
         drawn_transformer(seed, d, layers, heads), context=context
     )
 

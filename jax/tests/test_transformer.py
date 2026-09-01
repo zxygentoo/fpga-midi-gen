@@ -55,7 +55,7 @@ def test_the_twin_carries_the_float_models_skeleton():
     puts `held.layers[k].wq` beside `twin.layers[k].wq` and reads one tensor against its
     own quantization, with nothing to align by hand."""
     held = drawn_transformer()
-    twin = quantized.QuantizedTransformer.of(held, context=16)
+    twin = quantized.Transformer.from_float(held, context=16)
     assert len(twin.layers) == len(held.layers)
     assert twin.head.seats.shape == held.head.seats.shape
     assert twin.head.phase.shape == held.head.phase.shape
@@ -71,7 +71,7 @@ def test_the_two_tables_take_the_larger_peaks_exponent():
     held = drawn_transformer()
     # the phase table is lifted far past the seats, thus the shared exponent is its own
     held.head.set_tensors([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
-    twin = ar_quantized.QuantizedHead.of(held.head)
+    twin = ar_quantized.Head.from_float(held.head)
     peak = float(np.abs(np.asarray(held.head.phase[...])).max())
     assert twin.e == max_exponent(peak)
     assert np.abs(twin.seats).max() < 127, "the smaller table does not reach the rail"
@@ -90,8 +90,8 @@ def test_each_layer_tensor_takes_its_own_exponent():
             for name, tensor in zip(model.LAYER_TENSORS, layer.tensors())
         ]
     )
-    lifted = quantized.QuantizedTransformer.of(held, context=16).layers[0]
-    plain = quantized.QuantizedTransformer.of(drawn_transformer(), context=16).layers[0]
+    lifted = quantized.Transformer.from_float(held, context=16).layers[0]
+    plain = quantized.Transformer.from_float(drawn_transformer(), context=16).layers[0]
     assert lifted.wq.e == plain.wq.e - 3, "eight times the peak is three exponents down"
     for name in model.LAYER_TENSORS[1:]:
         assert getattr(lifted, name).e == getattr(plain, name).e
@@ -128,7 +128,7 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
 
 
 def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
-    """`QuantizedHead` holds ONE exponent, thus this side cannot state two; a FILE can,
+    """`Head` holds ONE exponent, thus this side cannot state two; a FILE can,
     and a reader that took the first and dropped the second would sum two formats in
     silence."""
     path = tmp_path / "tiny.int8"

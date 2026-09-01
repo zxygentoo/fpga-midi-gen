@@ -125,8 +125,9 @@ def join(h, weight, *, values, at):
     return h + rescale(values @ weight.values, at=at + weight.e, to=H_Q)
 
 
-class QuantizedImage:
-    """A layer whose WHOLE image is named tensors, thus the name list alone spells it.
+class Weights:
+    """A layer that is nothing but named `Weight`s, thus the name list alone spells it.
+    A layer with a number that is no tensor -- era five's block -- is not one of these.
 
     THE TWIN HOLDS THE FLOAT LAYER'S TENSORS UNDER THE SAME ATTRIBUTE NAMES, so a reader
     can audit the two trees layer for layer. `names` states the order, which is the
@@ -141,20 +142,20 @@ class QuantizedImage:
             setattr(self, name, weight)
 
     @classmethod
-    def of(cls, layer):
+    def from_float(cls, layer):
         """one float layer under the exponent rule, tensor for tensor"""
-        return cls([Weight.of(tensor) for tensor in layer.tensors()])
+        return cls([Weight.from_float(tensor) for tensor in layer.tensors()])
 
     def tensors(self):
         return [getattr(self, name) for name in self.names]
 
 
-class QuantizedHead:
+class Head:
     """The two tables of `Head` as the machine holds them -- and ONE exponent over both.
 
     THE SEAT AND PHASE TABLES SHARE IT, from the larger peak: their rows ADD, thus two
     exponents would be two formats inside one sum. The module's shape holds the rule and
-    `of_file` refuses a file that states two.
+    `from_file` refuses a file that states two.
 
     The four seat tables are ONE tensor, seat 0 first: a circuit reaches row
     (seat * CLASSES + class) with a shift and an add from the base."""
@@ -169,7 +170,7 @@ class QuantizedHead:
         return self.seats.shape[-1]
 
     @classmethod
-    def of_file(cls, tensors, exponents):
+    def from_file(cls, tensors, exponents):
         """the head of a contract file: tensors "0" and "1", under the one exponent.
         The refusal stands here and not in an era's `load`, because the rule is this
         class's."""
@@ -178,7 +179,7 @@ class QuantizedHead:
         return cls(seats=tensors["0"], phase=tensors["1"], e=int(exponents[0]))
 
     @classmethod
-    def of(cls, head):
+    def from_float(cls, head):
         """the float `Head` under the exponent rule, one exponent over both tables"""
         seats, phase = (np.asarray(t, np.float64) for t in head.tensors())
         shared = max_exponent(

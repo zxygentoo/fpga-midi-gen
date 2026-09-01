@@ -77,7 +77,7 @@ def draw(coconet, *, crop, seeds, walk, temperature, twin):
     twin takes it as the SEED cell does -- and a seed inside 32 bits names itself under
     both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if twin:
-        engine = quantized.QuantizedCoconet.of(coconet, temperature)
+        engine = quantized.Coconet.from_float(coconet, temperature)
         states, given = model.opening_sheet(engine_states(seeds), crop)
 
         def walked():
@@ -241,7 +241,7 @@ def quantize(ckpt, out, temperature):
     It is the only thing that crosses the seam for a build. The population statistics and
     the float scales do not travel: the fold happens here, one time."""
     coconet = model.Coconet.load(ckpt)
-    twin = quantized.QuantizedCoconet.of(coconet, temperature)
+    twin = quantized.Coconet.from_float(coconet, temperature)
     quantized.save(out, twin)
     layers = twin.layers()
     widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in layers)

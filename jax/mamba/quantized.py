@@ -148,7 +148,7 @@ def decay_scale(a_log):
     return min(max(q_value, 0), DECAY_HIGH)
 
 
-class QuantizedBlock:
+class Block:
     """One block as the machine holds it -- the twin of `model.Block`.
 
     Six float tensors become three image tensors and three per-head ROWS: `dt_bias` and
@@ -166,15 +166,15 @@ class QuantizedBlock:
         self.d_skip = np.asarray(d_skip, np.int32)
 
     @classmethod
-    def of(cls, layer):
+    def from_float(cls, layer):
         """one float [model.Block] under the exponent rule, its per-head numbers folded
         into the constants the ops carry"""
         return cls(
             # THE IMAGE STORES W_IN TRANSPOSED, because the circuit walks the projection
             # as the outer axis; every other tensor stands as the checkpoint holds it.
-            w_in=Weight.of(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
-            conv=Weight.of(layer.conv[...]),
-            w_out=Weight.of(layer.w_out[...]),
+            w_in=Weight.from_float(np.ascontiguousarray(np.asarray(layer.w_in[...]).T)),
+            conv=Weight.from_float(layer.conv[...]),
+            w_out=Weight.from_float(layer.w_out[...]),
             decay=[decay_scale(a) for a in np.asarray(layer.a_log[...])],
             dt_bias=ar_quantized.fixed_q12(layer.dt_bias[...], DT_BIAS_BOUND),
             d_skip=ar_quantized.fixed_q12(layer.d_skip[...], D_SKIP_BOUND),
@@ -208,7 +208,7 @@ class QuantizedBlock:
         return [self.decay, self.dt_bias, self.d_skip]
 
 
-class QuantizedAttention(ar_quantized.QuantizedImage):
+class Attention(ar_quantized.Weights):
     """The Zamba attention layer as the machine holds it -- the twin of
     `model.Attention` at its widened kind.
 
@@ -219,15 +219,15 @@ class QuantizedAttention(ar_quantized.QuantizedImage):
     names = IMAGE_TENSORS[recurrence.ZATTN]
 
     @classmethod
-    def of(cls, layer):
+    def from_float(cls, layer):
         if layer.kind == recurrence.ATTN:
             raise ValueError(
                 "a square query is era four's attention and no layer of this model"
             )
-        return super().of(layer)
+        return super().from_float(layer)
 
 
-class QuantizedFeedForward(ar_quantized.QuantizedImage):
+class FeedForward(ar_quantized.Weights):
     """The feed-forward as the machine holds it -- the twin of `model.FeedForward`."""
 
     kind = recurrence.MLP
@@ -235,19 +235,19 @@ class QuantizedFeedForward(ar_quantized.QuantizedImage):
 
 
 TWIN_OF = {
-    recurrence.MAMBA: QuantizedBlock,
-    recurrence.ZATTN: QuantizedAttention,
-    recurrence.ATTN: QuantizedAttention,
-    recurrence.MLP: QuantizedFeedForward,
+    recurrence.MAMBA: Block,
+    recurrence.ZATTN: Attention,
+    recurrence.ATTN: Attention,
+    recurrence.MLP: FeedForward,
 }
 
 
-class QuantizedMamba:
+class Mamba:
     """The model as the bitstream carries it. [tensors] walks it in THE ORDER OF THE
     ROM: the two tables, then what each layer puts in the image. The ring is an inference
     choice and travels in the file beside the span.
 
-    IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
+    IT IS NOT A `model.Trunk` -- `ar_quantized.Weights` states why no twin of this
     era is a Flax module -- thus [tensors] and [plan] are restated below. THE
     ATTRIBUTE NAMES ARE THE PARITY and not the base class."""
 
@@ -295,7 +295,7 @@ class QuantizedMamba:
         return self.blocks[0].widths._replace(plan=self.plan)
 
     @classmethod
-    def of(
+    def from_float(
         cls,
         model,
         *,
@@ -306,11 +306,11 @@ class QuantizedMamba:
         """the float model under the exponent rule of the eras, and the per-head numbers
         folded into the constants the ops carry"""
         return cls(
-            head=ar_quantized.QuantizedHead.of(model.head),
-            layers=[TWIN_OF[layer.kind].of(layer) for layer in model.layers],
+            head=ar_quantized.Head.from_float(model.head),
+            layers=[TWIN_OF[layer.kind].from_float(layer) for layer in model.layers],
             span=model.span,
             ring=ring,
-            temper=Temper.of(temperature),
+            temper=Temper.from_float(temperature),
             min_weight=min_weight_of(min_p),
         )
 
@@ -416,7 +416,7 @@ def load(path):
             return TWIN_OF[kind](group)
         decay, dt_bias, d_skip = next(rows)
         w_in, conv, w_out = group
-        return QuantizedBlock(
+        return Block(
             w_in=w_in,
             conv=conv,
             w_out=w_out,
@@ -425,12 +425,12 @@ def load(path):
             d_skip=d_skip,
         )
 
-    twin = QuantizedMamba(
-        head=ar_quantized.QuantizedHead.of_file(tensors, exponents),
+    twin = Mamba(
+        head=ar_quantized.Head.from_file(tensors, exponents),
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
-        temper=Temper.of_file(tensors, metadata, key=TEMPER),
+        temper=Temper.from_file(tensors, metadata, key=TEMPER),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -513,7 +513,7 @@ class Engine(NamedTuple):
     the engine after it, thus a walk is a fold and no state hides in a mutable field.
     THE STATE AND THE TAPS ARE THE MEMORY and the only things that survive a step."""
 
-    twin: QuantizedMamba
+    twin: Mamba
     state: np.ndarray  # [walks, blocks * d_in * n], Q12
     taps: np.ndarray  # [walks, blocks * channels * taps], Q12
     kc: np.ndarray  # [walks, attentions, ring, d], Q12 in a coarse byte
@@ -767,7 +767,7 @@ def drift(model, *, steps, seed, ring=ELECTED_RING):
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""
-    e = engine(QuantizedMamba.of(model, ring=ring), [seed])
+    e = engine(Mamba.from_float(model, ring=ring), [seed])
     carry = model.initial_carry(1, context=ring)
     counted = measure.Counted()
     stream = None

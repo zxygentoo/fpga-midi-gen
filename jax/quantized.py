@@ -138,12 +138,12 @@ class Temper(NamedTuple):
     temperature: float
 
     @classmethod
-    def of(cls, temperature):
+    def from_float(cls, temperature):
         q_value, q = temper_of(temperature)
         return cls(q_value, q, temperature)
 
     @classmethod
-    def of_file(cls, tensors, metadata, *, key):
+    def from_file(cls, tensors, metadata, *, key):
         """the temper a contract file carries: the pair from its named tensor and the
         temperature from the metadata. [key] stays an argument because what a file names
         its tensors is the ERA'S layout."""
@@ -167,7 +167,7 @@ class Weight(NamedTuple):
     e: int
 
     @classmethod
-    def of(cls, tensor, e=None):
+    def from_float(cls, tensor, e=None):
         """one float tensor under the exponent rule; [e] overrides the tensor's own
         peak"""
         q, e = quantize(np.asarray(tensor, np.float64), e=e)

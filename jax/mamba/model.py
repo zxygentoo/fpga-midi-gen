@@ -14,7 +14,7 @@ holds them to each other step for step.
 
 THE NET IS A MODULE TREE AND NOT A DICTIONARY OF TENSORS. A layer of one of three kinds
 answers [step] and [window] under one signature, thus the trunk dispatches on nothing and
-`quantized.QuantizedMamba` carries the same tree in integers under the same names.
+`quantized.Mamba` carries the same tree in integers under the same names.
 
 The carry of the step form is the whole memory: for each block a state [batch, H, P, N]
 and the K-1 convolution taps behind the step, opening at zero as a training window does.

@@ -7,7 +7,7 @@ draw in integers. THE ORDER OF OPERATIONS IS THE CONTRACT: a rewrite that is alg
 equal and differently ordered is a different machine, and `tests/test_rtl_diffusion.py`
 holds the circuit to these integers write for write.
 
-[QuantizedCoconet] is a `model.Trunk` under the same attribute names at every level, thus
+[Coconet] is a `model.Trunk` under the same attribute names at every level, thus
 `coconet.pairs[7].first` and `twin.pairs[7].first` audit against each other. What is not
 this era's comes from `quantized.py`; `ar_quantized.py` is the step-frame half and this
 era reads none of it.
@@ -139,7 +139,7 @@ def accumulate(x, kernel):
 # ---------------------------------------------------------------------
 
 
-class QuantizedNormedConv(nnx.Module):
+class NormedConv(nnx.Module):
     """One layer as the machine holds it -- the twin of `model.NormedConv`. Five float
     tensors become three facts: the kernel, and the two per-channel rows the norm folded
     into."""
@@ -162,7 +162,7 @@ class QuantizedNormedConv(nnx.Module):
         return self.kernel.shape[3]
 
     @classmethod
-    def of(cls, layer):
+    def from_float(cls, layer):
         """One float [model.NormedConv] under the exponent rule, its norm folded. At
         inference batch normalization is the affine `a * gain + bias` and the fold is
         that same affine, in float64 and IN THE ORDER WRITTEN HERE; its rounding is
@@ -205,7 +205,7 @@ class QuantizedNormedConv(nnx.Module):
         ]
 
 
-class QuantizedResidualPair(nnx.Module):
+class ResidualPair(nnx.Module):
     """Two layers and the skip past both -- the twin of `model.ResidualPair`.
 
     THE RELU STANDS IN A DIFFERENT PLACE HERE, and that is the contract and not a slip:
@@ -217,9 +217,9 @@ class QuantizedResidualPair(nnx.Module):
         self.second = second
 
     @classmethod
-    def of(cls, pair):
+    def from_float(cls, pair):
         return cls(
-            QuantizedNormedConv.of(pair.first), QuantizedNormedConv.of(pair.second)
+            NormedConv.from_float(pair.first), NormedConv.from_float(pair.second)
         )
 
     def __call__(self, x, tally):
@@ -231,7 +231,7 @@ class QuantizedResidualPair(nnx.Module):
         return first, tallied_write(tally, np.maximum(x + second, 0))
 
 
-class QuantizedCoconet(model.Trunk):
+class Coconet(model.Trunk):
     """The paper's net in the arithmetic the board holds: `model.Coconet`, layer for
     layer. The temper stands beside the layers because the bitstream carries it."""
 
@@ -242,15 +242,15 @@ class QuantizedCoconet(model.Trunk):
         self.temper = temper
 
     @classmethod
-    def of(cls, coconet, temperature=ELECTED_TEMPERATURE):
+    def from_float(cls, coconet, temperature=ELECTED_TEMPERATURE):
         """The float model in the arithmetic the board holds. It is the ONE
         quantization of the era -- the drift walk, the audition and the elaboration all
         take their model here -- thus the pair under comparison cannot slip."""
         return cls(
-            stem=QuantizedNormedConv.of(coconet.stem),
-            pairs=[QuantizedResidualPair.of(pair) for pair in coconet.pairs],
-            head=QuantizedNormedConv.of(coconet.head),
-            temper=Temper.of(temperature),
+            stem=NormedConv.from_float(coconet.stem),
+            pairs=[ResidualPair.from_float(pair) for pair in coconet.pairs],
+            head=NormedConv.from_float(coconet.head),
+            temper=Temper.from_float(temperature),
         )
 
     def _writes(self, classes, hidden, tally, *, rows=model.ROWS):
@@ -287,7 +287,7 @@ def paired(layers):
     module is a tree; this and `model.Trunk.layers` are the two directions of that
     seam."""
     return [
-        QuantizedResidualPair(first, second)
+        ResidualPair(first, second)
         for first, second in zip(layers[::2], layers[1::2])
     ]
 
@@ -375,7 +375,7 @@ def load(path):
 
     def layer_at(at):
         base = LAYER_TENSORS * at
-        return QuantizedNormedConv(
+        return NormedConv(
             kernel=tensors[str(base + 0)],
             e=int(tensors[str(base + 1)]),
             gain_q_value=tensors[str(base + 2)],
@@ -385,11 +385,11 @@ def load(path):
 
     stem, *trunk = [layer_at(at) for at in range(count)]
     head = trunk.pop()
-    twin = QuantizedCoconet(
+    twin = Coconet(
         stem=stem,
         pairs=paired(trunk),
         head=head,
-        temper=Temper.of_file(tensors, metadata, key=TEMPER),
+        temper=Temper.from_file(tensors, metadata, key=TEMPER),
     )
     check_shape(twin)
     return twin
@@ -544,7 +544,7 @@ def drift(coconet, states, given, *, walk, temperature=ELECTED_TEMPERATURE):
     the same-draw share reads the float draw ON THE VERY UNIFORM THE ENGINE TOOK, thus
     what stands between them is the arithmetic alone. The quantization happens here,
     from the float model handed in, thus the pair cannot slip."""
-    twin = QuantizedCoconet.of(coconet, temperature)
+    twin = Coconet.from_float(coconet, temperature)
     tally = Tally()
     counted = measure.Counted()
     for taken in passes(twin, states, given, walk=walk, tally=tally):

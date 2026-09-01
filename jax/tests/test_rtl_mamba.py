@@ -39,7 +39,7 @@ def drive(subcommand, path, *, seed, steps):
 def contract(tmp_path, spelt, *, ring=8, **shape):
     """a tiny model of the plan spelt out, drawn here and quantized here, as the file the
     driver reads"""
-    twin = quantized.QuantizedMamba.of(plan_of(spelt, **shape), ring=ring)
+    twin = quantized.Mamba.from_float(plan_of(spelt, **shape), ring=ring)
     path = tmp_path / "tiny.int8"
     quantized.save(path, twin)
     return path, quantized.load(path)

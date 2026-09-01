@@ -80,19 +80,19 @@ BESIDE_THE_WEIGHTS = (
 # re-elect it.
 
 
-class QuantizedLayer(ar_quantized.QuantizedImage):
+class Layer(ar_quantized.Weights):
     """One decoder layer as the machine holds it -- the twin of `model.Layer`, tensor for
     tensor and under the same names."""
 
     names = step.LAYER_TENSORS
 
 
-class QuantizedTransformer:
+class Transformer:
     """The model as the bitstream carries it: the draw, the heads, the context and the
     span stand beside the layers, because one quantization serves every seed as one
     bitstream serves every seed of the board.
 
-    IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
+    IT IS NOT A `model.Trunk` -- `ar_quantized.Weights` states why no twin of this
     era is a Flax module -- thus [tensors] is restated below. THE ATTRIBUTE NAMES ARE
     THE PARITY and not the base class."""
 
@@ -117,7 +117,7 @@ class QuantizedTransformer:
         ]
 
     @classmethod
-    def of(
+    def from_float(
         cls,
         model,
         *,
@@ -129,12 +129,12 @@ class QuantizedTransformer:
         quantization of the era -- the drift walk, the audition and the elaboration all
         take their model here -- thus the pair under comparison cannot slip."""
         return cls(
-            head=ar_quantized.QuantizedHead.of(model.head),
-            layers=[QuantizedLayer.of(layer) for layer in model.layers],
+            head=ar_quantized.Head.from_float(model.head),
+            layers=[Layer.from_float(layer) for layer in model.layers],
             heads=model.heads,
             context=context,
             slope_span=model.span,
-            temper=Temper.of(temperature),
+            temper=Temper.from_float(temperature),
             min_weight=min_weight_of(min_p),
         )
 
@@ -188,10 +188,10 @@ def load(path):
     if count < len(TABLES) + step.PER_LAYER or spare:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized step model")
     exponents = tensors[EXPONENTS]
-    twin = QuantizedTransformer(
-        head=ar_quantized.QuantizedHead.of_file(tensors, exponents),
+    twin = Transformer(
+        head=ar_quantized.Head.from_file(tensors, exponents),
         layers=[
-            QuantizedLayer(
+            Layer(
                 image_from_tensors(
                     tensors,
                     exponents,
@@ -204,7 +204,7 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=Temper.of_file(tensors, metadata, key=TEMPER),
+        temper=Temper.from_file(tensors, metadata, key=TEMPER),
         min_weight=int(tensors[MIN_WEIGHT]),
     )
     check_shape(twin)
@@ -228,7 +228,7 @@ class Engine(NamedTuple):
     THE RINGS ARE THE CONTEXT -- one slot for each step of the window -- and a walk
     never reads an unwritten slot."""
 
-    twin: QuantizedTransformer
+    twin: Transformer
     h: np.ndarray  # [walks, d], Q16 in int32
     kc: np.ndarray  # [walks, layers, slots, d], Q12 int16
     vc: np.ndarray
@@ -347,7 +347,7 @@ def drift(model, *, context, steps, seed):
     pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
     reads the float draw on the very uniform the engine took, thus the report measures
     the quantization and never a walk that parted for another reason."""
-    e = engine(QuantizedTransformer.of(model, context=context), [seed])
+    e = engine(Transformer.from_float(model, context=context), [seed])
     history = []
     counted = measure.Counted()
     for at in range(steps):

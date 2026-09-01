@@ -511,7 +511,7 @@ def test_the_twin_carries_the_float_models_skeleton():
     puts `coconet.pairs[k].first` beside `twin.pairs[k].first` and reads one layer against
     its own quantization, with nothing to align by hand."""
     coconet = model.Coconet.drawn(5, 6, 8)
-    twin = quantized.QuantizedCoconet.of(coconet)
+    twin = quantized.Coconet.from_float(coconet)
     assert len(twin.pairs) == len(coconet.pairs)
     for here, there in zip(twin.layers(), coconet.layers()):
         assert here.kernel.shape == there.conv.kernel.shape
@@ -525,7 +525,7 @@ def test_the_twin_carries_the_float_models_skeleton():
 def test_the_contract_file_round_trips_exactly(tmp_path):
     """`save` then `load` is the identity: the seam carries the whole model and nothing of
     it is re-derived on either side of the file."""
-    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8), 0.9)
+    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8), 0.9)
     path = tmp_path / "round-trip.int8"
     quantized.save(path, twin)
     read = quantized.load(path)
@@ -547,16 +547,16 @@ def rebuilt(twin, **parts):
         "head": twin.head,
         "temper": twin.temper,
     }
-    return quantized.QuantizedCoconet(**{**held, **parts})
+    return quantized.Coconet(**{**held, **parts})
 
 
 def test_a_broken_model_refuses_loudly():
     """`check_shape` states the rules its consumers assume. THE SHORT AND THE ODD TRUNK
-    ARE NOT AMONG THEM: a [QuantizedCoconet] is a stem, whole pairs and a head by
+    ARE NOT AMONG THEM: a [Coconet] is a stem, whole pairs and a head by
     construction. A file of the wrong tensor count meets `load` instead."""
-    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
     head = twin.head
-    chopped = quantized.QuantizedNormedConv(
+    chopped = quantized.NormedConv(
         kernel=head.kernel[...],
         e=head.e,
         gain_q_value=head.gain_q_value[...],
@@ -566,7 +566,7 @@ def test_a_broken_model_refuses_loudly():
     with pytest.raises(ValueError, match="do not cover its channels"):
         quantized.check_shape(rebuilt(twin, head=chopped))
     # a head that reads a width the pair before it did not write
-    narrow = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 4))
+    narrow = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 4))
     with pytest.raises(ValueError, match="the layer before it"):
         quantized.check_shape(rebuilt(twin, head=narrow.head))
 
@@ -574,7 +574,7 @@ def test_a_broken_model_refuses_loudly():
 def test_a_contract_file_of_the_wrong_shape_refuses_loudly(tmp_path):
     """The file is a FLAT list and the tree is not, thus the count is checked where the
     two meet: a file that holds no whole residual pairs is no model of this era."""
-    twin = quantized.QuantizedCoconet.of(model.Coconet.drawn(5, 6, 8))
+    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
     path = tmp_path / "short.int8"
     quantized.save(path, twin)
     tensors = load_file(str(path))

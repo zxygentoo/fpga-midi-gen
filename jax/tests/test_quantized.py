@@ -193,10 +193,10 @@ def test_a_file_with_no_metadata_reads_back_no_temperature():
     thus a contract file an older tool wrote carries the pair and no temperature. It must
     read back nan and raise nothing -- the pair is the whole of what the circuit takes."""
     tensors = {"temper": np.array(quantized.temper_of(1.0), np.int32)}
-    older = quantized.Temper.of_file(tensors, {}, key="temper")
+    older = quantized.Temper.from_file(tensors, {}, key="temper")
     assert (older.q_value, older.q) == quantized.temper_of(1.0)
     assert np.isnan(older.temperature)
-    told = quantized.Temper.of_file(tensors, {"temperature": "0.9"}, key="temper")
+    told = quantized.Temper.from_file(tensors, {"temperature": "0.9"}, key="temper")
     assert told.temperature == 0.9
 
 
