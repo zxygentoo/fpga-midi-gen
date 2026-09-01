@@ -397,6 +397,18 @@ and shared.
   and the residual joins — and over windows shorter than the tap ring,
   where a pad written the other way round would show. The step form is
   the definition; the integer twin and the circuit compute that one.
+
+  **A THIRD FORM WAS BUILT AND REMOVED, 2026-08-21.** The chunked
+  semiseparable form of Mamba-2 replaces the quadratic form's `[T, T]`
+  weight with a scan over chunks, and it is the form the Mamba-2 paper
+  itself recommends at length. Measured here it read **1.17× at T 256 and
+  1.35× at T 512**, under the 1.5× bar the round set to justify a third
+  statement of the recurrence, and the cost was diagnosed as kernel launch
+  overhead and not the memory traffic the chunking removes. It was kept
+  dormant rather than adopted, because a change of summation order would
+  have put every new run outside the seed spread of the thirty checkpoints
+  the round had already trained; with the era frozen it was deleted, and
+  what was left of it was an export alive only because a test read it.
 - **The recipe opens where era four closed.** The same hand-rolled AdamW
   with a decoupled decay and a global-norm clip, the same batch draw —
   a uniform stream, then a uniform window — the same reporting: nats
