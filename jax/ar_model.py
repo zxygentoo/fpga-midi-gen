@@ -203,7 +203,7 @@ class Head(nnx.Module):
         """the two tables in the order every checkpoint of both eras carries them"""
         return [self.seats[...], self.phase[...]]
 
-    def take(self, tensors):
+    def set_tensors(self, tensors):
         """the reverse of [tensors]; the two stand together so the layout cannot drift"""
         seats, phase = tensors
         self.seats[...] = jnp.asarray(seats)
@@ -226,7 +226,7 @@ class Trunk(nnx.Module):
     `hidden(classes, phases, *, dropout, key)`; `self.d` comes off the head. The integer
     twins hold the same three names and are not subclasses."""
 
-    def every_tensor(self):
+    def tensors(self):
         """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
         tensors of each layer.
 
@@ -247,4 +247,4 @@ class Trunk(nnx.Module):
         return self.head.nll(h, labels)
 
     def parameter_count(self):
-        return sum(int(tensor.size) for tensor in self.every_tensor())
+        return sum(int(tensor.size) for tensor in self.tensors())

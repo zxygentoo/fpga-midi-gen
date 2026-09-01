@@ -345,7 +345,7 @@ class NormedConv(nnx.Module):
             self.norm.variance[...],
         ]
 
-    def take(self, tensors):
+    def set_tensors(self, tensors):
         """the reverse of [tensors]; the two stand together so the layout cannot drift"""
         kernel, scale, shift, mean, variance = tensors
         self.conv.kernel[...] = jnp.asarray(kernel)
@@ -374,7 +374,7 @@ class Trunk(nnx.Module):
     float tree and the integer twin fill it under the SAME attribute names at every
     level."""
 
-    def every_layer(self):
+    def layers(self):
         """every layer in the order the network runs: the checkpoint, the population fold,
         the quantizer and the contract file all walk a trunk this way"""
         walked = [self.stem]
@@ -389,14 +389,14 @@ class Coconet(Trunk):
     carries a residual; the head keeps its norm and takes no activation, as equation 7
     states. THE LAYER COUNT IS EVEN AND AT LEAST FOUR, and the tree is why."""
 
-    def __init__(self, layers, width, *, norm_scale=NORM_SCALE, rngs):
-        if layers < 4 or layers % 2:
-            raise ValueError(f"{layers} layers is no sheet model")
+    def __init__(self, layer_count, width, *, norm_scale=NORM_SCALE, rngs):
+        if layer_count < 4 or layer_count % 2:
+            raise ValueError(f"{layer_count} layers is no sheet model")
         self.stem = NormedConv(PLANES, width, norm_scale=norm_scale, rngs=rngs)
         self.pairs = nnx.List(
             [
                 ResidualPair(width, norm_scale=norm_scale, rngs=rngs)
-                for _ in range((layers - 2) // 2)
+                for _ in range((layer_count - 2) // 2)
             ]
         )
         self.head = NormedConv(width, VOICES, norm_scale=norm_scale, rngs=rngs)
@@ -431,7 +431,7 @@ class Coconet(Trunk):
         """The whole model as one flat list, in the order the network runs. THE POPULATION
         STATISTICS TRAVEL INSIDE IT: they are not parameters, but the model cannot state a
         probability without them."""
-        flat = [tensor for layer in self.every_layer() for tensor in layer.tensors()]
+        flat = [tensor for layer in self.layers() for tensor in layer.tensors()]
         save_checkpoint(path, flat)
 
     @classmethod
@@ -439,18 +439,18 @@ class Coconet(Trunk):
         """The model of one checkpoint. A model of L layers holds 5 L tensors, thus the
         count states the layers and the stem's kernel states the width."""
         tensors = load_file(str(path))
-        layers, spare = divmod(len(tensors), LAYER_TENSORS)
-        if spare or layers < 4 or layers % 2:
+        layer_count, spare = divmod(len(tensors), LAYER_TENSORS)
+        if spare or layer_count < 4 or layer_count % 2:
             raise ValueError(f"{path}: {len(tensors)} tensors is no sheet model")
         # the draw is thrown away tensor by tensor below; it buys the one constructor
-        held = cls(layers, int(tensors["0"].shape[3]), rngs=nnx.Rngs(0))
-        for at, layer in enumerate(held.every_layer()):
+        held = cls(layer_count, int(tensors["0"].shape[3]), rngs=nnx.Rngs(0))
+        for at, layer in enumerate(held.layers()):
             base = LAYER_TENSORS * at
-            layer.take([tensors[str(base + on)] for on in range(LAYER_TENSORS)])
+            layer.set_tensors([tensors[str(base + on)] for on in range(LAYER_TENSORS)])
         return held
 
     @classmethod
-    def drawn(cls, seed, layers, width, norm_scale=1.0):
+    def drawn(cls, seed, layer_count, width, norm_scale=1.0):
         """A model of DRAWN weights, at a shape a gate can afford. It draws with NUMPY at
         a stated seed and not with the module's own initializer, so a gate's expected
         numbers do not move when a framework changes its key rule.
@@ -459,13 +459,13 @@ class Coconet(Trunk):
         trunk decays its activations tenfold at every layer, and by the third layer a gate
         over the twin reads the resolution floor of the format instead of the
         arithmetic."""
-        held = cls(layers, width, norm_scale=norm_scale, rngs=nnx.Rngs(0))
+        held = cls(layer_count, width, norm_scale=norm_scale, rngs=nnx.Rngs(0))
         rng = np.random.default_rng(seed)
-        for at, layer in enumerate(held.every_layer()):
+        for at, layer in enumerate(held.layers()):
             inputs = PLANES if at == 0 else width
-            outputs = VOICES if at == layers - 1 else width
+            outputs = VOICES if at == layer_count - 1 else width
             deviation = math.sqrt(2.0 / (KERNEL * KERNEL * inputs))
-            layer.take(
+            layer.set_tensors(
                 [
                     rng.normal(0.0, deviation, (KERNEL, KERNEL, inputs, outputs)).astype(
                         np.float32

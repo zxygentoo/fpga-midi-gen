@@ -66,7 +66,7 @@ def masked_nll(said, classes, hidden):
 def fold_population(coconet, seen, decay):
     """the batch statistics of a training pass, folded into the populations in the layer
     order; IT STANDS OUTSIDE THE GRADIENT, because a training pass reads no population"""
-    for layer, statistics in zip(coconet.every_layer(), seen):
+    for layer, statistics in zip(coconet.layers(), seen):
         layer.norm.fold(statistics, decay)
 
 

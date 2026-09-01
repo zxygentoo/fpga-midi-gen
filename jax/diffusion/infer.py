@@ -243,7 +243,7 @@ def quantize(ckpt, out, temperature):
     coconet = model.Coconet.load(ckpt)
     twin = quantized.QuantizedCoconet.of(coconet, temperature)
     quantized.save(out, twin)
-    layers = twin.every_layer()
+    layers = twin.layers()
     widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in layers)
     click.echo(f"wrote {out}: {len(layers)} layers, {widths}")
     click.echo(

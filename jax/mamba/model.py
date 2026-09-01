@@ -115,7 +115,7 @@ class NamedTensors:
     def tensors(self):
         return [getattr(self, name)[...] for name in LAYER_TENSORS[self.kind]]
 
-    def take(self, tensors):
+    def set_tensors(self, tensors):
         for name, value in zip(LAYER_TENSORS[self.kind], tensors):
             getattr(self, name)[...] = jnp.asarray(value)
 
@@ -488,7 +488,7 @@ class Mamba(Trunk):
         """The whole model as one flat list, then the ALiBi span LAST and alone, thus an
         older file that does not carry it still reads. It is written even where no layer
         attends, which costs four bytes and keeps one rule."""
-        save_checkpoint(path, self.every_tensor(), span=self.span)
+        save_checkpoint(path, self.tensors(), span=self.span)
 
     @classmethod
     def load(cls, path):
@@ -534,9 +534,9 @@ class Mamba(Trunk):
             span=span,
             rngs=nnx.Rngs(0),
         )
-        held.head.take([tensors[str(at)] for at in range(len(TABLES))])
+        held.head.set_tensors([tensors[str(at)] for at in range(len(TABLES))])
         for layer, group in zip(held.layers, groups):
-            layer.take(group)
+            layer.set_tensors(group)
         return held
 
     @classmethod
@@ -569,7 +569,7 @@ class Mamba(Trunk):
         keys = iter(jax.random.split(jax.random.key(seed), count))
         held = cls(plan, d=d, heads=heads, state=state, taps=taps, expand=expand,
                    span=span, rngs=nnx.Rngs(0))
-        held.head.take(
+        held.head.set_tensors(
             [ar_model.normal_at(next(keys), s) for s in ar_model.Head.shapes(d)]
         )
 
@@ -594,16 +594,16 @@ class Mamba(Trunk):
 
         for kind, layer in zip(plan, held.layers):
             if kind == MAMBA:
-                layer.take(block_tensors())
+                layer.set_tensors(block_tensors())
             elif kind == MLP:
-                layer.take(
+                layer.set_tensors(
                     [ar_model.normal_at(next(keys), s) for s in ((d, 4 * d), (4 * d, d))]
                 )
             else:
                 # the Zamba query and key read the stream beside the embedding, thus
                 # [2d,d]
                 wide = (2 * d, d) if kind == ZATTN else (d, d)
-                layer.take(
+                layer.set_tensors(
                     [
                         ar_model.normal_at(next(keys), s)
                         for s in (wide, wide, (d, d), (d, d))

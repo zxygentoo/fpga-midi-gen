@@ -230,7 +230,7 @@ def test_the_image_is_not_the_checkpoint_order():
     are two structures and neither is implied by the other."""
     twin = quantized_plan("MZF")
     # two tables, then three, four and two
-    assert len(twin.every_tensor()) == len(ar_model.TABLES) + 3 + 4 + 2
+    assert len(twin.tensors()) == len(ar_model.TABLES) + 3 + 4 + 2
     # the three per-head rows stand on the BLOCK that drew them, thus no index aligns them
     block = twin.blocks[0]
     assert block.decay.shape == block.dt_bias.shape == block.d_skip.shape
@@ -278,7 +278,7 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
         for mine, yours in zip(here.rows(), there.rows(), strict=True):
             assert np.array_equal(mine, yours)
     for here, there in zip(
-        read.every_tensor(), twin.every_tensor(), strict=True
+        read.tensors(), twin.tensors(), strict=True
     ):
         assert np.array_equal(here.values, there.values) and here.e == there.e
 

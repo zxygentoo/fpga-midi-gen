@@ -93,7 +93,7 @@ class QuantizedTransformer:
     bitstream serves every seed of the board.
 
     IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
-    era is a Flax module -- thus [every_tensor] is restated below. THE ATTRIBUTE NAMES ARE
+    era is a Flax module -- thus [tensors] is restated below. THE ATTRIBUTE NAMES ARE
     THE PARITY and not the base class."""
 
     def __init__(self, *, head, layers, heads, context, slope_span, temper, min_weight):
@@ -109,7 +109,7 @@ class QuantizedTransformer:
     def d(self):
         return self.head.d
 
-    def every_tensor(self):
+    def tensors(self):
         """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
         tensors of each layer, which is `ar_model.Trunk`'s order and the ROM's."""
         return self.head.tensors() + [
@@ -162,7 +162,7 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    tensors = image_tensors(twin.every_tensor())
+    tensors = image_tensors(twin.tensors())
     tensors[HEADS] = scalar_tensor(twin.heads)
     tensors[CONTEXT] = scalar_tensor(twin.context)
     tensors[SLOPE_SPAN] = scalar_tensor(twin.slope_span)

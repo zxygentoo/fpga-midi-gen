@@ -284,7 +284,7 @@ class QuantizedCoconet(model.Trunk):
 
 def paired(layers):
     """The trunk's layers two at a time. The contract file is a FLAT list and the
-    module is a tree; this and `model.Trunk.every_layer` are the two directions of that
+    module is a tree; this and `model.Trunk.layers` are the two directions of that
     seam."""
     return [
         QuantizedResidualPair(first, second)
@@ -298,7 +298,7 @@ def check_shape(twin):
     head states the voices, and every constant row covers its output channels. A LAYER
     COUNT THAT IS ODD OR TOO SHORT IS NOT CHECKED HERE, because the tree cannot hold
     one."""
-    layers = twin.every_layer()
+    layers = twin.layers()
     if layers[0].inputs != model.PLANES:
         raise ValueError(
             f"the stem reads {layers[0].inputs} planes, not {model.PLANES}"
@@ -343,7 +343,7 @@ def save(path, twin):
     reasons"""
     check_shape(twin)
     tensors = {}
-    for at, layer in enumerate(twin.every_layer()):
+    for at, layer in enumerate(twin.layers()):
         base = LAYER_TENSORS * at
         for on, tensor in enumerate(layer.tensors()):
             tensors[str(base + on)] = tensor

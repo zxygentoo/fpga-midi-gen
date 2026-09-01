@@ -70,7 +70,7 @@ def test_the_two_tables_take_the_larger_peaks_exponent():
     quantized at another tensor's exponent clamps."""
     held = drawn_transformer()
     # the phase table is lifted far past the seats, thus the shared exponent is its own
-    held.head.take([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
+    held.head.set_tensors([held.head.seats[...] * 0.01, held.head.phase[...] * 4.0])
     twin = ar_quantized.QuantizedHead.of(held.head)
     peak = float(np.abs(np.asarray(held.head.phase[...])).max())
     assert twin.e == max_exponent(peak)
@@ -84,7 +84,7 @@ def test_each_layer_tensor_takes_its_own_exponent():
     held = drawn_transformer()
     layer = held.layers[0]
     # wq alone is lifted; every other tensor of the model stands where it stood
-    layer.take(
+    layer.set_tensors(
         [
             tensor * 8.0 if name == "wq" else tensor
             for name, tensor in zip(model.LAYER_TENSORS, layer.tensors())
@@ -122,8 +122,8 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
     assert read.temper.temperature == twin.temper.temperature
     assert read.min_weight == twin.min_weight
-    assert len(read.every_tensor()) == len(twin.every_tensor())
-    for here, there in zip(read.every_tensor(), twin.every_tensor()):
+    assert len(read.tensors()) == len(twin.tensors())
+    for here, there in zip(read.tensors(), twin.tensors()):
         assert np.array_equal(here.values, there.values) and here.e == there.e
 
 

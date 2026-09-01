@@ -128,7 +128,7 @@ def test_the_net_states_a_distribution_for_every_cell():
     hidden = model.orderless_masks(jax.random.key(2), 2, 16)
     said, seen = coconet(model.planes(classes, hidden))
     assert said.shape == (2, 16, model.ROWS, model.VOICES)
-    assert len(seen) == len(coconet.every_layer())
+    assert len(seen) == len(coconet.layers())
     total = jnp.sum(jax.nn.softmax(said, axis=-2), axis=-2)
     assert np.allclose(np.asarray(total), 1.0, atol=1e-5)
 
@@ -148,14 +148,14 @@ def test_the_paper_size_holds_nine_million_parameters():
     """the shape of the round, counted and not assumed: 64 layers of 3 by 3 at 128
     channels, a stem of 2I planes and a head of I"""
     coconet = tiny(layers=model.LAYERS, width=model.WIDTH)
-    assert len(coconet.every_layer()) == model.LAYERS
+    assert len(coconet.layers()) == model.LAYERS
     assert len(coconet.pairs) == (model.LAYERS - 2) // 2
     assert 9.0e6 < coconet.parameter_count() < 9.3e6
 
 
 def flat_tensors(coconet):
     """the whole model as one list, in the order [Coconet.save] writes it"""
-    return [np.asarray(t) for layer in coconet.every_layer() for t in layer.tensors()]
+    return [np.asarray(t) for layer in coconet.layers() for t in layer.tensors()]
 
 
 def test_the_checkpoint_states_the_weights_and_the_statistics(tmp_path):
@@ -164,7 +164,7 @@ def test_the_checkpoint_states_the_weights_and_the_statistics(tmp_path):
     a probability without them."""
     coconet = tiny(seed=3)
     # a population that is not the opening, thus a reader that dropped it would be caught
-    for layer in coconet.every_layer():
+    for layer in coconet.layers():
         layer.norm.mean[...] = layer.norm.mean[...] + 0.5
         layer.norm.variance[...] = layer.norm.variance[...] + 0.5
     path = str(tmp_path / "sheet.ckpt")
@@ -206,7 +206,7 @@ def test_the_population_statistics_decide_the_answer():
     # one sheet alone must give what it gave inside the pair
     alone, _ = coconet(sheet[:1])
     assert np.allclose(np.asarray(alone), np.asarray(said[:1]), atol=1e-5)
-    for layer in coconet.every_layer():
+    for layer in coconet.layers():
         layer.norm.mean[...] = layer.norm.mean[...] + 1.0
     other, _ = coconet(sheet)
     assert not np.allclose(np.asarray(said), np.asarray(other))
@@ -513,7 +513,7 @@ def test_the_twin_carries_the_float_models_skeleton():
     coconet = model.Coconet.drawn(5, 6, 8)
     twin = quantized.QuantizedCoconet.of(coconet)
     assert len(twin.pairs) == len(coconet.pairs)
-    for here, there in zip(twin.every_layer(), coconet.every_layer()):
+    for here, there in zip(twin.layers(), coconet.layers()):
         assert here.kernel.shape == there.conv.kernel.shape
         assert here.outputs == len(there.norm.scale[...])
     # the stem reads the planes, the head states the voices, and each pair is two layers
@@ -531,7 +531,7 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     read = quantized.load(path)
     assert read.temper == twin.temper
     assert len(read.pairs) == len(twin.pairs)
-    for here, there in zip(read.every_layer(), twin.every_layer()):
+    for here, there in zip(read.layers(), twin.layers()):
         assert here.e == there.e
         assert np.array_equal(np.asarray(here.kernel[...]), np.asarray(there.kernel[...]))
         assert np.array_equal(here.gain_q_value[...], there.gain_q_value[...])

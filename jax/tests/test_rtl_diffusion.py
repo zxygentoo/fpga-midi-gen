@@ -230,7 +230,7 @@ def test_the_store_writes_are_the_twins(
         )
     # every layer's whole tensor and every offered step, thus a driver that printed
     # nothing cannot pass
-    columns = sum(steps * layer.outputs for layer in twin.every_layer()[:-1])
+    columns = sum(steps * layer.outputs for layer in twin.layers()[:-1])
     assert checked == columns + (steps * VOICES), (
         f"{name}: {checked} columns checked, and the shape holds "
         f"{columns + steps * VOICES}"

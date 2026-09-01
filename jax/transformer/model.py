@@ -67,7 +67,7 @@ class Layer(nnx.Module):
         """the six tensors of this layer in the order of the checkpoint and of the ROM"""
         return [getattr(self, name)[...] for name in LAYER_TENSORS]
 
-    def take(self, tensors):
+    def set_tensors(self, tensors):
         """the reverse of [tensors]; the two stand together so the layout cannot drift"""
         for name, value in zip(LAYER_TENSORS, tensors):
             getattr(self, name)[...] = jnp.asarray(value)
@@ -119,7 +119,7 @@ class Transformer(Trunk):
 
     def save(self, path):
         """the whole model as one flat list, in the construction order"""
-        save_checkpoint(path, self.every_tensor())
+        save_checkpoint(path, self.tensors())
 
     @classmethod
     def load(cls, path, *, heads, span=SLOPE_SPAN):
@@ -136,15 +136,15 @@ class Transformer(Trunk):
         held = cls(
             tensors["0"].shape[-1], layers, heads=heads, span=span, rngs=nnx.Rngs(0)
         )
-        held.take([tensors[str(at)] for at in range(count)])
+        held.set_tensors([tensors[str(at)] for at in range(count)])
         return held
 
-    def take(self, tensors):
-        """the flat list of [every_tensor], written back in"""
-        self.head.take(tensors[: len(TABLES)])
+    def set_tensors(self, tensors):
+        """the flat list of [tensors], written back in"""
+        self.head.set_tensors(tensors[: len(TABLES)])
         for at, layer in enumerate(self.layers):
             base = len(TABLES) + PER_LAYER * at
-            layer.take(tensors[base : base + PER_LAYER])
+            layer.set_tensors(tensors[base : base + PER_LAYER])
 
     @classmethod
     def drawn(cls, seed, d, layers, *, heads, span=SLOPE_SPAN):
@@ -159,7 +159,7 @@ class Transformer(Trunk):
             return [ar_model.normal_at(next(keys), shape) for shape in shapes]
 
         held = cls(d, layers, heads=heads, span=span, rngs=nnx.Rngs(0))
-        held.head.take(drawn_tensors(ar_model.Head.shapes(d)))
+        held.head.set_tensors(drawn_tensors(ar_model.Head.shapes(d)))
         for layer in held.layers:
-            layer.take(drawn_tensors(Layer.shapes(d)))
+            layer.set_tensors(drawn_tensors(Layer.shapes(d)))
         return held

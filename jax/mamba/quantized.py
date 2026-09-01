@@ -243,12 +243,12 @@ TWIN_OF = {
 
 
 class QuantizedMamba:
-    """The model as the bitstream carries it. [every_tensor] walks it in THE ORDER OF THE
+    """The model as the bitstream carries it. [tensors] walks it in THE ORDER OF THE
     ROM: the two tables, then what each layer puts in the image. The ring is an inference
     choice and travels in the file beside the span.
 
     IT IS NOT A `model.Trunk` -- `ar_quantized.QuantizedImage` states why no twin of this
-    era is a Flax module -- thus [every_tensor] and [plan] are restated below. THE
+    era is a Flax module -- thus [tensors] and [plan] are restated below. THE
     ATTRIBUTE NAMES ARE THE PARITY and not the base class."""
 
     def __init__(self, *, head, layers, span, ring, temper, min_weight):
@@ -268,7 +268,7 @@ class QuantizedMamba:
     def d(self):
         return self.head.d
 
-    def every_tensor(self):
+    def tensors(self):
         """Every tensor of the model in THE ONE ORDER -- the head's tables, then the
         tensors of each layer, which is `ar_model.Trunk`'s order and the ROM's."""
         return self.head.tensors() + [
@@ -359,7 +359,7 @@ def save(path, twin):
     """the contract file of `twin`: the module docstring holds the layout and the
     reasons"""
     check_shape(twin)
-    tensors = image_tensors(twin.every_tensor())
+    tensors = image_tensors(twin.tensors())
     tensors[SPAN] = scalar_tensor(twin.span)
     tensors[RING] = scalar_tensor(twin.ring)
     tensors[TEMPER] = twin.temper.tensor()
