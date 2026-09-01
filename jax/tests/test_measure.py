@@ -257,9 +257,9 @@ def test_the_cosine_reads_the_shape_of_a_row_and_not_its_scale():
     """The third number of every drift report, at rows whose answer is known by hand: a
     row against itself is 1, a row against a scaling of itself is still 1, and a row
     against one at 45 degrees to it is the root of a half."""
-    here = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
-    there = np.array([[1.0, 0.0], [7.0, 0.0], [1.0, 1.0]])
-    assert list(measure.cosines(here, there)) == pytest.approx([1.0, 1.0, 0.5**0.5])
+    twin = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    floated = np.array([[1.0, 0.0], [7.0, 0.0], [1.0, 1.0]])
+    assert list(measure.cosines(twin, floated)) == pytest.approx([1.0, 1.0, 0.5**0.5])
 
 
 def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
@@ -274,19 +274,19 @@ def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
     A SHARE OF 1/1.0498 and the two uniforms straddle it; the twin is said to have drawn
     class 0 both times, thus one of the two draws agrees. The count adds onto a report
     that has already seen ten draws, because a walk calls this once for each step."""
-    there = np.array([[0.0, -3.0, -8.0]] * 2)
-    here = np.array([[0.0, -3.0, -8.0], [-8.0, -3.0, 0.0]])
-    said = measure.count_draws(
+    floated = np.array([[0.0, -3.0, -8.0]] * 2)
+    twin = np.array([[0.0, -3.0, -8.0], [-8.0, -3.0, 0.0]])
+    counted = measure.count_draws(
         measure.Counted(draws=10, same_peak=5, same_draw=4, cosine=3.0),
-        here,
-        there,
+        twin,
+        floated,
         drawn=np.array([0, 0]),
         uniform=np.array([0.95, 0.96]),
         temperature=1.0,
         min_p=0.01,
     )
-    assert (said.draws, said.same_peak, said.same_draw) == (12, 6, 5)
-    assert said.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
+    assert (counted.draws, counted.same_peak, counted.same_draw) == (12, 6, 5)
+    assert counted.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
 
 
 # the step-frame referee: the forced pass, and the error over walks
