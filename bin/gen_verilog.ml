@@ -7,11 +7,11 @@
    the others keep their netlists alive, and `jax/tests/test_parity.py` pins the md5 of
    each. Neither an elaboration nor a quantizer can move without that gate saying so.
 
-   THE MODEL IS A CONTRACT FILE AND THE QUANTIZATION IS NOT HERE. `jax/<era>/quantized.py`
-   folds the norm and states the int8 image, one time, and writes the file this reads. The
-   default of every era is `weights/<era>.int8`, which `make verilog-<era>` writes from
-   the checkpoint beside it; `weights/README.md` holds that command and why the contract
-   file is derived and not committed.
+   THE MODEL IS A CONTRACT FILE AND THE QUANTIZATION IS NOT HERE.
+   `jax/<era>/quantized/model.py` folds the norm and states the int8 image, one time, and
+   writes the file this reads. The default of every era is `weights/<era>.int8`, which
+   `make verilog-<era>` writes from the checkpoint beside it; `weights/README.md` holds
+   that command and why the contract file is derived and not committed.
 
    ERA ONE READS NO FILE. Pink noise is parameters and not weights, thus `Pink.default` is
    the model and this is the one era that elaborates on a bare clone.

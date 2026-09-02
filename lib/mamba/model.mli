@@ -10,10 +10,10 @@
     of the circuit is [docs/mamba_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/mamba/model.py] and the integer
-    twin is [jax/mamba/quantized.py]; [jax/tests/test_rtl_mamba.py] states what the
-    circuit must do and [bin/gate_mamba.ml] states what it did. What stays here is what
-    the CIRCUIT reads: the fixed-point formats, the model as data, its ROM image and the
-    bases of that image.
+    twin is [jax/mamba/quantized/], its model half and its walk;
+    [jax/tests/test_rtl_mamba.py] states what the circuit must do and [bin/gate_mamba.ml]
+    states what it did. What stays here is what the CIRCUIT reads: the fixed-point
+    formats, the model as data, its ROM image and the bases of that image.
 
     EVERY WIDTH AND THE PLAN ARE IN THE FILE, thus the elaboration states none of them.
     The seat table gives [d]; the image of the first block gives the projection, the inner
@@ -208,10 +208,10 @@ val projection : t -> int
 val check_shape : t -> unit
 
 (** [of_int8_checkpoint path] is the model of one CONTRACT FILE — the quantized model that
-    [jax/mamba/quantized.py] writes, and the only thing that crosses the seam for a build.
-    The quantization happens above the seam, one time, thus this reader quantizes nothing:
-    it takes the image, the exponents, the per-head rows, the span, the ring, the temper
-    and the min-p share as they stand.
+    [jax/mamba/quantized/model.py] writes, and the only thing that crosses the seam for a
+    build. The quantization happens above the seam, one time, thus this reader quantizes
+    nothing: it takes the image, the exponents, the per-head rows, the span, the ring, the
+    temper and the min-p share as they stand.
 
     THE PLAN AND EVERY WIDTH COME OUT OF THE SHAPES, by the rule the module comment
     states, thus the file carries no plan of its own that a reader could disagree with.
@@ -271,12 +271,12 @@ module For_test : sig
 
       IT QUANTIZES NOTHING. A quantizer picks an exponent from a tensor's own peak, and
       that is a rule of a CHECKPOINT: it lives above the seam with
-      [jax/mamba/quantized.py], which is the only thing that reads one. This draw states
-      ONE exponent for every tensor and rounds the normal at it, as era six's does, and
-      the per-head numbers draw straight into the forms the circuit reads — the decay's
-      [a * log2(e)] in Q12, the step through its inverse softplus, the skip at one — with
-      no float32 round trip between, because a test model has no safetensors file to
-      survive. The temper and the min-p floor are stated the same way.
+      [jax/mamba/quantized/model.py], which is the only thing that reads one. This draw
+      states ONE exponent for every tensor and rounds the normal at it, as era six's does,
+      and the per-head numbers draw straight into the forms the circuit reads — the
+      decay's [a * log2(e)] in Q12, the step through its inverse softplus, the skip at one
+      — with no float32 round trip between, because a test model has no safetensors file
+      to survive. The temper and the min-p floor are stated the same way.
 
       The draw is what every expect test of this library has recorded, thus it may not
       move: a moved byte here would move every state table, every cycle bench and every

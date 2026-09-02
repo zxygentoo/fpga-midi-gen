@@ -1,11 +1,11 @@
 """The draw of the masked sheet: the annealed schedule, the blocked Gibbs loop and the
 draw of one cell.
 
-The float walk of `diffusion/infer.py` and the integer walk of `diffusion/quantized.py`
-take THIS loop, in this order, off the same seed; what parts them is arithmetic they hand
-in. The sheet itself is `diffusion/model.py` -- `cell_order` states the order of every
-uniform and `hidden_cells` the mask of a pass -- and `lib/diffusion/model.ml` holds both
-under the same names.
+The float walk of `diffusion/infer.py` and the integer walk of
+`diffusion/quantized/infer.py` take THIS loop, in this order, off the same seed; what
+parts them is arithmetic they hand in. The sheet itself is `diffusion/model.py` --
+`cell_order` states the order of every uniform and `hidden_cells` the mask of a pass --
+and `lib/diffusion/model.ml` holds both under the same names.
 
 The Gibbs schedule is the paper's section 5.2, citing Yao et al.: the annealed masking
 probability, with the constants from the code release.

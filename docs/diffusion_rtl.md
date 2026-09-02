@@ -7,7 +7,7 @@ masked sheet, blocked Gibbs over an annealed schedule. The board draws one
 sheet and the sequencer plays it.
 
 **The contract of the round is QUANTIZED-RTL EXACTNESS.** The integer twin
-(`jax/diffusion/quantized.py`) is the specification. The circuit must equal
+(`jax/diffusion/quantized/`) is the specification. The circuit must equal
 it operation for operation: the same seed gives the same sheet, bit for
 bit. This is Gate B, and it runs under `uv run pytest` — Python states what
 the machine must do and `bin/gate_diffusion.exe` states what it did. The
@@ -51,7 +51,7 @@ JAX float --(drift, in one framework)--> JAX int8 --(exact, pytest drives Cycles
 What the machine round stands on:
 
 - **The float model and the integer twin** (`jax/diffusion/model.py` and
-  `jax/diffusion/quantized.py`). The drift report pins the twin to the
+  `jax/diffusion/quantized/`). The drift report pins the twin to the
   float model in one framework, on the walk the board takes:
   `uv run pytest -m slow jax/tests/test_drift.py`, which holds the walk of
   the elected checkpoint to the top-1, cosine and same-draw columns of the
@@ -93,7 +93,7 @@ module at every rung.
 
 Every uniform of a walk comes from `Prng`, the xorshift32 of the circuit,
 and THE CONSUMPTION ORDER IS THE CONTRACT — the full statement is in
-`lib/diffusion/model.mli` and `jax/diffusion/quantized.py`, and the
+`lib/diffusion/model.mli` and `jax/diffusion/quantized/infer.py`, and the
 machine obeys it as written:
 
 1. One sheet is one seed. The board takes the SEED cell as it stands

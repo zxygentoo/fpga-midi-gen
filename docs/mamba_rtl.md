@@ -12,7 +12,8 @@ each one keeps what the design decided and adds what the implementation
 found. The build numbers are in `build-log.md`.
 
 The design keeps the rules of era four. The reference of the circuit is
-exact integer arithmetic — the twin, `jax/mamba/quantized.py` — and the
+exact integer arithmetic — the twin's walk, `jax/mamba/quantized/infer.py` —
+and the
 circuit must match it bit for bit: `jax/tests/test_rtl_mamba.py` states
 what the circuit must do, and `bin/gate_mamba.ml` prints what it did. The
 float model is not the reference of the circuit; the drift report
@@ -23,7 +24,8 @@ The modules of the era:
 | Module | It owns |
 |---|---|
 | `jax/mamba/model.py` | the float model: the plan, the block, the head, the loss, the sampler |
-| `jax/mamba/quantized.py` | the quantizer of the checkpoint, and the integer twin: the recurrence, the chain and the sampler |
+| `jax/mamba/quantized/model.py` | the quantizer of the checkpoint and the twin's weights: the plan, the formats and the contract file |
+| `jax/mamba/quantized/infer.py` | the twin's walk: the recurrence, the attention, the chain and the sampler |
 | `Mamba.Model` (`lib/mamba/model.ml`) | the model as the circuit reads it: the formats, the plan, the contract file and the ROM image |
 | `Mamba.Source` (`lib/mamba/source.ml`) | the same integers as a circuit: the schedule, the datapath and the socket machine |
 | from `mgen_nn` (`lib/nn/`) | the common home of the sources: the units — `Mac`, `Divider`, `Isqrt`, `Exp2`, `Sigmoid`, `Softplus` — the draw of the chain (`Sampler`), and the shared integer rules the circuits read. The quantizer and the sampling policy stand above the seam, in `jax/quantized.py` |
@@ -196,7 +198,7 @@ cumulative in a way era four never had.
 
 ### The operations
 
-Each operation is one definition in `jax/mamba/quantized.py`, and the
+Each operation is one definition in `jax/mamba/quantized/infer.py`, and the
 circuit computes the same integers. Every product fits one DSP48, 25 by 18
 signed. `rms_norm`, the embed, the chain and the sampler are era four's
 operations unchanged. The new ones:

@@ -33,7 +33,8 @@ import prng
 import quantized as q
 from diffusion import measure as referee
 from diffusion import model
-from diffusion import quantized as integer
+from diffusion.quantized import infer as qinfer
+from diffusion.quantized import model as qmodel
 from diffusion.sample import gibbs_passes, tempered_pick
 
 
@@ -41,7 +42,7 @@ def gibbs(coconet, given, states, *, walk, temperature):
     """The FLOAT walk of the era: the `gibbs_passes` of `diffusion/sample.py`, in float64
     over the trained model. The loop, the schedule and the order of the draws stand there
     once for both walks; what is here is this walk's arithmetic alone. It gives the sheets
-    and the generator behind them, as `integer.gibbs` does."""
+    and the generator behind them, as `qinfer.gibbs` does."""
 
     def forward(classes, hidden):
         return np.asarray(
@@ -78,11 +79,11 @@ def draw(coconet, *, crop, seeds, walk, temperature, quantized):
     seed and the twin takes it as the SEED cell does -- and a seed inside 32 bits names
     itself under both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if quantized:
-        twin = integer.Coconet.from_float(coconet, temperature)
+        twin = qmodel.Coconet.from_float(coconet, temperature)
         states, given = model.opening_sheet(q.engine_states(seeds), crop)
 
         def walked():
-            return integer.gibbs(twin, states, given, walk=walk)[0]
+            return qinfer.gibbs(twin, states, given, walk=walk)[0]
     else:
         states, given = model.opening_sheet(prng.states(seeds), crop)
 
@@ -109,8 +110,8 @@ def main():
     callback=cli.parse_seeds,
     help="a list, or LOW-HIGH; each seed is one sheet, one whole piece",
 )
-# `integer.ELECTED_TEMPERATURE` is the one home of this era's draw and states why
-@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
+# `qmodel.ELECTED_TEMPERATURE` is the one home of this era's draw and states why
+@click.option("--temperature", default=qmodel.ELECTED_TEMPERATURE)
 @click.option(
     "--quantized",
     is_flag=True,
@@ -195,15 +196,15 @@ def sample(
 @main.command()
 @cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
-@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
+@click.option("--temperature", default=qmodel.ELECTED_TEMPERATURE)
 def quantize(ckpt, out, temperature):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     It is the only thing that crosses the seam for a build. The population statistics and
     the float scales do not travel: the fold happens here, one time."""
     coconet = model.Coconet.load(ckpt)
-    twin = integer.Coconet.from_float(coconet, temperature)
-    integer.save(out, twin)
+    twin = qmodel.Coconet.from_float(coconet, temperature)
+    twin.save(out)
     layers = twin.layers()
     widths = " ".join(f"{layer.inputs}->{layer.outputs}" for layer in layers)
     click.echo(f"wrote {out}: {len(layers)} layers, {widths}")

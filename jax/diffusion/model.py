@@ -14,14 +14,14 @@ spends them, and the draw of one cell, are `diffusion/sample.py`.
 
 THE RULES OF THE WALK STAND HERE AND NOT IN ONE OF ITS TWO WALKERS. `cell_order`,
 `opening_sheet`, `hidden_cells` and `Coconet.logits` are what the float walk of
-`diffusion/infer.py` and the integer walk of `diffusion/quantized.py` must do
+`diffusion/infer.py` and the integer walk of `diffusion/quantized/infer.py` must do
 IDENTICALLY: the same opening from the same seed, the same cells hidden at the same pass,
 the same uniform for the same cell. `lib/diffusion/model.ml` holds the first three under
 the same names.
 
 THE NET IS A MODULE TREE AND NOT A LIST OF LAYERS, thus `__call__` reads as the paper's
-own diagram and an odd layer count is UNREPRESENTABLE. `diffusion/quantized.py` carries
-the same skeleton in integers, auditable layer for layer.
+own diagram and an odd layer count is UNREPRESENTABLE. `diffusion/quantized/model.py`
+carries the same skeleton in integers, auditable layer for layer.
 
 WHAT IS PINNED FROM THE PAPER, AND WHERE IT CAME FROM. The referee compares against a
 published number, thus every constant carries its source:

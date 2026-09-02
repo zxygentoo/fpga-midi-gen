@@ -255,7 +255,16 @@ It is not 48000 Hz.
   `import quantized as q`, thus `q.pick` states where the name came from —
   and never as a list of names, which says nothing and drifts. A bare
   `import measure` inside an era directory is the TOP-LEVEL one, because
-  Python 3 has no implicit relative import. Each era has a directory, and
+  Python 3 has no implicit relative import. AN ERA'S TWIN IS THE PACKAGE
+  `<era>/quantized/`, in two halves that mirror the float side by position:
+  `model.py` holds the weights, the formats and the contract file, `infer.py`
+  the walk the board runs, and the cut runs ONE WAY — `infer` reads `model`
+  and never the reverse. Every consumer reads them as `qmodel` and `qinfer`,
+  beside `q` for the shared module; a file that reads three eras' twins
+  qualifies fully (`transformer.quantized.infer.walk`). INSIDE a twin's
+  `model.py` the float model takes the era's own alias — `step`,
+  `recurrence`, `sheet` — because a file named `model.py` that reads
+  `model.Trunk` misleads. Each era has a directory, and
   `tests/` holds the oracle gates —
   `tests/gate.py` and `tests/models.py` do not begin with `test_`, because a
   `from tests.test_x import y` makes a SECOND module of a file pytest already

@@ -6,10 +6,10 @@
    this file states an expectation, thus a gate cannot pass by the driver agreeing with
    itself.
 
-   The model is a CONTRACT FILE and never a draw of this side: jax/mamba/quantized.py
-   draws the tiny model, quantizes it and writes the file, and both sides then read one
-   model. Every width and the plan travel in that file — the image states them — thus no
-   flag here states a shape.
+   The model is a CONTRACT FILE and never a draw of this side:
+   jax/mamba/quantized/model.py draws the tiny model, quantizes it and writes the file,
+   and both sides then read one model. Every width and the plan travel in that file — the
+   image states them — thus no flag here states a shape.
 
    THE NETLIST GATE OF THE ERA IS NOT HERE. [bin/gen_verilog mamba] elaborates the board
    top level over this era's source and `test_g1_the_mamba_quantizer_states_its_netlist`

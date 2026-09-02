@@ -7,10 +7,10 @@
    gate cannot pass by the driver agreeing with itself.
 
    The model is a CONTRACT FILE and never a draw of this side:
-   [jax/diffusion/quantized.py] draws the tiny model, quantizes it and writes the file,
-   and both sides then read one model. The geometry cannot travel in a file — the steps of
-   a sheet, the lanes of a group and the passes of a walk are the elaboration's — thus it
-   travels in the flags, and the Python side states the same numbers it passed.
+   [jax/diffusion/quantized/model.py] draws the tiny model, quantizes it and writes the
+   file, and both sides then read one model. The geometry cannot travel in a file — the
+   steps of a sheet, the lanes of a group and the passes of a walk are the elaboration's —
+   thus it travels in the flags, and the Python side states the same numbers it passed.
 
    Three gates, three subcommands:
 

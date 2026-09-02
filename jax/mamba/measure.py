@@ -22,7 +22,8 @@ from ar_measure import (
     walk_line,
     walk_row,
 )
-from mamba import model, quantized
+from mamba import model
+from mamba.quantized import model as qmodel
 
 
 @click.group(help=__doc__)
@@ -43,8 +44,8 @@ def forced(ckpt, corpus_path):
 @cli.ckpt_option
 @click.option("--seeds", default="1-16", help="a list, or LOW-HIGH")
 @click.option("--steps", default=512)
-@click.option("--temperature", default=quantized.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=quantized.ELECTED_MIN_P)
+@click.option("--temperature", default=qmodel.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=qmodel.ELECTED_MIN_P)
 @click.option("--ring", default=model.ATTN_CONTEXT, help="the attention ring depth")
 @click.option("--corpus", "corpus_path", default=str(corpus.FRAMES))
 def free(ckpt, seeds, steps, temperature, min_p, ring, corpus_path):

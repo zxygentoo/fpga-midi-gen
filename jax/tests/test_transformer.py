@@ -18,7 +18,9 @@ import ar_quantized
 import corpus
 import quantized as q
 from tests.models import drawn_transformer, transformer_twin
-from transformer import model, quantized
+from transformer import model
+from transformer.quantized import infer as qinfer
+from transformer.quantized import model as qmodel
 
 
 def test_the_chain_conditions_downward():
@@ -53,7 +55,7 @@ def test_the_twin_carries_the_float_models_skeleton():
     puts `held.layers[k].wq` beside `twin.layers[k].wq` and reads one tensor against its
     own quantization, with nothing to align by hand."""
     held = drawn_transformer()
-    twin = quantized.Transformer.from_float(held, context=16)
+    twin = qmodel.Transformer.from_float(held, context=16)
     assert len(twin.layers) == len(held.layers)
     assert twin.head.seats.shape == held.head.seats.shape
     assert twin.head.phase.shape == held.head.phase.shape
@@ -88,8 +90,8 @@ def test_each_layer_tensor_takes_its_own_exponent():
             for name, tensor in zip(model.LAYER_TENSORS, layer.tensors())
         ]
     )
-    lifted = quantized.Transformer.from_float(held, context=16).layers[0]
-    plain = quantized.Transformer.from_float(drawn_transformer(), context=16).layers[0]
+    lifted = qmodel.Transformer.from_float(held, context=16).layers[0]
+    plain = qmodel.Transformer.from_float(drawn_transformer(), context=16).layers[0]
     assert lifted.wq.e == plain.wq.e - 3, "eight times the peak is three exponents down"
     for name in model.LAYER_TENSORS[1:]:
         assert getattr(lifted, name).e == getattr(plain, name).e
@@ -110,8 +112,8 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     it is re-derived on either side of the file."""
     twin = transformer_twin()
     path = tmp_path / "tiny.int8"
-    quantized.save(path, twin)
-    read = quantized.load(path)
+    twin.save(path)
+    read = qmodel.Transformer.load(path)
     assert (read.heads, read.context, read.slope_span) == (
         twin.heads,
         twin.context,
@@ -129,12 +131,12 @@ def test_a_file_whose_two_tables_disagree_is_refused(tmp_path):
     and a reader that took the first and dropped the second would sum two formats in
     silence."""
     path = tmp_path / "tiny.int8"
-    quantized.save(path, transformer_twin())
+    transformer_twin().save(path)
     tensors = load_file(str(path))
     tensors[q.EXPONENTS][1] += 1
     save_file(tensors, str(path))
     with pytest.raises(ValueError, match="share one exponent"):
-        quantized.load(path)
+        qmodel.Transformer.load(path)
 
 
 def test_a_shape_the_circuit_cannot_hold_refuses_at_the_file():
@@ -142,12 +144,12 @@ def test_a_shape_the_circuit_cannot_hold_refuses_at_the_file():
     a head width that is not a power of four has no circuit at all. It refuses here, where
     a build fails loudly, and never inside a walk."""
     with pytest.raises(ValueError):
-        quantized.check_shape(transformer_twin(d=12))
+        transformer_twin(d=12).check_shape()
     with pytest.raises(ValueError):
-        quantized.check_shape(transformer_twin(context=20))
+        transformer_twin(context=20).check_shape()
     # d 8 over 4 heads is a head width of 2, which is not a power of four
     with pytest.raises(ValueError):
-        quantized.check_shape(transformer_twin(d=8, heads=4))
+        transformer_twin(d=8, heads=4).check_shape()
 
 
 def test_the_lead_in_draws_nothing_and_moves_no_generator():
@@ -156,10 +158,10 @@ def test_the_lead_in_draws_nothing_and_moves_no_generator():
     and every step of it would be legal music. IT IS THE TWIN AGAINST ITSELF and no
     circuit is in it, thus it stands here and not in `test_rtl_transformer.py`."""
     twin = transformer_twin(layers=1)
-    played, draws = quantized.walk(twin, [1, 7], ar_quantized.LEAD + 2)
+    played, draws = qinfer.walk(twin, [1, 7], ar_quantized.LEAD + 2)
     assert (played[:, : ar_quantized.LEAD] == 0).all(), "the lead-in is not silent"
     assert all(not taken for taken in draws[: ar_quantized.LEAD]), "the lead-in drew"
     assert all(len(taken) == 4 for taken in draws[ar_quantized.LEAD :])
     # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], ar_quantized.LEAD + 2)
+    alone, _ = qinfer.walk(twin, [7], ar_quantized.LEAD + 2)
     assert np.array_equal(alone[0], played[1])

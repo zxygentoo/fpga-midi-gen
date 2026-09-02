@@ -1,9 +1,9 @@
 (** What every RTL gate driver mounts: the three flags and the walk.
 
     A GATE DRIVER STATES WHAT THE CIRCUIT DID AND NEVER WHAT IT SHOULD HAVE DONE. The
-    oracle is the era's integer twin above the seam, in [jax/<era>/quantized.py], and the
-    gate that compares them is [jax/tests/test_rtl_<era>.py]. Nothing here states an
-    expectation, thus a gate cannot pass by the driver agreeing with itself, and this
+    oracle is the era's integer twin above the seam, in [jax/<era>/quantized/infer.py],
+    and the gate that compares them is [jax/tests/test_rtl_<era>.py]. Nothing here states
+    an expectation, thus a gate cannot pass by the driver agreeing with itself, and this
     module holds only the part that is neither side of that comparison.
 
     IT KNOWS NO ERA AND NO BOARD. The model reader and the walk arrive as arguments, thus

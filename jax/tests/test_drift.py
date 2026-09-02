@@ -28,14 +28,19 @@ from flax import nnx
 
 import ar_model
 import corpus
+import diffusion.quantized.infer
+import diffusion.quantized.model
+import mamba.infer
+import mamba.quantized.infer
+import mamba.quantized.model
 import prng
 import quantized as q
 import sample as s
-from diffusion import model, quantized, sample
-from mamba import quantized as mamba_twin
+import transformer.quantized.infer
+import transformer.quantized.model
+from diffusion import model, sample
 from tests import gate
 from tests.models import drawn_transformer, plan_of
-from transformer import quantized as transformer_twin
 
 # The instrument: the twin's draw against the float model's, on the one uniform the twin
 # took. All three walks below count through it, thus one rule states what a drift is.
@@ -195,7 +200,12 @@ class SheetDrift(NamedTuple):
 
 
 def sheet_drift(
-    coconet, states, given, *, walk, temperature=quantized.ELECTED_TEMPERATURE
+    coconet,
+    states,
+    given,
+    *,
+    walk,
+    temperature=diffusion.quantized.model.ELECTED_TEMPERATURE,
 ):
     """The quantized walk of one sheet, scored against the float model cell for cell.
 
@@ -203,9 +213,9 @@ def sheet_drift(
     the same-draw share reads the float draw ON THE VERY UNIFORM THE ENGINE TOOK, thus
     what stands between them is the arithmetic alone. The quantization happens here,
     from the float model handed in, thus the pair cannot slip."""
-    twin = quantized.Coconet.from_float(coconet, temperature)
+    twin = diffusion.quantized.model.Coconet.from_float(coconet, temperature)
     counted = Counted()
-    for taken in quantized.passes(twin, states, given, walk=walk):
+    for taken in diffusion.quantized.infer.passes(twin, states, given, walk=walk):
         floated = np.asarray(
             coconet.logits(jnp.asarray(taken.read), jnp.asarray(taken.hidden)),
             dtype=np.float64,
@@ -362,12 +372,12 @@ def ring_drift(model, *, context, steps, seed):
     pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
     reads the float draw on the very uniform the engine took, thus the report measures
     the quantization and never a walk that parted for another reason."""
-    twin = transformer_twin.Transformer.from_float(model, context=context)
-    engine = transformer_twin.create_engine(twin, [seed])
+    twin = transformer.quantized.model.Transformer.from_float(model, context=context)
+    engine = transformer.quantized.infer.create_engine(twin, [seed])
     history = []
     counted = Counted()
     for at in range(steps):
-        engine, classes, chain_draws = transformer_twin.next_step(engine)
+        engine, classes, chain_draws = transformer.quantized.infer.next_step(engine)
         # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
         # the window the engine's own ring held
         window = list(history)
@@ -463,10 +473,10 @@ class StateDrift(NamedTuple):
     same_peak: int  # the draws where both models elect the same class
     same_draw: int  # the draws where both models pick the same class
     mean_cosine: float
-    clamps: mamba_twin.Clamps  # the twin's own, which no other era reports
+    clamps: mamba.quantized.infer.Clamps  # the twin's own, no other era reports one
 
 
-def state_drift(model, *, steps, seed, ring=mamba_twin.ELECTED_RING):
+def state_drift(model, *, steps, seed, ring=mamba.quantized.model.ELECTED_RING):
     """The quantized walk, scored against the float model draw for draw.
 
     ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
@@ -482,13 +492,13 @@ def state_drift(model, *, steps, seed, ring=mamba_twin.ELECTED_RING):
 
     The same-draw share reads the float draw on the very uniform the engine took, thus a
     difference there is the arithmetic and not the generator."""
-    twin = mamba_twin.Mamba.from_float(model, ring=ring)
-    engine = mamba_twin.create_engine(twin, [seed])
+    twin = mamba.quantized.model.Mamba.from_float(model, ring=ring)
+    engine = mamba.quantized.infer.create_engine(twin, [seed])
     carry = model.initial_carry(1, context=ring)
     counted = Counted()
     stream = None
     for at in range(steps):
-        engine, classes, chain_draws = mamba_twin.next_step(engine)
+        engine, classes, chain_draws = mamba.quantized.infer.next_step(engine)
         # THE CHAIN OF A STEP READS THE STREAM OF THE STEP BEFORE IT, on both sides: the
         # float row must be the row that same forward states and never the one this
         # step's classes make
@@ -503,7 +513,7 @@ def state_drift(model, *, steps, seed, ring=mamba_twin.ELECTED_RING):
                 temperature=q.ELECTED_TEMPERATURE,
                 min_p=q.ELECTED_MIN_P,
             )
-        carry, stream = mamba_twin.float_step(
+        carry, stream = mamba.infer.float_step(
             model,
             carry,
             np.asarray(classes, np.int32),
