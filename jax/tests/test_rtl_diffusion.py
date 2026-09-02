@@ -6,7 +6,7 @@ done, from `diffusion/quantized.py` over the same model. Neither side can pass b
 with itself. The model crosses the seam as a CONTRACT FILE; the GEOMETRY cannot travel in
 one -- T, G and N are the elaboration's -- thus it travels in the flags below.
 
-Two gates, and each exists because a whole class of fault does not move a frame:
+Three gates, and each exists because a whole class of fault does not move a frame:
 
 - THE WALK, PHASE FOR PHASE. The finished sheet alone would pass a walk whose masks are
   one pass out of phase, or one that spends a uniform on a standing cell. The comparison
@@ -15,6 +15,11 @@ Two gates, and each exists because a whole class of fault does not move a frame:
 - THE STREAM, COLUMN FOR COLUMN. Era five's four faults were all faults of the
   composition layer -- a weight stride, a channel block offset, an operand read one cycle
   early, a ring run off its end -- and none of them moved a frame.
+- THE SUCCESSION, BYTE FOR BYTE. The two gates above hold ONE sheet, and phase II's whole
+  subject is the SECOND: which seed it comes from, what sounds between the two, and that
+  the drain closes the first one whole. What crosses is the wire, thus the reference is
+  the audition's own -- `corpus.decode` and `midi.play` over the twin's draws at the seeds
+  of the succession, which is the command the board rung captures against.
 
 P IS A PARAMETER OF THE STREAM GATE AND NOT OF THE WALK, because its input is data: a
 narrow P is a legal sheet, and the composition layer's P-parametric paths keep an oracle
@@ -31,6 +36,8 @@ root:
 import numpy as np
 import pytest
 
+import corpus
+import midi
 import quantized as q
 from diffusion import model, quantized
 from tests import gate
@@ -136,9 +143,9 @@ def test_the_walk_is_the_twins_walk(
             f"{phase}, write {at}: the circuit wrote {made} and the twin wants "
             f"{tuple(wanted)}"
         )
-    # THE FRAMES CLOSE THE WALK THROUGH THE SEQUENCER'S OWN FACE: the writes above prove
-    # the sheet is the twin's, and this proves the score face states that sheet -- through
-    # the Vocab decode, the seat packing, and the silence past T - 1.
+    # THE FRAMES CLOSE THE WALK THROUGH THE TRANSFER FACE: the writes above prove the
+    # sheet is the twin's, and this proves the face states that sheet -- through the Vocab
+    # decode, the seat packing, and the WRAP at T, which the scheduler's copy rests on.
     played = [(word[1], word[2]) for word in lines if word[0] == "frame"]
     stated = [(word[1], word[2]) for word in lines if word[0] == "want_frame"]
     assert played and played == stated, (
@@ -230,4 +237,105 @@ def test_the_store_writes_are_the_twins(
     assert checked == columns + (steps * VOICES), (
         f"{name}: {checked} columns checked, and the shape holds "
         f"{columns + steps * VOICES}"
+    )
+
+
+# the succession, byte for byte
+
+
+def wire_of(music, path, *, channel, velocity):
+    """the bytes one sheet puts on the wire, FROM THE AUDITION'S OWN PLAYER. `midi.play`
+    writes raw channel voice bytes to whatever the device is, and a file is a device the
+    board rung already uses -- thus the rule of the strike, the release and the sorted
+    drain has one home and this gate restates none of it."""
+    midi.play(music, device=str(path), step_ms=0, channel=channel, velocity=velocity)
+    return path.read_bytes()
+
+
+def wanted_wire(twin, tmp_path, *, steps, walk, seed, channel, velocity, sheets=2):
+    """the bytes the line must carry over a succession: the twin's draws at the seeds
+    `seed` to `seed + sheets - 1`, each one decoded and played whole.
+
+    THE GAP PUTS NO BYTE ON THE WIRE. It is silence, and the drain that opens it is the
+    tail of the sheet before it -- which is why the two streams meet with no rule of
+    their own for the boundary."""
+    states, given = model.opening_sheet(
+        q.engine_states([seed + at for at in range(sheets)]), steps
+    )
+    classes = quantized.gibbs(twin, states, given, walk=walk)[0]
+    return b"".join(
+        wire_of(
+            corpus.decode(drawn),
+            tmp_path / f"sheet-{at}.wire",
+            channel=channel,
+            velocity=velocity,
+        )
+        for at, drawn in enumerate(classes)
+    )
+
+
+def held_across_the_last_boundary(twin, *, steps, walk, seed):
+    """the pitches the drain of sheet `seed` must close that its LAST STEP did not strike
+    -- the case a boundary with no drain would carry into the next sheet"""
+    states, given = model.opening_sheet(q.engine_states([seed]), steps)
+    music = corpus.decode(quantized.gibbs(twin, states, given, walk=walk)[0][0])
+    ringing = set()
+    for events in music:
+        for kind, pitch in events:
+            if kind == "on":
+                ringing.add(pitch)
+            else:
+                ringing.discard(pitch)
+    struck_last = {pitch for kind, pitch in music[-1] if kind == "on"}
+    return sorted(ringing - struck_last)
+
+
+@pytest.mark.parametrize("seed", [3, 11])
+@pytest.mark.parametrize(
+    "layers,width,lanes,steps,walk,weight_seed",
+    [(6, 8, 2, 6, 3, 1)],
+)
+def test_the_wire_is_the_twins_succession(
+    tmp_path, seed, layers, width, lanes, steps, walk, weight_seed
+):
+    """TWO SHEETS AND THE SILENCE BETWEEN THEM, on the wire. The driver runs the socket
+    simulation over the phase II pair and prints what the line carried; this states what
+    it must have carried, from the twin's own draws at S and S + 1.
+
+    THE GAP IS THE ERA'S OWN AND NOT A FLAG. The driver mounts `Source`, which is what
+    `gen_verilog` hands the board, thus this gate holds the face the board carries and not
+    a wiring the test chose. The gap puts no byte on the wire either way -- silence is
+    silence -- which is why nothing on this side states it.
+
+    THE SEEDS ARE NOT ARBITRARY. Both leave pitches RINGING across the last step boundary
+    of a sheet, which the assertion below names: those pitches are what the drain must
+    close, and a boundary that carried them into the next sheet would sound a chord no
+    sheet states. The gate is byte for byte and in order -- a simulation reorders
+    nothing."""
+    path, twin = contract_file(
+        tmp_path, weight_seed=weight_seed, layers=layers, width=width
+    )
+    held = held_across_the_last_boundary(twin, steps=steps, walk=walk, seed=seed)
+    assert held, (
+        f"seed {seed} ends its sheet with nothing held across the last step, thus it "
+        "does not exercise the drain; choose another"
+    )
+    lines = drive("succession", path, steps=steps, lanes=lanes, walk=walk, seed=seed)
+    params = next(word for word in lines if word[0] == "params")
+    channel, velocity = int(params[1]), int(params[2])
+    got = bytes(
+        int(byte, 16) for word in lines if word[0] == "message" for byte in word[1:]
+    )
+    want = wanted_wire(
+        twin,
+        tmp_path,
+        steps=steps,
+        walk=walk,
+        seed=seed,
+        channel=channel,
+        velocity=velocity,
+    )
+    assert got == want, (
+        f"the line carried {len(got)} bytes and the twin's succession wants {len(want)}\n"
+        f"  the line {got[:24].hex(' ')}\n  the twin {want[:24].hex(' ')}"
     )

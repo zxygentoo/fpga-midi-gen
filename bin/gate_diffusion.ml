@@ -12,7 +12,7 @@
    a sheet, the lanes of a group and the passes of a walk are the elaboration's — thus it
    travels in the flags, and the Python side states the same numbers it passed.
 
-   Two gates, two subcommands:
+   Three gates, three subcommands:
 
    - [walk] is INSTRUMENT 2: the walk beside the engine, PHASE FOR PHASE. It prints every
      write of the cell port in the order the walk made them — the opening's classes, each
@@ -20,6 +20,13 @@
      answers, beside the frames the sheet it drew states. The finished sheet alone would
      pass a walk whose masks are one pass out of phase, or one that spends a uniform on a
      standing cell: both draw a sheet, and both draw the WRONG one with no local symptom.
+
+   - [succession] is INSTRUMENT 5: the WIRE over two sheets and the gap between them. The
+     socket simulation stands over the era's own [Source] — the scheduler over the
+     generator at the elected gap — and this prints every message the line carried; the
+     Python side assembles the same bytes from two twin draws at the seeds of the
+     succession, through [corpus.decode] and [midi.play]'s own rule, which is the
+     reference the board rung captures against.
 
    - [stream] is INSTRUMENT 3: every column the engine writes, against the twin's own
      [layer_writes]. Era five's four faults — a weight address whose stride was not the
@@ -34,7 +41,11 @@ module Elaboration = Mgen_diffusion.Elaboration
 module Forward = Mgen_diffusion.Forward
 module Generator = Mgen_diffusion.Generator
 module Source = Mgen_diffusion.Source
+module Socket = Mgen_board.Socket
 module Frame = Mgen_core.Frame
+module Midi = Mgen_core.Midi
+module Control_intf = Mgen_core.Control_intf
+module Harness = Mgen_core.Harness
 
 (* THE GEOMETRY IS THE ONLY THING THE FLAGS CARRY. The shape of the model — L, H and every
    width — comes out of the contract file, as it does for a build; a gate that stated a
@@ -199,12 +210,120 @@ let stream_command =
      fun () -> run_stream (elaborate ()) ~seed)
 ;;
 
+(* ==================================================================== *)
+(* The succession *)
+(* ==================================================================== *)
+
+(* THE SOCKET SIMULATION OVER THE PAIR, and what crosses it is BYTES. The Python side
+   assembles the same bytes out of two twin draws, thus neither side can pass by agreeing
+   with itself here either.
+
+   THE RUN IS A COUNT OF STEPS AND NEVER A COUNT OF CYCLES, on two facts:
+
+   - THE PERIOD HOLDS THE LOOKAHEAD. The step period is sized off the walk's own cost
+     model, thus the draw of the next sheet always ends inside the T + gap steps of this
+     one and no boundary stretches — the relation the board has at the elected rung, where
+     22.3 s of draw sit inside 32.0 s of performance.
+   - THE FIRST NOTE ENDS THE OPENING DRAW. No message crosses while the source holds the
+     boundary, thus the line itself says when the first walk is over.
+
+   The run then plays a fixed count of steps and drops RUN inside the SECOND gap, as the
+   board protocol does. Every step from the drain of sheet 1 to the end of its gap states
+   no event at all, thus the stream saturates and the stop adds no byte. *)
+
+(* the console divisor of the simulation, and the worst step's line time: eight messages
+   of three bytes at ten bit times each *)
+let clocks_per_ms = 4
+let clocks_per_bit = 4
+let line_cycles = 2 * Frame.voices * Midi.max_message_bytes * 10 * clocks_per_bit
+
+(* The walk, over-estimated: every pass at its model price and EVERY cell drawn, at 200
+   cycles for a draw that measures 154 at P 48. *)
+let draw_budget e =
+  let steps = e.Elaboration.steps in
+  (e.walk * (Elaboration.pass_cycles e + (steps * Frame.voices * 200)))
+  + Elaboration.cell_walk_cycles e
+;;
+
+(* THE PERIOD IS DERIVED AND NOT CHOSEN: long enough that a whole lookahead walk fits the
+   T + gap steps of a performance, and long enough that a dense step's messages fit one
+   step. STEP_MS is a 16-bit cell, thus a shape whose walk cannot fit is refused here and
+   not silently compressed. *)
+let step_ms_of e ~gap =
+  let period =
+    max (2 * line_cycles) ((draw_budget e / (e.Elaboration.steps + gap)) + 1)
+  in
+  let step_ms = (period + clocks_per_ms - 1) / clocks_per_ms in
+  if step_ms > 0xFFFF
+  then
+    failwithf
+      "the walk of this shape wants STEP_MS %d and the cell holds 16 bits"
+      step_ms
+      ();
+  step_ms
+;;
+
+let run_succession e ~seed =
+  let steps = e.Elaboration.steps in
+  (* THE GAP IS THE ERA'S OWN. This mounts [Source], which is what `gen_verilog` hands the
+     board, thus the gate holds the face the board carries and not a wiring of its own. *)
+  let gap = Source.gap in
+  (* THE WINDOW THE RUN MUST LAND IN. The first note stands at some step of sheet 0, thus
+     the run overshoots the drain of sheet 1 by up to T steps; the gap behind that drain
+     absorbs the overshoot, and a sheet longer than gap - 3 could reach a third one. *)
+  if gap < steps + 3
+  then
+    failwithf
+      "a sheet of %d steps wants a gap of %d and the era's is %d"
+      steps
+      (steps + 3)
+      gap
+      ();
+  let step_ms = step_ms_of e ~gap in
+  let period = clocks_per_ms * step_ms in
+  let channel = Control_intf.Default.channel in
+  let velocity = Control_intf.Default.velocity in
+  let h =
+    Socket.For_test.harness
+      ~clocks_per_ms
+      ~clocks_per_bit
+      ~source:(fun params -> Source.create ~e ~seed:params.seed)
+      ()
+  in
+  let inp = h.inputs in
+  Harness.set inp.params.seed seed;
+  Harness.set inp.params.channel channel;
+  Harness.set inp.params.velocity velocity;
+  Harness.set inp.params.step_ms step_ms;
+  Harness.set inp.params.run 1;
+  let left = ref (2 * draw_budget e) in
+  while List.is_empty (h.messages ()) && !left > 0 do
+    h.run_for ~cycles:period;
+    left := !left - period
+  done;
+  if !left <= 0 then failwith "the first note did not sound inside two draws";
+  h.run_for ~cycles:(((2 * steps) + gap + 2) * period);
+  Harness.set inp.params.run 0;
+  h.run_for ~cycles:(2 * period);
+  printf "params %d %d\n" channel velocity;
+  List.iter (h.messages ()) ~f:(fun bytes ->
+    printf "message %s\n" (String.concat ~sep:" " (List.map bytes ~f:(sprintf "%02x"))))
+;;
+
+let succession_command =
+  Command.basic
+    ~summary:"two sheets and the gap between them, as the MIDI line carried them"
+    (let%map_open.Command elaborate = elaboration_param
+     and seed = seed_param in
+     fun () -> run_succession (elaborate ()) ~seed)
+;;
+
 let command =
   Command.group
     ~summary:
       "drive the circuit of era six and state what it did; \
        jax/tests/test_rtl_diffusion.py states what it must have done"
-    [ "walk", walk_command; "stream", stream_command ]
+    [ "walk", walk_command; "stream", stream_command; "succession", succession_command ]
 ;;
 
 let () = Command_unix.run command
