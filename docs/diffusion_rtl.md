@@ -1539,13 +1539,13 @@ again. QSPI erased, programmed, verified, booted; the cell dump answers over
 the UART behind the boot. The unfused rung 2 that had held the flash since
 2026-08-27 stood aside as `board/_build/top-rung2-unfused.bit`.
 
-**THE FLASH HOLDS `ca16397a` SINCE 2026-08-29**, the same shape rebuilt after
-the lifts into `lib/nn`: `Placement.rom` took a dead write port out of every
-weight and norm bank and the frames became registers of their own, and the
-`Explore` directives of `build.tcl` placed and routed it at +0.070 / +0.021
-with no clock-skew adjustment. The capture at seed 47872 reads 840 bytes and
-280 messages byte for byte against the twin — the netlist moved and the music
-did not.
+**`ca16397a` HELD THE FLASH FROM 2026-08-29 TO 2026-09-02**, when phase II
+took it; it is the same shape rebuilt after the lifts into `lib/nn`:
+`Placement.rom` took a dead write port out of every weight and norm bank,
+the frames became registers of their own, and the `Explore` directives of
+`build.tcl` placed and routed it at +0.070 / +0.021 with no clock-skew
+adjustment. The capture at seed 47872 reads 840 bytes and 280 messages byte
+for byte against the twin — the netlist moved and the music did not.
 
 ## The iteration strategy
 
@@ -1907,3 +1907,9 @@ cat sheet-S.bin sheet-S+1.bin > reference.bin
 ```
 
 and the concatenation IS the wire, because the gap writes no byte.
+
+**THE FLASH HOLDS `c574f5b2` SINCE 2026-09-02.** The captured bitstream went
+into the QSPI after the branch merged — erased, programmed, verified, booted
+— and the cell dump answers over the console UART behind the boot, at the
+panel seed the switches stand at. The board therefore plays the succession
+from a power-on with nothing behind it.
