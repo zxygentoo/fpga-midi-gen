@@ -11,9 +11,12 @@ so that a failure names the rule and not the walk.
 
 import numpy as np
 import pytest
+from safetensors import safe_open
 
 import ar_quantized
 import quantized
+from tests import models
+from transformer import quantized as step_twin
 
 
 @pytest.mark.parametrize(
@@ -182,32 +185,42 @@ def test_a_stored_ring_row_keeps_its_top_byte():
 def test_the_temper_is_log2e_over_the_temperature():
     """log2(e) / T at a Q one below log2(e)'s own: the extra bit is headroom for the
     temperature, because the circuits carry this constant on an 18-bit signed port."""
-    assert quantized.temper_of(1.0) == (23637, 14)
-    assert quantized.temper_of(0.5) == (47274, 14)
+    assert quantized.Temper.from_float(1.0) == (23637, 14)
+    assert quantized.Temper.from_float(0.5) == (47274, 14)
     with pytest.raises(ValueError):
-        quantized.temper_of(0.0)
+        quantized.Temper.from_float(0.0)
 
 
-def test_a_file_with_no_metadata_reads_back_no_temperature():
-    """The temperature is PROVENANCE and not arithmetic: it travels in the metadata alone,
-    thus a contract file an older tool wrote carries the pair and no temperature. It must
-    read back nan and raise nothing -- the pair is the whole of what the circuit takes."""
-    tensors = {"temper": np.array(quantized.temper_of(1.0), np.int32)}
-    older = quantized.Temper.from_file(tensors, {}, key="temper")
-    assert (older.q_value, older.q) == quantized.temper_of(1.0)
-    assert np.isnan(older.temperature)
-    told = quantized.Temper.from_file(tensors, {"temperature": "0.9"}, key="temper")
-    assert told.temperature == 0.9
+def test_a_saved_file_carries_no_map_beside_its_tensors(tmp_path):
+    """AND IS THEREFORE REPRODUCIBLE BYTE FOR BYTE. The `__metadata__` map that once
+    travelled was serialised out of a Rust hash map whose order is randomised PER PROCESS,
+    thus two builds of one unchanged twin gave two md5s and no diff could say what moved.
+
+    THE EMPTY HEADER IS WHAT THIS PINS, and the two saves below are its corollary: one
+    process orders that map one way, thus two saves in one process would have agreed even
+    under the old writer. What makes the file a function of the tensors alone is that no
+    such map is written at all."""
+    twin = models.transformer_twin()
+
+    def saved(name):
+        path = tmp_path / name
+        step_twin.save(path, twin)
+        return path
+
+    first, second = saved("first.int8"), saved("second.int8")
+    assert first.read_bytes() == second.read_bytes()
+    with safe_open(str(first), framework="numpy") as opened:
+        assert opened.metadata() is None
 
 
 def test_the_min_p_floor_is_a_share_of_the_peak_weight():
     """The peak weighs 2^15 after the temper, thus the floor is a plain share of it and
     the circuit compares two integers. The elected 0.05 of the frozen eras is 1638."""
-    assert quantized.min_weight_of(0.05) == 1638
-    assert quantized.min_weight_of(0.0) == 0
+    assert quantized.min_weight(0.05) == 1638
+    assert quantized.min_weight(0.0) == 0
     for outside in (-0.1, 1.0):
         with pytest.raises(ValueError):
-            quantized.min_weight_of(outside)
+            quantized.min_weight(outside)
 
 
 def test_a_q12_number_clamps_to_the_port_that_carries_it():

@@ -58,6 +58,7 @@ from typing import NamedTuple
 
 import numpy as np
 from flax import nnx
+from safetensors.numpy import load_file, save_file
 
 import ar_model
 import ar_quantized
@@ -291,7 +292,7 @@ class Mamba:
             span=model.span,
             ring=ring,
             temper=q.Temper.from_float(temperature),
-            min_weight=q.min_weight_of(min_p),
+            min_weight=q.min_weight(min_p),
         )
 
     def ordinals(self):
@@ -354,17 +355,7 @@ def save(path, twin):
     tensors[DECAY_Q] = np.full_like(decay, DECAY_Q_BITS)
     tensors[DT_BIAS] = dt_bias
     tensors[D_SKIP] = d_skip
-    q.write_contract(
-        path,
-        tensors,
-        {
-            "plan": "".join(LETTERS[layer.kind] for layer in twin.layers),
-            "temper_q_value": str(twin.temper.q_value),
-            "temper_q": str(twin.temper.q),
-            "temperature": repr(twin.temper.temperature),
-            "min_weight": str(twin.min_weight),
-        },
-    )
+    save_file(tensors, str(path))
 
 
 def load(path):
@@ -372,7 +363,7 @@ def load(path):
 
     THE PLAN COMES BACK OUT OF THE SHAPES, by the rule the module docstring states, thus
     the reader of this side and the reader of the elaboration walk the image alike."""
-    tensors, metadata = q.read_contract(path)
+    tensors = load_file(str(path))
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     if count < len(ar_model.TABLES) + 1:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized state model")
@@ -412,7 +403,7 @@ def load(path):
         layers=[layer_of(kind, group) for kind, group in zip(plan, groups)],
         span=int(tensors[SPAN]),
         ring=int(tensors[RING]),
-        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
+        temper=q.Temper.from_file(tensors, key=q.TEMPER),
         min_weight=int(tensors[q.MIN_WEIGHT]),
     )
     check_shape(twin)

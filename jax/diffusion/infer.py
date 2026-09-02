@@ -240,7 +240,7 @@ def quantize(ckpt, out, temperature):
     click.echo(f"wrote {out}: {len(layers)} layers, {widths}")
     click.echo(
         f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
-        f"temperature {twin.temper.temperature}"
+        f"temperature {temperature}"
     )
 
 

@@ -57,6 +57,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
+from safetensors.numpy import load_file, save_file
 
 import measure
 import prng
@@ -329,21 +330,12 @@ def save(path, twin):
             tensors[str(base + on)] = tensor
     tensors[q.TEMPER] = twin.temper.tensor()
     tensors[ACTIVATION] = q.scalar_tensor(ACTIVATION_Q)
-    q.write_contract(
-        path,
-        tensors,
-        {
-            "temper_q_value": str(twin.temper.q_value),
-            "temper_q": str(twin.temper.q),
-            "activation_q": str(ACTIVATION_Q),
-            "temperature": repr(twin.temper.temperature),
-        },
-    )
+    save_file(tensors, str(path))
 
 
 def load(path):
     """the model of one contract file; a round trip through `save` is exact"""
-    tensors, metadata = q.read_contract(path)
+    tensors = load_file(str(path))
     count, spare = divmod(len(tensors) - len(BESIDE_THE_LAYERS), LAYER_TENSORS)
     if spare or count < 4 or count % 2:
         raise ValueError(f"{path}: {len(tensors)} tensors is no quantized sheet model")
@@ -369,7 +361,7 @@ def load(path):
         stem=stem,
         pairs=paired(trunk),
         head=head,
-        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
+        temper=q.Temper.from_file(tensors, key=q.TEMPER),
     )
     check_shape(twin)
     return twin

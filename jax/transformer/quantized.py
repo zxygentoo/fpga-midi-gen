@@ -30,13 +30,14 @@ EVERY VALUE TENSOR KEEPS THE SHAPE THE FLOAT TENSOR HAD and the names are the fl
 checkpoint's own, thus one order -- the construction order -- carries the checkpoint, the
 file and the ROM. `d` and the layer count are NOT in the file: the seat tensor sizes d and
 the tensor count states the layers. `quantized.py` states why every tensor is int32 and
-every scalar a tensor; the metadata beside them is provenance.
+every scalar a tensor.
 """
 
 from typing import NamedTuple
 
 import numpy as np
 from flax import nnx
+from safetensors.numpy import load_file, save_file
 
 import ar_model
 import ar_quantized
@@ -121,7 +122,7 @@ class Transformer:
             context=context,
             slope_span=model.span,
             temper=q.Temper.from_float(temperature),
-            min_weight=q.min_weight_of(min_p),
+            min_weight=q.min_weight(min_p),
         )
 
 
@@ -154,21 +155,12 @@ def save(path, twin):
     tensors[SLOPE_SPAN] = q.scalar_tensor(twin.slope_span)
     tensors[q.TEMPER] = twin.temper.tensor()
     tensors[q.MIN_WEIGHT] = q.scalar_tensor(twin.min_weight)
-    q.write_contract(
-        path,
-        tensors,
-        {
-            "temper_q_value": str(twin.temper.q_value),
-            "temper_q": str(twin.temper.q),
-            "temperature": repr(twin.temper.temperature),
-            "min_weight": str(twin.min_weight),
-        },
-    )
+    save_file(tensors, str(path))
 
 
 def load(path):
     """the model of one contract file; a round trip through `save` is exact"""
-    tensors, metadata = q.read_contract(path)
+    tensors = load_file(str(path))
     count = len(tensors) - len(BESIDE_THE_WEIGHTS)
     layers, spare = divmod(count - len(TABLES), step.PER_LAYER)
     if count < len(TABLES) + step.PER_LAYER or spare:
@@ -190,7 +182,7 @@ def load(path):
         heads=int(tensors[HEADS]),
         context=int(tensors[CONTEXT]),
         slope_span=int(tensors[SLOPE_SPAN]),
-        temper=q.Temper.from_file(tensors, metadata, key=q.TEMPER),
+        temper=q.Temper.from_file(tensors, key=q.TEMPER),
         min_weight=int(tensors[q.MIN_WEIGHT]),
     )
     check_shape(twin)

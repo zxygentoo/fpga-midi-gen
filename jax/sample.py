@@ -1,9 +1,9 @@
 """The sampling: given the logits of one step and a uniform, which class.
 
 The float half of one policy. `quantized.pick` is the integer twin over Q15 weights and a
-24-bit word, `quantized.temper_of` and `min_weight_of` fold the temperature and the floor
-into the machine's constants, and `lib/nn/sampler.ml` is the circuit that does both at
-once. The two must state the same policy; `tests/test_sample.py` and
+24-bit word, `quantized.Temper.from_float` and `quantized.min_weight` fold the temperature
+and the floor into the machine's constants, and `lib/nn/sampler.ml` is the circuit that
+does both at once. The two must state the same policy; `tests/test_sample.py` and
 `tests/test_quantized.py` state the numbers each must give.
 
 Every era draws through here, on raw logits and a uniform from `prng.py`. What one era
