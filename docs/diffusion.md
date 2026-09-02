@@ -36,8 +36,8 @@ Not in this round: whole pieces, endings, the length mask, the RTL. The
 sheet is 128 sixteenth steps and one chorale in a hundred fits inside it,
 thus a sheet is a crop and it stops where the corpus was cut instead of
 ARRIVING. That is the open musical problem the era inherits, it is the
-reason for the fade and the rest on the audition wire, and the round that
-answers it is in "Deferred". The findings of `feat/diffusion-proto` are
+reason for the rest on the audition wire, and the round that answers it is
+in "Deferred". The findings of `feat/diffusion-proto` are
 built into this one: the piano roll reads pitch, the padded tail starves the
 sheet, and the trunk completes where it does not invent.
 
@@ -349,16 +349,8 @@ reaches the RTL.
    is the whole-piece round's thesis, and the mask planes give it back for
    one flag whenever that round wants it.
 
-   `--gap` puts a silence between two sheets on the wire and `--fade`
-   takes the velocity down over the last bar of one, two bars and one bar
-   by default. The fade reaches only the notes that BEGIN inside its
-   window — velocity is a fact of the onset, and the S-1 makes a control
-   change audible only on the next note — thus its length is measured and
-   not chosen: a crop's last note has been sounding 4.5 steps in the mean,
-   so a bar catches 99 percent of the final notes where four steps catches
-   67 and finds no onset at all in 18 percent of crops. The gap doubled
-   when the fade arrived, because a sheet that ends quiet has less to
-   part from. A batch is several INDEPENDENT draws and each one is a whole
+   `--gap` puts a silence between two sheets on the wire, two bars by
+   default. A batch is several INDEPENDENT draws and each one is a whole
    piece; with nothing between them the second opens on the first one's
    last chord, which no performance does. The ear set the bar on
    2026-08-25 and reported what the silence CANNOT do: a sheet is a crop
@@ -366,6 +358,14 @@ reaches the RTL.
    silence after a phrase that never closed makes it sound closed. That is
    the deferred whole-piece round below, and it is the open musical
    problem the transformer era logged before this one.
+
+   A `--fade` stood beside the gap from 2026-08-25 to 2026-09-02: a
+   diminuendo over the last bar, which reached only the notes that BEGAN
+   inside its window, because velocity is a fact of the onset. **Phase II
+   of the circuit CUT it on both sides** — the wire now carries pitch and
+   timing alone, and the two bars stay as the ear elected them.
+   `docs/diffusion_rtl.md`, "The fade — cut", holds the reasons; the gap
+   is the board's own, an elaboration constant of the scheduler.
 
 ## What the round measured
 

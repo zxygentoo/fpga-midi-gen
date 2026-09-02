@@ -72,6 +72,11 @@
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
 ; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
 ; jax/tests/test_rtl_diffusion.py, thus nothing here states what the circuit should have done.
+;
+; IT IS THE ONE GATE DRIVER THAT NAMES A BOARD LIBRARY, and the succession gate is why:
+; what that instrument holds is the WIRE over two sheets, thus it mounts the socket
+; simulation `Socket.For_test` -- the sequencer, the decode and the UART -- around the
+; era's own pair. It still names no board TOP LEVEL: `mgen_nexys4` is `gen_verilog`'s.
 
 (executable
  (name gate_diffusion)
@@ -85,6 +90,7 @@
   hardcaml
   gate_common
   mgen_core
+  mgen_board
   mgen_diffusion))
 
 ; The driver of the RTL gates of era four: it runs the circuit in Cyclesim and states
