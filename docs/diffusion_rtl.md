@@ -373,13 +373,13 @@ changed nothing and validated one escalation path.
 
 The chapter above is the geometry. This one is the circuit that holds it: the
 shape of the code, the dwell, the drain, the memories and their ports, the
-walk, and the seam to the sequencer. `lib/diffusion/source.ml` holds the
-design and its reasons, as the era before it did.
+walk, and the seam to the sequencer. `lib/diffusion/generator.ml` and
+`lib/diffusion/scheduler.ml` hold the design and its reasons, as the era
+before it did, and `source.ml` wires the pair.
 
-![The diffusion source: the elaboration, the walk and its one generator, the
-sheet with three faces, the column engine with its memories, bands, array
-and epilogue, the draw, and the five broadcast nets where ring 3 first
-missed timing](diffusion_rtl.svg)
+![The diffusion source: the scheduler with its frame store, its seed
+succession and its gap, and the generator under it with its walk, its sheet,
+the column engine and the draw](diffusion_rtl.svg)
 
 ### The shape of the code
 
