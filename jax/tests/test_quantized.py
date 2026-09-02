@@ -48,25 +48,6 @@ def test_a_stated_exponent_overrides_the_tensors_own_peak():
     assert list(quantized.quantize(np.array([1.0, -1.0]), e=14)[0]) == [127, -127]
 
 
-def test_the_counted_write_keeps_the_peak_and_counts_both_rails():
-    """The two branches of every activation write. A write INSIDE the format keeps the
-    peak, counts no clamp and skips the clip -- a walk makes millions of writes, and that
-    short circuit is the whole of the difference. A write outside counts each rail it
-    passed and clips to it.
-
-    THE PEAK IS A MAGNITUDE AND THE FORMAT IS NOT SYMMETRIC: a write that lands on the low
-    rail reads a peak of 32768, one above the high rail, with nothing clamped."""
-    tally = quantized.Tally()
-    assert tally.clamped_share == 0.0  # a walk that wrote nothing rode nothing
-    inside = quantized.tallied_write(tally, np.array([[100, -32768, 32767]], np.int64))
-    assert list(inside[0]) == [100, -32768, 32767] and inside.dtype == np.int32
-    assert (tally.seen, tally.clamped, tally.peak) == (3, 0, 32768)
-    outside = quantized.tallied_write(tally, np.array([[40000, -40000, 5]], np.int64))
-    assert list(outside[0]) == [32767, -32768, 5]
-    assert (tally.seen, tally.clamped, tally.peak) == (6, 2, 40000)
-    assert tally.clamped_share == pytest.approx(2 / 6)
-
-
 def test_the_exp2_table_is_the_shared_table():
     """exp2 of -j/256 in Q15, the one table the samplers of every era read: entry 0 is the
     peak 2^15, a full fractional step halves, and the last entry sits one table step above

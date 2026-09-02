@@ -20,7 +20,6 @@ No float model reads this file and nothing here reads one: `quantize` runs one w
 """
 
 import math
-from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
@@ -197,41 +196,6 @@ def exp2_q(value):
     shared table takes the magnitude."""
     return exp2_of_magnitude(-np.asarray(value, np.int64))
 
-
-# the counted write
-
-
-@dataclass
-class Tally:
-    """A running tally of a walk: the activation writes, the writes that rode the clamp,
-    and the hottest write BEFORE it -- which answers the format question directly.
-
-    IT MUTATES, and that is why it is the one record here that is not a `NamedTuple`: a
-    walk makes millions of writes and each updates the same three numbers."""
-
-    seen: int = 0
-    clamped: int = 0
-    peak: int = 0
-
-    @property
-    def clamped_share(self):
-        """the share of the writes that rode the clamp; a walk that wrote nothing rode
-        nothing"""
-        return 0.0 if self.seen == 0 else self.clamped / self.seen
-
-
-def tallied_write(tally, value):
-    """Every activation write goes through here: the clamp is counted and the peak kept.
-    A peak inside the format proves nothing clamped, thus the clip is skipped -- millions
-    of writes make that short circuit the whole of the difference."""
-    high, low = int(value.max()), int(value.min())
-    tally.seen += value.size
-    tally.peak = max(tally.peak, high, -low)
-    if high <= INT16_HIGH and low >= INT16_LOW:
-        return value.astype(np.int32)
-    tally.clamped += int(np.count_nonzero(value > INT16_HIGH))
-    tally.clamped += int(np.count_nonzero(value < INT16_LOW))
-    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
 
 
 # the integer draw

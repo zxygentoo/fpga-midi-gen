@@ -1,31 +1,147 @@
 """What the quantization costs: each integer twin against the float model it quantizes.
 
+THE INSTRUMENT LIVES HERE AND SO DOES EVERY WALK THAT READS IT. No twin module carries a
+drift: the report gates nothing a build depends on, thus what measures it is a test and
+the twins hold the arithmetic alone. `count_draws` scores a batch of the twin's rows
+against the float rows of the same places, ON THE VERY UNIFORM THE TWIN TOOK, and each
+era's walk below teacher-forces the float model on the twin's own history.
+
 Era six holds the file and the frozen eras stand at its foot. Every era takes the same
 shape of gate and what differs is its FEEDBACK AXIS -- era four's KV ring, era five's
 state, era six's sheet -- because that is what decides whether an arithmetic error dies
 with its step or compounds.
 
-TWO PARTS, and the drawn weights make both deterministic. The fixed sweep pins MEASURED
-NUMBERS AND NOT THRESHOLDS: a diff says the integers moved, and the reader judges whether
-it is a re-measurement or a bug. The property part draws seed pairs at a fixed generator
-and holds floors calibrated under the first measured minima; the printed minima keep the
-calibration honest.
+THREE PARTS, and the drawn weights make the two sweeping ones deterministic. The fixed
+sweep pins MEASURED NUMBERS AND NOT THRESHOLDS: a diff says the integers moved, and the
+reader judges whether it is a re-measurement or a bug. The property part draws seed pairs
+at a fixed generator and holds floors calibrated under the first measured minima; the
+printed minima keep the calibration honest. The third is one walk of the ELECTED
+checkpoint, which is the only place a trained trunk's own drift is measured.
 """
 
 from typing import NamedTuple
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from flax import nnx
 
+import ar_model
+import corpus
+import prng
 import quantized as q
-from diffusion import model, quantized
+import sample as s
+from diffusion import model, quantized, sample
 from mamba import quantized as mamba_twin
+from tests import gate
 from tests.models import drawn_transformer, plan_of
 from transformer import quantized as transformer_twin
 
-# EVERY GATE HERE IS SLOW because it MEASURES: 112 drift runs, each a whole walk of a
-# drawn model against its twin. `-m "not slow"` is the inner loop.
-pytestmark = pytest.mark.slow
+# The instrument: the twin's draw against the float model's, on the one uniform the twin
+# took. All three walks below count through it, thus one rule states what a drift is.
+
+
+def cosines(twin_logits, float_logits):
+    """the cosine of each integer row against the float row of the same place, over a
+    batch of [rows, classes]"""
+    twin = np.asarray(twin_logits, np.float64)
+    floated = np.asarray(float_logits, np.float64)
+    return (twin * floated).sum(axis=-1) / np.sqrt(
+        (twin * twin).sum(axis=-1) * (floated * floated).sum(axis=-1)
+    )
+
+
+class Counted(NamedTuple):
+    """what a drift report has counted over the draws it has seen"""
+
+    draws: int = 0
+    same_peak: int = 0
+    same_draw: int = 0
+    cosine: float = 0.0
+
+
+def count_draws(
+    counted, twin_logits, float_logits, *, drawn, uniform, temperature, min_p
+):
+    """A BATCH of the twin's rows against the float rows of the same places, on the very
+    uniform the twin drew [drawn] on.
+
+    It is batched because era six redraws a whole sheet where a step-frame chain redraws
+    four seats. The caller states the policy, because the elected numbers are the twin's
+    and not this instrument's."""
+    twin = np.asarray(twin_logits, np.float64)
+    floated = np.asarray(float_logits, np.float64)
+    weights = s.tempered_weight(floated, temperature, min_p)
+    return Counted(
+        draws=counted.draws + len(twin),
+        same_peak=counted.same_peak
+        + int((twin.argmax(axis=-1) == floated.argmax(axis=-1)).sum()),
+        same_draw=counted.same_draw
+        + int((s.pick_share(weights, uniform) == drawn).sum()),
+        cosine=counted.cosine + float(cosines(twin, floated).sum()),
+    )
+
+
+def count_chain_draws(counted, floated, chain_draws, *, temperature, min_p):
+    """one step's CHAIN as a batch of four: the step-frame adapter over `count_draws`. A
+    `Draw` holds a walk axis the drift report does not use -- it runs one walk -- thus
+    every row here is that walk's row."""
+    return count_draws(
+        counted,
+        np.stack([draw.logits[0] for draw in chain_draws]),
+        np.stack([floated[draw.seat] for draw in chain_draws]),
+        drawn=np.array([draw.drawn[0] for draw in chain_draws]),
+        uniform=np.array([float(draw.word[0]) for draw in chain_draws])
+        * 2.0**-prng.UNIFORM_BITS,
+        temperature=temperature,
+        min_p=min_p,
+    )
+
+
+def test_the_cosine_reads_the_shape_of_a_row_and_not_its_scale():
+    """The third number of every drift report, at rows whose answer is known by hand: a
+    row against itself is 1, a row against a scaling of itself is still 1, and a row
+    against one at 45 degrees to it is the root of a half."""
+    twin = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    floated = np.array([[1.0, 0.0], [7.0, 0.0], [1.0, 1.0]])
+    assert list(cosines(twin, floated)) == pytest.approx([1.0, 1.0, 0.5**0.5])
+
+
+def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
+    """THE INSTRUMENT ITSELF IS GATED NOWHERE ELSE, and that is the reason this stands
+    here: the drift tables are measured numbers and are legitimately re-pinned, thus a
+    fault in the instrument would be absorbed into the next re-pin with nothing to say so.
+
+    Two rows over three classes, on numbers chosen by hand. The float rows are one row
+    twice; the twin agrees with it on the first and reverses it on the second, thus one of
+    the two elects the same class and the cosines are 1 and 9/73. Under a temperature of
+    one and a min-p of 0.01 the weights are 1, e^-3 and 0, thus THE PICK LEAVES CLASS 0 AT
+    A SHARE OF 1/1.0498 and the two uniforms straddle it; the twin is said to have drawn
+    class 0 both times, thus one of the two draws agrees. The count adds onto a report
+    that has already seen ten draws, because a walk calls this once for each step."""
+    floated = np.array([[0.0, -3.0, -8.0]] * 2)
+    twin = np.array([[0.0, -3.0, -8.0], [-8.0, -3.0, 0.0]])
+    counted = count_draws(
+        Counted(draws=10, same_peak=5, same_draw=4, cosine=3.0),
+        twin,
+        floated,
+        drawn=np.array([0, 0]),
+        uniform=np.array([0.95, 0.96]),
+        temperature=1.0,
+        min_p=0.01,
+    )
+    assert (counted.draws, counted.same_peak, counted.same_draw) == (12, 6, 5)
+    assert counted.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
+
+
+# EVERY GATE THAT WALKS A MODEL IS SLOW, and each carries the mark: 112 drift runs, each
+# a whole walk of a drawn model against its twin, and one over the elected checkpoint.
+# `-m "not slow"` is the inner loop, and it still holds the instrument's two hand gates
+# above -- they are arithmetic on numbers written out by hand.
+
+
+# Era six: the masked sheet
+
 
 # the structure of the era at a shape a test can afford: the stem, two residual pairs and
 # the head, over a quarter of the board's sheet -- two measures
@@ -68,11 +184,63 @@ def drawn_pairs(seed, span, trials):
     return tuple(tuple(int(v) for v in rng.integers(1, span, 2)) for _ in range(trials))
 
 
+class SheetDrift(NamedTuple):
+    """What era six's quantization costs, measured on the walk the board takes."""
+
+    passes: int
+    cells: int  # the redrawn cells: the comparisons of the report
+    same_peak: int  # the cells where both models elect the same class
+    same_draw: int  # the cells where both models pick the same class
+    mean_cosine: float
+
+
+def sheet_drift(
+    coconet, states, given, *, walk, temperature=quantized.ELECTED_TEMPERATURE
+):
+    """The quantized walk of one sheet, scored against the float model cell for cell.
+
+    At every pass the float model is TEACHER-FORCED on the engine's sheet and mask, and
+    the same-draw share reads the float draw ON THE VERY UNIFORM THE ENGINE TOOK, thus
+    what stands between them is the arithmetic alone. The quantization happens here,
+    from the float model handed in, thus the pair cannot slip."""
+    twin = quantized.Coconet.from_float(coconet, temperature)
+    counted = Counted()
+    for taken in quantized.passes(twin, states, given, walk=walk):
+        floated = np.asarray(
+            coconet.logits(jnp.asarray(taken.read), jnp.asarray(taken.hidden)),
+            dtype=np.float64,
+        )
+        for drawn in taken.draws:
+            active = drawn.hidden
+            # a cell no sheet hid took no uniform and is no comparison
+            if not active.any():
+                continue
+            # `count_draws`, the instrument above: this era sends the cell's whole batch
+            # of sheets where a chain sends its four seats. `sample.MIN_P` is the
+            # one thing that parts the two calls.
+            counted = count_draws(
+                counted,
+                taken.logits[active, drawn.step, :, drawn.voice],
+                floated[active, drawn.step, :, drawn.voice],
+                drawn=drawn.drawn[active],
+                uniform=drawn.word[active] * 2.0**-prng.UNIFORM_BITS,
+                temperature=temperature,
+                min_p=sample.MIN_P,
+            )
+    return SheetDrift(
+        passes=walk,
+        cells=counted.draws,
+        same_peak=counted.same_peak,
+        same_draw=counted.same_draw,
+        mean_cosine=1.0 if counted.draws == 0 else counted.cosine / counted.draws,
+    )
+
+
 def drift(weight_seed, walk_seed, passes):
     """the drift of one drawn model on one walk"""
     coconet = model.Coconet.drawn(weight_seed, LAYERS, WIDTH)
     states, given = model.opening_sheet(q.engine_states([walk_seed]), STEPS)
-    return quantized.drift(coconet, states, given, walk=passes)
+    return sheet_drift(coconet, states, given, walk=passes)
 
 
 # The row `test_a_sweep_states_its_measured_numbers` reads: for each weight seed, summed
@@ -98,27 +266,50 @@ def trial_drift(weight_seed, walk_seed):
     return drift(weight_seed, walk_seed, 8)
 
 
-# at 8, 32 and 128 passes of one model: the top-1 count, the cells, the mean cosine, the
-# share of activation writes that rode the clamp, and the hottest write in real units
+# at 8, 32 and 128 passes of one model: the top-1 count, the cells and the mean cosine
 LONG_WALK = {
-    8: (411, 445, 0.9982, 0.0, 4.58),
-    32: (1436, 1552, 0.9983, 0.0, 4.53),
-    128: (5624, 6169, 0.9982, 0.0, 4.98),
+    8: (411, 445, 0.9982),
+    32: (1436, 1552, 0.9983),
+    128: (5624, 6169, 0.9982),
 }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("passes", sorted(LONG_WALK))
 def test_the_long_walk_does_not_compound(passes):
-    """THE LONG WALK, AND THE CLAMPS UNDER IT. A redrawn cell enters the context of every
-    later pass, thus one model runs at 8, 32 and 128 passes and a cumulative error would
-    show as numbers that FALL with the length. A zero clamp count is the finding that the
-    format's margin holds."""
+    """THE LONG WALK. A redrawn cell enters the context of every later pass, thus one
+    model runs at 8, 32 and 128 passes and a cumulative error would show as numbers that
+    FALL with the length."""
     report = drift(11, 42, passes)
-    peak, cells, cosine, clamped, hottest = LONG_WALK[passes]
+    peak, cells, cosine = LONG_WALK[passes]
     assert (report.same_peak, report.cells) == (peak, cells)
     assert report.mean_cosine == pytest.approx(cosine, abs=5e-5)
-    assert report.activations_clamped == clamped
-    assert report.activation_peak == pytest.approx(hottest, abs=5e-3)
+
+
+# The ELECTED checkpoint, at the numbers `docs/diffusion_rtl.md` states for it: the climb
+# table of 2026-08-26 reads 97.2 percent top-1, 0.9998 cosine and 95.1 percent same draw
+# at seed 42, T 128, 32 passes, and this pins the same walk to the counts behind them.
+# THE DRAWN MODELS ABOVE CANNOT REPLACE IT: they hold the SCHEME, and what a trained
+# trunk's own weights cost is measured only on a trained trunk.
+ELECTED = gate.ROOT / "weights" / "diffusion.ckpt"
+ELECTED_SEED = 42
+ELECTED_PASSES = 32
+ELECTED_DRIFT = (6148, 6013, 6326, 0.99983)
+
+
+@pytest.mark.slow
+def test_the_elected_checkpoint_drifts_as_the_chapter_states():
+    """The one drift measurement the chapter carries that no gate made. It is a MEASURED
+    NUMBER and not a threshold: a diff says the twin moved against the float model, and
+    the reader judges whether it is a re-measurement or a bug."""
+    gate.need(ELECTED)
+    coconet = model.Coconet.load(str(ELECTED))
+    states, given = model.opening_sheet(q.engine_states([ELECTED_SEED]), model.CROP)
+    report = sheet_drift(coconet, states, given, walk=ELECTED_PASSES)
+    peak, draw, cells, cosine = ELECTED_DRIFT
+    assert (report.same_peak, report.same_draw, report.cells) == (peak, draw, cells)
+    assert report.mean_cosine == pytest.approx(cosine, abs=5e-5)
+
 
 
 # The floors, calibrated on this model's own first measured minima over the CLEAN trials,
@@ -142,9 +333,77 @@ TRANSFORMER_CONTEXT = 16
 TRANSFORMER_STEPS = 40
 
 
+@nnx.jit
+def window_float_row(held, window, phases, drawn, at):
+    """The float logits of the seats of ONE step, teacher-forced on the twin's history.
+
+    It takes the model as an ARGUMENT at the module level, thus its compiled form is keyed
+    on the shapes and every step of a drift run reuses the first compile. [window] is
+    padded to the context and [at] is the last real position, which the causal wall keeps
+    from seeing the padding."""
+    h = held.hidden(window, phases)[:, at, None, :]
+    return held.head.logits(h, drawn[None])[0, 0]
+
+
+class RingDrift(NamedTuple):
+    """What era four's quantization costs, measured on the walk the board takes."""
+
+    steps: int  # the steps of the walk, the silent lead-in inside
+    draws: int  # four for each drawn step: one for each seat of the chain
+    same_peak: int  # the draws where both models elect the same class
+    same_draw: int  # the draws where both models pick the same class
+    mean_cosine: float
+
+
+def ring_drift(model, *, context, steps, seed):
+    """The quantized walk, scored against the float model draw for draw.
+
+    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself. The float
+    pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
+    reads the float draw on the very uniform the engine took, thus the report measures
+    the quantization and never a walk that parted for another reason."""
+    twin = transformer_twin.Transformer.from_float(model, context=context)
+    engine = transformer_twin.create_engine(twin, [seed])
+    history = []
+    counted = Counted()
+    for at in range(steps):
+        engine, classes, chain_draws = transformer_twin.next_step(engine)
+        # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
+        # the window the engine's own ring held
+        window = list(history)
+        history.append(classes[0])
+        if not chain_draws or not window:
+            continue
+        # ONE shape for the whole run: right-padded to [context], read at the last real
+        # position
+        low = max(0, at - context)
+        length = at - low
+        rows = np.zeros((1, context, corpus.SEATS), dtype=np.int32)
+        rows[0, :length] = np.stack(window[low:])
+        phases = np.zeros((1, context), dtype=np.int32)
+        phases[0, :length] = np.arange(low, at) % ar_model.PHASE_BUCKETS
+        floated = np.asarray(
+            window_float_row(model, rows, phases, classes, length - 1)
+        ).astype(np.float64)
+        counted = count_chain_draws(
+            counted,
+            floated,
+            chain_draws,
+            temperature=q.ELECTED_TEMPERATURE,
+            min_p=q.ELECTED_MIN_P,
+        )
+    return RingDrift(
+        steps=steps,
+        draws=counted.draws,
+        same_peak=counted.same_peak,
+        same_draw=counted.same_draw,
+        mean_cosine=counted.cosine / max(1, counted.draws),
+    )
+
+
 def transformer_drift(weight_seed, walk_seed):
     """the drift of one drawn model on one walk"""
-    return transformer_twin.drift(
+    return ring_drift(
         drawn_transformer(weight_seed, heads=TRANSFORMER_HEADS, **TRANSFORMER_SHAPE),
         context=TRANSFORMER_CONTEXT,
         steps=TRANSFORMER_STEPS,
@@ -190,9 +449,79 @@ MAMBA_RING = 16
 MAMBA_STEPS = 64
 
 
+@nnx.jit
+def stream_float_row(held, stream, drawn):
+    """the float logits of the seats of one step, on the stream the step before it left"""
+    return held.head.logits(stream[:, None, :], drawn[None])[0, 0]
+
+
+class StateDrift(NamedTuple):
+    """What era five's quantization costs, measured on the walk the board takes."""
+
+    steps: int  # the steps of the walk, the silent lead-in inside
+    draws: int  # four for each drawn step: one for each seat of the chain
+    same_peak: int  # the draws where both models elect the same class
+    same_draw: int  # the draws where both models pick the same class
+    mean_cosine: float
+    clamps: mamba_twin.Clamps  # the twin's own, which no other era reports
+
+
+def state_drift(model, *, steps, seed, ring=mamba_twin.ELECTED_RING):
+    """The quantized walk, scored against the float model draw for draw.
+
+    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
+    cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
+    quantized chain -- it reads the classes the engine drew and conditions each seat on
+    the classes the engine chose -- thus what the report measures is the quantization and
+    never a walk that parted for another reason.
+
+    BOTH MODELS TAKE ONE STEP FOR ONE STEP. Era four had to re-run a whole window at every
+    step, which made a long comparison quadratic; here each carries its own memory, thus
+    the walk can run past many decay lifetimes -- which it must, because a state error is
+    cumulative in a way era four never had.
+
+    The same-draw share reads the float draw on the very uniform the engine took, thus a
+    difference there is the arithmetic and not the generator."""
+    twin = mamba_twin.Mamba.from_float(model, ring=ring)
+    engine = mamba_twin.create_engine(twin, [seed])
+    carry = model.initial_carry(1, context=ring)
+    counted = Counted()
+    stream = None
+    for at in range(steps):
+        engine, classes, chain_draws = mamba_twin.next_step(engine)
+        # THE CHAIN OF A STEP READS THE STREAM OF THE STEP BEFORE IT, on both sides: the
+        # float row must be the row that same forward states and never the one this
+        # step's classes make
+        if chain_draws and stream is not None:
+            floated = np.asarray(stream_float_row(model, stream, classes)).astype(
+                np.float64
+            )
+            counted = count_chain_draws(
+                counted,
+                floated,
+                chain_draws,
+                temperature=q.ELECTED_TEMPERATURE,
+                min_p=q.ELECTED_MIN_P,
+            )
+        carry, stream = mamba_twin.float_step(
+            model,
+            carry,
+            np.asarray(classes, np.int32),
+            np.array([at % ar_model.PHASE_BUCKETS], np.int32),
+        )
+    return StateDrift(
+        steps=steps,
+        draws=counted.draws,
+        same_peak=counted.same_peak,
+        same_draw=counted.same_draw,
+        mean_cosine=counted.cosine / max(1, counted.draws),
+        clamps=engine.clamps,
+    )
+
+
 def mamba_drift(weight_seed, walk_seed, steps=MAMBA_STEPS):
     """the drift of one drawn model on one walk"""
-    return mamba_twin.drift(
+    return state_drift(
         plan_of(MAMBA_SPELT, seed=weight_seed, **MAMBA_SHAPE),
         steps=steps,
         seed=walk_seed,
@@ -219,6 +548,7 @@ MAMBA_LONG_WALK = {
 }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("steps", sorted(MAMBA_LONG_WALK))
 def test_the_mamba_long_walk_does_not_compound(steps):
     """THE LONG WALK, AND THE CLAMPS UNDER IT. The state of a block carries forward for
@@ -270,6 +600,7 @@ SWEEPS = (
 
 
 @pytest.mark.parametrize("weight_seed", WEIGHT_SEEDS)
+@pytest.mark.slow
 @pytest.mark.parametrize("sweep", SWEEPS, ids=[sweep.era for sweep in SWEEPS])
 def test_a_sweep_states_its_measured_numbers(sweep, weight_seed):
     """MEASURED NUMBERS AND NOT THRESHOLDS: a diff here says the integers moved, and the
@@ -291,47 +622,39 @@ def test_a_sweep_states_its_measured_numbers(sweep, weight_seed):
 class Trials(NamedTuple):
     """One era's floor gate over drawn seed pairs, as the body below runs it. [drift] and
     [counted] are the sweep's; [pairs] is the era's own fixed set, whose length is its
-    trial count; [floors] are the shares every clean trial must clear.
-
-    [releases] IS ERA SIX'S ALONE, and it is the second of the two things that part the
-    three bodies: a drawn trunk can outgrow any fixed format, thus a trial whose clamps
-    fired is the format's answer and not the scheme's fault. The two frozen eras report
-    no such share, and their gates hold every trial to the floors."""
+    trial count; [floors] are the shares every clean trial must clear."""
 
     era: str
     drift: object
     counted: str
     pairs: tuple
     floors: Shares
-    releases: bool = False
 
 
 PROPERTIES = (
-    Trials("six", trial_drift, "cells", PAIRS, FLOORS, releases=True),
+    Trials("six", trial_drift, "cells", PAIRS, FLOORS),
     Trials("four", transformer_drift, "draws", TRANSFORMER_PAIRS, TRANSFORMER_FLOORS),
     Trials("five", mamba_drift, "draws", MAMBA_PAIRS, MAMBA_FLOORS),
 )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("trials", PROPERTIES, ids=[era.era for era in PROPERTIES])
 def test_the_floors_hold_on_drawn_seed_pairs(trials, capsys):
     """THE SCHEME AGAINST A SET OF DRAWN MODELS, not the four weight seeds the sweep pins:
     a fail here is a break of the scheme and not a re-draw of the set, thus no floor is
-    ever tightened onto a measurement. At Q6 no trial of era six's set clamps."""
+    ever tightened onto a measurement. Every trial of every era is held to the floors: at
+    Q6 no trial of era six's set rode its clamps, thus the release rule that once stood
+    here had nothing left to release."""
     low = Shares(1.0, 1.0, 1.0)
-    released = 0
     for weight_seed, walk_seed in trials.pairs:
         report = trials.drift(weight_seed, walk_seed)
-        if trials.releases and report.activations_clamped > 0.001:
-            released += 1
-            continue
         low = lowest(low, shares_of(report, trials.counted))
     # the minima print BEFORE the floors: they are what the reader needs at the moment a
     # floor breaks, and an assert inside the loop loses them
     with capsys.disabled():
-        clamped = f", {released} released by their clamps" if trials.releases else ""
         print(
-            f"\nera {trials.era}: {len(trials.pairs)} drawn seed pairs{clamped}: "
+            f"\nera {trials.era}: {len(trials.pairs)} drawn seed pairs: "
             f"low top-1 {low.top1:.3f}  low same draw {low.same_draw:.3f}  "
             f"low cosine {low.cosine:.4f}"
         )

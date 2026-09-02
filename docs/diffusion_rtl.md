@@ -53,8 +53,10 @@ What the machine round stands on:
 - **The float model and the integer twin** (`jax/diffusion/model.py` and
   `jax/diffusion/quantized.py`). The drift report pins the twin to the
   float model in one framework, on the walk the board takes:
-  `uv run python -m diffusion.infer drift --ckpt C`. The report is a
-  measurement and gates nothing.
+  `uv run pytest -m slow jax/tests/test_drift.py`, which holds the walk of
+  the elected checkpoint to the top-1, cosine and same-draw columns of the
+  table below. The clamp columns are DATED HISTORY: the counter that read
+  them was cut on 2026-09-02, having never fired outside a drawn model.
 - **The contract file**, the only thing that crosses the seam for a build:
   `infer.py quantize --ckpt C --out C.int8` states the int8 image and the
   folded norm, and `Model.of_int8_checkpoint` reads it into the
@@ -1559,7 +1561,7 @@ becomes the iteration loop:
 ```
 elect a checkpoint
   -> infer.py quantize: the contract file
-  -> the drift line (infer.py drift, seconds, on the host)
+  -> the drift line (pytest -m slow test_drift.py, seconds, on the host)
   -> dune build: the netlist; uv run pytest: the Cyclesim gates at a tiny shape
   -> Vivado -> the board -> the capture gate
 ```

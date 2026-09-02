@@ -36,13 +36,9 @@ every scalar a tensor.
 from typing import NamedTuple
 
 import numpy as np
-from flax import nnx
 from safetensors.numpy import load_file, save_file
 
-import ar_model
 import ar_quantized
-import corpus
-import measure
 import quantized as q
 from ar_model import TABLES
 from transformer import model as step
@@ -290,71 +286,3 @@ def walk(twin, seeds, steps):
     return ar_quantized.walk(create_engine(twin, seeds), steps, forward)
 
 
-# what the quantization costs
-
-
-@nnx.jit
-def float_row(held, window, phases, drawn, at):
-    """The float logits of the seats of ONE step, teacher-forced on the twin's history.
-
-    It takes the model as an ARGUMENT at the module level, thus its compiled form is keyed
-    on the shapes and every step of a drift run reuses the first compile. [window] is
-    padded to the context and [at] is the last real position, which the causal wall keeps
-    from seeing the padding."""
-    h = held.hidden(window, phases)[:, at, None, :]
-    return held.head.logits(h, drawn[None])[0, 0]
-
-
-class Drift(NamedTuple):
-    """What the quantization costs, measured on the walk the board takes."""
-
-    steps: int  # the steps of the walk, the silent lead-in inside
-    draws: int  # four for each drawn step: one for each seat of the chain
-    same_peak: int  # the draws where both models elect the same class
-    same_draw: int  # the draws where both models pick the same class
-    mean_cosine: float
-
-
-def drift(model, *, context, steps, seed):
-    """The quantized walk, scored against the float model draw for draw.
-
-    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself. The float
-    pass is TEACHER-FORCED on the quantized history and chain, and the same-draw share
-    reads the float draw on the very uniform the engine took, thus the report measures
-    the quantization and never a walk that parted for another reason."""
-    engine = create_engine(Transformer.from_float(model, context=context), [seed])
-    history = []
-    counted = measure.Counted()
-    for at in range(steps):
-        engine, classes, chain_draws = next_step(engine)
-        # THE HISTORY IS THE TWIN'S: the window the float pass sees before this step is
-        # the window the engine's own ring held
-        window = list(history)
-        history.append(classes[0])
-        if not chain_draws or not window:
-            continue
-        # ONE shape for the whole run: right-padded to [context], read at the last real
-        # position
-        low = max(0, at - context)
-        length = at - low
-        rows = np.zeros((1, context, corpus.SEATS), dtype=np.int32)
-        rows[0, :length] = np.stack(window[low:])
-        phases = np.zeros((1, context), dtype=np.int32)
-        phases[0, :length] = np.arange(low, at) % ar_model.PHASE_BUCKETS
-        floated = np.asarray(float_row(model, rows, phases, classes, length - 1)).astype(
-            np.float64
-        )
-        counted = measure.count_chain_draws(
-            counted,
-            floated,
-            chain_draws,
-            temperature=ELECTED_TEMPERATURE,
-            min_p=ELECTED_MIN_P,
-        )
-    return Drift(
-        steps=steps,
-        draws=counted.draws,
-        same_peak=counted.same_peak,
-        same_draw=counted.same_draw,
-        mean_cosine=counted.cosine / max(1, counted.draws),
-    )

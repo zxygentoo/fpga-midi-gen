@@ -63,7 +63,6 @@ from safetensors.numpy import load_file, save_file
 import ar_model
 import ar_quantized
 import corpus
-import measure
 import quantized as q
 from mamba import model as recurrence
 
@@ -675,24 +674,7 @@ def walk(twin, seeds, steps):
     return ar_quantized.walk(create_engine(twin, seeds), steps, forward)
 
 
-def streams(twin, seeds, steps):
-    """the stream writes of each step, in the order the circuit writes them; it walks the
-    model, thus they are the writes of a real walk"""
-    engine = create_engine(twin, seeds)
-    written = []
-    # `ar_quantized.next_step` states the lead-in and the chain, and the trunk pass it
-    # takes is the one this gate reads: a step runs the recurrence once and not twice
-    def recorded(engine, classes, phase):
-        rows, engine = layer_streams(engine, classes, phase)
-        written.append(rows)
-        return engine
-
-    for _ in range(steps):
-        engine, _, _ = ar_quantized.next_step(engine, recorded)
-    return written
-
-
-# what the quantization costs
+# the float half of the drift report, which `tests/test_drift.py` runs
 
 
 @nnx.jit
@@ -702,70 +684,3 @@ def float_step(held, carry, classes, phases):
     It takes the model as an ARGUMENT and stands at the module level, thus its compiled
     form is keyed on the shapes and every step of a drift run reuses the first compile."""
     return held.forward_step(carry, classes, phases)
-
-
-@nnx.jit
-def float_row(held, stream, drawn):
-    """the float logits of the seats of one step, on the stream the step before it left"""
-    return held.head.logits(stream[:, None, :], drawn[None])[0, 0]
-
-
-class Drift(NamedTuple):
-    """What the quantization costs, measured on the walk the board takes."""
-
-    steps: int  # the steps of the walk, the silent lead-in inside
-    draws: int  # four for each drawn step: one for each seat of the chain
-    same_peak: int  # the draws where both models elect the same class
-    same_draw: int  # the draws where both models pick the same class
-    mean_cosine: float
-    clamps: Clamps
-
-
-def drift(model, *, steps, seed, ring=ELECTED_RING):
-    """The quantized walk, scored against the float model draw for draw.
-
-    ONE WEIGHTS SOURCE AND ONE POLICY: the walk quantizes `model` itself, thus the pair
-    cannot slip. The float pass is TEACHER-FORCED on the quantized history and on the
-    quantized chain -- it reads the classes the engine drew and conditions each seat on
-    the classes the engine chose -- thus what the report measures is the quantization and
-    never a walk that parted for another reason.
-
-    BOTH MODELS TAKE ONE STEP FOR ONE STEP. Era four had to re-run a whole window at every
-    step, which made a long comparison quadratic; here each carries its own memory, thus
-    the walk can run past many decay lifetimes -- which it must, because a state error is
-    cumulative in a way era four never had.
-
-    The same-draw share reads the float draw on the very uniform the engine took, thus a
-    difference there is the arithmetic and not the generator."""
-    engine = create_engine(Mamba.from_float(model, ring=ring), [seed])
-    carry = model.initial_carry(1, context=ring)
-    counted = measure.Counted()
-    stream = None
-    for at in range(steps):
-        engine, classes, chain_draws = next_step(engine)
-        # THE CHAIN OF A STEP READS THE STREAM OF THE STEP BEFORE IT, on both sides: the
-        # float row must be the row that same forward states and never the one this
-        # step's classes make
-        if chain_draws and stream is not None:
-            floated = np.asarray(float_row(model, stream, classes)).astype(np.float64)
-            counted = measure.count_chain_draws(
-                counted,
-                floated,
-                chain_draws,
-                temperature=ELECTED_TEMPERATURE,
-                min_p=ELECTED_MIN_P,
-            )
-        carry, stream = float_step(
-            model,
-            carry,
-            np.asarray(classes, np.int32),
-            np.array([at % ar_model.PHASE_BUCKETS], np.int32),
-        )
-    return Drift(
-        steps=steps,
-        draws=counted.draws,
-        same_peak=counted.same_peak,
-        same_draw=counted.same_draw,
-        mean_cosine=counted.cosine / max(1, counted.draws),
-        clamps=engine.clamps,
-    )

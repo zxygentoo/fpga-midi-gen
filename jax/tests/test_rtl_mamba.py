@@ -21,6 +21,7 @@ root:
 import numpy as np
 import pytest
 
+import ar_quantized
 from mamba import quantized
 from tests import gate
 from tests.models import plan_of
@@ -67,6 +68,25 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(tmp_path, spelt, seed, 
     gate.assert_one_walk(circuit, played[0])
 
 
+def streams(twin, seeds, steps):
+    """The stream writes of each step, in the order the circuit writes them; it walks the
+    model, thus they are the writes of a real walk. THIS GATE IS ITS ONE READER, thus it
+    stands here and not beside the twin."""
+    engine = quantized.create_engine(twin, seeds)
+    written = []
+
+    # `ar_quantized.next_step` states the lead-in and the chain, and the trunk pass it
+    # takes is the one this gate reads: a step runs the recurrence once and not twice
+    def recorded(engine, classes, phase):
+        rows, engine = quantized.layer_streams(engine, classes, phase)
+        written.append(rows)
+        return engine
+
+    for _ in range(steps):
+        engine, _, _ = ar_quantized.next_step(engine, recorded)
+    return written
+
+
 @pytest.mark.parametrize(
     "spelt,seed,shape",
     [
@@ -94,7 +114,7 @@ def test_the_stream_writes_of_the_circuit_are_the_twins(tmp_path, spelt, seed, s
     for word in (line.split() for line in stdout.splitlines() if line):
         if word[0] == "write":
             got.setdefault(int(word[1]), []).append([int(v) for v in word[3:]])
-    want = quantized.streams(twin, [seed], steps)
+    want = streams(twin, [seed], steps)
     assert sorted(got) == list(range(steps)), "the driver skipped a step"
     checked = 0
     for step in sorted(got):

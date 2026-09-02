@@ -250,45 +250,6 @@ def test_the_corpus_row_stands_where_the_proto_round_left_it():
     assert all(8.0 < pair["dissonant"] < 12.0 for pair in row["pairs"])
 
 
-# the drift count: the twin's draw against the float model's
-
-
-def test_the_cosine_reads_the_shape_of_a_row_and_not_its_scale():
-    """The third number of every drift report, at rows whose answer is known by hand: a
-    row against itself is 1, a row against a scaling of itself is still 1, and a row
-    against one at 45 degrees to it is the root of a half."""
-    twin = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
-    floated = np.array([[1.0, 0.0], [7.0, 0.0], [1.0, 1.0]])
-    assert list(measure.cosines(twin, floated)) == pytest.approx([1.0, 1.0, 0.5**0.5])
-
-
-def test_the_drift_count_adds_a_batch_onto_what_it_has_counted():
-    """THE INSTRUMENT ITSELF IS GATED NOWHERE ELSE, and that is the reason this stands
-    here: the drift tables are measured numbers and are legitimately re-pinned, thus a
-    fault in the instrument would be absorbed into the next re-pin with nothing to say so.
-
-    Two rows over three classes, on numbers chosen by hand. The float rows are one row
-    twice; the twin agrees with it on the first and reverses it on the second, thus one of
-    the two elects the same class and the cosines are 1 and 9/73. Under a temperature of
-    one and a min-p of 0.01 the weights are 1, e^-3 and 0, thus THE PICK LEAVES CLASS 0 AT
-    A SHARE OF 1/1.0498 and the two uniforms straddle it; the twin is said to have drawn
-    class 0 both times, thus one of the two draws agrees. The count adds onto a report
-    that has already seen ten draws, because a walk calls this once for each step."""
-    floated = np.array([[0.0, -3.0, -8.0]] * 2)
-    twin = np.array([[0.0, -3.0, -8.0], [-8.0, -3.0, 0.0]])
-    counted = measure.count_draws(
-        measure.Counted(draws=10, same_peak=5, same_draw=4, cosine=3.0),
-        twin,
-        floated,
-        drawn=np.array([0, 0]),
-        uniform=np.array([0.95, 0.96]),
-        temperature=1.0,
-        min_p=0.01,
-    )
-    assert (counted.draws, counted.same_peak, counted.same_draw) == (12, 6, 5)
-    assert counted.cosine == pytest.approx(3.0 + 1.0 + 9.0 / 73.0)
-
-
 # the step-frame referee: the forced pass, and the error over walks
 
 
