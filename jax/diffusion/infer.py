@@ -5,8 +5,7 @@
 
 `sample` is the ear's path: draw, print the battery against the corpus row, and speak the
 music to the synthesizer or to a .mid. A batch is several whole pieces and not one piece
-in parts, thus --gap puts a silence between two of them and --fade takes the velocity down
-over the last bar of each. Neither makes a crop ARRIVE.
+in parts, thus --gap puts a silence between two of them. It does not make a crop ARRIVE.
 
 EVERY DRAW COMES FROM THE SHARED GENERATOR under the consumption order of
 docs/diffusion_rtl.md: one seed names one SHEET -- its opening, its masks and its redraws
@@ -127,11 +126,6 @@ def main():
     default=32,
     help="steps of silence between two sheets; 32 is two bars, 0 is none",
 )
-@click.option(
-    "--fade",
-    default=16,
-    help="steps of diminuendo at the end of a sheet; 16 is one bar, 0 is none",
-)
 def sample(
     ckpt,
     walk,
@@ -140,7 +134,6 @@ def sample(
     device,
     step_ms,
     gap,
-    fade,
     channel,
     velocity,
     corpus_path,
@@ -179,7 +172,6 @@ def sample(
                 step_ms=step_ms,
                 channel=channel,
                 velocity=velocity,
-                fade=fade,
             )
             click.echo(f"wrote {path}")
         if to_synth:
@@ -191,7 +183,6 @@ def sample(
                 step_ms=step_ms,
                 channel=channel,
                 velocity=velocity,
-                fade=fade,
             )
         if not (to_synth or to_file):
             click.echo(

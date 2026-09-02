@@ -35,23 +35,6 @@ val send_note_on
 
 val send_note_off : Core_unix.File_descr.t -> channel:int -> note:int -> unit
 
-(** [fading ~step ~steps ~fade] is the share of its velocity a note-on keeps at [step] of
-    a piece of [steps], under a fade of the last [fade] steps; outside the window it is
-    one, and a [fade] of 0 turns the gesture off. The twin of [jax/midi.py]'s rule, number
-    for number, and the playback gesture the board of era six will carry: velocity is a
-    fact of the onset — the synthesizer makes a control change audible only on the next
-    note — thus a fade reaches only the notes that BEGIN inside its window, and the window
-    is a whole bar because a crop's last note has been sounding 4.5 steps in the mean. A
-    sheet shorter than the window fades across the whole of itself.
-
-    The ramp ends at a quarter of the stroke and never at zero: A NOTE-ON OF VELOCITY ZERO
-    IS A NOTE-OFF on the wire, and a note the fade silenced would never be released. *)
-val fading : step:int -> steps:int -> fade:int -> float
-
-(** [faded_velocity ~velocity ~step ~steps ~fade] is the struck velocity of one note-on
-    under the fade, and it is at least 1, for the note-off reason above. *)
-val faded_velocity : velocity:int -> step:int -> steps:int -> fade:int -> int
-
 (** The hardware side: the interface that a message source gives to a sink. *)
 module Rtl : sig
   module Message : sig
