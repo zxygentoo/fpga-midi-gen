@@ -1,4 +1,4 @@
-(* The walk — see source.mli, and docs/diffusion_rtl.md for the design.
+(* The walk — see generator.mli, and docs/diffusion_rtl.md for the design.
 
    THE RISK OF THIS UNIT IS ORDER AND NOT TIMING. What it adds of its own is serial
    machinery at 2.7 percent of a pass and nothing near the critical path. What is near the
@@ -6,27 +6,47 @@
    another sheet with no local symptom.
 
    TWO FRAMES, TWO CYCLES APART, AS THE ENGINE HAS. The LEAD frame of a cell walk steps
-   the generator; the NOW frame — the lead through two registers — is where the cell is
+   the PRNG; the NOW frame — the lead through two registers — is where the cell is
    written, because the third byte of a uniform lands one cycle behind its step and the
    shift register states the whole 24 one cycle behind that. The step rides the LEAD
-   frame, thus the two cycles of tail write without drawing and the generator moves
-   exactly three times for each cell. *)
+   frame, thus the two cycles of tail write without drawing and the PRNG moves exactly
+   three times for each cell.
+
+   THE UNIT IS THE PRNG'S CONSUMER AND NOT THE PRNG. This file says "the PRNG" wherever it
+   means [Prng.Rtl], because the module is [Generator] and one name states one thing. *)
 
 open Core
 open Hardcaml
 open Signal
 module Placement = Mgen_nn.Placement
-module I = Source_intf.I
-module O = Source_intf.O
+
+module I = struct
+  type 'a t =
+    { clock : 'a
+    ; clear : 'a
+    ; start : 'a
+    ; step : 'a
+    }
+  [@@deriving hardcaml]
+end
+
+module O = struct
+  type 'a t =
+    { frame : 'a [@bits Frame.code_bits * Frame.voices]
+    ; valid : 'a
+    ; idle : 'a
+    }
+  [@@deriving hardcaml]
+end
 
 (* the activation format of the twin: what a logit column carries in each row *)
 let activation_bits = Model.activation_bits
 
-(* one uniform is three bytes of the generator, high byte first *)
+(* one uniform is three bytes of the PRNG, high byte first *)
 let uniform_bits = Prng.uniform_bits
 let byte_bits = Prng.byte_bits
 
-(* the ticks of one cell of a cell walk: three steps of the generator *)
+(* the ticks of one cell of a cell walk: three steps of the PRNG *)
 let cell_ticks = Prng.uniform_bytes
 
 (* one hidden cell before its draw: three steps, the cycle their last byte lands, and the
@@ -36,7 +56,7 @@ let uniform_ticks = 5
 
 module State = struct
   type t =
-    | Idle (* the rest, and the PLAY phase: the score face answers [step] *)
+    | Idle (* the rest: the sheet stands and the transfer face answers [step] *)
     | Open (* the opening: one class for each cell *)
     | Mask (* the mask of one pass: one bit for each cell *)
     | Serve
@@ -51,7 +71,7 @@ end
    last seat retire and moves to [Take] on the very edge the service rests — thus cutting
    it out of the walk's own machine adds no cycle anywhere.
 
-   THE EXCLUSIVITY IS THE CONSUMPTION ORDER'S. The cell walks step the generator from the
+   THE EXCLUSIVITY IS THE CONSUMPTION ORDER'S. The cell walks step the PRNG from the
    walk's own arms and the service from [Uniform]; the two never stand at once because the
    service runs only while the walk is parked in [Serve]. *)
 module Service = struct
@@ -139,9 +159,10 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let served = Variable.reg spec ~width:step_bits in
   let seat = Variable.reg spec ~width:seat_bits in
   let tick = Variable.reg spec ~width:tick_bits in
-  let play_step = Variable.reg spec ~width:step_bits in
-  (* the sheet is played one time: past the last step the frame is four zero bytes *)
-  let spent = Variable.reg spec ~width:1 in
+  (* THE TRANSFER FACE IS CYCLIC: the counter wraps at [T], thus [T] strobes read the
+     sheet whole and leave the face at frame 0. There is no silence rule — silence is the
+     [Scheduler]'s gap and never this unit's business. *)
+  let transfer_step = Variable.reg spec ~width:step_bits in
   let held = Variable.reg spec ~width:frame_bits in
   let valid = Variable.reg spec ~width:1 in
   let prng_step = Variable.wire ~default:gnd () in
@@ -150,13 +171,13 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
   let forward_start = Variable.wire ~default:gnd () in
   let idle = sm.is Idle in
   (* ---------------------------------------------------------------- *)
-  (* the generator, and the uniform it assembles *)
+  (* the PRNG, and the uniform it assembles *)
   (* ---------------------------------------------------------------- *)
   let prng =
     Prng.Rtl.create
       { Prng.Rtl.I.clock = i.clock
       ; clear = i.clear
-      ; load = i.rewind &: idle
+      ; load = i.start &: idle
       ; seed
       ; step = prng_step.value
       }
@@ -276,7 +297,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
       ; cell_hidden
       ; plane_step = forward.plane_step
       ; plane = forward.plane
-      ; score_step = play_step.value
+      ; score_step = transfer_step.value
       }
   in
   Signal.assign plane_column sheet.plane_column;
@@ -310,7 +331,7 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
         take_byte
         [ u <-- sel_bottom u.value ~width:(uniform_bits - byte_bits) @: prng_byte ]
     ; (* THE LEAD FRAME. It runs in the cell walks alone, thus this block is inert
-         everywhere else and the generator cannot take a step no phase asked for. *)
+         everywhere else and the PRNG cannot take a step no phase asked for. *)
       when_
         lead_running.value
         [ prng_step <-- vdd
@@ -332,20 +353,18 @@ let create ~(e : Elaboration.t) ~seed (i : _ I.t) : _ O.t =
     ; sm.switch
         [ ( State.Idle
           , [ if_
-                i.rewind
-                ([ pass <--. 0; play_step <--. 0; spent <-- gnd ]
-                 @ enter_walk
-                 @ [ sm.set_next Open ])
-                [ (* PLAY. The score face answers combinationally from the cells, thus one
-                     register holds the answer and the walk keeps no copy. *)
+                i.start
+                ([ pass <--. 0; transfer_step <--. 0 ] @ enter_walk @ [ sm.set_next Open ])
+                [ (* THE TRANSFER. The score face answers combinationally from the cells,
+                     thus one register holds the answer and the walk keeps no copy. *)
                   when_
                     i.step
-                    [ held <-- mux2 spent.value (zero frame_bits) sheet.frame
+                    [ held <-- sheet.frame
                     ; valid <-- vdd
                     ; if_
-                        (play_step.value ==:. steps - 1)
-                        [ spent <-- vdd ]
-                        [ play_step <-- play_step.value +:. 1 ]
+                        (transfer_step.value ==:. steps - 1)
+                        [ transfer_step <--. 0 ]
+                        [ transfer_step <-- transfer_step.value +:. 1 ]
                     ]
                 ]
             ] )
@@ -412,10 +431,10 @@ module Bench = struct
     ; value : int (** the class a face wrote, or the mask bit *)
     }
 
-  (* The walk, driven. [rewind] runs one whole walk from the rest to the rest and clears
+  (* The walk, driven. [start] runs one whole walk from the rest to the rest and clears
      the write log behind it; [play] strobes one step and gives the frame it answers. *)
   type t =
-    { rewind : unit -> unit
+    { start : unit -> unit
     ; play : unit -> int
     ; writes : unit -> write list
     ; spent : State.t -> int
@@ -506,16 +525,16 @@ module Bench = struct
       + (e.walk * e.steps * 128)
       + 4096
     in
-    let rewind () =
+    let start () =
       Harness.Tally.clear spent;
       Harness.Tally.clear service_spent;
       writes := [];
       cycles := 0;
       standing := at_rest;
       serving := serving_rest;
-      inp.rewind := Bits.vdd;
+      inp.start := Bits.vdd;
       cycle ();
-      inp.rewind := Bits.gnd;
+      inp.start := Bits.gnd;
       (* the walk leaves the rest on the edge behind the strobe, thus the wait cycles
          before it reads [idle] *)
       cycle ();
@@ -538,7 +557,7 @@ module Bench = struct
       if !left <= 0 then failwith "the step was not answered";
       Bits.to_int_trunc !(out.frame)
     in
-    { rewind
+    { start
     ; play
     ; writes = (fun () -> List.rev !writes)
     ; spent = Harness.Tally.spent spent
@@ -566,7 +585,7 @@ let%expect_test "the service of one step: the level, a standing seat, a hidden o
   let model = Model.For_test.drawn ~layers:4 ~width:8 ~seed:1 in
   let e = Elaboration.create model ~steps:3 ~lanes:2 ~walk:1 in
   let h = Bench.harness ~trace:true ~e ~seed:5 () in
-  h.rewind ();
+  h.start ();
   let waves = Option.value_exn h.waves ~message:"a traced run gives a waveform" in
   let served =
     Option.value_exn (h.service_entered Seat) ~message:"the walk served a step"
@@ -705,7 +724,7 @@ let%expect_test "where a pass spends its cycles, against the cost model" =
     end)
   in
   let h = Bench.harness ~e ~seed () in
-  h.rewind ();
+  h.start ();
   let spent = h.spent in
   let served = h.service_spent in
   (* THE HIDDEN CELLS COME OUT OF THE MACHINE'S OWN COUNTER: the service takes one uniform
@@ -818,7 +837,7 @@ let%expect_test "the cycles of one pass at rung 1, measured" =
   let e = Elaboration.create model ~steps:128 ~lanes:4 ~walk:1 in
   let cells = e.steps * Frame.voices in
   let h = Bench.harness ~e ~seed:42 () in
-  h.rewind ();
+  h.start ();
   let spent = h.spent in
   let served = h.service_spent in
   let service = served Seat + served Uniform + served Redraw + spent Take in
@@ -872,14 +891,14 @@ module For_test = struct
       }
 
     type t =
-      { rewind : unit -> unit
+      { start : unit -> unit
       ; play : unit -> int
       ; writes : unit -> write list
       }
 
     let harness ~e ~seed () =
       let bench = Bench.harness ~e ~seed () in
-      { rewind = bench.rewind; play = bench.play; writes = bench.writes }
+      { start = bench.start; play = bench.play; writes = bench.writes }
     ;;
   end
 end

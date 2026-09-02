@@ -7,30 +7,35 @@
    [Socket] would put a concrete model into the library that exists so that the board
    knows none of them.
 
+   THE SEAT HOLDS THE ERA'S FACE AND NOT ONE UNIT UNDER IT. [Source] is the scheduler over
+   the generator at the elected gap, which is what [gen_verilog] hands the board; the
+   mounting below is therefore that same face and no wiring of its own.
+
    The gate: the bytes on the MIDI line are the messages that [Frame.events_of_frames]
    states over THE FRAMES THE SOURCE IN THE SEAT ANSWERS, byte for byte and in order; the
    run stop plays the silent frame; and a second run from the same seed repeats the first.
    The two halves of the model path are proved separately — the walk gate of
-   [jax/tests/test_rtl_diffusion.py] holds the source's walk to the integer twin phase for
-   phase, and this holds the sequencer to the frames that source answers — thus a failure
+   [jax/tests/test_rtl_diffusion.py] holds the generator's walk to the integer twin phase
+   for phase, and this holds the sequencer to the frames the seat answers — thus a failure
    here names the sequencer's side and never the network.
 
-   THE REFERENCE IS THE SOURCE, PLAYED ON ITS OWN. [Source]'s bench drives a second
+   THE REFERENCE IS THE GENERATOR, PLAYED ON ITS OWN. [Generator]'s bench drives a second
    instance of the same block from the same seed and the same elaboration, thus it answers
    the same frames; what this gate then measures is everything BETWEEN those frames and
    the wire — the socket, the sequencer, the note tracking and the UART.
 
-   ERA SIX IS THE EASY TENANT OF THIS SOCKET. The source answers [step] in one cycle from
-   a sheet that already stands, thus the step period constrains nothing; what it does
+   ERA SIX IS THE EASY TENANT OF THIS SOCKET. The seat answers [step] in one cycle from a
+   sheet that already stands, thus the step period constrains nothing; what it does
    instead is hold [idle] low for a whole walk at the rewind, which is exactly the wait
    that [WaitRewind] exists for.
 
    **THE GATE DOES NOT DEPEND ON THE LENGTH OF THAT WALK.** The run below carries the
-   whole sheet and some steps past it, and PAST STEP T - 1 EVERY FRAME IS SILENT: the
-   first of them releases what the last cell held and every one after it states no event
-   at all. The stop's own silent frame is the same frame again. Thus the message stream
-   saturates, the draw budget only has to be an over-estimate, and no number of this test
-   has to track the machine's cycles. *)
+   whole sheet and the first steps of the gap behind it: the first gap step is THE DRAIN,
+   whose silent frame releases what the last cell held, and the 31 gap steps after it
+   state no event at all, which is the slack the run may overshoot into. The stop's own
+   silent frame is the same frame again. Thus the message stream saturates, the draw
+   budget only has to be an over-estimate, and no number of this test has to track the
+   machine's cycles. *)
 
 open Base
 module Harness = Mgen_core.Harness
@@ -40,6 +45,7 @@ module Frame = Mgen_core.Frame
 module Midi = Mgen_core.Midi
 module Model = Mgen_diffusion.Model
 module Elaboration = Mgen_diffusion.Elaboration
+module Generator = Mgen_diffusion.Generator
 module Source = Mgen_diffusion.Source
 
 (* The model of the test: drawn weights in the era's test shape, thus the test reads no
@@ -69,8 +75,14 @@ let draw_budget =
 ;;
 
 (* [Socket.For_test] mounts the block and samples the line; the RUN LENGTH is this test's
-   own. [play] runs one whole run: run to 1, the draw, the sheet and some silence past it,
-   then run to 0 and the drain; it gives the messages that the line carried. *)
+   own, and it is stated in STEPS and never in cycles.
+
+   THE REWIND IS NOT ONE NUMBER HERE. A run start draws a whole sheet, and a RESTART first
+   waits out the lookahead walk the scheduler opened behind the standing one — two
+   different waits, and neither is a cycle count this test should carry. THE LINE ITSELF
+   SAYS WHEN THE WAIT IS OVER: no message crosses while the source holds the boundary. The
+   run then plays a fixed count of steps past the first note, which reaches the drain and
+   stops far inside the gap, thus the stream saturates whatever the machine's cycles. *)
 let harness () =
   let h =
     Socket.For_test.harness
@@ -84,7 +96,15 @@ let harness () =
     h.clear_line ();
     let period = clocks_per_ms * Hardcaml.Bits.to_int_trunc !(inp.params.step_ms) in
     Harness.set inp.params.run 1;
-    h.run_for ~cycles:(draw_budget + ((steps + 2) * period));
+    (* a stale walk and the run's own, each at the over-estimate above; a machine that
+       stalls must fail the gate and not hang it *)
+    let left = ref (2 * draw_budget) in
+    while List.is_empty (h.messages ()) && !left > 0 do
+      h.run_for ~cycles:period;
+      left := !left - period
+    done;
+    if !left <= 0 then failwith "the first note did not sound inside two draws";
+    h.run_for ~cycles:((steps + 2) * period);
     Harness.set inp.params.run 0;
     h.run_for ~cycles:(2 * period);
     h.messages ()
@@ -95,13 +115,13 @@ let harness () =
 (* the messages of the reference: the frames the source answers over the whole sheet, the
    silent frame of the stop behind them, and [Frame.events_of_frames] over the run.
 
-   THE FRAMES PAST T - 1 ARE NOT IN THE LIST AND DO NOT HAVE TO BE. The first of them
-   releases what the last cell held and every one after it states no event at all, thus
+   THE GAP STEPS ARE NOT IN THE LIST AND DO NOT HAVE TO BE. The first of them — the drain
+   — releases what the last cell held and every one after it states no event at all, thus
    the stop's silent frame states that release and the message stream saturates — which is
    why no number of this test tracks the machine's cycles. *)
 let reference_messages ~seed ~channel ~velocity =
-  let h = Source.For_test.Bench.harness ~e ~seed () in
-  h.rewind ();
+  let h = Generator.For_test.Bench.harness ~e ~seed () in
+  h.start ();
   (* [List.init] applies its function in the reverse index order, thus it cannot collect
      from a simulation; the fold steps in the true order *)
   let played =

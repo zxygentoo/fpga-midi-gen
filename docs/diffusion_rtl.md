@@ -1601,8 +1601,8 @@ cycles, the utilization against the cost model. Phase I holds every
 unknown of the round.
 
 **Phase II — the performance.** Many sheets: draw the next while this
-one plays, the gap, the fade, the buffer. Phase II reuses semantics the
-software side already pinned.
+one plays, the gap, the buffer. Phase II reuses semantics the software
+side already pinned. Its locked design is the last chapter.
 
 ## Phase I: the locked design
 
@@ -1646,30 +1646,264 @@ software side already pinned.
   utilization against the cost model, and the N the board affords inside
   the playback window.
 
-## Phase II, in short
+## Phase II: the locked design — the generator and the scheduler
 
-Nothing here is designed; the chapter waits for phase I's numbers. The
-items, so the seams stay clean:
+Elected 2026-09-02, over phase I's measurements. **THE PHASE PARTS PHASE
+I'S `Source` INTO TWO UNITS, one function each, AND KEEPS `Source` AS THE
+FACE OVER THEM:**
 
-- **The buffer.** Gibbs rewrites the sheet in place, thus the playing
-  sheet must be its own copy: two sheet memories in ping-pong. Phase I
-  keeps the score read port behind its own interface so the doubling stays
-  local.
-- **The scheduling.** Draw the next sheet while this one plays; the lane
-  count and N come from phase I's measurement.
-- **The gap and the fade**, as the software states them: the `--gap` and
-  `--fade` of `jax/diffusion/infer.py` over `Midi.fading`'s rule, whose
-  share of the velocity at a step is the fade's one point of variation,
-  and velocity is a fact of the onset.
+- **`Generator`** (`lib/diffusion/generator.ml`) — phase I's machine,
+  NARROWED: it draws one sheet of music and hands it over. The draw
+  machinery does not move — the engine, the cell port, the per-phase
+  writes and every pinned probe stand — and what leaves is the socket
+  identity: `Source_intf`, and the "silence for ever past T - 1" rule, a
+  playback fact that stood in a draw unit.
+- **`Scheduler`** (`lib/diffusion/scheduler.ml`) — the succession. It
+  drives the generator and answers the socket: the playing copy, the
+  seeds, the gap and the restart. It takes the gap as a parameter,
+  because a unit test states its own.
+- **`Source`** (`lib/diffusion/source.ml`) — the era's face, and one
+  wiring line: the scheduler over the generator at the elected gap.
 
-  THE OCaml SIDE OF THE FADE IS ALREADY DEAD CODE AND WAS KEPT FOR THIS
-  ITEM. The all-era cut of 2026-08-29 found `Midi.fading` read by nothing
-  but `Midi.faded_velocity`, and `faded_velocity` read by nothing but its
-  own expect test — the case `AGENT.md` names, an export alive only because
-  a test uses it. Both were left whole rather than cut, because this item
-  is what would wire them; `jax/midi.py` carries a fade of its own and the
-  board carries none. **The round that takes this item decides them: wire
-  them to the sequencer, or cut them and let the software keep the fade.**
-- **The seed succession.** The rule that names the seed of sheet k is a
-  contract to pin with `infer.py sample --seeds` and the JAX handoff before
-  phase II elaborates.
+**THE THIRD FILE IS THE CONVENTION AND NOT A WRAPPER.** Every era has a
+`Source` and the board knows no other name: `gen_verilog` hands
+`Source.create ~e` to `Top` for all four of them, thus the seat reads the
+same whatever is under it and what parts one era from the next stays
+inside its own library. What this one holds is the two names and the one
+elected number, which is exactly the question "what is era six made of".
+
+The sequencer, the socket, `Frame` and the host control do not move;
+`Top` wraps one closure, as it did.
+
+### The generator's face
+
+`Generator.I` is `{ clock; clear; start; step }` and `Generator.O` is
+`{ frame; valid; idle }` — phase I's socket records under the narrowed
+contract, with `rewind` grown into `start`:
+
+- **`start` draws one sheet** from the `seed` signal. It is read at rest
+  alone, and `idle` rises when the sheet stands.
+- **`step` is the transfer face**: the frame of the standing sheet,
+  answered one cycle behind the strobe, the counter inside, `Vocab.Rtl`
+  inside. It too is read at rest alone. **The face is cyclic** — the
+  counter wraps at `T`, thus `T` strobes read the sheet whole and leave
+  the face at frame 0. No silence rule exists here: silence is the
+  scheduler's own gap and never the generator's business.
+
+### The buffer — the pong already exists
+
+Gibbs rewrites the sheet in place, thus the playing sheet must be its own
+copy. The two memories of the ping-pong are:
+
+- **the generator's own sheet RAM.** When a walk ends, the finished
+  sheet stands there and the transfer face serves it.
+- **the scheduler's frame store**: `T` frames of 32 bits, one RAMB18.
+
+The scheduler copies the finished sheet out through the transfer face —
+phase I's score port, kept as it stands: `T` step strobes, one frame
+each, about 300 cycles — 3 µs against a 200 ms step. It then strobes
+`start` with the next seed, and the engine rewrites its sheet while the
+scheduler answers the sequencer from the copy. **The store holds FRAMES
+and not classes**: the transfer face maps each class through `Vocab.Rtl`
+as it answers, thus the scheduler carries no vocabulary and no class
+width.
+
+### The walk of the unit
+
+**Rest, then OPEN, then DRAW, then COPY, then PLAY — and PLAY loops
+through DRAW and COPY at every boundary.**
+
+- **Rest** exports `idle` 1 and answers `step` with the silent frame. The
+  outer `rewind` latches the seed view into `seed_reg` and opens the run.
+  OPEN waits out any stale walk and strobes the generator's `start`; DRAW
+  waits that walk out and steps `seed_reg`; COPY fills the frame store and
+  strobes `start` again over the generator's own sheet; PLAY raises `idle`.
+  The first note therefore comes when phase I's came, and the sequencer's
+  `WaitRewind` needs nothing new.
+- **PLAY answers from the store**: steps `0` to `T - 1` are the copy, and
+  the `gap` steps behind them are the silent frame. `idle` HOLDS at 1
+  through PLAY and falls through OPEN, DRAW and COPY — at the first draw
+  and at every boundary alike. A step the scheduler cannot answer yet waits
+  on `valid`, which is the socket's standing rule — the bytes are exact and
+  the step stretches.
+- **The boundary** is the step after the gap: fall back through DRAW to
+  wait for the generator's `idle`, step `seed_reg`, COPY, strobe `start`,
+  and answer the fresh step 0. At the elected rung the wait is zero — the
+  draw ends nine seconds before the boundary — and the copy is the 3 µs
+  above.
+- **The restart.** A `rewind` in PLAY re-latches the panel seed and drops
+  `idle`, but the generator may be inside its lookahead walk, and a
+  `start` inside a walk is what its contract refuses. The scheduler waits
+  the stale walk out — about 45 s to the first note at the worst — and
+  the generator gains no abort port for a gesture this rare: the reset
+  button clears everything and redraws in 22 s, as phase I states.
+
+### The succession
+
+**The seed of sheet k is `(S + k) mod 2^32`**, with S the SEED cell at the
+run start. This is the existing handoff verbatim: the board's performance
+at seed S is
+
+```
+uv run python -m diffusion.infer sample --quantized \
+    --seeds S-(S+n) --gap 32 --play
+```
+
+Seed 0 inside a succession plays its silent sheet — no skip rule, because
+the software handoff would have to carry the same rule to stay exact.
+
+### The gap
+
+**An elaboration constant, 32 steps, floored at 1.** It is the software
+default the ear elected, and it is not a host cell: a knob is runtime
+state every capture must then pin, for a number nobody turns. **The
+election is `Source`'s and the floor is the `Scheduler`'s**: 32 is a fact
+of the performance, and the refusal at 0 is a fact of the drain.
+
+**The first gap step is the drain.** The sequencer's silent-frame rule
+closes every held pitch in ascending order — `midi.play`'s own sorted
+drain, byte for byte. The floor follows: at gap 0 the decode would carry
+held pitches across the boundary where the software drains whole and
+strikes again, and the two streams would part.
+
+### The fade — cut, 2026-09-02
+
+**The fade is cut from the software and the OCaml side both; the gap
+alone parts the sheets.** Velocity is the sequencer's, from the params
+view, and a frame carries pitch classes only. Every honest wiring either
+split one rule across the socket — the share table in the scheduler, the
+multiply in the sequencer — or grew the seam by a velocity byte and forced
+`jax/midi.py` onto an integer rule so the byte gate could stay exact: a
+re-baseline of every era's audition, for one gesture. Not worth it.
+
+What the cut takes: `Midi.fading` and `Midi.faded_velocity` with their
+expect test — the dead code the all-era cut kept for this decision — and
+`jax/midi.py`'s `fading`, `struck_velocity`, `FADE_FLOOR`, the `fade`
+parameters of `play` and `save`, and `infer.py`'s `--fade`. The wire then
+carries pitch and timing alone, and the capture gate has no velocity rule
+to twin.
+
+### The numbers
+
+- **The steady state meets with a third of the window spare.** One
+  rewind-to-rewind period is `T + gap` steps — 32.0 s at STEP_MS 200 —
+  against the measured draw of 22.32 s. The boundary first waits near
+  STEP_MS 140.
+- **The cost is half a tile**: the frame store's RAMB18, 108.5 to 109 of
+  135. The rest is counters, the FSM and the seed adder — no DSP, no new
+  memory class.
+- **The timing class is the walk's**: events 200 ms apart, register
+  freely. The unit touches neither the engine, nor the broadcast families,
+  nor the drain chain.
+
+### The probe names
+
+**The scheduler's own state register is `scheduler_state` and NOT `state`.**
+One simulation of this unit holds three machines — the scheduler, the
+generator's walk and the engine under it — and `Forward` already answers to
+`state`; a bare name would let the mangler decide which one a probe reached.
+The generator carries the same rule already, in `walk_state` and
+`service_state`. Beside it stand `seed_reg`, `play_step`, `copy_step`,
+`gen_step` and `store_write`, because the unit's own gates read them.
+
+### The gates
+
+1. **The unit tests**, beside `scheduler.ml`: a waveform of the boundary —
+   the last frames, the drain step, the gap, the copy, the next sheet's
+   step 0 — and expect tests of the succession register and the restart.
+2. **The succession gate**, under `uv run pytest`: the socket simulation
+   over two sheets at a tiny shape, against bytes assembled from twin
+   draws at S and S + 1 under the gap rule. Neither side can pass by
+   agreeing with itself.
+3. **The board rung**: the amidi capture over two sheets at the panel seed
+   against the command above. The protocol drops RUN inside a gap — the
+   sheet's own drain has closed every note, thus the stop adds no bytes
+   and the two streams end together.
+
+### The round — built and captured, 2026-09-02
+
+The split landed in one tree state: phase I's `source.ml` became
+`generator.ml` under the narrowed contract, `scheduler.ml` took the
+succession, and a new `source.ml` wires the two at the elected gap — thus
+`gen_verilog`, the transaction test, the socket simulation and the
+succession gate all read `Source.create ~e` and none of them names a unit
+under it. The netlist moved from `ca16397a` to **`c574f5b2`**, and the twin
+did not move at all — `jax/diffusion/quantized.py` shows an empty diff and
+the walk and stream gates read their old expectations.
+
+**WHAT THE SPLIT COSTS, MEASURED AT SYNTHESIS.** Both netlists synthesized
+alone on one Vivado and one part, thus the two columns differ in the source
+and in nothing else:
+
+| | develop `ca16397a` | phase II `c574f5b2` |
+|---|---|---|
+| Slice LUTs | 25 908 | **26 094** |
+| LUT as distributed RAM | 12 | 12 |
+| Slice registers | 27 857 | **27 939** |
+| block RAM tiles | 108.5 | **109.0** |
+| RAMB36 / RAMB18 | 107 / 3 | 107 / **4** |
+| DSP48E1 | 240 | 240 |
+
+**Half a tile and 186 LUTs** — the frame store's RAMB18, the FSM, the two
+counters and the seed adder. The chapter's estimate was half a tile and
+small LUTs, and that is what it is.
+
+**A BLOCK RAM HAS NO ASYNCHRONOUS PORT, AND A REGISTER IN FRONT OF THE
+ADDRESS IS NOT A READ PORT.** The store's first shape put the register on
+the address and left the memory's own read combinational; Vivado answered
+`Infeasible attribute ram_style = "block"` and mapped the whole 128 by 32
+store into LUTRAM — 22 RAM64M, 88 LUTs, and the tile count stayed at 108.5.
+The register belongs BEHIND the memory, where it is the primitive's own
+output register and the enable is the read strobe. The answer is one cycle
+behind the strobe either way, thus nothing above the port moved. **The
+warning is the instrument**: the demotion of "Traps" is silent, and this one
+is not — read the synthesis log for `Synth 8-6849` whenever a store is
+meant to be a tile.
+
+**THE BUILD**, first roll of the fixed netlist, `Explore` as `build.tcl`
+stands:
+
+| | golden `ca16397a` | phase II `c574f5b2` |
+|---|---|---|
+| WNS / WHS | +0.070 / +0.021 | **+0.036 / +0.016** |
+| `Physopt 32-703` | 0 | **0** |
+| `BUFGCTRL` | 1 | **1** |
+| tiles / DSPs | 108.5 / 240 | **109.0 / 240** |
+| LUTs / registers | — | 25 545 / 27 983 |
+
+The worst path is nine levels at 73 percent route, from a broadcast replica
+into a store register — the engine's own congestion edge, which "The
+broadcast round" already named, and not the new unit. The slack sits inside
+the 0.1 ns lottery band with no clock-skew adjustment anywhere.
+
+**THE BOARD RUNG, AND IT IS EXACT.** Programmed volatile at the panel seed
+**49920**, the flash still holding `ca16397a`. RUN cycled over the console
+UART, `amidi -r` on the S-1's thru, RUN dropped 83 s in — inside the second
+gap. **The capture and the reference are 1 500 bytes and 500 messages EACH,
+and they agree BYTE FOR BYTE IN ORDER**; the order-tolerant allowance the
+thru's local reordering earns went unused again.
+
+**The stopwatch reads the design back.** The first note stands at **22.29 s**
+from RUN against the phase I measurement of 22.32; the silence after the
+first sheet's drain is **6.40 s**, which is `gap * STEP_MS` to the
+hundredth; and the second sheet opens at **54.32 s**, which is 32.03 s after
+the first — `(T + gap) * STEP_MS` with **no stretch at all**. The lookahead
+draw ends nine seconds before the boundary asks for it, as the numbers
+above state, thus the boundary waited for nothing.
+
+**THE REFERENCE IS ONE COMMAND FOR EACH SHEET, and that is not a taste.**
+`midi.play` opens the device with `"wb"`, thus a batch of sheets on one
+`--device FILE` leaves only the LAST sheet in the file — the whole run looks
+half a stream long for no stated reason. Append mode is not the answer
+either: `open("/dev/snd/midiC2D0", "ab")` is refused with `EINVAL`, thus the
+flag that would fix a file breaks the wire. The recipe is therefore
+
+```
+for s in S S+1; do
+    uv run python -m diffusion.infer sample --ckpt weights/diffusion.ckpt \
+        --quantized --seeds $s --gap 32 --play --device sheet-$s.bin
+done
+cat sheet-S.bin sheet-S+1.bin > reference.bin
+```
+
+and the concatenation IS the wire, because the gap writes no byte.

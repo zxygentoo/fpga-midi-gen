@@ -16,9 +16,9 @@
 
    - [walk] is INSTRUMENT 2: the walk beside the engine, PHASE FOR PHASE. It prints every
      write of the cell port in the order the walk made them — the opening's classes, each
-     pass's mask bits, each pass's redraws — and then the frames the score face answers,
-     beside the frames the sheet it drew states. The finished sheet alone would pass a
-     walk whose masks are one pass out of phase, or one that spends a uniform on a
+     pass's mask bits, each pass's redraws — and then the frames the transfer face
+     answers, beside the frames the sheet it drew states. The finished sheet alone would
+     pass a walk whose masks are one pass out of phase, or one that spends a uniform on a
      standing cell: both draw a sheet, and both draw the WRONG one with no local symptom.
 
    - [stream] is INSTRUMENT 3: every column the engine writes, against the twin's own
@@ -32,7 +32,9 @@ module Model = Mgen_diffusion.Model
 module Sheet = Mgen_diffusion.Sheet
 module Elaboration = Mgen_diffusion.Elaboration
 module Forward = Mgen_diffusion.Forward
+module Generator = Mgen_diffusion.Generator
 module Source = Mgen_diffusion.Source
+module Frame = Mgen_core.Frame
 
 (* THE GEOMETRY IS THE ONLY THING THE FLAGS CARRY. The shape of the model — L, H and every
    width — comes out of the contract file, as it does for a build; a gate that stated a
@@ -68,31 +70,31 @@ let row values = String.concat ~sep:" " (List.map (Array.to_list values) ~f:Int.
    and the two comparisons of the Python side compose — the writes ARE the twin's, thus
    the sheet is the twin's, thus a frame face that agrees with this sheet agrees with the
    twin. The driver never reads a model to state a frame. *)
-let sheet_of_writes (writes : Source.For_test.Bench.write list) ~steps =
-  let sheet = Array.make_matrix ~dimx:steps ~dimy:Mgen_core.Frame.voices 0 in
-  List.iter writes ~f:(fun { Source.For_test.Bench.mask; step; seat; value } ->
+let sheet_of_writes (writes : Generator.For_test.Bench.write list) ~steps =
+  let sheet = Array.make_matrix ~dimx:steps ~dimy:Frame.voices 0 in
+  List.iter writes ~f:(fun { Generator.For_test.Bench.mask; step; seat; value } ->
     if not mask then sheet.(step).(seat) <- value);
   sheet
 ;;
 
-(* the steps the score face is played past the end of the sheet: past step T - 1 the first
-   frame releases what the last cell held and every one after it states no event at all *)
-let silent_steps = 2
+(* the steps the transfer face is played PAST the end of the sheet. The face is cyclic —
+   the counter wraps at T — thus these read the sheet's own first frames again, and the
+   gate holds the wrap the scheduler's copy rests on. *)
+let wrapped_steps = 2
 
 let run_walk e ~seed =
   let steps = e.Elaboration.steps in
-  let h = Source.For_test.Bench.harness ~e ~seed () in
-  h.rewind ();
+  let h = Generator.For_test.Bench.harness ~e ~seed () in
+  h.start ();
   let writes = h.writes () in
-  List.iter writes ~f:(fun { Source.For_test.Bench.mask; step; seat; value } ->
+  List.iter writes ~f:(fun { Generator.For_test.Bench.mask; step; seat; value } ->
     printf "write %s %d %d %d\n" (if mask then "MASK" else "CLASS") step seat value);
   let frames = Model.frames_of_sheet (sheet_of_writes writes ~steps) in
   List.iter
-    (List.range 0 (steps + silent_steps))
-    ~f:(fun step ->
-      printf "want_frame %d %d\n" step (if step < steps then frames.(step) else 0));
+    (List.range 0 (steps + wrapped_steps))
+    ~f:(fun step -> printf "want_frame %d %d\n" step frames.(step % steps));
   List.iter
-    (List.range 0 (steps + silent_steps))
+    (List.range 0 (steps + wrapped_steps))
     ~f:(fun step ->
       let frame = h.play () in
       printf "frame %d %d\n" step frame)

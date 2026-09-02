@@ -231,9 +231,11 @@ PIECES = corpus.PIECES
 DIFFUSION_LOSS = 0.193459
 DIFFUSION_CROP = 128
 
-# The golden candidate at T 128, G 5, N 512, AND IT IS WHAT THE FLASH HOLDS: the capture
-# at seed 47872 read 840 bytes and 280 messages byte for byte against the twin.
-DIFFUSION_NETLIST_MD5 = "ca16397aa3c91be2d8fe4c34736d0834"
+# The golden candidate at T 128, G 5, N 512, over the PHASE II PAIR: the scheduler on the
+# socket and the generator under it, gap 32. Re-pinned 2026-09-02, where the split moved
+# the netlist and no byte of a sheet: the board rung over two sheets read 1500 bytes and
+# 500 messages byte for byte against the twin.
+DIFFUSION_NETLIST_MD5 = "c574f5b228079e145bdbf85f25e618e3"
 
 
 def diffusion_gate_masks(sheets, crop):
