@@ -377,9 +377,8 @@ walk, and the seam to the sequencer. `lib/diffusion/generator.ml` and
 `lib/diffusion/scheduler.ml` hold the design and its reasons, as the era
 before it did, and `source.ml` wires the pair.
 
-![The diffusion source: the scheduler with its frame store, its seed
-succession and its gap, and the generator under it with its walk, its sheet,
-the column engine and the draw](diffusion_rtl.svg)
+![The diffusion source: the scheduler with its frame store and its gap, and
+the generator with its walk, sheet, column engine and draw](diffusion_rtl.svg)
 
 ### The shape of the code
 
