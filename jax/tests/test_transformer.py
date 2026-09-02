@@ -118,7 +118,6 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
         twin.slope_span,
     )
     assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
-    assert read.temper.temperature == twin.temper.temperature
     assert read.min_weight == twin.min_weight
     assert len(read.tensors()) == len(twin.tensors())
     for here, there in zip(read.tensors(), twin.tensors()):

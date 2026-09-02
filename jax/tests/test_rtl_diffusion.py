@@ -86,10 +86,7 @@ def wanted_walk(twin, *, steps, walk, seed):
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in model.cell_order(steps)
     ]
-    tally = q.Tally()
-    for at, taken in enumerate(
-        quantized.passes(twin, states, given, walk=walk, tally=tally)
-    ):
+    for at, taken in enumerate(quantized.passes(twin, states, given, walk=walk)):
         wanted += [
             (
                 f"the mask of pass {at}",
@@ -197,7 +194,7 @@ def stem_input(lines, steps):
 def test_the_store_writes_are_the_twins(
     tmp_path, name, layers, width, lanes, steps, weight_seed, rows
 ):
-    """Every column the engine writes, against the twin's own `layer_writes`: the address
+    """Every column the engine writes, against the twin's own `writes`: the address
     stands in the elaboration's map, the datum equals the twin's, and each destination
     column is written exactly one time for each layer. The head writes no store, thus its
     gate is the logit face, read through the ports at every step the level offers."""
@@ -209,7 +206,7 @@ def test_the_store_writes_are_the_twins(
         "stream", path, steps=steps, lanes=lanes, walk=8, seed=weight_seed, rows=rows
     )
     classes, hidden = stem_input(lines, steps)
-    want = twin.layer_writes(classes, hidden, q.Tally(), rows=rows)
+    want = list(twin.writes(classes, hidden, rows=rows))
     checked = 0
     for word in lines:
         if word[0] == "write":

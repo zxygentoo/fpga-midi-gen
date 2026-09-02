@@ -31,11 +31,10 @@ from this directory and `make verilog-pink` runs on a bare clone.
     uv run python -m <era>.infer quantize --ckpt weights/<era>.ckpt \
         --out weights/<era>.int8
 
-IT IS NOT COMMITTED, for two measured reasons. It is no smaller than the
+IT IS NOT COMMITTED, for one measured reason: it is no smaller than the
 checkpoint — an int8 image travels as int32, because `Nx_io` skips a dtype it
-does not hold — and it is not reproducible byte for byte, because
-`safetensors` writes its metadata out of a hash map that each process orders
-differently. What IS reproducible is the NETLIST the file states, and
-`jax/tests/test_parity.py` pins the md5 of that for every era. A contract file
-rebuilt here must state the pinned netlist, thus nothing is lost by rebuilding
-it and a stale one could not hide.
+does not hold. It IS reproducible byte for byte since the metadata was cut on
+2026-09-02: nothing but the tensors is written, and `jax/tests/test_quantized.py`
+holds a saved header to that. The pinned artefact stays the NETLIST the file
+states: `jax/tests/test_parity.py` holds its md5 for every era, thus a contract
+file rebuilt here must state the pinned netlist and a stale one could not hide.

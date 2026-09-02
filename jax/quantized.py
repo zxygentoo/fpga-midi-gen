@@ -20,12 +20,9 @@ No float model reads this file and nothing here reads one: `quantize` runs one w
 """
 
 import math
-from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
-from safetensors import safe_open
-from safetensors.numpy import load_file, save_file
 
 import prng
 
@@ -133,17 +130,7 @@ def apply_scale(q_value, q, value):
     return (value * q_value) >> q
 
 
-def temper_of(temperature):
-    """the sampling temper, log2(e) / T, as (q_value, q); `Constants.temper_at_one` is
-    this rule at the elected temperature of one"""
-    if temperature <= 0.0:
-        raise ValueError("the temperature is positive")
-    return int(round_half_up(np.ldexp(1.0 / math.log(2.0) / temperature, TEMPER_Q))), (
-        TEMPER_Q
-    )
-
-
-def min_weight_of(min_p):
+def min_weight(min_p):
     """The min-p floor as a share of the peak weight, which is 2^`EXP2_OUT_Q` after the
     temper -- thus the floor is a plain share and the circuit compares two integers."""
     if not 0.0 <= min_p < 1.0:
@@ -152,27 +139,26 @@ def min_weight_of(min_p):
 
 
 class Temper(NamedTuple):
-    """The sampling temper as the bitstream carries it: log2(e) / T at [q].
-
-    The temperature is PROVENANCE and not arithmetic, thus it travels in the metadata
-    alone and a file an older tool wrote reads back with no temperature."""
+    """The sampling temper as the bitstream carries it: log2(e) / T at [q]."""
 
     q_value: int
     q: int
-    temperature: float
 
     @classmethod
     def from_float(cls, temperature):
-        q_value, q = temper_of(temperature)
-        return cls(q_value, q, temperature)
+        """the sampling temper at a temperature; `Constants.temper_at_one` is this rule
+        at the elected temperature of one"""
+        if temperature <= 0.0:
+            raise ValueError("the temperature is positive")
+        scaled = np.ldexp(1.0 / math.log(2.0) / temperature, TEMPER_Q)
+        return cls(int(round_half_up(scaled)), TEMPER_Q)
 
     @classmethod
-    def from_file(cls, tensors, metadata, *, key):
-        """the temper a contract file carries: the pair from its named tensor and the
-        temperature from the metadata. [key] stays an argument because what a file names
-        its tensors is the ERA'S layout."""
+    def from_file(cls, tensors, *, key):
+        """the temper a contract file carries, from its named tensor. [key] stays an
+        argument because what a file names its tensors is the ERA'S layout."""
         q_value, q = (int(value) for value in tensors[key])
-        return cls(q_value, q, float(metadata.get("temperature", np.nan)))
+        return cls(q_value, q)
 
     def tensor(self):
         """the pair as the contract file carries it, an int32 tensor like every scalar"""
@@ -180,7 +166,7 @@ class Temper(NamedTuple):
 
 
 # log2(e), `Constants.log2e`: the exp2 form of an exponential
-LOG2E = Temper(int(round_half_up(math.ldexp(1.0 / math.log(2.0), LOG2E_Q))), LOG2E_Q, 1.0)
+LOG2E = Temper(int(round_half_up(math.ldexp(1.0 / math.log(2.0), LOG2E_Q))), LOG2E_Q)
 
 
 # the quantized exponential, exp2 of -j/256 in Q15: the one table the samplers of every
@@ -211,41 +197,6 @@ def exp2_q(value):
     return exp2_of_magnitude(-np.asarray(value, np.int64))
 
 
-# the counted write
-
-
-@dataclass
-class Tally:
-    """A running tally of a walk: the activation writes, the writes that rode the clamp,
-    and the hottest write BEFORE it -- which answers the format question directly.
-
-    IT MUTATES, and that is why it is the one record here that is not a `NamedTuple`: a
-    walk makes millions of writes and each updates the same three numbers."""
-
-    seen: int = 0
-    clamped: int = 0
-    peak: int = 0
-
-    @property
-    def clamped_share(self):
-        """the share of the writes that rode the clamp; a walk that wrote nothing rode
-        nothing"""
-        return 0.0 if self.seen == 0 else self.clamped / self.seen
-
-
-def tallied_write(tally, value):
-    """Every activation write goes through here: the clamp is counted and the peak kept.
-    A peak inside the format proves nothing clamped, thus the clip is skipped -- millions
-    of writes make that short circuit the whole of the difference."""
-    high, low = int(value.max()), int(value.min())
-    tally.seen += value.size
-    tally.peak = max(tally.peak, high, -low)
-    if high <= INT16_HIGH and low >= INT16_LOW:
-        return value.astype(np.int32)
-    tally.clamped += int(np.count_nonzero(value > INT16_HIGH))
-    tally.clamped += int(np.count_nonzero(value < INT16_LOW))
-    return np.clip(value, INT16_LOW, INT16_HIGH).astype(np.int32)
-
 
 # the integer draw
 
@@ -267,7 +218,7 @@ def engine_states(seeds):
     return np.array([prng.create(int(seed)) for seed in seeds], dtype=np.uint32)
 
 
-# the contract file: one writer and one reader
+# the contract file: the names and the shapes both sides read
 
 
 # THE ARCHIVE IS THE SEAM, and two facts of the OCaml reader shape it. Each era's module
@@ -276,7 +227,6 @@ def engine_states(seeds):
 # - EVERY TENSOR IS INT32, the int8 image included, because `Nx_io.load_safetensors` SKIPS
 #   every dtype it does not hold: an int8 tensor would arrive as a hole.
 # - EVERY SCALAR TRAVELS AS A NAMED TENSOR, because `Nx_io` cannot reach `__metadata__`.
-#   The metadata is written all the same and nothing in it is required.
 #
 # `Mgen_nn.Contract_file` is the reader below the seam. A name, a dtype or a shape that
 # moves here moves there, and `jax/tests/test_parity.py` fails first.
@@ -311,21 +261,3 @@ def image_from_tensors(tensors, exponents, *, first, count):
         Weight(np.asarray(tensors[str(at)], np.int64), int(exponents[at]))
         for at in range(first, first + count)
     ]
-
-
-def write_contract(path, tensors, metadata):
-    """The archive, written; the metadata values are strings and the caller makes them.
-
-    THE BYTES ARE NOT REPRODUCIBLE. `safetensors` serialises `__metadata__` out of a Rust
-    hash map whose order is randomised per process, thus two runs of one unchanged tree
-    write two different files. Compare a contract file PARSED and never by its md5."""
-    save_file(tensors, str(path), metadata=metadata)
-
-
-def read_contract(path):
-    """The tensors and the metadata of an archive. IT OPENS THE FILE TWICE because
-    `safetensors` parts them, and a file with no metadata reads back as an empty dict."""
-    tensors = load_file(str(path))
-    with safe_open(str(path), framework="numpy") as opened:
-        metadata = opened.metadata() or {}
-    return tensors, metadata

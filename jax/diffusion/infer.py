@@ -194,37 +194,6 @@ def sample(
 
 @main.command()
 @cli.ckpt_option
-@click.option("--crop", default=model.CROP, help="T; the steps of the sheet")
-@click.option("--seed", default=42, help="N, the seed of the walk")
-@click.option("--walk", default=32, help="N, the Gibbs passes to compare")
-@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
-def drift(ckpt, crop, seed, walk, temperature):
-    """What the quantization costs, measured on the walk the board takes: at every pass
-    the float model is teacher-forced on the ENGINE'S sheet and mask, thus what stands
-    between the two is the arithmetic alone."""
-    coconet = model.Coconet.load(ckpt)
-    states, given = model.opening_sheet(q.engine_states([seed]), crop)
-    report = integer.drift(coconet, states, given, walk=walk, temperature=temperature)
-    seen = report.cells
-
-    def share(count):
-        return 100.0 * count / max(1, seen)
-
-    click.echo(f"{report.passes} passes over {crop} steps redrew {seen} cells")
-    click.echo(
-        f"against the float model: top-1 {share(report.same_peak):.1f}% "
-        f"({report.same_peak}/{seen})  cosine {report.mean_cosine:.4f}  "
-        f"same draw {share(report.same_draw):.1f}% ({report.same_draw}/{seen})"
-    )
-    click.echo(
-        f"activations on the clamp: {100.0 * report.activations_clamped:.4f}%  "
-        f"the hottest write: {report.activation_peak:.1f} of the format's "
-        f"{integer.ACTIVATION_CEILING:.1f}"
-    )
-
-
-@main.command()
-@cli.ckpt_option
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
 @click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
 def quantize(ckpt, out, temperature):
@@ -240,7 +209,7 @@ def quantize(ckpt, out, temperature):
     click.echo(f"wrote {out}: {len(layers)} layers, {widths}")
     click.echo(
         f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
-        f"temperature {twin.temper.temperature}"
+        f"temperature {temperature}"
     )
 
 

@@ -142,7 +142,7 @@ def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):
     )
     click.echo(
         f"temper {twin.temper.q_value} at Q{twin.temper.q}, "
-        f"temperature {twin.temper.temperature}, min weight {twin.min_weight}"
+        f"temperature {temperature}, min weight {twin.min_weight}"
     )
 
 

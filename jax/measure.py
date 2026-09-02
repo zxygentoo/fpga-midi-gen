@@ -4,8 +4,8 @@ The common home of the measurement. Everything here is arithmetic over a [sheets
 SEATS] array of class indices and nothing here knows which era drew it -- a Gibbs sheet, a
 walk of the packed stream and a corpus crop all read the same way, and a single walk is a
 stack of one. What a RECIPE measures with a model lives beside that recipe, in
-`ar_measure.py` and `diffusion/measure.py`. The drift count at the end is the one
-instrument that reads logits: what the quantization costs.
+`ar_measure.py` and `diffusion/measure.py`, and what the quantization costs lives with the
+gate that measures it, `tests/test_drift.py`.
 
 A ROW IS A DICT OF INSTRUMENTS AND A LINE IS WHAT PRINTS IT. A function that computes one
 ends in `_row`, a function that renders one in `_line` or `_lines`, and every measure
@@ -20,13 +20,10 @@ docs/diffusion.md.
 """
 
 import itertools
-from typing import NamedTuple
 
 import numpy as np
 
 import corpus
-import prng
-import sample
 
 # what this corpus calls a dissonance, a triad and a clash
 
@@ -293,64 +290,3 @@ def battery_lines(label, row):
         f"{'':<22} " + "   ".join(pairs[:half]),
         f"{'':<22} " + "   ".join(pairs[half:]),
     ]
-
-
-# The drift: the twin's draw against the float model's, on the one uniform the twin took.
-# It is what the quantization costs, and both step-frame twins report it through these.
-
-
-def cosines(twin_logits, float_logits):
-    """the cosine of each integer row against the float row of the same place, over a
-    batch of [rows, classes]"""
-    twin = np.asarray(twin_logits, np.float64)
-    floated = np.asarray(float_logits, np.float64)
-    return (twin * floated).sum(axis=-1) / np.sqrt(
-        (twin * twin).sum(axis=-1) * (floated * floated).sum(axis=-1)
-    )
-
-
-class Counted(NamedTuple):
-    """what a drift report has counted over the draws it has seen"""
-
-    draws: int = 0
-    same_peak: int = 0
-    same_draw: int = 0
-    cosine: float = 0.0
-
-
-def count_draws(
-    counted, twin_logits, float_logits, *, drawn, uniform, temperature, min_p
-):
-    """A BATCH of the twin's rows against the float rows of the same places, on the very
-    uniform the twin drew [drawn] on.
-
-    It is batched because era six redraws a whole sheet where a step-frame chain redraws
-    four seats. The caller states the policy, because the elected numbers are the twin's
-    and not this instrument's."""
-    twin = np.asarray(twin_logits, np.float64)
-    floated = np.asarray(float_logits, np.float64)
-    weights = sample.tempered_weight(floated, temperature, min_p)
-    return Counted(
-        draws=counted.draws + len(twin),
-        same_peak=counted.same_peak
-        + int((twin.argmax(axis=-1) == floated.argmax(axis=-1)).sum()),
-        same_draw=counted.same_draw
-        + int((sample.pick_share(weights, uniform) == drawn).sum()),
-        cosine=counted.cosine + float(cosines(twin, floated).sum()),
-    )
-
-
-def count_chain_draws(counted, floated, chain_draws, *, temperature, min_p):
-    """one step's CHAIN as a batch of four: the step-frame adapter over `count_draws`. A
-    `Draw` holds a walk axis the drift report does not use -- it runs one walk -- thus
-    every row here is that walk's row."""
-    return count_draws(
-        counted,
-        np.stack([draw.logits[0] for draw in chain_draws]),
-        np.stack([floated[draw.seat] for draw in chain_draws]),
-        drawn=np.array([draw.drawn[0] for draw in chain_draws]),
-        uniform=np.array([float(draw.word[0]) for draw in chain_draws])
-        * 2.0**-prng.UNIFORM_BITS,
-        temperature=temperature,
-        min_p=min_p,
-    )
