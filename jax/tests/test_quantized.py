@@ -16,7 +16,6 @@ from safetensors import safe_open
 import ar_quantized
 import quantized
 from tests import models
-from transformer import quantized as step_twin
 
 
 @pytest.mark.parametrize(
@@ -185,7 +184,7 @@ def test_a_saved_file_carries_no_map_beside_its_tensors(tmp_path):
 
     def saved(name):
         path = tmp_path / name
-        step_twin.save(path, twin)
+        twin.save(path)
         return path
 
     first, second = saved("first.int8"), saved("second.int8")

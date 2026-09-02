@@ -15,8 +15,8 @@ four takes its seat. `Pink` holds the model seat until it does.
 
 The design keeps the project rules. The reference of the circuit is exact
 integer arithmetic, and the circuit must match it bit for bit. THAT
-REFERENCE IS ABOVE THE SEAM: `jax/transformer/quantized.py` is the integer
-twin, `bin/gate_transformer.exe` runs the bench and prints what the circuit
+REFERENCE IS ABOVE THE SEAM: `jax/transformer/quantized/infer.py` is the
+twin's walk, `bin/gate_transformer.exe` runs the bench and prints what the circuit
 did, and `jax/tests/test_rtl_transformer.py` states what it must have done.
 Neither side can pass that gate by agreeing with itself. The float model is
 not the reference of the circuit: post-training quantization separates them,
@@ -158,7 +158,8 @@ circuit alone.
 
 ### The operations
 
-Each operation is one definition in `jax/transformer/quantized.py`, and
+Each operation is one definition in `jax/transformer/quantized/infer.py`,
+and
 the circuit computes the same integers. Every product fits one DSP48 — 25
 by 18, signed — and the timing of the machine rests on that rule.
 

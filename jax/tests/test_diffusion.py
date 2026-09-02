@@ -25,8 +25,9 @@ from safetensors.numpy import load_file, save_file
 
 import corpus
 import prng
-from diffusion import infer, model, quantized, sample, train
+from diffusion import infer, model, sample, train
 from diffusion import measure as referee
+from diffusion.quantized import model as qmodel
 from tests import gate
 
 PIECES = corpus.PIECES
@@ -499,7 +500,7 @@ def test_the_twin_carries_the_float_models_skeleton():
     puts `coconet.pairs[k].first` beside `twin.pairs[k].first` and reads one layer against
     its own quantization, with nothing to align by hand."""
     coconet = model.Coconet.drawn(5, 6, 8)
-    twin = quantized.Coconet.from_float(coconet)
+    twin = qmodel.Coconet.from_float(coconet)
     assert len(twin.pairs) == len(coconet.pairs)
     for here, there in zip(twin.layers(), coconet.layers()):
         assert here.kernel.shape == there.conv.kernel.shape
@@ -513,10 +514,10 @@ def test_the_twin_carries_the_float_models_skeleton():
 def test_the_contract_file_round_trips_exactly(tmp_path):
     """`save` then `load` is the identity: the seam carries the whole model and nothing of
     it is re-derived on either side of the file."""
-    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8), 0.9)
+    twin = qmodel.Coconet.from_float(model.Coconet.drawn(5, 6, 8), 0.9)
     path = tmp_path / "round-trip.int8"
-    quantized.save(path, twin)
-    read = quantized.load(path)
+    twin.save(path)
+    read = qmodel.Coconet.load(path)
     assert read.temper == twin.temper
     assert len(read.pairs) == len(twin.pairs)
     for here, there in zip(read.layers(), twin.layers()):
@@ -535,16 +536,16 @@ def rebuilt(twin, **parts):
         "head": twin.head,
         "temper": twin.temper,
     }
-    return quantized.Coconet(**{**held, **parts})
+    return qmodel.Coconet(**{**held, **parts})
 
 
 def test_a_broken_model_refuses_loudly():
     """`check_shape` states the rules its consumers assume. THE SHORT AND THE ODD TRUNK
     ARE NOT AMONG THEM: a [Coconet] is a stem, whole pairs and a head by
     construction. A file of the wrong tensor count meets `load` instead."""
-    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
+    twin = qmodel.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
     head = twin.head
-    chopped = quantized.NormedConv(
+    chopped = qmodel.NormedConv(
         kernel=head.kernel[...],
         e=head.e,
         gain_q_value=head.gain_q_value[...],
@@ -552,22 +553,22 @@ def test_a_broken_model_refuses_loudly():
         bias=head.bias[...][:2],
     )
     with pytest.raises(ValueError, match="do not cover its channels"):
-        quantized.check_shape(rebuilt(twin, head=chopped))
+        rebuilt(twin, head=chopped).check_shape()
     # a head that reads a width the pair before it did not write
-    narrow = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 4))
+    narrow = qmodel.Coconet.from_float(model.Coconet.drawn(5, 6, 4))
     with pytest.raises(ValueError, match="the layer before it"):
-        quantized.check_shape(rebuilt(twin, head=narrow.head))
+        rebuilt(twin, head=narrow.head).check_shape()
 
 
 def test_a_contract_file_of_the_wrong_shape_refuses_loudly(tmp_path):
     """The file is a FLAT list and the tree is not, thus the count is checked where the
     two meet: a file that holds no whole residual pairs is no model of this era."""
-    twin = quantized.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
+    twin = qmodel.Coconet.from_float(model.Coconet.drawn(5, 6, 8))
     path = tmp_path / "short.int8"
-    quantized.save(path, twin)
+    twin.save(path)
     tensors = load_file(str(path))
-    for name in (str(quantized.LAYER_TENSORS * 5 + on) for on in range(5)):
+    for name in (str(qmodel.LAYER_TENSORS * 5 + on) for on in range(5)):
         del tensors[name]
     save_file(tensors, str(path))
     with pytest.raises(ValueError, match="no quantized sheet model"):
-        quantized.load(path)
+        qmodel.Coconet.load(path)

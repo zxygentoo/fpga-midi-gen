@@ -2,9 +2,9 @@
 
 THE ORACLE IS THIS SIDE AND THE CIRCUIT IS THE OTHER. `bin/gate_diffusion.exe` drives the
 Hardcaml circuit in Cyclesim and prints WHAT IT DID; this module states what it must have
-done, from `diffusion/quantized.py` over the same model. Neither side can pass by agreeing
-with itself. The model crosses the seam as a CONTRACT FILE; the GEOMETRY cannot travel in
-one -- T, G and N are the elaboration's -- thus it travels in the flags below.
+done, from `diffusion/quantized/infer.py` over the same model. Neither side can pass by
+agreeing with itself. The model crosses the seam as a CONTRACT FILE; the GEOMETRY cannot
+travel in one -- T, G and N are the elaboration's -- thus it travels in the flags below.
 
 Three gates, and each exists because a whole class of fault does not move a frame:
 
@@ -39,7 +39,9 @@ import pytest
 import corpus
 import midi
 import quantized as q
-from diffusion import model, quantized
+from diffusion import model
+from diffusion.quantized import infer as qinfer
+from diffusion.quantized import model as qmodel
 from tests import gate
 
 DRIVER = gate.driver("gate_diffusion.exe")
@@ -67,9 +69,9 @@ def drive(subcommand, path, *, steps, lanes, walk, seed, rows=model.ROWS):
 
 def contract_file(tmp_path, *, weight_seed, layers, width):
     """the contract file of one drawn model, and the twin that wrote it"""
-    twin = quantized.Coconet.from_float(model.Coconet.drawn(weight_seed, layers, width))
+    twin = qmodel.Coconet.from_float(model.Coconet.drawn(weight_seed, layers, width))
     path = tmp_path / f"l{layers}-h{width}-s{weight_seed}.int8"
-    quantized.save(path, twin)
+    twin.save(path)
     return path, twin
 
 
@@ -86,7 +88,7 @@ def wanted_walk(twin, *, steps, walk, seed):
         ("the opening", "CLASS", step, voice, int(given[0, step, voice]))
         for step, voice in model.cell_order(steps)
     ]
-    for at, taken in enumerate(quantized.passes(twin, states, given, walk=walk)):
+    for at, taken in enumerate(qinfer.passes(twin, states, given, walk=walk)):
         wanted += [
             (
                 f"the mask of pass {at}",
@@ -259,7 +261,7 @@ def wanted_wire(twin, tmp_path, *, steps, walk, seed, channel, velocity, sheets=
     states, given = model.opening_sheet(
         q.engine_states([seed + at for at in range(sheets)]), steps
     )
-    classes = quantized.gibbs(twin, states, given, walk=walk)[0]
+    classes = qinfer.gibbs(twin, states, given, walk=walk)[0]
     return b"".join(
         wire_of(
             corpus.decode(drawn),
@@ -275,7 +277,7 @@ def held_across_the_last_boundary(twin, *, steps, walk, seed):
     """the pitches the drain of sheet `seed` must close that its LAST STEP did not strike
     -- the case a boundary with no drain would carry into the next sheet"""
     states, given = model.opening_sheet(q.engine_states([seed]), steps)
-    music = corpus.decode(quantized.gibbs(twin, states, given, walk=walk)[0][0])
+    music = corpus.decode(qinfer.gibbs(twin, states, given, walk=walk)[0][0])
     ringing = set()
     for events in music:
         for kind, pitch in events:

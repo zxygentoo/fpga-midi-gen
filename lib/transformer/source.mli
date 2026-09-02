@@ -1,7 +1,7 @@
 (** The transformer as a circuit: the note source of era four.
 
     The block computes the integers of the JAX twin, operation for operation.
-    [jax/transformer/quantized.py] is the reference, and the gates of
+    [jax/transformer/quantized/infer.py] is the reference, and the gates of
     [jax/tests/test_rtl_transformer.py] prove the match through
     [bin/gate_transformer.exe]: the frames of the circuit must equal the frames of the
     twin, step for step. Neither side can pass a gate by agreeing with itself.

@@ -219,8 +219,8 @@ end
    and then [chain] to draw the frame after it.
 
    The chain runs from the soprano down and it stands FIRST in the step of the twin —
-   [jax/transformer/quantized.py]'s [next_step] draws and then forwards. The circuit takes
-   the two in the other order for one reason: it answers [step] from a frame it drew
+   [jax/transformer/quantized/infer.py]'s [next_step] draws and then forwards. The circuit
+   takes the two in the other order for one reason: it answers [step] from a frame it drew
    already, thus the forward of the stated frame and the chain of the next one both fall
    inside one step period, and the wire never waits for the network.
 

@@ -1,7 +1,7 @@
 (** The state-space model as a circuit: the note source of era five.
 
     The block computes the integers of the JAX twin, operation for operation.
-    [jax/mamba/quantized.py] is the reference, and the gates of
+    [jax/mamba/quantized/infer.py] is the reference, and the gates of
     [jax/tests/test_rtl_mamba.py] prove the match through [bin/gate_mamba.exe]: the frames
     of the circuit must equal the frames of the twin, step for step, and every write of
     the h RAM must equal the twin's own. Neither side can pass a gate by agreeing with

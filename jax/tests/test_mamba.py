@@ -19,7 +19,9 @@ import ar_model
 import ar_quantized
 import corpus
 import quantized as q
-from mamba import model, quantized, train
+from mamba import model, train
+from mamba.quantized import infer as qinfer
+from mamba.quantized import model as qmodel
 from tests.models import drawn_mamba, plan_of
 
 # Six layers of float32 over a window of 64 steps, reduced in two different orders. A real
@@ -218,7 +220,7 @@ def test_the_half_life_ladder_opens_each_head_on_its_rung():
 
 def quantized_plan(spelt="MZF", ring=8):
     """the twin of a drawn model of that plan, at the small test shape"""
-    return quantized.Mamba.from_float(plan_of(spelt), ring=ring)
+    return qmodel.Mamba.from_float(plan_of(spelt), ring=ring)
 
 
 def test_the_image_is_not_the_checkpoint_order():
@@ -241,7 +243,7 @@ def test_w_in_is_stored_transposed():
     `d` is one; the projection is not. Storing the tensor the other way round puts `d`
     under the outer counter."""
     held = plan_of("M")
-    twin = quantized.Mamba.from_float(held)
+    twin = qmodel.Mamba.from_float(held)
     rows, cols = twin.blocks[0].w_in.values.shape
     assert (rows, cols) == tuple(reversed(held.layers[0].w_in.shape))
     assert cols == twin.d
@@ -255,9 +257,9 @@ def test_the_decay_reads_the_libms_exponential():
     for a_log in (-1.5, 0.0, 0.5, 2.7):
         a = math.exp(a_log)
         want = int(q.round_half_up(math.ldexp(a / math.log(2.0), 12)))
-        assert quantized.decay_scale(a_log) == want
+        assert qmodel.decay_scale(a_log) == want
     # a decay rate the port cannot hold saturates and never wraps
-    assert quantized.decay_scale(20.0) == quantized.DECAY_HIGH
+    assert qmodel.decay_scale(20.0) == qmodel.DECAY_HIGH
 
 
 def test_the_contract_file_round_trips_exactly(tmp_path):
@@ -266,8 +268,8 @@ def test_the_contract_file_round_trips_exactly(tmp_path):
     elaboration walk the image alike."""
     twin = quantized_plan("MZFM")
     path = tmp_path / "tiny.int8"
-    quantized.save(path, twin)
-    read = quantized.load(path)
+    twin.save(path)
+    read = qmodel.Mamba.load(path)
     assert read.plan == twin.plan
     assert (read.span, read.ring) == (twin.span, twin.ring)
     assert (read.temper.q_value, read.temper.q) == (twin.temper.q_value, twin.temper.q)
@@ -285,7 +287,7 @@ def test_era_fours_attention_is_no_layer_of_this_model():
     """A square query is era four's plain attention, which measured null in this trunk
     three times. It is refused where a build fails loudly."""
     with pytest.raises(ValueError, match="square query"):
-        quantized.Mamba.from_float(plan_of("MA"))
+        qmodel.Mamba.from_float(plan_of("MA"))
 
 
 def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():
@@ -293,7 +295,7 @@ def test_a_ring_the_mask_cannot_wrap_refuses_at_the_file():
     INFERENCE and a choice of the player. The circuit wraps it by a mask, thus a depth
     that is not a power of two has no circuit at all."""
     with pytest.raises(ValueError, match="ring"):
-        quantized.check_shape(quantized_plan("MZF", ring=12))
+        quantized_plan("MZF", ring=12).check_shape()
 
 
 def test_the_lead_in_draws_nothing_and_moves_no_generator():
@@ -302,9 +304,9 @@ def test_the_lead_in_draws_nothing_and_moves_no_generator():
     and every step of it would be legal music. IT IS THE TWIN AGAINST ITSELF and no
     circuit is in it, thus it stands here and not in `test_rtl_mamba.py`."""
     twin = quantized_plan("MZF")
-    played, draws = quantized.walk(twin, [1, 7], ar_quantized.LEAD + 2)
+    played, draws = qinfer.walk(twin, [1, 7], ar_quantized.LEAD + 2)
     assert (played[:, : ar_quantized.LEAD] == 0).all(), "the lead-in is not silent"
     assert all(not taken for taken in draws[: ar_quantized.LEAD]), "the lead-in drew"
     # the walks of a batch are independent: seed 7 draws what seed 7 draws alone
-    alone, _ = quantized.walk(twin, [7], ar_quantized.LEAD + 2)
+    alone, _ = qinfer.walk(twin, [7], ar_quantized.LEAD + 2)
     assert np.array_equal(alone[0], played[1])

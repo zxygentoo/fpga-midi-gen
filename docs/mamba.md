@@ -703,7 +703,8 @@ heard era five at a texture era four would have had near T 0.9.
 
 The corpus reads hold 78.17 and onsets 0.81. **Seed 7 at T 1.2 lands on
 both to the second decimal.** The ear elects the policy;
-`jax/mamba/quantized.py`'s `ELECTED_TEMPERATURE` stands at 1.0 until it does,
+`jax/mamba/quantized/model.py`'s `ELECTED_TEMPERATURE` stands at 1.0 until it
+does,
 and a change there is a change of the bitstream.
 
 **The silence-arrival share does not rank models at these sample sizes.**
@@ -844,7 +845,7 @@ the chain, because a chain with a broken link proves nothing.
 
    **STEPS 3 AND 4 WERE CUT 2026-08-29 by the all-era cut.** The OCaml
    float model and the OCaml integer twin both went; the JAX model is the
-   float reference and `jax/mamba/quantized.py` is the twin. The gates of
+   float reference and `jax/mamba/quantized/` is the twin. The gates of
    steps 3 to 5 read the same way from above the seam: `test_parity.py`
    holds the float model to a pinned loss and the JAX quantizer to a
    pinned netlist md5, `test_drift.py` carries the drift sweep with its

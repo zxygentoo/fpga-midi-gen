@@ -8,11 +8,11 @@
     [docs/transformer_rtl.md].
 
     **NO MODEL IS COMPUTED HERE.** The float model is [jax/transformer/model.py] and the
-    integer twin is [jax/transformer/quantized.py]; [jax/tests/test_rtl_transformer.py]
-    states what the circuit must do and [bin/gate_transformer.ml] states what it did. What
-    stays here is what the CIRCUIT reads, and every one of those facts is a rule the RTL
-    must equal rather than restate: the fixed-point formats, the model as data, its ROM
-    image and the bases of that image.
+    integer twin is [jax/transformer/quantized/], its model half and its walk;
+    [jax/tests/test_rtl_transformer.py] states what the circuit must do and
+    [bin/gate_transformer.ml] states what it did. What stays here is what the CIRCUIT
+    reads, and every one of those facts is a rule the RTL must equal rather than restate:
+    the fixed-point formats, the model as data, its ROM image and the bases of that image.
 
     The shape numbers are fields of the model because the ELABORATION reads a file and no
     flag. The width and the layer count are in the tensors; the heads, the context and the
@@ -98,10 +98,11 @@ val layers : t -> int
 val check_shape : t -> unit
 
 (** [of_int8_checkpoint path] is the model of one CONTRACT FILE — the quantized model that
-    [jax/transformer/quantized.py] writes, and the only thing that crosses the seam for a
-    build. The quantization happens above the seam, one time, thus this reader quantizes
-    nothing: it takes the tensors, the exponents, the shape numbers, the temper and the
-    min-p share as they stand, and [check_shape] holds every rule the consumers assume.
+    [jax/transformer/quantized/model.py] writes, and the only thing that crosses the seam
+    for a build. The quantization happens above the seam, one time, thus this reader
+    quantizes nothing: it takes the tensors, the exponents, the shape numbers, the temper
+    and the min-p share as they stand, and [check_shape] holds every rule the consumers
+    assume.
 
     The layout is that module's docstring; the two facts of the archive itself — every
     tensor int32, every scalar a named tensor — stand in [Mgen_nn.Contract_file], which
@@ -146,11 +147,12 @@ module For_test : sig
 
       IT QUANTIZES NOTHING. A quantizer picks an exponent from a tensor's own peak, and
       that is a rule of a CHECKPOINT: it lives above the seam with
-      [jax/transformer/quantized.py], which is the only thing that reads one. This draw
-      states ONE exponent for every tensor and rounds the normal at it, as era six's does,
-      thus the seat and phase tables share an exponent by construction and [check_shape]'s
-      rule about them costs nothing to keep. The temper and the min-p floor are stated the
-      same way, from [Mgen_nn.Quantized.Constants.temper_at_one] and the elected floor.
+      [jax/transformer/quantized/model.py], which is the only thing that reads one. This
+      draw states ONE exponent for every tensor and rounds the normal at it, as era six's
+      does, thus the seat and phase tables share an exponent by construction and
+      [check_shape]'s rule about them costs nothing to keep. The temper and the min-p
+      floor are stated the same way, from [Mgen_nn.Quantized.Constants.temper_at_one] and
+      the elected floor.
 
       The draw and the rule are what every expect test of this library and of the socket
       simulation has recorded, thus neither may move: a moved byte here would move every

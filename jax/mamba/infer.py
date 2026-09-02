@@ -25,7 +25,8 @@ import corpus
 import midi
 import prng
 from mamba import model
-from mamba import quantized as integer
+from mamba.quantized import infer as qinfer
+from mamba.quantized import model as qmodel
 
 
 @nnx.jit
@@ -56,10 +57,10 @@ def draw(
     seed and the twin takes it as the SEED cell does -- and a seed inside 32 bits names
     itself under both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if quantized:
-        twin = integer.Mamba.from_float(
+        twin = qmodel.Mamba.from_float(
             held, ring=ring, temperature=temperature, min_p=min_p
         )
-        return integer.walk(twin, seeds, steps)[0]
+        return qinfer.walk(twin, seeds, steps)[0]
     batch = len(seeds)
     rng = prng.states(seeds)
     carry = held.initial_carry(batch, context=ring)
@@ -115,22 +116,22 @@ def sample(ckpt, seeds, ring, **flags):
 @click.option("--out", required=True, type=click.Path(dir_okay=False))
 @click.option(
     "--ring",
-    default=integer.ELECTED_RING,
+    default=qmodel.ELECTED_RING,
     help="the depth of the attention layer's key and value ring, in steps. It is a "
     "choice of the INFERENCE and no fact of the training run, thus the file carries it.",
 )
-@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=integer.ELECTED_MIN_P)
+@click.option("--temperature", default=qmodel.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=qmodel.ELECTED_MIN_P)
 def quantize(ckpt, out, ring, temperature, min_p):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     Every width and the plan come out of the checkpoint's own shapes; the ring is the one
     number no training run states."""
-    twin = integer.Mamba.from_float(
+    twin = qmodel.Mamba.from_float(
         model.Mamba.load(ckpt), ring=ring, temperature=temperature, min_p=min_p
     )
-    integer.save(out, twin)
-    plan = "".join(integer.LETTERS[kind] for kind in twin.plan)
+    twin.save(out)
+    plan = "".join(qmodel.LETTERS[kind] for kind in twin.plan)
     click.echo(
         f"wrote {out}: d {twin.d}, plan {plan}, {twin.heads} heads, "
         f"span {twin.span}, ring {twin.ring}"

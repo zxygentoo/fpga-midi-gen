@@ -2,9 +2,9 @@
 
 THE ORACLE IS THIS SIDE AND THE CIRCUIT IS THE OTHER. `bin/gate_transformer.exe` drives
 the Hardcaml circuit in Cyclesim and prints WHAT IT DID; this module states what it must
-have done, from `transformer/quantized.py` over the same model. Neither side can pass by
-agreeing with itself. The model crosses the seam as a CONTRACT FILE and every shape number
-of the era travels in it, thus no flag of this module states a shape.
+have done, from `transformer/quantized/infer.py` over the same model. Neither side can
+pass by agreeing with itself. The model crosses the seam as a CONTRACT FILE and every
+shape number of the era travels in it, thus no flag of this module states a shape.
 
 THE COMPARISON IS OVER CLASSES AND NOT OVER FRAME WORDS: the vocabulary and the seat
 packing stay on the OCaml side, and the driver decodes through `Vocab.classes_of_frame`.
@@ -23,7 +23,8 @@ import pytest
 
 from tests import gate
 from tests.models import transformer_twin
-from transformer import quantized
+from transformer.quantized import infer as qinfer
+from transformer.quantized import model as qmodel
 
 DRIVER = gate.driver("gate_transformer.exe")
 
@@ -41,8 +42,8 @@ def contract(tmp_path, **shape):
     """a tiny model, drawn here and quantized here, as the file the driver reads"""
     twin = transformer_twin(**shape)
     path = tmp_path / "tiny.int8"
-    quantized.save(path, twin)
-    return path, quantized.load(path)
+    twin.save(path)
+    return path, qmodel.Transformer.load(path)
 
 
 @pytest.mark.parametrize(
@@ -73,5 +74,5 @@ def test_the_walk_of_the_circuit_is_the_walk_of_the_twin(
     steps = 20
     path, twin = contract(tmp_path, seed=5, d=d, layers=layers, heads=heads)
     circuit = drive(path, seed=seed, steps=steps)
-    played, _ = quantized.walk(twin, [seed], steps)
+    played, _ = qinfer.walk(twin, [seed], steps)
     gate.assert_one_walk(circuit, played[0])

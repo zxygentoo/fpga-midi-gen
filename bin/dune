@@ -70,7 +70,7 @@
  (libraries core core_unix hardcaml jane_rope mgen_nn mgen_diffusion))
 
 ; The driver of the RTL gates of era six: it runs the circuit in Cyclesim and states what
-; the circuit did. The ORACLE is jax/diffusion/quantized.py and the gate is
+; the circuit did. The ORACLE is jax/diffusion/quantized/infer.py and the gate is
 ; jax/tests/test_rtl_diffusion.py, thus nothing here states what the circuit should have done.
 ;
 ; IT IS THE ONE GATE DRIVER THAT NAMES A BOARD LIBRARY, and the succession gate is why:
@@ -94,7 +94,7 @@
   mgen_diffusion))
 
 ; The driver of the RTL gates of era four: it runs the circuit in Cyclesim and states
-; what the circuit did. The ORACLE is jax/transformer/quantized.py and the gate is
+; what the circuit did. The ORACLE is jax/transformer/quantized/infer.py and the gate is
 ; jax/tests/test_rtl_transformer.py, thus nothing here states what the circuit should have
 ; done. The era's netlist is `gen_verilog transformer`, and test_parity.py pins its md5.
 
@@ -112,7 +112,7 @@
   mgen_transformer))
 
 ; The driver of the RTL gates of era five: it runs the circuit in Cyclesim and states
-; what the circuit did. The ORACLE is jax/mamba/quantized.py and the gate is
+; what the circuit did. The ORACLE is jax/mamba/quantized/infer.py and the gate is
 ; jax/tests/test_rtl_mamba.py, thus nothing here states what the circuit should have done.
 ; The era's netlist is `gen_verilog mamba`, and test_parity.py pins its md5.
 

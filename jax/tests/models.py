@@ -10,7 +10,7 @@ Each name says its era, because a bare `drawn` here would say neither.
 from mamba import model as recurrence
 from mamba import train as recurrence_train
 from transformer import model as step
-from transformer import quantized as step_twin
+from transformer.quantized import model as qmodel
 
 
 def drawn_transformer(seed=5, d=8, layers=2, heads=2):
@@ -20,7 +20,7 @@ def drawn_transformer(seed=5, d=8, layers=2, heads=2):
 
 def transformer_twin(seed=5, d=8, layers=2, heads=2, context=16):
     """the twin of a drawn model of era four's shape"""
-    return step_twin.Transformer.from_float(
+    return qmodel.Transformer.from_float(
         drawn_transformer(seed, d, layers, heads), context=context
     )
 

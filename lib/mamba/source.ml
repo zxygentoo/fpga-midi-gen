@@ -296,10 +296,10 @@ end
    and then [chain] to draw the frame after it.
 
    The chain runs from the soprano down and it stands FIRST in the step of the twin —
-   [jax/mamba/quantized.py]'s [next_step] draws and then forwards. The circuit takes the
-   two in the other order for one reason: it answers [step] from a frame it drew already,
-   thus the forward of the stated frame and the chain of the next one both fall inside one
-   step period, and the wire never waits for the network.
+   [jax/mamba/quantized/infer.py]'s [next_step] draws and then forwards. The circuit takes
+   the two in the other order for one reason: it answers [step] from a frame it drew
+   already, thus the forward of the stated frame and the chain of the next one both fall
+   inside one step period, and the wire never waits for the network.
 
    **[chain] is ONE seat and the machine runs it [Frame.voices] times**, counting the seat
    register down from the soprano. Era four measured what inlining the four seats costs —

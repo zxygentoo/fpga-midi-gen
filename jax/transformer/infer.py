@@ -24,7 +24,8 @@ import corpus
 import midi
 import prng
 from transformer import model
-from transformer import quantized as integer
+from transformer.quantized import infer as qinfer
+from transformer.quantized import model as qmodel
 
 
 @nnx.jit
@@ -49,10 +50,10 @@ def draw(held, *, seeds, steps, context, temperature, min_p, quantized=False):
     seed and the twin takes it as the SEED cell does -- and a seed inside 32 bits names
     itself under both. SEED 0 IS THE EXCEPTION, where the twin stands still."""
     if quantized:
-        twin = integer.Transformer.from_float(
+        twin = qmodel.Transformer.from_float(
             held, context=context, temperature=temperature, min_p=min_p
         )
-        return integer.walk(twin, seeds, steps)[0]
+        return qinfer.walk(twin, seeds, steps)[0]
     batch = len(seeds)
     state = prng.states(seeds)
     lead = corpus.BAR_STEPS
@@ -121,21 +122,21 @@ def sample(ckpt, seeds, context, heads, alibi_span, **flags):
 @click.option(
     "--alibi-span", default=ar_model.SLOPE_SPAN, help="must match the training run"
 )
-@click.option("--temperature", default=integer.ELECTED_TEMPERATURE)
-@click.option("--min-p", default=integer.ELECTED_MIN_P)
+@click.option("--temperature", default=qmodel.ELECTED_TEMPERATURE)
+@click.option("--min-p", default=qmodel.ELECTED_MIN_P)
 def quantize(ckpt, out, heads, context, alibi_span, temperature, min_p):
     """Write the contract file of one checkpoint: the quantized model, and nothing else.
 
     It is the only thing that crosses the seam for a build. The heads, the context and
     the span are NOT in the checkpoint, thus they are flags here and named tensors in
     the file. The temperature and the floor bake into the temper and the min-p share."""
-    twin = integer.Transformer.from_float(
+    twin = qmodel.Transformer.from_float(
         model.Transformer.load(ckpt, heads=heads, span=alibi_span),
         context=context,
         temperature=temperature,
         min_p=min_p,
     )
-    integer.save(out, twin)
+    twin.save(out)
     click.echo(
         f"wrote {out}: d {twin.d}, {len(twin.layers)} layers, {twin.heads} heads, "
         f"context {twin.context}, span {twin.slope_span}"

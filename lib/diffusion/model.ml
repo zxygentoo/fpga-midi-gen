@@ -111,9 +111,9 @@ let check_shape { layers; temper = (_ : Nn_quantized.Constants.scale) } =
     then invalid_argf "the constants of layer %d do not cover its channels" at ())
 ;;
 
-(* THE CONTRACT FILE, READ. [jax/diffusion/quantized.py] writes it and its docstring holds
-   the layout; [Mgen_nn.Contract_file] holds the two facts of the archive itself, the
-   int32 kernel included. *)
+(* THE CONTRACT FILE, READ. [jax/diffusion/quantized/model.py] writes it and its docstring
+   holds the layout; [Mgen_nn.Contract_file] holds the two facts of the archive itself,
+   the int32 kernel included. *)
 let of_int8_checkpoint path =
   let file = Contract_file.open_ path in
   let values = Contract_file.values file in
