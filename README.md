@@ -61,6 +61,16 @@ make build    # build stuff
 make test     # run tests
 ```
 
+### (Optional) Only if you want to test it on a board
+
+The project is developed and tested with:
+
+- [Vivado](https://www.amd.com/en/products/software/adaptive-socs-and-fpgas/vivado.html): Building the bitstream and programming the board.
+- [Nexys 4](https://digilent.com/reference/_media/reference/programmable-logic/nexys-4/nexys4_rm.pdf): An FPGA dev board from Digilent. The free edition of Vivado covers it, so no licence is needed. This is **NOT** the later Nexys 4 DDR version with DDR RAM.
+- [Roland S-1](https://www.roland.com/us/products/s-1/): A mighty little synth from Roland.
+- Nexys 4 Pmod JD connects to the S-1 MIDI IN as the pin map states, through an improvised adaptor: two 33 Ω resistors and a standard audio cable and connector.
+- Neither the board nor the synth is a requirement of the project; they just happen to be the gear I own. Any MIDI player, hardware or software, and any board with comparable resources should do, though the code would need adapting.
+
 ## JAX
 
 ### Play pretrained weights on the host
@@ -100,7 +110,19 @@ This exports `corpus/JSB-Chorales-dataset` into `jax/_data` (git ignored) in the
 
 #### Run trainer
 
-TBA
+```sh
+uv run python -m transformer.train --steps 200 --ckpt _train/probe.ckpt
+uv run python -m mamba.train --steps 200 --ckpt _train/probe.ckpt
+uv run python -m diffusion.train --steps 200 --ckpt _train/probe.ckpt
+```
+
+- without `--ckpt` nothing is saved and the run only prints its losses
+- what is written is the best checkpoint by validation loss, not the last one
+- `_train/` is git ignored: it holds the runs, where `weights/` holds the product
+- pipe a run to a log beside its checkpoint, `... | tee _train/NAME.log`, and watch it live
+- `--help` lists the shape flags of each model: `--d`, `--layers`, `--plan`, `--crop` etc.
+- drop your own checkpoint at `weights/<model>.ckpt` and the board build picks it up
+- the recipe behind each shipped checkpoint is in `weights/README.md`, and why it won is in `docs/<model>.md`
 
 ## Hardcaml
 
@@ -115,57 +137,95 @@ TBA
 
 ### Generate verilog
 
-TBA
+```sh
+make verilog-pink
+make verilog-transformer
+make verilog-mamba
+make verilog-diffusion
+```
 
-### Nexys-4
+Verilog is generated to `board/_generated/top.v`, so a later command overwrites the earlier version.
 
-TBA
+- each model but pink is quantized to `weights/<model>.int8` first, which the elaboration reads
+- this needs no Vivado; only the bitstream and the board do
+
+### Nexys 4
+
+Program the board (transformer as the example). This is the fast path, and it does not survive a power cycle:
+
+```sh
+make bitstream-transformer
+make program
+```
+
+Flash the board so it boots from the onboard QSPI flash memory:
+
+```sh
+make bitstream-transformer
+make flash
+```
+
+- `make bitstream-<model>` pulls the Verilog and the quantized weights behind it, so there is nothing to run first
 
 ### Host tool
 
-TBA
+`board_tool` reads and writes the control registers over the console UART, at `/dev/ttyUSB1`:
+
+```sh
+dune exec bin/board_tool.exe -- dump          # every cell, each register named
+dune exec bin/board_tool.exe -- read 0x00 4   # the seed cell
+dune exec bin/board_tool.exe -- write 0x08 1  # RUN: start the music
+```
+
+- the registers are `seed`, `velocity`, `step_ms`, `channel` and `run`
+- `-device PATH` for another port
+- the board needs no host at all: the center button toggles RUN, and the slide switches set the seed
+- there is no runtime version, so the driver and the bitstream must come from the same commit
+
+[doc](docs/host_control.md)
 
 ## Layout
 
 ```
-lib/         the OCaml libraries, software and RTL together
-  core/        the host control constants, MIDI, the frame, the PRNG, Cyclesim
-  board/       the UART, COBS, the control port, the sequencer, the socket
-  corpus/      the chorales (Jsb) and the vocabulary (Vocab)
-  nn/          common part for sources
-  pink/        pink noise source
-  transformer/ transformer source
-  mamba/       mamba source
-  diffusion/   diffusion source
-bin/         the executables: the drivers, the gate drivers, the elaborators
-board/       the top level, the pin map and the Vivado scripts of each board
-jax/         the Python side: see below
-corpus/      the chorale corpus
-weights/     the elected checkpoints for transformer, mamba and diffusion model
-docs/        the design documents
-test/        the OCaml integration tests: the socket simulations
+fpga-midi-gen/
+├── docs/             the design documents
+├── jax/              the Python side: see below
+├── lib/              the OCaml libraries, software and RTL together
+│   ├── core/         the host control constants, MIDI, the frame, the PRNG, Cyclesim
+│   ├── board/        the UART, COBS, the control port, the sequencer, the socket
+│   ├── nn/           common part for sources
+│   ├── pink/         pink noise source
+│   ├── transformer/  transformer source
+│   ├── mamba/        mamba source
+│   ├── diffusion/    diffusion source
+│   └── corpus/       the chorales (Jsb) and the vocabulary (Vocab)
+├── bin/              the executables: the drivers, the gate drivers, the elaborators
+├── board/            the top level, the pin map and the Vivado scripts of each board
+├── corpus/           the chorale corpus
+├── weights/          the elected checkpoints for transformer, mamba and diffusion model
+└── test/             the OCaml integration tests: the socket simulations
 ```
 
 ```
 jax/
-  corpus.py       the chorales and the vocabulary, as lib/corpus holds them
-  prng.py         xorshift32, the batched twin of lib/core/prng.ml
-  midi.py         the wire side: to the synth, to a .mid, or to the terminal
-  sample.py       the float draw; quantized.pick is its integer twin
-  measure.py      the instruments every era is judged on
-  train.py        the rate curve, the update rule, the checkpoint -- not a loop
-  quantized.py    the integer rules every twin follows, and the contract file
-  cli.py          the click options more than one command states
-  ar_*.py         eras four and five only: their model, twin, trainer, measure
-  transformer/    one directory for each era, mamba/ and diffusion/ beside it
-    model.py      the float model
-    train.py      the trainer
-    infer.py      sample on the host, quantize to a contract file
-    quantized/    the integer twin, which the circuit mirrors bit for bit
-      model.py    the weights, the formats and the contract file
-      infer.py    the walk the board runs
-  tests/          the oracle gates
-  _data/          the packed corpus, git ignored: make corpus writes it
+├── transformer/      one directory for each era, mamba/ and diffusion/ beside it
+│   ├── model.py      the float model
+│   ├── train.py      the trainer
+│   ├── infer.py      sample on the host, quantize to a contract file
+│   └── quantized/    the integer twin, which the circuit mirrors bit for bit
+│       ├── model.py  the weights, the formats and the contract file
+│       └── infer.py  the walk the board runs
+├── train.py          the rate curve, the update rule, the checkpoint -- not a loop
+├── sample.py         the float draw; quantized.pick is its integer twin
+├── measure.py        the instruments every era is judged on
+├── quantized.py      the integer rules every twin follows, and the contract file
+├── ar_*.py           eras four and five only: their model, twin, trainer, measure
+├── cli.py            the click options more than one command states
+├── prng.py           xorshift32, the batched twin of lib/core/prng.ml
+├── midi.py           the wire side: to the synth, to a .mid, or to the terminal
+├── corpus.py         the chorales and the vocabulary, as lib/corpus holds them
+├── tests/            the oracle gates
+└── _data/            the packed corpus, git ignored: make corpus writes it
 ```
 
 ## The board
