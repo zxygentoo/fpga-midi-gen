@@ -22,14 +22,16 @@ G ?= 5
 # THE PATTERN TARGETS ARE NOT HERE, and that is not an oversight: make does not look for
 # a pattern rule to build a target it has been told is phony, thus `verilog-%` would
 # answer "nothing to be done" and write nothing.
-.PHONY: help gates test fmt lint build clean require-vivado program flash verilog-pink
+.PHONY: help gates test fmt lint build corpus clean require-vivado program flash \
+        verilog-pink
 
 help:
-	@echo 'make gates              the pre-commit gates: fmt, build, ruff, pytest'
+	@echo 'make gates              the pre-commit gates: fmt, build, ruff, both suites'
 	@echo 'make test               dune runtest, then the Python suite'
 	@echo 'make fmt                format the OCaml side'
 	@echo 'make lint               ruff over the Python side'
-	@echo 'make build              dune build'
+	@echo 'make build              dune build, then everything a clone can derive'
+	@echo 'make corpus             the JAX seam: the frames and the pieces of jax/_data'
 	@echo
 	@echo 'make verilog-ERA        the board top level over one era, into board/_generated'
 	@echo 'make bitstream-ERA      that netlist through Vivado, into board/_build'
@@ -43,14 +45,18 @@ help:
 
 # ---- the gates ------------------------------------------------------------
 
-# AGENT.md states these four and this is where they live. `dune build @fmt` REPORTS a
+# AGENT.md states these and this is where they live. `dune build @fmt` REPORTS a
 # difference where `dune fmt` would write one, thus a tree that needs formatting fails
 # here instead of being formatted behind the author.
+#
+# THE GATES RUN `test` AND DO NOT RESTATE IT. Both suites gate a commit -- the OCaml side
+# holds the unit gates, the cycle benches and the waveforms, and the Python side holds the
+# oracle gates -- and one target that names them is one place they can move.
 gates:
 	dune build @fmt
 	dune build
 	uv run ruff check
-	uv run pytest
+	$(MAKE) --no-print-directory test
 
 test:
 	dune runtest
@@ -62,8 +68,36 @@ fmt:
 lint:
 	uv run ruff check
 
+# WHAT A CLONE CAN DERIVE, and this is where a clone starts: the OCaml, the corpus of the
+# JAX seam, and the contract file of every era that has weights. `make build && make
+# gates` then says whether the tree stands in a good place, and no gate is skipped for a
+# file that was never written.
 build:
 	dune build
+	$(MAKE) --no-print-directory corpus $(CONTRACTS)
+
+# ---- the corpus -----------------------------------------------------------
+
+# The two files of the JAX seam, from the chorales in corpus/. Git ignores jax/_data/,
+# thus a clone writes them one time, before a trainer runs or era six auditions.
+#
+# EACH SUBCOMMAND IS NAMED BY THE FILE IT WRITES, and the two files are two corpora and
+# not two views of one: a stream has no pieces and a sheet holds nothing else.
+#
+# THE PACKING RULES ARE PREREQUISITES AND NOT THE CHORALES ALONE, for the reason the
+# contract file states below: the seam carries data and never rules, thus a moved shift
+# policy, rotation or grid makes a kept file wrong and NOTHING ON THE JAX SIDE COULD SAY
+# SO -- it reads arrays, and it never reads what packed them.
+CHORALES := corpus/JSB-Chorales-dataset/Jsb16thSeparated.json
+PACKERS := bin/corpus_tool.ml lib/corpus/jsb.ml
+
+corpus: jax/_data/frames.safetensors jax/_data/pieces.safetensors
+
+jax/_data/frames.safetensors: $(CHORALES) $(PACKERS)
+	dune exec bin/corpus_tool.exe -- frames
+
+jax/_data/pieces.safetensors: $(CHORALES) $(PACKERS)
+	dune exec bin/corpus_tool.exe -- pieces
 
 # ---- the weights ----------------------------------------------------------
 
@@ -85,6 +119,11 @@ QUANTIZERS := $(wildcard jax/*.py) \
 
 weights/%.int8: weights/%.ckpt $(QUANTIZERS)
 	uv run python -m $*.infer quantize --ckpt $< --out $@
+
+# every contract file a clone can write, which `make build` does. THE COMMITTED
+# CHECKPOINTS STATE WHICH ERAS HAVE ONE and nothing here lists them: era one is a value of
+# `lib/pink`, it owns no `.ckpt`, and it drops out by itself.
+CONTRACTS := $(patsubst %.ckpt,%.int8,$(wildcard weights/*.ckpt))
 
 # ---- the netlist ----------------------------------------------------------
 
@@ -126,9 +165,13 @@ flash: require-vivado
 
 # ---- clean ----------------------------------------------------------------
 
-# EVERYTHING DERIVED GOES, the contract files with it: they are what the quantizer said
-# at one moment, and a half-clean tree that keeps them is how a stale one survives.
+# EVERYTHING DERIVED GOES, the contract files and the corpus with them: each is what one
+# program said at one moment, and a half-clean tree that keeps them is how a stale one
+# survives. `make corpus` writes jax/_data again in seconds.
+#
+# _train/ STAYS. It is git-ignored as these are, but it is not derived: a checkpoint costs
+# hours and no rule here could write it again.
 clean:
 	dune clean
-	rm -rf board/_generated board/_build
+	rm -rf board/_generated board/_build jax/_data
 	rm -f weights/*.int8
