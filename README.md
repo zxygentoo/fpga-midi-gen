@@ -132,17 +132,40 @@ lib/         the OCaml libraries, software and RTL together
   core/        the host control constants, MIDI, the frame, the PRNG, Cyclesim
   board/       the UART, COBS, the control port, the sequencer, the socket
   corpus/      the chorales (Jsb) and the vocabulary (Vocab)
-  nn/          what is one thing across the eras: the units, the fixed-point
-               rules, the placement, the sampler, the program compiler
-  pink/ transformer/ mamba/ diffusion/    one directory for each era
+  nn/          common part for sources
+  pink/        pink noise source
+  transformer/ transformer source
+  mamba/       mamba source
+  diffusion/   diffusion source
 bin/         the executables: the drivers, the gate drivers, the elaborators
 board/       the top level, the pin map and the Vivado scripts of each board
-jax/         the Python side: the trainers, the float models, the integer
-             twins, and the oracle gates in jax/tests
+jax/         the Python side: see below
 corpus/      the chorale corpus
-weights/     the elected checkpoint of each era, committed
+weights/     the elected checkpoints for transformer, mamba and diffusion model
 docs/        the design documents
-test/        the integration tests: the socket simulations
+test/        the OCaml integration tests: the socket simulations
+```
+
+```
+jax/
+  corpus.py       the chorales and the vocabulary, as lib/corpus holds them
+  prng.py         xorshift32, the batched twin of lib/core/prng.ml
+  midi.py         the wire side: to the synth, to a .mid, or to the terminal
+  sample.py       the float draw; quantized.pick is its integer twin
+  measure.py      the instruments every era is judged on
+  train.py        the rate curve, the update rule, the checkpoint -- not a loop
+  quantized.py    the integer rules every twin follows, and the contract file
+  cli.py          the click options more than one command states
+  ar_*.py         eras four and five only: their model, twin, trainer, measure
+  transformer/    one directory for each era, mamba/ and diffusion/ beside it
+    model.py      the float model
+    train.py      the trainer
+    infer.py      sample on the host, quantize to a contract file
+    quantized/    the integer twin, which the circuit mirrors bit for bit
+      model.py    the weights, the formats and the contract file
+      infer.py    the walk the board runs
+  tests/          the oracle gates
+  _data/          the packed corpus, git ignored: make corpus writes it
 ```
 
 ## The board
