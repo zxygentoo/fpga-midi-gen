@@ -1234,3 +1234,159 @@ Sources: `lib/transformer/source.ml` 1416 to 1281 and
 `lib/mamba/source.ml` 2036 to 1920; the two gate drivers 87 to 46 and 116
 to 76; the three socket tests about twenty lines each. The four new homes
 are 662 lines, of which 271 are interface documentation.
+
+## 2026-09-02 — the generator and the scheduler (feat/diffusion-scheduler)
+
+**THE SOURCE OF ERA SIX IS TWO UNITS, and the second sheet is what the
+round bought.** Phase I drew one sheet from one seed and then stopped;
+the board played it and stood. What was `source.ml` is now
+`generator.ml` under a narrowed contract — `start` and a CYCLIC transfer
+face, no rewind and no silence past T − 1 — and `scheduler.ml` takes the
+succession: it latches the SEED view, drives the generator, copies each
+finished sheet into a frame store and answers the socket from the copy
+while the generator draws the next one. A new `source.ml` wires the two
+at the elected gap, thus `gen_verilog`, the transaction test and the
+socket simulation all read `Source.create ~e` and none of them names a
+unit under it.
+
+**THE PING-PONG IS TWO MEMORIES THAT ALREADY EXIST.** Gibbs rewrites the
+sheet in place, thus the generator's own sheet registers hold the draw
+and the frame store holds what plays. The store carries FRAMES and not
+classes, because the transfer face decodes: the scheduler names no
+vocabulary and no class width.
+
+**A BLOCK RAM HAS NO ASYNCHRONOUS PORT, AND A REGISTER IN FRONT OF THE
+ADDRESS IS NOT A READ PORT.** The store's first shape put the register on
+the address and left the memory's own read combinational; Vivado answered
+`Infeasible attribute ram_style = "block"` and mapped the whole 128 by 32
+store into LUTRAM — 22 RAM64M, 88 LUTs — and the tile count did not move.
+The register belongs BEHIND the memory, where it is the primitive's own
+output register and the enable is the read strobe. The answer is one
+cycle behind the strobe either way, thus nothing above the port moved.
+The warning is the instrument: this demotion is not silent, and the
+synthesis log states `Synth 8-6849` whenever a store meant to be a tile
+is not one.
+
+**THE COST, MEASURED AT SYNTHESIS ON ONE VIVADO AND ONE PART**: 25,908 to
+26,094 slice LUTs, 27,857 to 27,939 registers, 108.5 to 109.0 block RAM
+tiles — the frame store's RAMB18 — and 240 DSPs unmoved. Half a tile and
+186 LUTs, which is what the chapter estimated. The netlist went from
+`ca16397a` to `c574f5b2` and the twin did not move at all: the walk and
+stream gates read their old expectations.
+
+**THE BUILD, FIRST ROLL, `Explore` as `build.tcl` stands**: +0.036 /
++0.016 against the golden +0.070 / +0.021, no `Physopt 32-703` family,
+one `BUFGCTRL`, 109.0 tiles and 240 DSPs. The worst path is nine levels
+at 73 percent route, from a broadcast replica into a store register —
+the engine's own congestion edge, which "The broadcast round" already
+named, and not the new unit.
+
+**THE BOARD RUNG IS EXACT.** Programmed volatile at the panel seed 49920,
+RUN cycled over the console UART, `amidi -r` on the S-1's thru, RUN
+dropped 83 s in, inside the second gap: **1,500 bytes and 500 messages
+EACH, byte for byte in order**. The stopwatch reads the design back — the
+first note at 22.29 s against phase I's 22.32, a silence of 6.40 s after
+the first drain, which is `gap * STEP_MS` to the hundredth, and the
+second sheet at 54.32 s, which is 32.03 s after the first: `(T + gap) *
+STEP_MS` with no stretch at all. The lookahead draw ends nine seconds
+before the boundary asks for it.
+
+**THE REFERENCE IS ONE COMMAND FOR EACH SHEET, and that is not a taste.**
+`midi.play` opens the device with `"wb"`, thus a batch of sheets on one
+`--device FILE` leaves only the LAST sheet in the file. Append mode is not
+the answer either: `open("/dev/snd/midiC2D0", "ab")` is refused with
+`EINVAL`, thus the flag that would fix a file breaks the wire. Draw each
+sheet into its own file and concatenate; the concatenation IS the wire,
+because the gap writes no byte.
+
+**THE FADE IS CUT FROM BOTH SIDES.** Velocity is a fact of the onset and
+the sequencer's alone. Every honest wiring of a fade into the circuit
+either split one rule across the socket — the share table in the
+scheduler, the multiply in the sequencer — or grew the seam by a velocity
+byte and forced `jax/midi.py` onto an integer rule so the byte gate could
+stay exact: a re-baseline of every era's audition, for one gesture. The
+gap alone parts the sheets, at the two bars the ear elected.
+
+**THE SUCCESSION GATE IS INSTRUMENT 5.** The walk and stream gates hold
+ONE sheet, and phase II's whole subject is the second: which seed it comes
+from, what sounds between the two, and that the drain closes the first one
+whole. `gate_diffusion succession` mounts `Socket.For_test` around the
+era's own `Source` — thus it holds the face the board carries and not a
+wiring the test chose — and prints every message the line carried; the
+Python side assembles the same bytes from two twin draws at S and S + 1,
+through `corpus.decode` and `midi.play`'s own rule. STEP_MS is DERIVED and
+never chosen there: long enough that a whole lookahead walk fits T + gap
+steps and that a dense step's messages fit one step, and a shape whose
+walk cannot fit is refused instead of silently compressed.
+
+**THE FLASH HOLDS `c574f5b2` SINCE 2026-09-02.** The captured bitstream
+went into the QSPI after the branch merged — erased, programmed, verified,
+booted — and the cell dump answers over the console UART behind the boot.
+The capture from the flashed board, at the panel seed 49152 the switches
+stood at, reads **1,416 bytes and 472 messages, byte for byte in order**
+against the twin's own two sheets. `ca16397a` held the flash from
+2026-08-29 until then.
+
+## 2026-09-02 — the twin package (feat/metadata-cut, feat/twin-package)
+
+**A CONTRACT FILE IS BYTE-REPRODUCIBLE NOW, and that is what let the round
+after it move freely.** The file carried a `__metadata__` map beside its
+tensors, and `safetensors` serialises that map out of a Rust hash map
+whose order is randomised PER PROCESS: two writes of one unchanged tree
+gave two md5s and no diff could say what moved. Every key in it either
+duplicated a tensor already in the file or a shape the reader derives, and
+the one reader of any of it took the float `temperature` — provenance, not
+arithmetic. So the map goes, `Temper` is the pair alone, and
+`write_contract` / `read_contract` have nothing left to hold: each era
+calls `save_file` and `load_file` bare, as the float side does. The three
+files then pinned the layout round below: `77256cd1` (four), `672078f5`
+(five) and `e2267fb0` (six), rebuilt from the same command at every step
+and byte-identical each time.
+
+**WHAT ONLY A TEST READS NOW LIVES WITH THE TEST.** The drift report gates
+nothing a build depends on — it is a measurement the reader judges — thus
+no twin module carries a drift any more: the three walks, the instrument
+out of `measure.py` and its two hand-number pins all stand in
+`tests/test_drift.py`, each walker named for its era's feedback axis
+(`sheet_drift`, `ring_drift`, `state_drift`). `mamba.streams` moved into
+`test_rtl_mamba.py`, its one reader. The tally went with the command that
+printed it: `Tally` and `tallied_write` counted every activation write of
+era six for two columns no RTL gate read, and every write now calls
+`q.clamp16`. At Q6 no trial ever rode a clamp, thus the release rule of
+the floor gate had nothing left to release. The one measurement the
+chapter carried that no gate made became a slow gate: the ELECTED
+checkpoint at seed 42, T 128, 32 passes reads 6,148 top-1 and 6,013 same
+draw of 6,326 cells at cosine 0.99983 — 97.2, 95.1 and 0.9998, the golden
+row of the climb table of 2026-08-26, to the digit.
+
+**EACH ERA'S TWIN IS A PACKAGE, in two halves that mirror the float side
+by position.** `<era>/quantized/model.py` holds the twin — the layers with
+their int8 weights, the formats, `from_float` and the contract file, with
+`check_shape`, `save` and `load` as METHODS beside `from_float`, as the
+float model has them — and `<era>/quantized/infer.py` holds the walk the
+board runs, in the functional style. THE CUT RUNS ONE WAY: `infer` reads
+`qmodel` and `qmodel` never reads the walk. A format constant stands in
+the half that reads it. The eras are namespace packages, thus no
+`__init__.py`, and a bare `import quantized` still reaches the shared
+module. Every consumer reads the halves as `qmodel` and `qinfer` beside
+`q`; inside a twin's `model.py` the float model takes the era's own alias
+— `step`, `recurrence`, `sheet` — because a file named `model.py` that
+reads `model.Trunk` misleads. Every pointer of `lib/`, `bin/`, `docs/` and
+`jax/` names a half now — a format pointer `model.py`, a walk pointer
+`infer.py` — and `lib/` moved in comments alone.
+
+**NOT ONE NUMBER MOVED IN EITHER ROUND.** Every netlist md5 of
+`test_parity.py` held, the three contract files stayed byte-identical, and
+every walk, stream, succession and drift pin read what it read.
+
+**THE ONE FAULT, AND THE GATE THAT NOW HOLDS IT.** A click option's
+default is evaluated at IMPORT TIME, thus a module whose defaults name a
+moved constant dies before any command runs — and a module nothing
+imports dies unseen. `mamba/measure.py` is the one CLI module with no
+function a test calls, and its two commands were dead from the package
+split until the review read them. It had broken the same way once before.
+Ruff cannot see that fault: an attribute on a module that exists is not an
+undefined name, and importing a namespace package is valid. The gate is
+the cheapest thing that catches it — import each of the eight modules that
+carry a click group, ask the group for `--help`, and read the exit code.
+It runs no model, needs no checkpoint and takes 1.5 s.
