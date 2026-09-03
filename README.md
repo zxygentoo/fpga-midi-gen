@@ -1,28 +1,28 @@
 # fpga-midi-gen
 
-Make a few models (transformer, mamba, diffusion) learn to generate Bach chorales, then make circuit versions of them to play on FPGA.
+Make a few models (transformer, mamba, diffusion) learn to generate Bach chorales, then make circuit versions of them to play on an FPGA.
 
-- For software side, we use [JAX](https://docs.jax.dev/en/latest/)
-- For RTL implementation, we use [Hardcaml](https://hardcaml.org/)
+- For the software side, we use [JAX](https://docs.jax.dev/en/latest/)
+- For the RTL implementation, we use [Hardcaml](https://hardcaml.org/)
 
-Their are three implementations for each model:
+There are three implementations of each model:
 1. A JAX float one: your normal machine learning stuff
-2. A JAX quantized (int8) one: a weight that's easy to integrate in circuit
-3. A RTL one: FPGA implemention of the inference engine
+2. A JAX quantized (int8) one: weights that are easy to integrate into a circuit
+3. An RTL one: the FPGA implementation of the inference engine
 
-- 1 and 2 is close in behavior, measured by drift gates
-- 2 and 3 is identical in behavior
-- identical prng (xorshift32) implemention for both JAX and Hardcaml
-- giving the same seed, 2 and 3 produces the exact same music
+- 1 and 2 are close in behavior, measured by drift gates
+- 2 and 3 are identical in behavior
+- identical PRNG (xorshift32) implementation for both JAX and Hardcaml
+- given the same seed, 2 and 3 produce the exact same music
 
-Weights are trained on the host and integrated to the RTL side.
+Weights are trained on the host and integrated into the RTL side.
 
 ## Why are you doing this?
 
 For fun and learning.
 
-- a microcontroller is probably better for this kind fo task than FPGA in almost every way, at least for the auto-regressive variants (transformer/mamba)
-- but playing with hardware is really fun and good learning experience
+- a microcontroller is probably better for this kind of task than an FPGA in almost every way, at least for the auto-regressive variants (transformer/mamba)
+- but playing with hardware is really fun and a good learning experience
 - and surprisingly freeing: no operating system, no CPU, no GPU, you just make a circuit, power it on and run
 
 ## Quickstart
@@ -40,9 +40,9 @@ For the Python side:
 uv sync
 ```
 
-*Note: If JAX CUDA plugin failed to install, the trainer falls back to CPU silently.*
+*Note: if the JAX CUDA plugin fails to install, the trainer falls back to the CPU silently.*
 
-We use OxCaml for the ocaml side:
+We use OxCaml for the OCaml side:
 
 ```sh
 opam switch create 5.2.0+ox \
@@ -57,15 +57,15 @@ Hardcaml version is `v0.18~preview`, which is what the ox repository holds.
 ### Run tests
 
 ```sh
-make build    # build OCaml stuff
-make test     # run tests, both Python and OCaml
+make build    # build stuff
+make test     # run tests
 ```
 
 ## JAX
 
-### Play pretained weights on the host
+### Play pretrained weights on the host
 
-A few pretrained weight is shipped with the code in `weights/`, to sample them:
+A few pretrained weights ship with the code in `weights/`. To sample them:
 
 ```sh
 # transformer
@@ -76,19 +76,19 @@ uv run python -m mamba.infer sample --ckpt weights/mamba.ckpt --seeds 1 --save o
 uv run python -m diffusion.infer sample --ckpt weights/diffusion.ckpt --seeds 1 --save out.mid
 ```
 
-- generated MIDI sequnence is saved to `out.mid`
-- `--quantized` will draw from the quantied model install of the float one
-- switch `--save` to `--play` will send midi to `/dev/snd/midiC2D0` on **channel 3**, eg. a hardware synth (dev tested on a Roland S-1)
-- these weights are meant for directly integrated into FPGA BRAM, hence the samll sizes
+- the generated MIDI sequence is saved to `out.mid`
+- `--quantized` draws from the quantized model instead of the float one
+- switching `--save` to `--play` sends MIDI to `/dev/snd/midiC2D0` on **channel 3**, e.g. a hardware synth (developed and tested on a Roland S-1)
+- these weights are meant to be quantized and then integrated into FPGA BRAM, hence the small sizes
 - `--help` for help
 
-And, there is also a pink noise model need no weight and JAX (and no `-save` option or hardware synth only):
+There is also a pink noise model that needs no weights and no JAX (hardware synth only, and it has no `-save` option):
 
 ```sh
 dune exec bin/play_pink.exe -- -seed 1
 ```
 
-### Train your own weight
+### Train your own weights
 
 #### Prepare the corpus
 
@@ -96,17 +96,22 @@ dune exec bin/play_pink.exe -- -seed 1
 make corpus
 ```
 
-This will export `corpus/JSB-Chorales-dataset` into `jax/_data` (git ignored) in the format jax side uses.
+This exports `corpus/JSB-Chorales-dataset` into `jax/_data` (git ignored) in the format the JAX side uses.
 
-#### Run tainer
+#### Run trainer
 
 TBA
 
 ## Hardcaml
 
 > [!Caution]
-> The code here is using PMod JD on the Nexsy-4 for midi output, and you may have to add resistences between the output and you midi device, otherwise it may demage your board or midi device.
-> Proceed with caution and at you own risk.
+> **The series resistor belongs to your pair of devices, not to this code.** MIDI IN is an isolated current loop, and the value follows from the driver voltage and the receiver. Here it is 33 Ω: a Nexys 4 driving Pmod JD pin 1 at 3.3 V into a Roland S-1, whose input measures about 286 Ω and needs 5 mA in the worst case. Another synth presents another loop, and a 5 V driver wants the classic 220 Ω. Work out your own value before you connect anything.
+>
+> **Remove the board power before you connect or disconnect the cable.** A TRS plug shorts tip, ring and sleeve together as it slides into the jack, and about 50 mA then flows, which is more than an Artix-7 pin permits.
+>
+> **Check Pmod pins 5 and 6 before the first power-on.** Pin 5 is ground and pin 6 is the 3.3 V supply. Swap the two wires and you short the supply, which the Nexys 4 does not fuse per connector.
+>
+> Proceed at your own risk.
 
 ### Generate verilog
 
@@ -142,7 +147,7 @@ test/        the integration tests: the socket simulations
 
 ## The board
 
-Source models connect to the board using the same interface in `lib/core/source_intf.ml`.
+Source models connect to the board through the same interface, `lib/core/source_intf.ml`.
 
 ![The blocks of the board](docs/board_rtl.svg)
 
@@ -150,7 +155,7 @@ Source models connect to the board using the same interface in `lib/core/source_
 
 ## Models
 
-### Transoformer
+### Transformer
 
 Transformer with a few hardware-in-mind choices: rms_norm, ALiBi etc.
 
@@ -166,21 +171,21 @@ Transformer with a few hardware-in-mind choices: rms_norm, ALiBi etc.
 
 ### Mamba
 
-Mamba with a page from the [Zamba](https://arxiv.org/abs/2405.16712) book and places an attention layer at the end.
+Mamba takes a page from the [Zamba](https://arxiv.org/abs/2405.16712) book and places an attention block near the end.
 
 ![The Mamba model](docs/mamba.svg)
 
-[doc](docs/transformer.md)
+[doc](docs/mamba.md)
 
 #### RTL
 
 ![The Mamba source](docs/mamba_rtl.svg)
 
-[doc](docs/transformer.md)
+[doc](docs/mamba_rtl.md)
 
 ### Diffusion
 
-A variant of the [Coconet](https://magenta.withgoogle.com/coconet).
+A variant of [Coconet](https://magenta.withgoogle.com/coconet).
 
 ![The Diffusion model](docs/diffusion.svg)
 
@@ -193,6 +198,8 @@ A variant of the [Coconet](https://magenta.withgoogle.com/coconet).
 [doc](docs/diffusion_rtl.md)
 
 ### Pink noise
+
+A cute little pink-noise-to-pentatonic circuit.
 
 [doc](docs/pink.md)
 
