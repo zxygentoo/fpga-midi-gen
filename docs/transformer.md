@@ -20,6 +20,13 @@ The RTL block design of era four comes in a later document.
 `docs/transformer_rtl.md` gives the circuit of era three, which plays on
 the board today.
 
+![The transformer model: one position of the network over the four tied
+tables, and the chained head that reads them back](transformer.svg)
+
+The four tables stand in the picture two times, because they are the input
+and the readout at once, and the chain that reads them draws the frame of the
+next step one voice at a time.
+
 ## Why the frame
 
 Era three carried one note at a time. A step gave zero notes or up to

@@ -41,6 +41,13 @@ in "Deferred". The findings of `feat/diffusion-proto` are
 built into this one: the piano roll reads pitch, the padded tail starves the
 sheet, and the trunk completes where it does not invent.
 
+![The diffusion model: the two-I input planes, the trunk of three-by-three
+convolutions over time and pitch, and one residual pair opened](diffusion.svg)
+
+The whole sheet is one input and the trunk holds all of it at every layer.
+Nothing in the picture goes from left to right in time, and the pitch is an
+axis of the convolution.
+
 ## Why the masked objective
 
 The Gaussian round failed in ways that belong to its objective, not to the

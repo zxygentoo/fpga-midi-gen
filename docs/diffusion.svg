@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="382" viewBox="0 0 1320 382" role="img" aria-label="The diffusion model: the two-I input planes, the trunk of three-by-three convolutions over time and pitch, and one residual pair opened">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .a  { fill: var(--accent); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .plate   { fill: var(--bg); stroke: var(--line); stroke-width: 1.1; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .brace   { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+    .elab    { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 6 4; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+    <marker id="e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1320" height="382" fill="var(--bg)"/>
+
+  <rect class="outline" x="40" y="52" width="1240" height="310" rx="8"/>
+  <text class="b" x="54" y="74">The net<tspan class="s"> — the paper's two-I planes in, and the paper's trunk at the rung the board holds: L 48 layers of three-by-three convolution over TIME AND PITCH, H 20 channels</tspan></text>
+
+  <rect class="plate" x="72" y="86" width="150" height="42" rx="4"/>
+  <rect class="plate" x="66" y="92" width="150" height="42" rx="4"/>
+  <rect class="plate" x="60" y="98" width="150" height="42" rx="4"/>
+  <rect class="blk" x="54" y="104" width="150" height="42" rx="4"/>
+  <text class="t" x="64" y="124">the masked roll</text>
+  <text class="s" x="64" y="139">4 × 128 × 48</text>
+
+  <rect class="plate" x="72" y="152" width="150" height="42" rx="4"/>
+  <rect class="plate" x="66" y="158" width="150" height="42" rx="4"/>
+  <rect class="plate" x="60" y="164" width="150" height="42" rx="4"/>
+  <rect class="blk" x="54" y="170" width="150" height="42" rx="4"/>
+  <text class="t" x="64" y="190">the mask planes</text>
+  <text class="s" x="64" y="205">4 × 128 × 48</text>
+
+  <line class="wire thin" x1="204" y1="125" x2="232" y2="125"/>
+  <line class="wire thin" x1="204" y1="191" x2="232" y2="191"/>
+  <polyline class="wire thin" points="232,125 232,191"/>
+  <line class="wire" x1="232" y1="158" x2="256" y2="158" marker-end="url(#a)"/>
+
+  <rect class="blk" x="256" y="128" width="190" height="60" rx="5"/>
+  <text class="b" x="268" y="150">the stem</text>
+  <text class="s" x="268" y="168">8 planes → H</text>
+  <text class="s" x="268" y="183">norm, then relu</text>
+  <line class="wire" x1="446" y1="158" x2="472" y2="158" marker-end="url(#a)"/>
+
+  <path class="brace" d="M472,121 v-8 h360 v8"/>
+  <text class="s a" x="652" y="105" text-anchor="middle">× (L − 2) / 2</text>
+  <rect class="blkacc" x="472" y="128" width="360" height="60" rx="5"/>
+  <text class="b" x="484" y="150">one residual pair</text>
+  <text class="s" x="484" y="168">two convolutions, and the skip</text>
+  <text class="s" x="484" y="183">passes both of them</text>
+  <line class="wire" x1="832" y1="158" x2="858" y2="158" marker-end="url(#a)"/>
+
+  <rect class="blk" x="858" y="128" width="190" height="60" rx="5"/>
+  <text class="b" x="870" y="150">the head</text>
+  <text class="s" x="870" y="168">H → 4 voices</text>
+  <text class="s" x="870" y="183">its norm, and no relu</text>
+  <line class="wire" x1="1048" y1="158" x2="1074" y2="158" marker-end="url(#a)"/>
+
+  <rect class="blk" x="1074" y="128" width="192" height="60" rx="5"/>
+  <text class="b" x="1086" y="150">the logits</text>
+  <text class="s" x="1086" y="168">128 × 48 × 4</text>
+  <text class="s" x="1086" y="183">the softmax over the rows</text>
+
+  <polyline class="elab" points="652,188 652,224" marker-end="url(#e)"/>
+
+  <rect class="outline" x="54" y="224" width="1212" height="126" rx="6"/>
+  <text class="b" x="70" y="246">one residual pair<tspan class="s"> — the paper's equation 7</tspan></text>
+
+  <text class="t" x="70" y="291">x</text>
+  <line class="wire" x1="84" y1="287" x2="110" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="110" y="262" width="165" height="50" rx="4"/>
+  <text class="t" x="122" y="292">conv 3 × 3</text>
+  <line class="wire thin" x1="275" y1="287" x2="299" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="299" y="262" width="145" height="50" rx="4"/>
+  <text class="t" x="311" y="292">norm</text>
+  <line class="wire thin" x1="444" y1="287" x2="468" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="468" y="262" width="115" height="50" rx="4"/>
+  <text class="t" x="480" y="292">relu</text>
+  <line class="wire thin" x1="583" y1="287" x2="607" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="607" y="262" width="165" height="50" rx="4"/>
+  <text class="t" x="619" y="292">conv 3 × 3</text>
+  <line class="wire thin" x1="772" y1="287" x2="796" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="796" y="262" width="145" height="50" rx="4"/>
+  <text class="t" x="808" y="292">norm</text>
+  <line class="wire thin" x1="941" y1="287" x2="965" y2="287" marker-end="url(#a)"/>
+  <rect class="blkacc" x="965" y="262" width="115" height="50" rx="4"/>
+  <text class="t" x="977" y="292">+ x</text>
+  <line class="wire thin" x1="1080" y1="287" x2="1104" y2="287" marker-end="url(#a)"/>
+  <rect class="blk" x="1104" y="262" width="115" height="50" rx="4"/>
+  <text class="t" x="1116" y="292">relu</text>
+
+  <polyline class="wire" points="96,287 96,332 1022,332 1022,312" marker-end="url(#a)"/>
+</svg>

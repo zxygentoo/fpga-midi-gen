@@ -1,0 +1,187 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="850" viewBox="0 0 1320 850" role="img" aria-label="The Mamba model: the plan of eight layers, one block in its recurrent form, and the Zamba head">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .a  { fill: var(--accent); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .brace   { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1320" height="850" fill="var(--bg)"/>
+
+  <!-- the plan -->
+  <rect class="outline" x="40" y="52" width="1240" height="163" rx="8"/>
+  <text class="b" x="54" y="74">The plan<tspan class="s"> — a layer is one of three kinds, and the sequence of them is the model. The elected plan is MMMMMMZF.</tspan></text>
+
+  <rect class="blk" x="54" y="100" width="150" height="76" rx="5"/>
+  <text class="b" x="66" y="122">the embedding</text>
+  <text class="s" x="66" y="141">era four's, and</text>
+  <text class="s" x="66" y="156">unchanged: four seat</text>
+  <text class="s" x="66" y="171">tables, the bar phase</text>
+  <line class="wire" x1="204" y1="138" x2="230" y2="138" marker-end="url(#a)"/>
+
+  <rect class="blk" x="230" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="242" y="124">M</text>
+  <text class="s" x="242" y="144">the block</text>
+  <rect class="blk" x="334" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="346" y="124">M</text>
+  <text class="s" x="346" y="144">the block</text>
+  <rect class="blk" x="438" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="450" y="124">M</text>
+  <text class="s" x="450" y="144">the block</text>
+  <rect class="blk" x="542" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="554" y="124">M</text>
+  <text class="s" x="554" y="144">the block</text>
+  <rect class="blk" x="646" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="658" y="124">M</text>
+  <text class="s" x="658" y="144">the block</text>
+  <rect class="blk" x="750" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="762" y="124">M</text>
+  <text class="s" x="762" y="144">the block</text>
+  <rect class="blkacc" x="854" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="866" y="124">Z</text>
+  <text class="s" x="866" y="144">the Zamba</text>
+  <text class="s" x="866" y="159">attention</text>
+  <rect class="blkacc" x="958" y="100" width="96" height="76" rx="5"/>
+  <text class="b" x="970" y="124">F</text>
+  <text class="s" x="970" y="144">the feed-</text>
+  <text class="s" x="970" y="159">forward</text>
+  <line class="wire" x1="1054" y1="138" x2="1080" y2="138" marker-end="url(#a)"/>
+
+  <rect class="blk" x="1080" y="100" width="186" height="76" rx="5"/>
+  <text class="b" x="1092" y="122">the chained head</text>
+  <text class="s" x="1092" y="141">era four's, and</text>
+  <text class="s" x="1092" y="156">unchanged: the tied</text>
+  <text class="s" x="1092" y="171">draw from the soprano down</text>
+
+  <path class="brace" d="M230,184 v8 h616 v-8"/>
+  <text class="s a" x="538" y="205" text-anchor="middle">the trunk</text>
+  <path class="brace" d="M854,184 v8 h200 v-8"/>
+  <text class="s a" x="954" y="205" text-anchor="middle">the head and the feed-forward</text>
+
+  <!-- one block -->
+  <rect class="outline" x="40" y="235" width="1240" height="385" rx="8"/>
+  <text class="b" x="54" y="257">One block, in the recurrent form<tspan class="s"> — the projection, the depthwise causal convolution, the recurrence, the gated norm and the join</tspan></text>
+
+  <text class="t" x="48" y="301">h</text>
+  <line class="wire" x1="62" y1="296" x2="88" y2="296" marker-end="url(#a)"/>
+  <rect class="blk" x="88" y="272" width="210" height="48" rx="5"/>
+  <text class="t" x="100" y="302">rms_norm</text>
+  <line class="wire" x1="193" y1="320" x2="193" y2="344" marker-end="url(#a)"/>
+  <rect class="blk" x="88" y="344" width="210" height="64" rx="5"/>
+  <text class="b" x="100" y="366">y · W_in</text>
+  <text class="s" x="100" y="386">d × (2 d_in + 2 N + H)</text>
+  <line class="wire" x1="298" y1="376" x2="330" y2="376"/>
+  <polyline class="wire" points="330,345 330,505"/>
+  <polyline class="wire" points="330,505 200,505 200,539" marker-end="url(#a)"/>
+  <text class="s" x="250" y="499">z</text>
+
+  <line class="wire" x1="330" y1="345" x2="356" y2="345" marker-end="url(#a)"/>
+  <text class="s" x="336" y="339">u</text>
+  <rect class="blk" x="356" y="315" width="220" height="60" rx="5"/>
+  <text class="b" x="368" y="337">conv · K = 4 taps</text>
+  <text class="s" x="368" y="355">depthwise and causal;</text>
+  <text class="s" x="368" y="370">each channel keeps K−1 taps</text>
+  <line class="wire" x1="576" y1="345" x2="602" y2="345" marker-end="url(#a)"/>
+  <rect class="blk" x="602" y="315" width="210" height="60" rx="5"/>
+  <text class="b" x="614" y="337">silu, then split</text>
+  <text class="s" x="614" y="355">x [d_in], B [N], C [N]</text>
+  <text class="s" x="614" y="370">G = 1: B and C are shared</text>
+  <line class="wire" x1="812" y1="345" x2="838" y2="345" marker-end="url(#a)"/>
+
+  <line class="wire" x1="330" y1="419" x2="356" y2="419" marker-end="url(#a)"/>
+  <text class="s" x="336" y="413">dt</text>
+  <rect class="blk" x="356" y="389" width="220" height="60" rx="5"/>
+  <text class="b" x="368" y="411">softplus</text>
+  <text class="s" x="368" y="429">dt, one for each head</text>
+  <text class="s" x="368" y="444">a = exp(a_log), from the file</text>
+  <line class="wire" x1="576" y1="419" x2="602" y2="419" marker-end="url(#a)"/>
+  <rect class="blk" x="602" y="389" width="210" height="60" rx="5"/>
+  <text class="b" x="614" y="411">alpha = exp(−dt·a)</text>
+  <text class="s" x="614" y="429">the decay, in (0, 1]</text>
+  <text class="s" x="614" y="444">one exp2 table in the twin</text>
+  <line class="wire" x1="812" y1="419" x2="838" y2="419" marker-end="url(#a)"/>
+
+  <rect class="blkacc" x="838" y="315" width="250" height="140" rx="5"/>
+  <text class="b" x="850" y="337">the state S</text>
+  <text class="s" x="850" y="357">H blocks of P × N, thus</text>
+  <text class="s" x="850" y="372">d_in × N for each layer</text>
+  <text class="s" x="850" y="397">S ← alpha·S + x (dt·B)</text>
+  <text class="s" x="850" y="412">y = Σ S·C + D·x</text>
+  <text class="s" x="850" y="432">the readout reads what</text>
+  <text class="s" x="850" y="447">the update just wrote</text>
+  <polyline class="wire" points="1088,385 1120,385 1120,515 260,515 260,539" marker-end="url(#a)"/>
+
+  <rect class="blk" x="88" y="539" width="260" height="56" rx="5"/>
+  <text class="b" x="100" y="561">y · silu(z)</text>
+  <text class="s" x="100" y="579">the readout, gated</text>
+  <line class="wire" x1="348" y1="567" x2="374" y2="567" marker-end="url(#a)"/>
+  <rect class="blk" x="374" y="539" width="220" height="56" rx="5"/>
+  <text class="b" x="386" y="561">rms_norm</text>
+  <text class="s" x="386" y="579">the gated norm</text>
+  <line class="wire" x1="594" y1="567" x2="620" y2="567" marker-end="url(#a)"/>
+  <rect class="blk" x="620" y="539" width="180" height="56" rx="5"/>
+  <text class="b" x="632" y="561">· W_out</text>
+  <text class="s" x="632" y="579">d_in × d</text>
+  <line class="wire" x1="800" y1="567" x2="826" y2="567" marker-end="url(#a)"/>
+  <rect class="blk" x="826" y="539" width="220" height="56" rx="5"/>
+  <text class="b" x="838" y="561">h ← h + …</text>
+  <text class="s" x="838" y="579">the residual join</text>
+
+  <!-- the Zamba head -->
+  <rect class="outline" x="40" y="640" width="1240" height="190" rx="8"/>
+  <text class="b" x="54" y="662">The Zamba head<tspan class="s"> — the Z of the plan, and the one change from era four's layer is what the query and the key read</tspan></text>
+
+  <rect class="blk" x="54" y="690" width="250" height="32" rx="4"/>
+  <text class="t" x="66" y="711">e = rms_norm(embedding)</text>
+  <rect class="blk" x="54" y="732" width="250" height="32" rx="4"/>
+  <text class="t" x="66" y="753">y = rms_norm(h)</text>
+  <line class="wire thin" x1="304" y1="706" x2="320" y2="706"/>
+  <line class="wire thin" x1="304" y1="748" x2="320" y2="748"/>
+  <polyline class="wire thin" points="320,706 320,748"/>
+  <line class="wire" x1="320" y1="727" x2="350" y2="727" marker-end="url(#a)"/>
+  <rect class="blkacc" x="350" y="711" width="110" height="32" rx="4"/>
+  <text class="t" x="362" y="732">[y ; e]</text>
+  <line class="wire thin" x1="460" y1="727" x2="476" y2="727"/>
+  <polyline class="wire thin" points="476,706 476,748"/>
+  <line class="wire" x1="476" y1="706" x2="500" y2="706" marker-end="url(#a)"/>
+  <line class="wire" x1="476" y1="748" x2="500" y2="748" marker-end="url(#a)"/>
+  <polyline class="wire" points="179,764 179,790 500,790" marker-end="url(#a)"/>
+
+  <rect class="blk" x="500" y="690" width="160" height="32" rx="4"/>
+  <text class="t" x="512" y="711">· wq → q</text>
+  <rect class="blk" x="500" y="732" width="160" height="32" rx="4"/>
+  <text class="t" x="512" y="753">· wk → k</text>
+  <rect class="blk" x="500" y="774" width="160" height="32" rx="4"/>
+  <text class="t" x="512" y="795">· wv → v</text>
+
+  <line class="wire" x1="660" y1="706" x2="690" y2="706" marker-end="url(#a)"/>
+  <line class="wire" x1="660" y1="748" x2="690" y2="748" marker-end="url(#a)"/>
+  <line class="wire" x1="660" y1="790" x2="690" y2="790" marker-end="url(#a)"/>
+  <rect class="blk" x="690" y="690" width="250" height="116" rx="5"/>
+  <text class="b" x="702" y="712">attend(q, k, v)</text>
+  <text class="s" x="702" y="734">H heads, causal</text>
+  <text class="s" x="702" y="749">ALiBi at the span</text>
+  <text class="s" x="702" y="764">a ring of 256 slots</text>
+  <line class="wire" x1="940" y1="748" x2="966" y2="748" marker-end="url(#a)"/>
+  <rect class="blk" x="966" y="722" width="160" height="52" rx="5"/>
+  <text class="t" x="978" y="752">· wo</text>
+  <line class="wire" x1="1126" y1="748" x2="1152" y2="748" marker-end="url(#a)"/>
+  <rect class="blk" x="1152" y="722" width="114" height="52" rx="5"/>
+  <text class="t" x="1164" y="752">h ← h +</text>
+</svg>

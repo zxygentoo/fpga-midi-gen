@@ -1,0 +1,214 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="660" viewBox="0 0 1320 660" role="img" aria-label="The transformer model: one position of the network over the four tied tables, and the chained head that reads them back">
+  <style>
+    /* One palette, and it is the light one; see docs/board_rtl.svg for the reason. */
+    :root {
+      --bg: #ffffff; --fg: #1b1f24; --muted: #5c6570; --line: #3d454f;
+      --box: #f2f4f7; --accent: #b45309; --accent-fill: #fdf3e3;
+    }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--fg); }
+    .b  { font-size: 12.5px; font-weight: 600; }
+    .t  { font-size: 12px; }
+    .s  { font-size: 10.5px; fill: var(--muted); }
+    .a  { fill: var(--accent); }
+    .blk     { fill: var(--box); stroke: var(--line); stroke-width: 1.4; }
+    .blkacc  { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .outline { fill: none; stroke: var(--line); stroke-width: 1.4; }
+    .outacc  { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+    .wire    { stroke: var(--line); stroke-width: 1.6; fill: none; }
+    .thin    { stroke-width: 1; opacity: .8; }
+    .acc     { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--line)"/>
+    </marker>
+    <marker id="e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1320" height="660" fill="var(--bg)"/>
+
+  <!-- one position -->
+  <rect class="outline" x="40" y="52" width="1240" height="250" rx="8"/>
+  <text class="b" x="54" y="74">One position<tspan class="s"> — one step of music is one position of the network, and the four tables are the input and the readout at once</tspan></text>
+
+  <rect class="blk" x="64" y="92" width="120" height="34" rx="4"/>
+  <text class="t" x="76" y="113">c3 · soprano</text>
+  <rect class="blk" x="64" y="130" width="120" height="34" rx="4"/>
+  <text class="t" x="76" y="151">c2 · alto</text>
+  <rect class="blk" x="64" y="168" width="120" height="34" rx="4"/>
+  <text class="t" x="76" y="189">c1 · tenor</text>
+  <rect class="blk" x="64" y="206" width="120" height="34" rx="4"/>
+  <text class="t" x="76" y="227">c0 · bass</text>
+  <rect class="blk" x="64" y="250" width="120" height="34" rx="4"/>
+  <text class="t" x="76" y="271">t mod 16</text>
+
+  <line class="wire thin" x1="184" y1="109" x2="206" y2="109" marker-end="url(#a)"/>
+  <line class="wire thin" x1="184" y1="147" x2="206" y2="147" marker-end="url(#a)"/>
+  <line class="wire thin" x1="184" y1="185" x2="206" y2="185" marker-end="url(#a)"/>
+  <line class="wire thin" x1="184" y1="223" x2="206" y2="223" marker-end="url(#a)"/>
+  <line class="wire thin" x1="184" y1="267" x2="206" y2="267" marker-end="url(#a)"/>
+
+  <rect class="blkacc" x="206" y="92" width="150" height="34" rx="4"/>
+  <text class="t" x="218" y="113">E[3] · 48 × d</text>
+  <rect class="blkacc" x="206" y="130" width="150" height="34" rx="4"/>
+  <text class="t" x="218" y="151">E[2] · 48 × d</text>
+  <rect class="blkacc" x="206" y="168" width="150" height="34" rx="4"/>
+  <text class="t" x="218" y="189">E[1] · 48 × d</text>
+  <rect class="blkacc" x="206" y="206" width="150" height="34" rx="4"/>
+  <text class="t" x="218" y="227">E[0] · 48 × d</text>
+  <rect class="blk" x="206" y="250" width="150" height="34" rx="4"/>
+  <text class="t" x="218" y="271">phase · 16 × d</text>
+
+  <line class="wire thin" x1="356" y1="109" x2="390" y2="109"/>
+  <line class="wire thin" x1="356" y1="147" x2="390" y2="147"/>
+  <line class="wire thin" x1="356" y1="185" x2="390" y2="185"/>
+  <line class="wire thin" x1="356" y1="223" x2="390" y2="223"/>
+  <line class="wire thin" x1="356" y1="267" x2="390" y2="267"/>
+  <polyline class="wire" points="390,96 390,267"/>
+  <text class="s" x="396" y="182">h</text>
+
+  <rect class="outacc" x="410" y="84" width="846" height="206" rx="8"/>
+  <text class="s a" x="1220" y="284" text-anchor="end">one layer, × 6</text>
+
+  <line class="wire" x1="390" y1="96" x2="1205" y2="96"/>
+  <line class="wire" x1="485" y1="96" x2="485" y2="110" marker-end="url(#a)"/>
+  <line class="wire" x1="1205" y1="96" x2="1205" y2="110" marker-end="url(#a)"/>
+
+  <rect class="blk" x="440" y="110" width="90" height="64" rx="5"/>
+  <text class="t" x="448" y="146">rms_norm</text>
+  <line class="wire" x1="530" y1="142" x2="544" y2="142" marker-end="url(#a)"/>
+  <rect class="blk" x="544" y="110" width="150" height="64" rx="5"/>
+  <text class="b" x="554" y="134">wq · wk · wv</text>
+  <text class="s" x="554" y="152">d × d each, and</text>
+  <text class="s" x="554" y="167">four heads</text>
+  <line class="wire" x1="694" y1="142" x2="708" y2="142" marker-end="url(#a)"/>
+  <rect class="blk" x="708" y="110" width="190" height="64" rx="5"/>
+  <text class="b" x="718" y="134">scores</text>
+  <text class="s" x="718" y="152">q · k, scaled</text>
+  <text class="s" x="718" y="167">+ ALiBi, + the causal wall</text>
+  <line class="wire" x1="898" y1="142" x2="912" y2="142" marker-end="url(#a)"/>
+  <rect class="blk" x="912" y="110" width="140" height="64" rx="5"/>
+  <text class="b" x="922" y="134">softmax · v</text>
+  <text class="s" x="922" y="152">over the slots</text>
+  <text class="s" x="922" y="167">that exist</text>
+  <line class="wire" x1="1052" y1="142" x2="1066" y2="142" marker-end="url(#a)"/>
+  <rect class="blk" x="1066" y="110" width="90" height="64" rx="5"/>
+  <text class="t" x="1076" y="146">· wo</text>
+  <line class="wire" x1="1156" y1="142" x2="1170" y2="142" marker-end="url(#a)"/>
+  <rect class="blkacc" x="1170" y="110" width="70" height="64" rx="5"/>
+  <text class="t" x="1194" y="146">+ h</text>
+
+  <polyline class="wire" points="1205,174 1205,194 485,194"/>
+  <line class="wire" x1="485" y1="194" x2="485" y2="208" marker-end="url(#a)"/>
+  <line class="wire" x1="1077" y1="194" x2="1077" y2="208" marker-end="url(#a)"/>
+
+  <rect class="blk" x="440" y="208" width="90" height="64" rx="5"/>
+  <text class="t" x="448" y="244">rms_norm</text>
+  <line class="wire" x1="530" y1="240" x2="544" y2="240" marker-end="url(#a)"/>
+  <rect class="blk" x="544" y="208" width="260" height="64" rx="5"/>
+  <text class="b" x="554" y="232">· w1 · relu</text>
+  <text class="s" x="554" y="250">d × 4 d, and no bias</text>
+  <line class="wire" x1="804" y1="240" x2="818" y2="240" marker-end="url(#a)"/>
+  <rect class="blk" x="818" y="208" width="210" height="64" rx="5"/>
+  <text class="b" x="828" y="232">· w2</text>
+  <text class="s" x="828" y="250">4 d × d</text>
+  <line class="wire" x1="1028" y1="240" x2="1042" y2="240" marker-end="url(#a)"/>
+  <rect class="blkacc" x="1042" y="208" width="70" height="64" rx="5"/>
+  <text class="t" x="1066" y="244">+ h</text>
+
+  <polyline class="wire" points="1112,240 1244,240 1244,362 100,362 100,380" marker-end="url(#a)"/>
+
+  <!-- the chained head -->
+  <rect class="outline" x="40" y="320" width="1240" height="340" rx="8"/>
+  <text class="b" x="54" y="342">The chained head<tspan class="s"> — each seat reads the stream that the seats above it have already written, and the same four tables read it back</tspan></text>
+
+  <rect class="blk" x="54" y="380" width="240" height="42" rx="5"/>
+  <text class="t" x="66" y="406">h3 = h</text>
+  <rect class="blk" x="54" y="442" width="240" height="42" rx="5"/>
+  <text class="t" x="66" y="468">h2 = h3 + E[3][c3]</text>
+  <rect class="blk" x="54" y="504" width="240" height="42" rx="5"/>
+  <text class="t" x="66" y="530">h1 = h2 + E[2][c2]</text>
+  <rect class="blk" x="54" y="566" width="240" height="42" rx="5"/>
+  <text class="t" x="66" y="592">h0 = h1 + E[1][c1]</text>
+
+  <line class="wire" x1="174" y1="422" x2="174" y2="442" marker-end="url(#a)"/>
+  <line class="wire" x1="174" y1="484" x2="174" y2="504" marker-end="url(#a)"/>
+  <line class="wire" x1="174" y1="546" x2="174" y2="566" marker-end="url(#a)"/>
+
+  <line class="wire thin" x1="294" y1="401" x2="320" y2="401" marker-end="url(#a)"/>
+  <line class="wire thin" x1="294" y1="463" x2="320" y2="463" marker-end="url(#a)"/>
+  <line class="wire thin" x1="294" y1="525" x2="320" y2="525" marker-end="url(#a)"/>
+  <line class="wire thin" x1="294" y1="587" x2="320" y2="587" marker-end="url(#a)"/>
+
+  <rect class="blk" x="320" y="380" width="130" height="42" rx="4"/>
+  <text class="t" x="332" y="406">rms_norm</text>
+  <rect class="blk" x="320" y="442" width="130" height="42" rx="4"/>
+  <text class="t" x="332" y="468">rms_norm</text>
+  <rect class="blk" x="320" y="504" width="130" height="42" rx="4"/>
+  <text class="t" x="332" y="530">rms_norm</text>
+  <rect class="blk" x="320" y="566" width="130" height="42" rx="4"/>
+  <text class="t" x="332" y="592">rms_norm</text>
+
+  <line class="wire thin" x1="450" y1="401" x2="476" y2="401" marker-end="url(#a)"/>
+  <line class="wire thin" x1="450" y1="463" x2="476" y2="463" marker-end="url(#a)"/>
+  <line class="wire thin" x1="450" y1="525" x2="476" y2="525" marker-end="url(#a)"/>
+  <line class="wire thin" x1="450" y1="587" x2="476" y2="587" marker-end="url(#a)"/>
+
+  <rect class="blkacc" x="476" y="380" width="270" height="42" rx="4"/>
+  <text class="t" x="488" y="398">E[3] · rms(h3)</text>
+  <text class="s" x="488" y="414">the table that read seat 3</text>
+  <rect class="blkacc" x="476" y="442" width="270" height="42" rx="4"/>
+  <text class="t" x="488" y="460">E[2] · rms(h2)</text>
+  <text class="s" x="488" y="476">the table that read seat 2</text>
+  <rect class="blkacc" x="476" y="504" width="270" height="42" rx="4"/>
+  <text class="t" x="488" y="522">E[1] · rms(h1)</text>
+  <text class="s" x="488" y="538">the table that read seat 1</text>
+  <rect class="blkacc" x="476" y="566" width="270" height="42" rx="4"/>
+  <text class="t" x="488" y="584">E[0] · rms(h0)</text>
+  <text class="s" x="488" y="600">the table that read seat 0</text>
+
+  <line class="wire thin" x1="746" y1="401" x2="772" y2="401" marker-end="url(#a)"/>
+  <line class="wire thin" x1="746" y1="463" x2="772" y2="463" marker-end="url(#a)"/>
+  <line class="wire thin" x1="746" y1="525" x2="772" y2="525" marker-end="url(#a)"/>
+  <line class="wire thin" x1="746" y1="587" x2="772" y2="587" marker-end="url(#a)"/>
+
+  <rect class="blk" x="772" y="380" width="270" height="42" rx="4"/>
+  <text class="t" x="784" y="398">logits(seat 3)</text>
+  <text class="s" x="784" y="414">48 classes, and one draw</text>
+  <rect class="blk" x="772" y="442" width="270" height="42" rx="4"/>
+  <text class="t" x="784" y="460">logits(seat 2)</text>
+  <text class="s" x="784" y="476">48 classes, and one draw</text>
+  <rect class="blk" x="772" y="504" width="270" height="42" rx="4"/>
+  <text class="t" x="784" y="522">logits(seat 1)</text>
+  <text class="s" x="784" y="538">48 classes, and one draw</text>
+  <rect class="blk" x="772" y="566" width="270" height="42" rx="4"/>
+  <text class="t" x="784" y="584">logits(seat 0)</text>
+  <text class="s" x="784" y="600">48 classes, and one draw</text>
+
+  <line class="wire thin" x1="1042" y1="401" x2="1068" y2="401" marker-end="url(#a)"/>
+  <line class="wire thin" x1="1042" y1="463" x2="1068" y2="463" marker-end="url(#a)"/>
+  <line class="wire thin" x1="1042" y1="525" x2="1068" y2="525" marker-end="url(#a)"/>
+  <line class="wire thin" x1="1042" y1="587" x2="1068" y2="587" marker-end="url(#a)"/>
+
+  <rect class="blkacc" x="1068" y="380" width="120" height="42" rx="4"/>
+  <text class="t" x="1080" y="406">c3</text>
+  <rect class="blkacc" x="1068" y="442" width="120" height="42" rx="4"/>
+  <text class="t" x="1080" y="468">c2</text>
+  <rect class="blkacc" x="1068" y="504" width="120" height="42" rx="4"/>
+  <text class="t" x="1080" y="530">c1</text>
+  <rect class="blkacc" x="1068" y="566" width="120" height="42" rx="4"/>
+  <text class="t" x="1080" y="592">c0</text>
+
+  <line class="acc" x1="1188" y1="401" x2="1216" y2="401"/>
+  <line class="acc" x1="1188" y1="463" x2="1216" y2="463"/>
+  <line class="acc" x1="1188" y1="525" x2="1216" y2="525"/>
+  <line class="acc" x1="1188" y1="587" x2="1216" y2="587"/>
+  <polyline class="acc" points="1216,401 1216,634 22,634 22,185 44,185"/>
+  <line class="acc" x1="44" y1="109" x2="44" y2="223"/>
+  <line class="acc" x1="44" y1="109" x2="64" y2="109" marker-end="url(#e)"/>
+  <line class="acc" x1="44" y1="147" x2="64" y2="147" marker-end="url(#e)"/>
+  <line class="acc" x1="44" y1="185" x2="64" y2="185" marker-end="url(#e)"/>
+  <line class="acc" x1="44" y1="223" x2="64" y2="223" marker-end="url(#e)"/>
+  <text class="s a" x="200" y="628">the four drawn codes are the frame of step t+1, and the four tables read them back as its embedding</text>
+</svg>

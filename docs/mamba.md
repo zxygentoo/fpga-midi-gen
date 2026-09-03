@@ -40,6 +40,14 @@ design spends its care on memory and on simplicity, not on throughput.
 
 The RTL block design is `docs/mamba_rtl.md`.
 
+![The Mamba model: the plan of eight layers, one block in its recurrent form,
+and the Zamba head](mamba.svg)
+
+The plan is the model, thus the picture states it first. The two ends of that
+row carry over from era four, and the trunk between them is the one experiment
+of the era: the block below is one of its six, and the Zamba head and the
+feed-forward are the pair the ear elected beside them.
+
 ## What carries over
 
 Era four settled the whole outside of the model, and this era changes
