@@ -368,9 +368,14 @@ is what a commit passes.
 - This repository uses git-flow, with the branches `main` and `develop`, and
   the prefix `feat/` for features.
 - The pre-commit gates are `make gates`: `dune build @fmt` reports no
-  difference, `dune build` completes with no error and no warning, and — when
-  `jax/` moves — `uv run ruff check` finds nothing and `uv run pytest` passes.
-  The Makefile is where those four commands live; this line names them and
-  states no command of its own, because a command written twice drifts.
+  difference, `dune build` completes with no error and no warning, `dune
+  runtest` passes, and — when `jax/` moves — `uv run ruff check` finds nothing
+  and `uv run pytest` passes. BOTH SUITES GATE A COMMIT, because the OCaml side
+  holds the unit gates and the cycle benches and the Python side holds the
+  oracle gates. The Makefile is where those commands live; this line names them
+  and states no command of its own, because a command written twice drifts.
+- A clone starts with `make build`, which writes everything it can derive: the
+  OCaml, the corpus of the JAX seam and the contract file of each era with
+  weights. `make build && make gates` then skips no gate for a missing file.
 - A change to the RTL is netlist-identical (the `top.v` md5 gate of
   `jax/tests/test_parity.py`) or it owes a Vivado build before it merges.

@@ -210,7 +210,7 @@ four voices move at 7.6 percent of the step boundaries.
 
 ## The corpus
 
-Built. `Jsb.pack` and `corpus_tool export` carry it.
+Built. `Jsb.pack` and `corpus_tool frames` carry it.
 
 ### The packed stream
 

@@ -1,8 +1,8 @@
-(* corpus_tool: the corpus side of the JAX seam. The export subcommand writes the packed
-   corpus as one safetensors file: for each split, a set of streams — the frames, the
-   rolling coordinates and the stream index. The seam carries data, never rules: the
-   packing, the rotation and the shifts all come from the committed OCaml, and the JAX
-   side only reads arrays.
+(* corpus_tool: the corpus side of the JAX seam. EACH SUBCOMMAND IS NAMED BY THE FILE IT
+   WRITES. The frames subcommand writes the packed corpus as one safetensors file: for
+   each split, a set of streams — the frames, the rolling coordinates and the stream
+   index. The seam carries data, never rules: the packing, the rotation and the shifts all
+   come from the committed OCaml, and the JAX side only reads arrays.
 
    The pieces subcommand writes the other corpus, the one the sheet of docs/diffusion.md
    reads: whole pieces on the grid the caller names, one row for each, with the true
@@ -27,7 +27,7 @@ let i32 ~shape data =
 (* A frame is one word of four voice codes, and a code with its flag set does not fit the
    sign of an int32 when it stands in the top byte. Therefore the seam carries the seats
    as four columns, seat 0 first, and the word is rebuilt by whoever wants one. *)
-let tensors_of_split streams =
+let tensors_of_streams streams =
   let all = Array.of_list streams in
   let total = Array.sum (module Int) all ~f:(fun s -> Array.length s.Jsb.frames) in
   let frames = Array.create ~len:(total * Jsb.voices) 0 in
@@ -92,7 +92,7 @@ let median counts =
 
 (* The range a list of pitches covers, for the report. The vocabulary of the model is
    sized to this and to nothing else — 48 classes cover 36 to 81 with one spare — thus
-   each export prints it and the number is checked and not assumed. *)
+   each run prints it and the number is checked and not assumed. *)
 let pitch_range pitches =
   match List.min_elt pitches ~compare:Int.compare with
   | None -> "silent"
@@ -113,16 +113,16 @@ let piece_pitches pieces =
     Array.to_list cells |> List.concat |> List.filter ~f:(fun pitch -> pitch >= 0))
 ;;
 
-let export ~corpus ~out ~streams ~seed =
+let write_frames ~corpus ~out ~streams ~seed =
   let data = Jsb.load ~path:corpus in
   let splits = [ "train", data.train; "valid", data.valid; "test", data.test ] in
-  (* one lane for the whole export, thus the streams of a split do not move when another
+  (* one lane for the whole file, thus the streams of a split do not move when another
      split changes *)
   let random_state = Random.State.make [| seed |] in
   let entries =
     List.concat_map splits ~f:(fun (name, chorales) ->
       let packed = Jsb.streams chorales ~count:streams ~random_state in
-      let tensors = tensors_of_split packed in
+      let tensors = tensors_of_streams packed in
       let steps = List.sum (module Int) packed ~f:(fun s -> Array.length s.Jsb.frames) in
       printf
         "%-5s  %3d pieces  %3d streams  %7d steps  pitches %s\n%!"
@@ -138,7 +138,7 @@ let export ~corpus ~out ~streams ~seed =
   printf "wrote %s\n%!" out
 ;;
 
-let export_command =
+let frames_command =
   Command.basic
     ~summary:"write the packed corpus for the JAX trainer: one set of streams per split"
     (let%map_open.Command corpus =
@@ -162,17 +162,17 @@ let export_command =
      and seed =
        flag "-seed" (optional_with_default 0 int) ~doc:"N the seed of the draw"
      in
-     fun () -> export ~corpus ~out ~streams ~seed)
+     fun () -> write_frames ~corpus ~out ~streams ~seed)
 ;;
 
 (* The pieces of one grid, and the width of the row that holds them.
 
-   With no -steps the corpus states the width: the longest piece of the whole export, thus
+   With no -steps the corpus states the width: the longest piece of all three splits, thus
    no piece is dropped and every split reads one sheet shape. A caller that wants a
-   narrower sheet states it, and the export says how many pieces it then dropped. The crop
+   narrower sheet states it, and the report says how many pieces it then dropped. The crop
    of the trainer is the JAX side's own — a sheet of 640 steps holds a crop of 128
    wherever the draw puts it. *)
-let export_pieces ~corpus ~out ~grid ~steps =
+let write_pieces ~corpus ~out ~grid ~steps =
   let data = Jsb.load ~path:corpus in
   let splits =
     [ "train", data.train; "valid", data.valid; "test", data.test ]
@@ -237,16 +237,16 @@ let pieces_command =
          (optional int)
          ~doc:
            "N the steps of one row. With no flag the longest piece states it and nothing \
-            is dropped; a piece that needs more than N is dropped, and the export says \
+            is dropped; a piece that needs more than N is dropped, and the report says \
             how many."
      in
-     fun () -> export_pieces ~corpus ~out ~grid ~steps)
+     fun () -> write_pieces ~corpus ~out ~grid ~steps)
 ;;
 
 let command =
   Command.group
     ~summary:"the corpus side of the JAX seam"
-    [ "export", export_command; "pieces", pieces_command ]
+    [ "frames", frames_command; "pieces", pieces_command ]
 ;;
 
 let () = Command_unix.run command
