@@ -126,7 +126,7 @@ uv run python -m diffusion.train --steps 200 --ckpt _train/probe.ckpt
 
 ## Hardcaml
 
-> [!Caution]
+> [!CAUTION]
 > **The series resistor belongs to your pair of devices, not to this code.** MIDI IN is an isolated current loop, and the value follows from the driver voltage and the receiver. Here it is 33 Ω: a Nexys 4 driving Pmod JD pin 1 at 3.3 V into a Roland S-1, whose input measures about 286 Ω and needs 5 mA in the worst case. Another synth presents another loop, and a 5 V driver wants the classic 220 Ω. Work out your own value before you connect anything.
 >
 > **Remove the board power before you connect or disconnect the cable.** A TRS plug shorts tip, ring and sleeve together as it slides into the jack, and about 50 mA then flows, which is more than an Artix-7 pin permits.

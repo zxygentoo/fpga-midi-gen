@@ -89,7 +89,7 @@ build:
 # policy, rotation or grid makes a kept file wrong and NOTHING ON THE JAX SIDE COULD SAY
 # SO -- it reads arrays, and it never reads what packed them.
 CHORALES := corpus/JSB-Chorales-dataset/Jsb16thSeparated.json
-PACKERS := bin/corpus_tool.ml lib/corpus/jsb.ml
+PACKERS := bin/corpus_tool.ml $(wildcard lib/corpus/*.ml) lib/core/frame.ml
 
 corpus: jax/_data/frames.safetensors jax/_data/pieces.safetensors
 
@@ -115,7 +115,8 @@ jax/_data/pieces.safetensors: $(CHORALES) $(PACKERS)
 # `test_parity.py` quantizes into its own directory and never reads this one. The list is
 # deliberately broad: a few seconds of quantizing is the cheaper mistake by far.
 QUANTIZERS := $(wildcard jax/*.py) \
-              $(wildcard jax/transformer/*.py jax/mamba/*.py jax/diffusion/*.py)
+              $(wildcard jax/transformer/*.py jax/mamba/*.py jax/diffusion/*.py) \
+              $(wildcard jax/*/quantized/*.py)
 
 weights/%.int8: weights/%.ckpt $(QUANTIZERS)
 	uv run python -m $*.infer quantize --ckpt $< --out $@
